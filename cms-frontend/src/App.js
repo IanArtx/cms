@@ -39,6 +39,8 @@ import SavingsPage from './pages/savings/SavingsPage';
 import SideFundPage from './pages/sideFund/SideFundPage';
 import AboutPage from './pages/about/AboutPage';
 import RequisitionsPage from './pages/requisitions/RequisitionsPage';
+import AuditManagementPage from './pages/audit/AuditManagementPage';
+import AuditorPortalPage from './pages/audit/AuditorPortalPage';
 
 const queryClient = new QueryClient({
     defaultOptions: {
@@ -99,6 +101,16 @@ function App() {
                             <Route path="side-fund" element={<SideFundPage />} />
                             <Route path="about" element={<AboutPage />} />
                             <Route path="requisitions" element={<RequisitionsPage />} />
+                            <Route path="audit" element={
+                                <ProtectedRoute requiredRole="Auditor">
+                                    <AuditorPortalPage />
+                                </ProtectedRoute>
+                            } />
+                            <Route path="audit-management" element={
+                                <ProtectedRoute requiredRole="Admin">
+                                    <AuditManagementPage />
+                                </ProtectedRoute>
+                            } />
                         </Route>
 
                         {/* Catch all */}

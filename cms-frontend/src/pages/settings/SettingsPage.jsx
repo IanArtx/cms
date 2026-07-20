@@ -272,6 +272,7 @@ const CurrenciesTab = () => {
             )}
 
             <div className="overflow-hidden rounded-lg border border-gray-200">
+                <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                         <tr>
@@ -339,6 +340,7 @@ const CurrenciesTab = () => {
                         ))}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
     );
@@ -459,6 +461,7 @@ const RolesTab = () => {
             )}
 
             <div className="overflow-hidden rounded-lg border border-gray-200">
+                <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                         <tr>
@@ -505,6 +508,7 @@ const RolesTab = () => {
                         ))}
                     </tbody>
                 </table>
+                </div>
             </div>
 
             <PermissionsModal
@@ -676,6 +680,7 @@ const CategoriesTab = () => {
             )}
 
             <div className="overflow-hidden rounded-lg border border-gray-200">
+                <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                         <tr>
@@ -728,6 +733,7 @@ const CategoriesTab = () => {
                         ))}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
     );

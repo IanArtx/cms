@@ -19,6 +19,7 @@ const getMyProfile = asyncHandler(async (req, res) => {
             u.id, u.uuid, u.email, u.first_name, u.last_name,
             u.date_of_birth, u.nationality, u.id_number, u.phone,
             u.address, u.photo_path, u.gender, u.avatar_choice,
+            u.auditor_company_name, u.auditor_company_initials, u.auditor_contact_phone,
             u.emergency_contact_name,
             u.emergency_contact_phone, u.two_factor_enabled,
             u.is_email_verified, u.last_login_at, u.created_at,
@@ -123,6 +124,7 @@ const updateMyProfile = asyncHandler(async (req, res) => {
         id_number, phone, address,
         emergency_contact_name, emergency_contact_phone,
         gender, avatar_choice,
+        auditor_company_name, auditor_company_initials, auditor_contact_phone,
     } = req.body;
 
     const result = await query(`
@@ -130,7 +132,7 @@ const updateMyProfile = asyncHandler(async (req, res) => {
             first_name              = COALESCE($1, first_name),
             last_name               = COALESCE($2, last_name),
             date_of_birth           = COALESCE($3, date_of_birth),
-            nationality             = COALESCE($4, nationality),
+            nationality              = COALESCE($4, nationality),
             id_number               = COALESCE($5, id_number),
             phone                   = COALESCE($6, phone),
             address                 = COALESCE($7, address),
@@ -138,14 +140,19 @@ const updateMyProfile = asyncHandler(async (req, res) => {
             emergency_contact_phone = COALESCE($9, emergency_contact_phone),
             gender                  = COALESCE($10, gender),
             avatar_choice           = COALESCE($11, avatar_choice),
+            auditor_company_name     = COALESCE($12, auditor_company_name),
+            auditor_company_initials = COALESCE($13, auditor_company_initials),
+            auditor_contact_phone    = COALESCE($14, auditor_contact_phone),
             updated_at              = NOW()
-        WHERE id = $12
-        RETURNING id, first_name, last_name, email, phone, address, gender, avatar_choice, photo_path
+        WHERE id = $15
+        RETURNING id, first_name, last_name, email, phone, address, gender, avatar_choice, photo_path,
+                  auditor_company_name, auditor_company_initials, auditor_contact_phone
     `, [
         first_name, last_name, date_of_birth, nationality,
         id_number, phone, address,
         emergency_contact_name, emergency_contact_phone,
         gender, avatar_choice,
+        auditor_company_name, auditor_company_initials, auditor_contact_phone,
         req.user.id,
     ]);
 
@@ -261,6 +268,7 @@ const getUserById = asyncHandler(async (req, res) => {
             u.id, u.uuid, u.email, u.first_name, u.last_name,
             u.date_of_birth, u.nationality, u.id_number, u.phone,
             u.address, u.photo_path, u.gender, u.avatar_choice,
+            u.auditor_company_name, u.auditor_company_initials, u.auditor_contact_phone,
             u.emergency_contact_name,
             u.emergency_contact_phone, u.two_factor_enabled,
             u.is_active, u.is_email_verified, u.last_login_at, u.created_at,

@@ -190,6 +190,33 @@ export const documentsAPI = {
 };
 
 // ============================================================
+// EXTERNAL AUDIT
+// ============================================================
+export const auditAPI = {
+    // Admin — engagement management
+    listEngagements:   ()          => api.get('/audit/engagements'),
+    getEngagement:     (id)        => api.get(`/audit/engagements/${id}`),
+    createEngagement:  (data)      => api.post('/audit/engagements', data),
+    updateEngagement:  (id, data)  => api.patch(`/audit/engagements/${id}`, data),
+    revokeEngagement:  (id)        => api.post(`/audit/engagements/${id}/revoke`),
+    addUser:           (id, data)  => api.post(`/audit/engagements/${id}/users`, data),
+    removeUser:        (id, userId) => api.delete(`/audit/engagements/${id}/users/${userId}`),
+    addDocument:       (id, data)  => api.post(`/audit/engagements/${id}/documents`, data),
+    removeDocument:    (id, documentId) => api.delete(`/audit/engagements/${id}/documents/${documentId}`),
+
+    // Auditor — scoped read-only portal
+    getMyEngagements:  ()          => api.get('/audit/my-engagements'),
+    getAllowedAccounts:(id)        => api.get(`/audit/engagements/${id}/allowed-accounts`),
+    getTransactions:   (id, params) => api.get(`/audit/engagements/${id}/transactions`, { params }),
+    getDocuments:      (id)        => api.get(`/audit/engagements/${id}/documents`),
+    // responseType 'blob' — same UPLOADED-vs-SYSTEM_GENERATED split as documentsAPI.download
+    previewDocument:   (id, documentId) => api.get(
+        `/audit/engagements/${id}/documents/${documentId}`, { responseType: 'blob' }
+    ),
+    getSummary:        (id)        => api.get(`/audit/engagements/${id}/summary`),
+};
+
+// ============================================================
 // SETTINGS (company branding)
 // ============================================================
 export const settingsAPI = {

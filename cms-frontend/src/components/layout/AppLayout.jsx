@@ -4,12 +4,26 @@
 // ============================================================
 
 import { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 
 const AppLayout = () => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
+    const { hasRole } = useAuth();
+    const location = useLocation();
+
+    // The Auditor role is the one place in this app an external,
+    // non-member party gets a login — every other page assumes an
+    // internal member/staff user, and most would either 403 or show
+    // a confusing empty state for an Auditor anyway. Rather than
+    // relying on every individual page to guard against that, this
+    // is enforced once, centrally: an Auditor is bounced to /audit
+    // no matter what URL they land on or type in directly.
+    if (hasRole('Auditor') && location.pathname !== '/audit') {
+        return <Navigate to="/audit" replace />;
+    }
 
     return (
         <div className="flex" style={{ height: '100vh', overflow: 'hidden' }}>

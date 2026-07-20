@@ -31,6 +31,7 @@ import {
     ClipboardDocumentListIcon,
     WalletIcon,
     XMarkIcon,
+    ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ isOpen, onClose }) => {
@@ -41,7 +42,18 @@ const Sidebar = ({ isOpen, onClose }) => {
         .map(w => w[0]).join('').toUpperCase() ||
         (process.env.REACT_APP_COMPANY_INITIALS || 'CMS');
 
-    const navItems = [
+    // The Auditor role sees nothing but its own page — every other
+    // nav item below would just bounce them straight back to /audit
+    // anyway (enforced centrally in AppLayout.jsx), so showing them
+    // here would only be confusing. This short-circuits the whole
+    // list rather than relying on permission checks alone, since a
+    // few items (Dashboard, Savings, Reports, About, etc.) are
+    // intentionally "show: true" for every normal member/staff role.
+    const isAuditorOnly = hasRole('Auditor');
+
+    const navItems = isAuditorOnly ? [
+        { label: 'Audit', href: '/audit', icon: ShieldCheckIcon, show: true },
+    ] : [
         { label: 'Dashboard',    href: '/',             icon: HomeIcon,            show: true },
         { label: 'Accounts',     href: '/accounts',     icon: BuildingLibraryIcon, show: hasPermission('FINANCE_VIEW_ALL') },
         { label: 'Transactions', href: '/transactions', icon: BanknotesIcon,       show: hasPermission('FINANCE_VIEW_ALL') },
@@ -57,6 +69,7 @@ const Sidebar = ({ isOpen, onClose }) => {
         { label: 'Documents',    href: '/documents',    icon: DocumentTextIcon,    show: hasPermission('DOCUMENT_VIEW') },
         { label: 'Reports',      href: '/reports',      icon: ChartPieIcon,        show: true },
         { label: 'Members',      href: '/users',        icon: UsersIcon,           show: hasPermission('USER_VIEW_ALL') },
+        { label: 'External Audit', href: '/audit-management', icon: ShieldCheckIcon, show: hasRole('Admin') },
         { label: 'Settings',     href: '/settings',     icon: Cog6ToothIcon,       show: hasRole('Admin') },
         { label: 'About',        href:  '/about',       icon:  InformationCircleIcon,    show:  true,},
     ];

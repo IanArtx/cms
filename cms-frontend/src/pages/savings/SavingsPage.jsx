@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { savingsAPI, usersAPI, accountsAPI, categoriesAPI } from '../../api/endpoints';
-import { formatDate, getErrorMessage } from '../../utils/helpers';
+import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -193,8 +193,8 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, cat
                         {memberBalance && (
                             <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm">
                                 <p className="text-primary-700">
-                                    Available principal: <span className="font-bold">{parseFloat(memberBalance.principal_balance).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
-                                    {' · '}Accrued interest: <span className="font-bold">{parseFloat(memberBalance.accrued_interest).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                                    Available principal: <span className="font-bold">{formatNumber(memberBalance.principal_balance)}</span>
+                                    {' · '}Accrued interest: <span className="font-bold">{formatNumber(memberBalance.accrued_interest)}</span>
                                 </p>
                             </div>
                         )}
@@ -630,7 +630,7 @@ const SavingsPage = () => {
         { header: 'Type', render: row => <span className="text-xs text-gray-500">{row.entry_type === 'FIXED_TERM' ? 'Fixed-Term' : 'Flexible'}</span> },
         { header: 'Amount', render: row => (
             <span className="text-sm font-bold text-gray-900">
-                {row.currency_code} {parseFloat(row.principal_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                {row.currency_code} {formatNumber(row.principal_amount)}
             </span>
         ) },
         { header: 'Deposit Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.deposit_date)}</span> },
@@ -656,9 +656,9 @@ const SavingsPage = () => {
     // Columns — My Handouts (confirm/reject)
     const myHandoutsColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
-        { header: 'Principal', render: row => <span className="text-sm text-gray-900">{row.currency_code} {parseFloat(row.principal_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
-        { header: 'Interest', render: row => <span className="text-sm text-green-600">{row.currency_code} {parseFloat(row.interest_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
-        { header: 'Total', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {parseFloat(row.total_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Principal', render: row => <span className="text-sm text-gray-900">{row.currency_code} {formatNumber(row.principal_amount)}</span> },
+        { header: 'Interest', render: row => <span className="text-sm text-green-600">{row.currency_code} {formatNumber(row.interest_amount)}</span> },
+        { header: 'Total', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {formatNumber(row.total_amount)}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.handout_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
         { header: 'Actions', render: row => (
@@ -683,7 +683,7 @@ const SavingsPage = () => {
         { header: 'Member', render: row => (
             <div><p className="text-sm font-medium text-gray-900">{row.member_name}</p><p className="text-xs text-gray-400">{row.member_email}</p></div>
         ) },
-        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {parseFloat(row.principal_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.principal_amount)}</span> },
         { header: 'Recorded By', render: row => <span className="text-xs text-gray-500">{row.recorded_by_name}</span> },
         { header: 'Source', render: row => <span className="text-xs text-gray-500">{row.source === 'REQUISITION' ? 'Member Request' : 'Treasury Direct'}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.deposit_date)}</span> },
@@ -705,7 +705,7 @@ const SavingsPage = () => {
     const poolInflowColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-amber-700">{row.reference_code}</span> },
         { header: 'Description', render: row => <p className="text-sm text-gray-700">{row.description}</p> },
-        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {parseFloat(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.amount)}</span> },
         { header: 'Recorded By', render: row => <span className="text-xs text-gray-500">{row.recorded_by_name}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.value_date)}</span> },
         { header: 'Actions', render: row => (
@@ -727,7 +727,7 @@ const SavingsPage = () => {
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
         { header: 'Type', render: row => <span className="text-xs text-gray-500">{row.entry_type === 'FIXED_TERM' ? 'Fixed-Term' : 'Flexible'}</span> },
-        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {parseFloat(row.principal_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.principal_amount)}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.deposit_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
     ];
@@ -735,7 +735,7 @@ const SavingsPage = () => {
     const allHandoutsColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
-        { header: 'Total', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {parseFloat(row.total_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Total', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.total_amount)}</span> },
         { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.handout_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
@@ -787,13 +787,13 @@ const SavingsPage = () => {
                 <div className="card">
                     <p className="text-sm text-gray-400">My Savings Balance</p>
                     <p className="text-2xl font-bold text-primary-700 mt-1">
-                        {myBalance ? parseFloat(myBalance.principal_balance).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '0.00'}
+                        {myBalance ? formatNumber(myBalance.principal_balance) : '0.00'}
                     </p>
                 </div>
                 <div className="card">
                     <p className="text-sm text-gray-400">Accrued Interest</p>
                     <p className="text-2xl font-bold text-green-600 mt-1">
-                        {myBalance ? parseFloat(myBalance.accrued_interest).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '0.00'}
+                        {myBalance ? formatNumber(myBalance.accrued_interest) : '0.00'}
                     </p>
                 </div>
                 <div className="card">

@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { sideFundAPI, accountsAPI, categoriesAPI } from '../../api/endpoints';
-import { formatDate, getErrorMessage } from '../../utils/helpers';
+import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -168,7 +168,7 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Side Fund Payment</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        {due.member_name} — {due.period}. Outstanding: {outstanding.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        {due.member_name} — {due.period}. Outstanding: {formatNumber(outstanding)}
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -252,7 +252,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, categories, currentBal
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Side Fund Expense</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        Posted as a normal expense on the parent account. Available in the fund: {parseFloat(currentBalance || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        Posted as a normal expense on the parent account. Available in the fund: {formatNumber(currentBalance || 0)}
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -472,8 +472,8 @@ const SideFundPage = () => {
 
     const myDuesColumns = [
         { header: 'Period', render: row => <span className="text-sm font-medium text-gray-900">{row.period}</span> },
-        { header: 'Amount Due', render: row => <span className="text-sm text-gray-900">{parseFloat(row.amount_due).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
-        { header: 'Amount Paid', render: row => <span className="text-sm text-green-600">{parseFloat(row.amount_paid).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Amount Due', render: row => <span className="text-sm text-gray-900">{formatNumber(row.amount_due)}</span> },
+        { header: 'Amount Paid', render: row => <span className="text-sm text-green-600">{formatNumber(row.amount_paid)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
         { header: 'Paid Date', render: row => <span className="text-sm text-gray-500">{row.paid_date ? formatDate(row.paid_date) : '—'}</span> },
     ];
@@ -485,9 +485,9 @@ const SideFundPage = () => {
         ) },
         { header: 'Due / Paid', render: row => (
             <span className="text-sm text-gray-900">
-                {parseFloat(row.amount_due).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                {formatNumber(row.amount_due)}
                 {' / '}
-                <span className="text-green-600">{parseFloat(row.amount_paid).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                <span className="text-green-600">{formatNumber(row.amount_paid)}</span>
             </span>
         ) },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
@@ -505,7 +505,7 @@ const SideFundPage = () => {
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Description', render: row => <span className="text-sm text-gray-900">{row.description}</span> },
         { header: 'Category', render: row => <span className="text-xs text-gray-500">{row.category_name || '—'}</span> },
-        { header: 'Amount', render: row => <span className="text-sm font-bold text-red-600">{parseFloat(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-red-600">{formatNumber(row.amount)}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.expense_date)}</span> },
         { header: 'Recorded By', render: row => <span className="text-xs text-gray-500">{row.recorded_by_name}</span> },
     ];
@@ -564,14 +564,14 @@ const SideFundPage = () => {
                     <div className="card">
                         <p className="text-sm text-gray-400">Fund Balance</p>
                         <p className="text-2xl font-bold text-primary-700 mt-1">
-                            {parseFloat(config.current_balance).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                            {formatNumber(config.current_balance)}
                             {config.currency_code ? ` ${config.currency_code}` : ''}
                         </p>
                     </div>
                     <div className="card">
                         <p className="text-sm text-gray-400">Monthly Due</p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">
-                            {parseFloat(config.monthly_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                            {formatNumber(config.monthly_amount)}
                         </p>
                     </div>
                     <div className="card">

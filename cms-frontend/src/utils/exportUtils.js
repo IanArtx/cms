@@ -1814,6 +1814,155 @@ export const systemManualTemplate = ({ steps = [], modules = [], roles = [] } = 
 </html>`;
 
 // ============================================================
+// EXTERNAL AUDIT SUMMARY TEMPLATE
+// One self-contained document for an external auditor to download:
+// engagement details, an opening/closing balance summary per
+// account, a breakdown by category, and the full transaction ledger
+// for the audited period — everything already scoped server-side to
+// what that auditor's engagement grants, so nothing extra needs
+// filtering here.
+// ============================================================
+export const auditSummaryTemplate = (data) => {
+    const { engagement, accounts = [], categories = [], transactions = [] } = data;
+
+    const totalIn = transactions
+        .filter(t => t.transaction_type === 'CREDIT' || t.transaction_type === 'REVERSAL_CREDIT')
+        .reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const totalOut = transactions
+        .filter(t => t.transaction_type === 'DEBIT' || t.transaction_type === 'REVERSAL_DEBIT')
+        .reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Audit Summary — ${engagement.name}</title>
+    <style>${getBaseStyles()}</style>
+</head>
+<body>
+<div class="page">
+    ${letterhead('External Audit Summary', engagement.name, new Date())}
+    <div class="doc-title">External Audit Summary</div>
+    <div class="doc-subtitle">
+        ${engagement.name} — Period: ${fmt.date(engagement.period_start)} to ${fmt.date(engagement.period_end)}
+    </div>
+
+    <div class="meta-box cols-3">
+        <div class="meta-item">
+            <div class="meta-label">Accounts in Scope</div>
+            <div class="meta-value large">${accounts.length}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Total In</div>
+            <div class="meta-value large green">+${fmt.amount(totalIn)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Total Out</div>
+            <div class="meta-value large red">-${fmt.amount(totalOut)}</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Account Summary</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Account</th>
+                    <th>Opening Balance</th>
+                    <th>Total In</th>
+                    <th>Total Out</th>
+                    <th>Closing Balance</th>
+                    <th class="text-right">Transactions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${accounts.map(a => `
+                <tr>
+                    <td>${a.name} <span class="text-gray">(${a.account_type})</span></td>
+                    <td>${a.currency_code} ${a.opening_balance != null ? fmt.amount(a.opening_balance) : '—'}</td>
+                    <td class="text-green">+${fmt.amount(a.total_in)}</td>
+                    <td class="text-red">-${fmt.amount(a.total_out)}</td>
+                    <td>${a.currency_code} ${a.closing_balance != null ? fmt.amount(a.closing_balance) : '—'}</td>
+                    <td class="text-right">${a.transaction_count}</td>
+                </tr>`).join('')}
+            </tbody>
+        </table>
+    </div>
+
+    ${categories.length > 0 ? `
+    <div class="section">
+        <div class="section-title">Breakdown by Category</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th class="text-right">Total In</th>
+                    <th class="text-right">Total Out</th>
+                    <th class="text-right">Transactions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${categories.map(c => `
+                <tr>
+                    <td>${c.category_trail || c.category_name}</td>
+                    <td class="text-right text-green">+${fmt.amount(c.total_in)}</td>
+                    <td class="text-right text-red">-${fmt.amount(c.total_out)}</td>
+                    <td class="text-right">${c.transaction_count}</td>
+                </tr>`).join('')}
+            </tbody>
+        </table>
+    </div>` : ''}
+
+    <div class="section">
+        <div class="section-title">Full Transaction Ledger (${transactions.length} records)</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Reference</th>
+                    <th>Account</th>
+                    <th>Description</th>
+                    <th>Category</th>
+                    <th>Date</th>
+                    <th class="text-right">Amount</th>
+                    <th class="text-right">Balance After</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${transactions.map(t => {
+                    const isCredit = t.transaction_type === 'CREDIT' || t.transaction_type === 'REVERSAL_CREDIT';
+                    return `
+                    <tr>
+                        <td class="font-mono text-blue">${t.reference_code}</td>
+                        <td>${t.account_name}</td>
+                        <td>${t.description || '—'}</td>
+                        <td class="text-gray">${t.category_trail || t.category_name || '—'}</td>
+                        <td>${fmt.date(t.value_date)}</td>
+                        <td class="text-right font-bold ${isCredit ? 'text-green' : 'text-red'}">
+                            ${isCredit ? '+' : '-'}${t.currency_code} ${fmt.amount(t.amount)}
+                        </td>
+                        <td class="text-right">${t.currency_code} ${fmt.amount(t.balance_after)}</td>
+                    </tr>`;
+                }).join('')}
+                ${transactions.length > 0 ? `
+                <tr class="total-row">
+                    <td colspan="5">TOTALS</td>
+                    <td class="text-right">
+                        <span class="text-green">+${fmt.amount(totalIn)}</span> /
+                        <span class="text-red">-${fmt.amount(totalOut)}</span>
+                    </td>
+                    <td></td>
+                </tr>` : ''}
+            </tbody>
+        </table>
+    </div>
+
+    ${footer()}
+</div>
+</body>
+</html>`;
+};
+
+// ============================================================
 // PRINT / EXPORT FUNCTION
 // Opens document in new tab and triggers print dialog
 // ============================================================

@@ -163,7 +163,7 @@ services:
       # Keep this in sync with render.yaml's copy — same codebase,
       # same version, both companies.
       - key: REACT_APP_VERSION
-        value: "1.18.0"
+        value: "1.19.0"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

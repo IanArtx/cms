@@ -90,6 +90,13 @@ CREATE TABLE users (
     avatar_choice               VARCHAR(30),
     -- avatar_choice: id of a built-in illustrated avatar (e.g. 'male-1', 'female-2', 'neutral-1')
     -- used as a placeholder when the user has not uploaded a real photo_path.
+    -- Only meaningful for the Auditor role (v1.20.0) — required before an
+    -- auditor can submit anything through the External Audit portal, and
+    -- used to build that auditor's reference-code prefix (first name +
+    -- company initials) on every document their submissions produce.
+    auditor_company_name        VARCHAR(200),
+    auditor_company_initials    VARCHAR(10),
+    auditor_contact_phone       VARCHAR(30),
     emergency_contact_name      VARCHAR(200),
     emergency_contact_phone     VARCHAR(30),
     two_factor_enabled          BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -1186,7 +1193,8 @@ CREATE TABLE documents (
                         CHECK (document_type IN (
                             'MEETING_MINUTES','MEETING_AGENDA','INVESTMENT_PROPOSAL',
                             'FINANCIAL_REPORT_GENERAL','FINANCIAL_REPORT_INDIVIDUAL',
-                            'RECEIPT','RESOLUTION','CONTRACT','LOAN_AGREEMENT','GRANT_AGREEMENT','OTHER'
+                            'RECEIPT','RESOLUTION','CONTRACT','LOAN_AGREEMENT','GRANT_AGREEMENT',
+                            'AUDITOR_FEEDBACK','AUDIT_REPORT','OTHER'
                         )),
     source              VARCHAR(20)  NOT NULL
                         CHECK (source IN ('UPLOADED','SYSTEM_GENERATED')),
@@ -1790,7 +1798,8 @@ INSERT INTO roles (name, description, is_system_role) VALUES
     ('Secretary',           'Events, documents, and meeting management',             TRUE),
     ('Assistant Secretary', 'Supports Secretary with events and documents',          TRUE),
     ('Coordinator',         'Operational coordination and project tracking',         TRUE),
-    ('Shareholder',         'Capital contributor — personal and general dashboard',  TRUE);
+    ('Shareholder',         'Capital contributor — personal and general dashboard',  TRUE),
+    ('Auditor',             'External auditor — read-only access to a specific scoped audit engagement, nothing else', TRUE);
 
 INSERT INTO categories (parent_id, module, name, abbreviation, description) VALUES
     -- Finance
@@ -1991,6 +2000,177 @@ CREATE TABLE notifications (
 
 CREATE INDEX idx_notifications_user      ON notifications (user_id, created_at DESC);
 CREATE INDEX idx_notifications_user_read ON notifications (user_id, is_read);
+
+-- ============================================================
+-- GROUP 17: EXTERNAL AUDIT (v1.19.0)
+-- Lets the company give a named external audit firm a dedicated,
+-- narrowly-scoped, revocable login — "an engagement" — instead of
+-- ever handing out a real member/staff role. Each engagement:
+--   - covers a fixed transaction date range (period_start/end)
+--   - only exposes the specific accounts an Admin picked
+--   - only exposes the specific documents an Admin picked
+--   - can have one or more auditor user logins attached to it
+--   - can be revoked independently of any other engagement
+-- The Auditor role itself grants no access to anything by default —
+-- every auditController.js query joins back through these tables to
+-- enforce scope server-side, not just hide things in the UI.
+-- ============================================================
+
+CREATE TABLE audit_engagements (
+    id                 SERIAL PRIMARY KEY,
+    name               VARCHAR(200) NOT NULL,   -- e.g. "2025 Annual Audit — Firm X"
+    description        TEXT,
+    period_start       DATE         NOT NULL,   -- transaction date range being audited
+    period_end         DATE         NOT NULL,
+    -- Optional hard login expiry, separate from the audited period —
+    -- e.g. audit covers Jan-Dec 2025 but access itself should stop
+    -- working after the engagement wraps up in March 2026. NULL means
+    -- no automatic expiry; access lasts until manually revoked.
+    access_expires_at  TIMESTAMPTZ,
+    status             VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
+                       CHECK (status IN ('ACTIVE','REVOKED')),
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by         INTEGER      NOT NULL REFERENCES users(id),
+    revoked_at         TIMESTAMPTZ,
+    revoked_by         INTEGER REFERENCES users(id),
+    CONSTRAINT check_audit_period_valid CHECK (period_end >= period_start)
+);
+
+-- Which accounts this engagement's auditor(s) may see transactions
+-- for. An engagement with zero rows here shows nothing — access is
+-- opt-in per account, never "everything by default".
+CREATE TABLE audit_engagement_accounts (
+    engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    account_id    INTEGER NOT NULL REFERENCES accounts(id),
+    PRIMARY KEY (engagement_id, account_id)
+);
+
+-- Which user logins belong to this engagement. A user with the
+-- Auditor role but no row here can log in but sees nothing — the
+-- engagement attachment is what actually grants visibility.
+CREATE TABLE audit_engagement_users (
+    engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    user_id       INTEGER NOT NULL REFERENCES users(id),
+    added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    added_by      INTEGER REFERENCES users(id),
+    PRIMARY KEY (engagement_id, user_id)
+);
+
+-- Specific documents (uploaded or system-generated) an Admin has
+-- explicitly chosen to make previewable for this engagement — a
+-- separate, curated list from the raw transaction ledger above.
+CREATE TABLE audit_engagement_documents (
+    engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    document_id   INTEGER NOT NULL REFERENCES documents(id),
+    added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    added_by      INTEGER REFERENCES users(id),
+    PRIMARY KEY (engagement_id, document_id)
+);
+
+CREATE INDEX idx_audit_engagement_accounts_engagement   ON audit_engagement_accounts (engagement_id);
+CREATE INDEX idx_audit_engagement_users_user            ON audit_engagement_users (user_id);
+CREATE INDEX idx_audit_engagement_documents_engagement  ON audit_engagement_documents (engagement_id);
+
+-- ============================================================
+-- GROUP 18: AUDITOR SUBMISSION WORKFLOW (v1.20.0)
+-- The auditor's side of an engagement: a running log of comments,
+-- staged report-file uploads, and a "Finish Audit" action that
+-- bundles whatever's accumulated into a submission for review.
+--
+-- Comments and files start unattached to any submission
+-- (submission_id IS NULL — "staged"). Clicking Finish Audit creates
+-- an audit_submissions row and attaches every currently-staged
+-- comment/file to it in one step, so what a Director/Secretary
+-- reviews is a fixed snapshot, not a moving target.
+--
+-- Approval requires BOTH a Director and a Secretary — either one
+-- rejecting short-circuits the whole submission to REJECTED
+-- immediately, without waiting on the other. Only once both have
+-- approved does the system generate reference codes and create the
+-- actual documents (feedback + each report file), then archive them
+-- — "referenced and archived" is a side effect of approval
+-- completing, not something that happens at submission time.
+-- ============================================================
+
+CREATE TABLE audit_submissions (
+    id                  SERIAL PRIMARY KEY,
+    engagement_id       INTEGER      NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    submitted_by        INTEGER      NOT NULL REFERENCES users(id),
+    submitted_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status              VARCHAR(20)  NOT NULL DEFAULT 'SUBMITTED'
+                        CHECK (status IN ('SUBMITTED','APPROVED','REJECTED')),
+    director_approved_by INTEGER REFERENCES users(id),
+    director_approved_at TIMESTAMPTZ,
+    secretary_approved_by INTEGER REFERENCES users(id),
+    secretary_approved_at TIMESTAMPTZ,
+    rejected_by         INTEGER REFERENCES users(id),
+    rejected_at         TIMESTAMPTZ,
+    rejection_reason    TEXT,
+    -- Set once both approvals are in and the compiled feedback
+    -- document has actually been created (see auditController.js).
+    feedback_document_id INTEGER REFERENCES documents(id)
+);
+
+CREATE TABLE audit_engagement_comments (
+    id            SERIAL PRIMARY KEY,
+    engagement_id INTEGER     NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    user_id       INTEGER     NOT NULL REFERENCES users(id),
+    comment_text  TEXT        NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- NULL = staged, not yet part of a submission
+    submission_id INTEGER REFERENCES audit_submissions(id)
+);
+
+CREATE TABLE audit_submission_files (
+    id                SERIAL PRIMARY KEY,
+    engagement_id     INTEGER      NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    -- NULL = staged, not yet part of a submission
+    submission_id     INTEGER REFERENCES audit_submissions(id),
+    file_path         TEXT         NOT NULL,
+    file_name         TEXT         NOT NULL,
+    file_size_bytes   BIGINT,
+    mime_type         VARCHAR(100),
+    uploaded_by       INTEGER      NOT NULL REFERENCES users(id),
+    uploaded_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    -- Set once the submission is fully approved and this file has
+    -- been promoted into a real documents row (source='UPLOADED').
+    document_id       INTEGER REFERENCES documents(id)
+);
+
+CREATE TABLE audit_extension_requests (
+    id                            SERIAL PRIMARY KEY,
+    engagement_id                 INTEGER      NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    requested_by                  INTEGER      NOT NULL REFERENCES users(id),
+    current_access_expires_at     TIMESTAMPTZ,
+    requested_new_access_expires_at TIMESTAMPTZ NOT NULL,
+    reason                        TEXT         NOT NULL,
+    status                        VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                                  CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    reviewed_by                   INTEGER REFERENCES users(id),
+    reviewed_at                   TIMESTAMPTZ,
+    reviewer_notes                TEXT,
+    created_at                    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Deduplicates the daily access-expiry reminder cron job — one row
+-- per (engagement, threshold) ever sent, so a reminder never goes
+-- out twice for the same milestone.
+CREATE TABLE audit_engagement_reminders_sent (
+    id            SERIAL PRIMARY KEY,
+    engagement_id INTEGER     NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+    days_before   INTEGER     NOT NULL,
+    sent_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (engagement_id, days_before)
+);
+
+CREATE INDEX idx_audit_submissions_engagement       ON audit_submissions (engagement_id);
+CREATE INDEX idx_audit_submissions_status            ON audit_submissions (status);
+CREATE INDEX idx_audit_engagement_comments_engagement ON audit_engagement_comments (engagement_id);
+CREATE INDEX idx_audit_engagement_comments_submission ON audit_engagement_comments (submission_id);
+CREATE INDEX idx_audit_submission_files_engagement    ON audit_submission_files (engagement_id);
+CREATE INDEX idx_audit_submission_files_submission     ON audit_submission_files (submission_id);
+CREATE INDEX idx_audit_extension_requests_engagement   ON audit_extension_requests (engagement_id);
+CREATE INDEX idx_audit_extension_requests_status        ON audit_extension_requests (status);
 
 -- ============================================================
 -- END OF SCHEMA — v1.6.0

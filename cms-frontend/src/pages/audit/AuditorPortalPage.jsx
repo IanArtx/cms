@@ -8,29 +8,39 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { auditAPI } from '../../api/endpoints';
-import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
+import { auditAPI, usersAPI } from '../../api/endpoints';
+import { useAuth } from '../../contexts/AuthContext';
+import { formatDate, formatNumber, formatFileSize, getErrorMessage } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
-    auditSummaryTemplate, previewDocument, printDocument,
+    auditorFeedbackTemplate, auditSummaryTemplate, previewDocument, printDocument,
 } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import DataTable from '../../components/common/DataTable';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
-import { ArrowDownTrayIcon, EyeIcon } from '@heroicons/react/24/outline';
+import {
+    ArrowDownTrayIcon, EyeIcon, PaperClipIcon, TrashIcon,
+    PaperAirplaneIcon, ClockIcon, CheckCircleIcon, XCircleIcon,
+} from '@heroicons/react/24/outline';
 
 // Same renderers DocumentsPage.jsx uses for SYSTEM_GENERATED documents
 // — keep in sync with that file's GENERATED_RENDERERS if a new
 // generated document type is ever added.
 const GENERATED_RENDERERS = {
-    MEETING_AGENDA:  meetingAgendaTemplate,
-    MEETING_MINUTES: meetingMinutesTemplate,
-    RECEIPT:         receiptTemplate,
-    RESOLUTION:      resolutionTemplate,
+    MEETING_AGENDA:   meetingAgendaTemplate,
+    MEETING_MINUTES:  meetingMinutesTemplate,
+    RECEIPT:          receiptTemplate,
+    RESOLUTION:       resolutionTemplate,
+    AUDITOR_FEEDBACK: auditorFeedbackTemplate,
 };
 
+const isProfileComplete = (user) =>
+    !!(user?.auditor_company_name && user?.auditor_company_initials && user?.auditor_contact_phone);
+
 const AuditorPortalPage = () => {
+    const { user, refreshUser } = useAuth();
+
     const [engagements, setEngagements] = useState([]);
     const [engagementId, setEngagementId] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -49,7 +59,145 @@ const AuditorPortalPage = () => {
 
     const [downloading, setDownloading] = useState(false);
 
+    // --- Profile gate (auditor_company_name/initials/phone) ---
+    const [profileForm, setProfileForm] = useState({
+        auditor_company_name: '', auditor_company_initials: '', auditor_contact_phone: '',
+    });
+    const [profileSaving, setProfileSaving] = useState(false);
+
+    useEffect(() => {
+        if (user) {
+            setProfileForm({
+                auditor_company_name:     user.auditor_company_name || '',
+                auditor_company_initials: user.auditor_company_initials || '',
+                auditor_contact_phone:    user.auditor_contact_phone || '',
+            });
+        }
+    }, [user]);
+
+    const handleSaveProfile = async (e) => {
+        e.preventDefault();
+        setError(null);
+        setProfileSaving(true);
+        try {
+            await usersAPI.updateMyProfile(profileForm);
+            await refreshUser();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setProfileSaving(false);
+        }
+    };
+
+    // --- Submission workflow state ---
+    const [comments, setComments]       = useState([]);
+    const [newComment, setNewComment]   = useState('');
+    const [commentSaving, setCommentSaving] = useState(false);
+
+    const [reportFiles, setReportFiles] = useState([]);
+    const [uploadingFile, setUploadingFile] = useState(false);
+
+    const [submissions, setSubmissions] = useState([]);
+    const [finishing, setFinishing]     = useState(false);
+
+    const [extensionForm, setExtensionForm] = useState({ requested_new_access_expires_at: '', reason: '' });
+    const [extensionRequests, setExtensionRequests] = useState([]);
+    const [extensionSaving, setExtensionSaving]     = useState(false);
+    const [showExtensionForm, setShowExtensionForm] = useState(false);
+
     const engagement = engagements.find(e => e.id === engagementId) || null;
+    const profileComplete = isProfileComplete(user);
+    const hasPendingSubmission = submissions.some(s => s.status === 'SUBMITTED');
+    const canStage = profileComplete && !hasPendingSubmission;
+
+    const loadWorkflowData = useCallback(() => {
+        if (!engagementId) return;
+        auditAPI.getComments(engagementId).then(res => setComments(res.data.data)).catch(err => setError(getErrorMessage(err)));
+        auditAPI.getReportFiles(engagementId).then(res => setReportFiles(res.data.data)).catch(err => setError(getErrorMessage(err)));
+        auditAPI.getEngagementSubmissions(engagementId).then(res => setSubmissions(res.data.data)).catch(err => setError(getErrorMessage(err)));
+        auditAPI.getMyExtensionRequests(engagementId).then(res => setExtensionRequests(res.data.data)).catch(err => setError(getErrorMessage(err)));
+    }, [engagementId]);
+
+    useEffect(() => { loadWorkflowData(); }, [loadWorkflowData]);
+
+    const handleAddComment = async (e) => {
+        e.preventDefault();
+        if (!newComment.trim()) return;
+        setError(null);
+        setCommentSaving(true);
+        try {
+            await auditAPI.addComment(engagementId, { comment_text: newComment.trim() });
+            setNewComment('');
+            loadWorkflowData();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setCommentSaving(false);
+        }
+    };
+
+    const handleUploadFile = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setError(null);
+        setUploadingFile(true);
+        try {
+            const formData = new FormData();
+            formData.append('report', file);
+            await auditAPI.uploadReportFile(engagementId, formData);
+            loadWorkflowData();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setUploadingFile(false);
+            e.target.value = '';
+        }
+    };
+
+    const handleDeleteFile = async (fileId) => {
+        setError(null);
+        try {
+            await auditAPI.deleteReportFile(engagementId, fileId);
+            loadWorkflowData();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    };
+
+    const stagedCommentCount = comments.filter(c => !c.submission_id).length;
+    const stagedFileCount    = reportFiles.filter(f => !f.submission_id).length;
+
+    const handleFinishAudit = async () => {
+        if (!window.confirm(
+            `Submit ${stagedCommentCount} comment(s) and ${stagedFileCount} file(s) for Director/Secretary approval? You won't be able to add more until it's reviewed.`
+        )) return;
+        setError(null);
+        setFinishing(true);
+        try {
+            await auditAPI.finishAudit(engagementId);
+            loadWorkflowData();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setFinishing(false);
+        }
+    };
+
+    const handleRequestExtension = async (e) => {
+        e.preventDefault();
+        setError(null);
+        setExtensionSaving(true);
+        try {
+            await auditAPI.requestExtension(engagementId, extensionForm);
+            setExtensionForm({ requested_new_access_expires_at: '', reason: '' });
+            setShowExtensionForm(false);
+            loadWorkflowData();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setExtensionSaving(false);
+        }
+    };
 
     useEffect(() => {
         (async () => {
@@ -198,6 +346,43 @@ const AuditorPortalPage = () => {
                 </div>
             )}
 
+            {!profileComplete && (
+                <div className="card mb-4 border-l-4 border-yellow-400 bg-yellow-50">
+                    <h3 className="section-title mb-1">Complete your auditor profile</h3>
+                    <p className="text-sm text-gray-600 mb-3">
+                        Your company name, company initials, and contact phone are required before you can
+                        add comments, upload report files, or finish an audit. Your first name and these
+                        company initials are used to build the reference codes on your submitted work.
+                    </p>
+                    <form onSubmit={handleSaveProfile} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label className="label">Auditing Company Name</label>
+                            <input type="text" className="input" required
+                                value={profileForm.auditor_company_name}
+                                onChange={e => setProfileForm(p => ({ ...p, auditor_company_name: e.target.value }))} />
+                        </div>
+                        <div>
+                            <label className="label">Company Initials</label>
+                            <input type="text" className="input" required maxLength={10}
+                                placeholder="e.g. KPMG"
+                                value={profileForm.auditor_company_initials}
+                                onChange={e => setProfileForm(p => ({ ...p, auditor_company_initials: e.target.value.toUpperCase() }))} />
+                        </div>
+                        <div>
+                            <label className="label">Contact Phone</label>
+                            <input type="text" className="input" required
+                                value={profileForm.auditor_contact_phone}
+                                onChange={e => setProfileForm(p => ({ ...p, auditor_contact_phone: e.target.value }))} />
+                        </div>
+                        <div className="sm:col-span-3">
+                            <button type="submit" disabled={profileSaving} className="btn-primary">
+                                {profileSaving ? 'Saving...' : 'Save Profile'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
+
             {engagements.length > 1 && (
                 <div className="card mb-4">
                     <label className="label">Engagement</label>
@@ -277,6 +462,182 @@ const AuditorPortalPage = () => {
                             </li>
                         ))}
                     </ul>
+                )}
+            </div>
+
+            {/* Submission status history */}
+            {submissions.length > 0 && (
+                <div className="card mt-6">
+                    <h3 className="section-title mb-3">Submission Status</h3>
+                    <ul className="divide-y divide-gray-200">
+                        {submissions.map(s => (
+                            <li key={s.id} className="py-3 flex items-start justify-between gap-4">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                                        {s.status === 'APPROVED' && <CheckCircleIcon className="h-4 w-4 text-green-600" />}
+                                        {s.status === 'REJECTED' && <XCircleIcon className="h-4 w-4 text-red-600" />}
+                                        {s.status === 'SUBMITTED' && <ClockIcon className="h-4 w-4 text-yellow-500" />}
+                                        Submitted {formatDate(s.submitted_at)}
+                                    </p>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        Director approval: {s.director_approved_at ? formatDate(s.director_approved_at) : 'pending'}
+                                        {' · '}Secretary approval: {s.secretary_approved_at ? formatDate(s.secretary_approved_at) : 'pending'}
+                                    </p>
+                                    {s.status === 'REJECTED' && s.rejection_reason && (
+                                        <p className="text-xs text-red-600 mt-1">Reason: {s.rejection_reason}</p>
+                                    )}
+                                </div>
+                                <span className={
+                                    s.status === 'APPROVED' ? 'badge-green' :
+                                    s.status === 'REJECTED' ? 'badge-red' : 'badge-yellow'
+                                }>{s.status}</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+
+            {/* Comments */}
+            <div className="card mt-6">
+                <h3 className="section-title mb-3">Auditor Comments</h3>
+                {comments.length === 0 ? (
+                    <p className="text-sm text-gray-500 mb-3">No comments added yet.</p>
+                ) : (
+                    <ul className="divide-y divide-gray-200 mb-3">
+                        {comments.map(c => (
+                            <li key={c.id} className="py-2">
+                                <p className="text-xs text-gray-400">
+                                    {formatDate(c.created_at)}{!c.submission_id && ' — staged, not yet submitted'}
+                                </p>
+                                <p className="text-sm text-gray-800">{c.comment_text}</p>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <form onSubmit={handleAddComment} className="flex items-start gap-2">
+                    <textarea className="input flex-1" rows={2}
+                        placeholder={canStage ? 'Add a comment...' : 'Complete your profile to add comments'}
+                        disabled={!canStage}
+                        value={newComment}
+                        onChange={e => setNewComment(e.target.value)} />
+                    <button type="submit" disabled={!canStage || commentSaving || !newComment.trim()}
+                        className="btn-secondary flex items-center gap-1">
+                        <PaperAirplaneIcon className="h-4 w-4" /> Add
+                    </button>
+                </form>
+            </div>
+
+            {/* Report files */}
+            <div className="card mt-6">
+                <h3 className="section-title mb-3">Report Files</h3>
+                {reportFiles.length === 0 ? (
+                    <p className="text-sm text-gray-500 mb-3">No files uploaded yet.</p>
+                ) : (
+                    <ul className="divide-y divide-gray-200 mb-3">
+                        {reportFiles.map(f => (
+                            <li key={f.id} className="py-2 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <PaperClipIcon className="h-4 w-4 text-gray-400" />
+                                    <div>
+                                        <p className="text-sm text-gray-800">{f.file_name}</p>
+                                        <p className="text-xs text-gray-400">
+                                            {formatFileSize(f.file_size_bytes)} · {formatDate(f.uploaded_at)}
+                                            {!f.submission_id && ' — staged, not yet submitted'}
+                                        </p>
+                                    </div>
+                                </div>
+                                {!f.submission_id && (
+                                    <button onClick={() => handleDeleteFile(f.id)} className="text-red-500 hover:text-red-700">
+                                        <TrashIcon className="h-4 w-4" />
+                                    </button>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <label className={`btn-secondary inline-flex items-center gap-2 cursor-pointer ${!canStage ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <PaperClipIcon className="h-4 w-4" />
+                    {uploadingFile ? 'Uploading...' : 'Upload Report File'}
+                    <input type="file" className="hidden" disabled={!canStage || uploadingFile} onChange={handleUploadFile} />
+                </label>
+            </div>
+
+            {/* Finish Audit */}
+            <div className="card mt-6">
+                <h3 className="section-title mb-2">Finish Audit</h3>
+                {hasPendingSubmission ? (
+                    <p className="text-sm text-yellow-700">
+                        A submission is currently awaiting Director and Secretary approval. You can add more
+                        comments or files once it's reviewed.
+                    </p>
+                ) : (
+                    <>
+                        <p className="text-sm text-gray-600 mb-3">
+                            You currently have <strong>{stagedCommentCount}</strong> comment(s) and{' '}
+                            <strong>{stagedFileCount}</strong> file(s) staged. Finishing the audit sends all of
+                            them together for Director and Secretary approval — you'll get an email confirming
+                            what was sent, and another once it's been reviewed.
+                        </p>
+                        <button onClick={handleFinishAudit}
+                            disabled={!profileComplete || finishing || (stagedCommentCount === 0 && stagedFileCount === 0)}
+                            className="btn-primary">
+                            {finishing ? 'Submitting...' : 'Finish Audit'}
+                        </button>
+                    </>
+                )}
+            </div>
+
+            {/* Extension requests */}
+            <div className="card mt-6 mb-6">
+                <h3 className="section-title mb-2">Request More Time</h3>
+                {extensionRequests.some(x => x.status === 'PENDING') ? (
+                    <p className="text-sm text-yellow-700">
+                        Your extension request is awaiting review.
+                    </p>
+                ) : (
+                    <>
+                        {!showExtensionForm ? (
+                            <button onClick={() => setShowExtensionForm(true)} className="btn-secondary">
+                                Request Extension
+                            </button>
+                        ) : (
+                            <form onSubmit={handleRequestExtension} className="space-y-3 max-w-md">
+                                <div>
+                                    <label className="label">New Access Expiry Date</label>
+                                    <input type="date" className="input" required
+                                        value={extensionForm.requested_new_access_expires_at}
+                                        onChange={e => setExtensionForm(p => ({ ...p, requested_new_access_expires_at: e.target.value }))} />
+                                </div>
+                                <div>
+                                    <label className="label">Reason</label>
+                                    <textarea className="input" rows={3} required
+                                        value={extensionForm.reason}
+                                        onChange={e => setExtensionForm(p => ({ ...p, reason: e.target.value }))} />
+                                </div>
+                                <div className="flex gap-2">
+                                    <button type="submit" disabled={extensionSaving} className="btn-primary">
+                                        {extensionSaving ? 'Submitting...' : 'Submit Request'}
+                                    </button>
+                                    <button type="button" onClick={() => setShowExtensionForm(false)} className="btn-secondary">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </form>
+                        )}
+                        {extensionRequests.length > 0 && (
+                            <ul className="divide-y divide-gray-200 mt-4">
+                                {extensionRequests.map(x => (
+                                    <li key={x.id} className="py-2 text-sm">
+                                        <span className={
+                                            x.status === 'APPROVED' ? 'badge-green' :
+                                            x.status === 'REJECTED' ? 'badge-red' : 'badge-yellow'
+                                        }>{x.status}</span>{' '}
+                                        Requested {formatDate(x.created_at)} — new date {formatDate(x.requested_new_access_expires_at)}
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </>
                 )}
             </div>
         </div>

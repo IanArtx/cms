@@ -214,6 +214,31 @@ export const auditAPI = {
         `/audit/engagements/${id}/documents/${documentId}`, { responseType: 'blob' }
     ),
     getSummary:        (id)        => api.get(`/audit/engagements/${id}/summary`),
+
+    // Auditor — submission workflow (v1.20.0)
+    getComments:       (id)        => api.get(`/audit/engagements/${id}/comments`),
+    addComment:        (id, data)  => api.post(`/audit/engagements/${id}/comments`, data),
+    getReportFiles:    (id)        => api.get(`/audit/engagements/${id}/report-files`),
+    uploadReportFile:  (id, formData) => api.post(`/audit/engagements/${id}/report-files`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    deleteReportFile:  (id, fileId) => api.delete(`/audit/engagements/${id}/report-files/${fileId}`),
+    getEngagementSubmissions: (id) => api.get(`/audit/engagements/${id}/submissions`),
+    finishAudit:       (id)        => api.post(`/audit/engagements/${id}/finish`),
+    requestExtension:  (id, data)  => api.post(`/audit/engagements/${id}/extension-requests`, data),
+    getMyExtensionRequests: (id)   => api.get(`/audit/engagements/${id}/extension-requests`),
+
+    // Director / Secretary — submission review (v1.20.0)
+    listSubmissions:   (params)    => api.get('/audit/submissions', { params }),
+    getSubmission:     (id)        => api.get(`/audit/submissions/${id}`),
+    previewSubmissionFile: (id, fileId) => api.get(
+        `/audit/submissions/${id}/files/${fileId}`, { responseType: 'blob' }
+    ),
+    approveSubmission: (id)        => api.post(`/audit/submissions/${id}/approve`),
+    rejectSubmission:  (id, data)  => api.post(`/audit/submissions/${id}/reject`, data),
+    listExtensionRequests: (params) => api.get('/audit/extension-requests', { params }),
+    approveExtensionRequest: (id, data) => api.post(`/audit/extension-requests/${id}/approve`, data),
+    rejectExtensionRequest:  (id, data) => api.post(`/audit/extension-requests/${id}/reject`, data),
 };
 
 // ============================================================

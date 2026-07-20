@@ -6,7 +6,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireRoles, isSelfOrHasPermission } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireRoles, isSelfOrHasPermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const usersController = require('../controllers/usersController');
 const { asyncHandler } = require('../utils/errors');
@@ -19,7 +19,11 @@ router.use(authenticate);
 // --- PUBLIC TO ALL AUTHENTICATED USERS ---
 router.get('/me',                   usersController.getMyProfile);
 router.get('/roles',                usersController.getAllRoles);
-router.get('/shareholding',         usersController.getShareholding);
+// Company-wide shareholding list — real member ownership data, not scoped
+// to the requester. Every other role that can reach this point is an
+// actual member; an Auditor is the one authenticated role that isn't, so
+// it's excluded here rather than opened up to everyone.
+router.get('/shareholding',         blockAuditor, usersController.getShareholding);
 
 router.patch('/me',
     [

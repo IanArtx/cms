@@ -6,10 +6,11 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireRoles } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireRoles } = require('../middleware/auth');
 const requisitionsController = require('../controllers/requisitionsController');
 
 router.use(authenticate);
+router.use(blockAuditor);
 
 // Get my own requisitions — any authenticated member
 router.get('/me',

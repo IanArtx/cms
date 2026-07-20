@@ -58,7 +58,7 @@ const ProtectedRoute = ({
                         Access Denied
                     </h2>
                     <p className="text-gray-500">
-                        This page requires the {requiredRole} role.
+                        This page requires the {Array.isArray(requiredRole) ? requiredRole.join(' or ') : requiredRole} role.
                     </p>
                 </div>
             </div>

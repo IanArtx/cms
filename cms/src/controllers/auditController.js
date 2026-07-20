@@ -20,7 +20,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord } = require('../services/referenceService');
-const { notify } = require('../services/notificationService');
+const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const path = require('path');
 const fs   = require('fs');
@@ -712,6 +712,905 @@ const getEngagementSummary = asyncHandler(async (req, res) => {
     });
 });
 
+// ============================================================================
+// AUDITOR SUBMISSION WORKFLOW (v1.20.0)
+//
+// Lifecycle of one round of work:
+//   1. Auditor fills in their profile (company name/initials/phone) via
+//      the normal PATCH /api/users/me — required before anything below.
+//   2. Auditor adds comments and uploads report files one at a time.
+//      Each lands with submission_id = NULL ("staged") until finished.
+//   3. Auditor clicks "Finish Audit" -> creates one audit_submissions row
+//      and atomically attaches every currently-staged comment/file to it.
+//   4. A Director AND a Secretary must each approve (dual sign-off). The
+//      moment both are in place, the system generates reference codes,
+//      creates real `documents` rows (this is the only point at which
+//      any of this becomes a permanent, referenced, archived record —
+//      documents.reference_id is NOT NULL, so nothing above this line
+//      could ever have been inserted into `documents` directly), and
+//      emails the auditor a receipt confirmation.
+//   5. A rejection from EITHER approver short-circuits the whole
+//      submission to REJECTED, and the auditor can stage a fresh round.
+// ============================================================================
+
+// INTERNAL HELPER — the auditor's own profile fields. req.user (attached
+// by the authenticate middleware) does not carry these columns — see the
+// SELECT in middleware/auth.js — so every function that needs them loads
+// a fresh copy here rather than trusting a stale JWT-derived object.
+const fetchAuditorProfile = async (userId) => {
+    const result = await query(`
+        SELECT id, first_name, last_name, email,
+               auditor_company_name, auditor_company_initials, auditor_contact_phone
+        FROM   users WHERE id = $1
+    `, [userId]);
+    return result.rows[0];
+};
+
+// INTERNAL HELPER — category to file archived audit documents under.
+// Reuses the seeded "Legal / compliance" DOCUMENT category (abbreviation
+// LEG) if it's still there; falls back to any DOCUMENT-module category so
+// a renamed/reorganised category tree doesn't break archiving.
+const resolveAuditCategoryId = async (client) => {
+    const named = await client.query(
+        `SELECT id FROM categories WHERE module = 'DOCUMENT' AND abbreviation = 'LEG' LIMIT 1`
+    );
+    if (named.rows.length > 0) return named.rows[0].id;
+    const any = await client.query(
+        `SELECT id FROM categories WHERE module = 'DOCUMENT' ORDER BY id LIMIT 1`
+    );
+    if (any.rows.length > 0) return any.rows[0].id;
+    throw createError.badRequest('No document category is configured — cannot archive the audit report');
+};
+
+// Small reusable email fragment builder — keeps the HTML in one place
+// instead of duplicated inline in every notify() call below.
+const emailParagraphs = (lines) => lines.map(l => `<p style="margin:0 0 12px 0;">${l}</p>`).join('');
+
+// ----------------------------------------------------------------
+// COMMENTS
+// ----------------------------------------------------------------
+
+// GET /api/audit/engagements/:id/comments
+const getComments = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+
+    const result = await query(`
+        SELECT c.id, c.comment_text, c.created_at, c.submission_id,
+               u.first_name || ' ' || u.last_name AS author_name
+        FROM   audit_engagement_comments c
+        JOIN   users u ON u.id = c.user_id
+        WHERE  c.engagement_id = $1
+        ORDER BY c.created_at ASC
+    `, [id]);
+    sendSuccess(res, result.rows);
+});
+
+// POST /api/audit/engagements/:id/comments
+const addComment = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { comment_text } = req.body;
+    if (!comment_text || !comment_text.trim()) {
+        throw createError.badRequest('Comment text is required');
+    }
+
+    await assertEngagementAccess(id, req.user.id);
+
+    const profile = await fetchAuditorProfile(req.user.id);
+    if (!isAuditorProfileComplete(profile)) {
+        throw createError.badRequest(
+            'Please complete your company name, company initials, and contact phone on your profile before adding comments.'
+        );
+    }
+
+    const pending = await query(
+        `SELECT 1 FROM audit_submissions WHERE engagement_id = $1 AND status = 'SUBMITTED'`, [id]
+    );
+    if (pending.rows.length > 0) {
+        throw createError.badRequest(
+            'A submission for this engagement is already awaiting review. New comments can be added once it is approved or rejected.'
+        );
+    }
+
+    const result = await query(`
+        INSERT INTO audit_engagement_comments (engagement_id, user_id, comment_text)
+        VALUES ($1, $2, $3)
+        RETURNING id, comment_text, created_at
+    `, [id, req.user.id, comment_text.trim()]);
+
+    await logAction(req.user.id, ACTIONS.AUDIT_COMMENT_ADDED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_engagements',
+        recordId:    parseInt(id),
+        description: `Auditor comment added to engagement ID ${id}`,
+    });
+
+    sendCreated(res, result.rows[0], 'Comment added');
+});
+
+// ----------------------------------------------------------------
+// REPORT FILES
+// ----------------------------------------------------------------
+
+// GET /api/audit/engagements/:id/report-files
+const getReportFiles = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+
+    const result = await query(`
+        SELECT f.id, f.file_name, f.file_size_bytes, f.mime_type, f.uploaded_at, f.submission_id
+        FROM   audit_submission_files f
+        WHERE  f.engagement_id = $1
+        ORDER BY f.uploaded_at DESC
+    `, [id]);
+    sendSuccess(res, result.rows);
+});
+
+// POST /api/audit/engagements/:id/report-files
+// Uses uploadSingle('report', 'audit-reports') — the file is already on
+// disk (req.file) by the time this runs; this just records it.
+const uploadReportFile = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!req.file) throw createError.badRequest('No file uploaded');
+
+    await assertEngagementAccess(id, req.user.id);
+
+    const profile = await fetchAuditorProfile(req.user.id);
+    if (!isAuditorProfileComplete(profile)) {
+        fs.unlink(req.file.path, () => {});
+        throw createError.badRequest(
+            'Please complete your company name, company initials, and contact phone on your profile before uploading files.'
+        );
+    }
+
+    const pending = await query(
+        `SELECT 1 FROM audit_submissions WHERE engagement_id = $1 AND status = 'SUBMITTED'`, [id]
+    );
+    if (pending.rows.length > 0) {
+        fs.unlink(req.file.path, () => {});
+        throw createError.badRequest(
+            'A submission for this engagement is already awaiting review. New files can be uploaded once it is approved or rejected.'
+        );
+    }
+
+    const result = await query(`
+        INSERT INTO audit_submission_files
+            (engagement_id, file_path, file_name, file_size_bytes, mime_type, uploaded_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, file_name, file_size_bytes, mime_type, uploaded_at
+    `, [id, req.file.path, req.file.originalname, req.file.size, req.file.mimetype, req.user.id]);
+
+    await logAction(req.user.id, ACTIONS.AUDIT_FILE_UPLOADED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_engagements',
+        recordId:    parseInt(id),
+        newValues:   { file_name: req.file.originalname },
+        description: `Auditor uploaded report file "${req.file.originalname}" to engagement ID ${id}`,
+    });
+
+    sendCreated(res, result.rows[0], 'File uploaded');
+});
+
+// DELETE /api/audit/engagements/:id/report-files/:fileId
+// Only the uploader can remove it, and only while it's still staged
+// (submission_id IS NULL) — once part of a submitted round it's locked,
+// same reasoning as comments.
+const deleteReportFile = asyncHandler(async (req, res) => {
+    const { id, fileId } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+
+    const result = await query(`
+        DELETE FROM audit_submission_files
+        WHERE  id = $1 AND engagement_id = $2 AND uploaded_by = $3 AND submission_id IS NULL
+        RETURNING file_path, file_name
+    `, [fileId, id, req.user.id]);
+
+    if (result.rows.length === 0) {
+        throw createError.notFound(
+            'File not found, not yours, or already part of a submitted round'
+        );
+    }
+
+    fs.unlink(result.rows[0].file_path, () => {});
+
+    await logAction(req.user.id, ACTIONS.AUDIT_FILE_REMOVED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_engagements',
+        recordId:    parseInt(id),
+        description: `Auditor removed report file "${result.rows[0].file_name}" from engagement ID ${id}`,
+    });
+
+    sendSuccess(res, null, 'File removed');
+});
+
+// GET /api/audit/engagements/:id/submissions
+// Lets the auditor see their own submission history and current review
+// status for this engagement — the in-portal counterpart to the email
+// confirmations sent at each step (deliverables received / approved /
+// rejected).
+const getEngagementSubmissions = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+
+    const result = await query(`
+        SELECT id, submitted_at, status,
+               director_approved_at, secretary_approved_at,
+               rejected_at, rejection_reason, feedback_document_id
+        FROM   audit_submissions
+        WHERE  engagement_id = $1
+        ORDER BY submitted_at DESC
+    `, [id]);
+    sendSuccess(res, result.rows);
+});
+
+// ----------------------------------------------------------------
+// FINISH AUDIT
+// ----------------------------------------------------------------
+
+// POST /api/audit/engagements/:id/finish
+const finishAudit = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+
+    const profile = await fetchAuditorProfile(req.user.id);
+    if (!isAuditorProfileComplete(profile)) {
+        throw createError.badRequest(
+            'Please complete your company name, company initials, and contact phone on your profile first.'
+        );
+    }
+
+    const pending = await query(
+        `SELECT 1 FROM audit_submissions WHERE engagement_id = $1 AND status = 'SUBMITTED'`, [id]
+    );
+    if (pending.rows.length > 0) {
+        throw createError.badRequest('A submission for this engagement is already awaiting review.');
+    }
+
+    const stagedComments = await query(
+        `SELECT COUNT(*) AS n FROM audit_engagement_comments WHERE engagement_id = $1 AND submission_id IS NULL`,
+        [id]
+    );
+    const stagedFiles = await query(
+        `SELECT COUNT(*) AS n FROM audit_submission_files WHERE engagement_id = $1 AND submission_id IS NULL`,
+        [id]
+    );
+    const commentCount = parseInt(stagedComments.rows[0].n);
+    const fileCount    = parseInt(stagedFiles.rows[0].n);
+    if (commentCount === 0 && fileCount === 0) {
+        throw createError.badRequest(
+            'Add at least one comment or report file before finishing the audit.'
+        );
+    }
+
+    const submission = await withTransaction(async (client) => {
+        const subResult = await client.query(`
+            INSERT INTO audit_submissions (engagement_id, submitted_by)
+            VALUES ($1, $2)
+            RETURNING id, submitted_at
+        `, [id, req.user.id]);
+        const submissionId = subResult.rows[0].id;
+
+        await client.query(
+            `UPDATE audit_engagement_comments SET submission_id = $1 WHERE engagement_id = $2 AND submission_id IS NULL`,
+            [submissionId, id]
+        );
+        await client.query(
+            `UPDATE audit_submission_files SET submission_id = $1 WHERE engagement_id = $2 AND submission_id IS NULL`,
+            [submissionId, id]
+        );
+
+        await logAction(req.user.id, ACTIONS.AUDIT_SUBMISSION_CREATED, MODULES.SYSTEM, {
+            ipAddress:   req.ip,
+            recordType:  'audit_submissions',
+            recordId:    submissionId,
+            newValues:   { engagement_id: id, comment_count: commentCount, file_count: fileCount },
+            description: `Audit submitted for review — engagement ID ${id}`,
+            client,
+        });
+
+        return { id: submissionId, submitted_at: subResult.rows[0].submitted_at };
+    });
+
+    // Best-effort notifications — outside the transaction, never block the
+    // response or roll back the submission if an email fails to send.
+    notify({
+        userId:  req.user.id,
+        type:    'AUDIT_DELIVERABLES_CONFIRMATION',
+        title:   'Deliverables received',
+        body:    `We've received your submission (${commentCount} comment(s), ${fileCount} file(s)) and it is now awaiting Director and Secretary approval.`,
+        link:    '/audit',
+        module:  'SYSTEM',
+        recordType: 'audit_submissions',
+        recordId: submission.id,
+        email: {
+            subject: 'Audit deliverables received',
+            html: await wrapEmail(emailParagraphs([
+                `Hello ${profile.first_name},`,
+                `This confirms we've received your audit deliverables: <strong>${commentCount}</strong> comment(s) and <strong>${fileCount}</strong> file(s).`,
+                `Your submission is now awaiting approval from a Director and a Secretary. You will receive another email once it has been reviewed.`,
+            ]), { preheader: 'Your audit deliverables have been received' }),
+        },
+    }).catch(() => {});
+
+    (async () => {
+        try {
+            const reviewers = await getDirectorsAndSecretaries();
+            const reviewerHtml = await wrapEmail(emailParagraphs([
+                `${profile.first_name} ${profile.last_name} (${profile.auditor_company_name}) has finished an audit and submitted ${commentCount} comment(s) and ${fileCount} file(s) for engagement ID ${id}.`,
+                `This submission requires approval from both a Director and a Secretary before it is archived. Please review it in the External Audit review page.`,
+            ]), { preheader: 'An audit submission needs your approval' });
+
+            await notifyMany(reviewers, 'AUDIT_SUBMISSION_PENDING', () => ({
+                title:   'Audit submission awaiting your approval',
+                body:    `${profile.first_name} ${profile.last_name} (${profile.auditor_company_name}) has finished an audit and it needs your approval.`,
+                link:    '/audit-review',
+                module:  'SYSTEM',
+                recordType: 'audit_submissions',
+                recordId: submission.id,
+                email: { subject: 'Audit submission awaiting approval', html: reviewerHtml },
+            }));
+        } catch { /* best-effort — never block the response */ }
+    })();
+
+    sendCreated(res, submission, 'Audit submitted for review');
+});
+
+// ============================================================================
+// DIRECTOR / SECRETARY — SUBMISSION REVIEW
+// ============================================================================
+
+// GET /api/audit/submissions?status=SUBMITTED
+const listSubmissions = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const conditions = [];
+    const params = [];
+    if (status) { params.push(status); conditions.push(`s.status = $${params.length}`); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const result = await query(`
+        SELECT s.id, s.engagement_id, s.submitted_at, s.status,
+               s.director_approved_at, s.secretary_approved_at,
+               s.rejected_at, s.rejection_reason,
+               e.name AS engagement_name,
+               u.first_name || ' ' || u.last_name AS auditor_name,
+               u.auditor_company_name,
+               (SELECT COUNT(*) FROM audit_engagement_comments WHERE submission_id = s.id) AS comment_count,
+               (SELECT COUNT(*) FROM audit_submission_files    WHERE submission_id = s.id) AS file_count
+        FROM   audit_submissions s
+        JOIN   audit_engagements e ON e.id = s.engagement_id
+        JOIN   users u             ON u.id = s.submitted_by
+        ${where}
+        ORDER BY s.submitted_at DESC
+    `, params);
+    sendSuccess(res, result.rows);
+});
+
+// GET /api/audit/submissions/:id
+const getSubmissionById = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const subResult = await query(`
+        SELECT s.*, e.name AS engagement_name, e.period_start, e.period_end,
+               u.first_name || ' ' || u.last_name AS auditor_name, u.email AS auditor_email,
+               u.auditor_company_name, u.auditor_company_initials, u.auditor_contact_phone,
+               d.first_name || ' ' || d.last_name AS director_approved_by_name,
+               sec.first_name || ' ' || sec.last_name AS secretary_approved_by_name,
+               rej.first_name || ' ' || rej.last_name AS rejected_by_name
+        FROM   audit_submissions s
+        JOIN   audit_engagements e ON e.id = s.engagement_id
+        JOIN   users u             ON u.id = s.submitted_by
+        LEFT JOIN users d   ON d.id = s.director_approved_by
+        LEFT JOIN users sec ON sec.id = s.secretary_approved_by
+        LEFT JOIN users rej ON rej.id = s.rejected_by
+        WHERE  s.id = $1
+    `, [id]);
+    if (subResult.rows.length === 0) throw createError.notFound('Submission not found');
+    const submission = subResult.rows[0];
+
+    const commentsResult = await query(`
+        SELECT c.id, c.comment_text, c.created_at
+        FROM   audit_engagement_comments c
+        WHERE  c.submission_id = $1
+        ORDER BY c.created_at ASC
+    `, [id]);
+
+    const filesResult = await query(`
+        SELECT f.id, f.file_name, f.file_size_bytes, f.mime_type, f.uploaded_at, f.document_id
+        FROM   audit_submission_files f
+        WHERE  f.submission_id = $1
+        ORDER BY f.uploaded_at ASC
+    `, [id]);
+
+    sendSuccess(res, { ...submission, comments: commentsResult.rows, files: filesResult.rows });
+});
+
+// GET /api/audit/submissions/:id/files/:fileId
+// Lets a Director/Secretary preview a still-staged report file before
+// approving — these files have no `documents` row yet (that only happens
+// on finalize), so this reads audit_submission_files directly instead of
+// going through documentsController's usual path.
+const previewSubmissionFile = asyncHandler(async (req, res) => {
+    const { id, fileId } = req.params;
+    const result = await query(
+        `SELECT file_path, file_name FROM audit_submission_files WHERE id = $1 AND submission_id = $2`,
+        [fileId, id]
+    );
+    if (result.rows.length === 0) throw createError.notFound('File not found on this submission');
+    const file = result.rows[0];
+    if (!fs.existsSync(file.file_path)) throw createError.notFound('The file could not be found on the server');
+    res.download(path.resolve(file.file_path), file.file_name);
+});
+
+// POST /api/audit/submissions/:id/approve
+// Records this reviewer's sign-off (Director and/or Secretary — a user
+// holding both roles satisfies both slots in one call). Once both slots
+// are filled, finalizes the submission: generates references, creates
+// the real `documents` rows, archives them, and emails the auditor.
+const approveSubmission = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const roles = req.user.roles || [];
+
+    if (!roles.includes('Director') && !roles.includes('Secretary')) {
+        throw createError.forbidden('Only a Director or Secretary can approve an audit submission');
+    }
+
+    const result = await withTransaction(async (client) => {
+        const subResult = await client.query(
+            `SELECT * FROM audit_submissions WHERE id = $1 FOR UPDATE`, [id]
+        );
+        if (subResult.rows.length === 0) throw createError.notFound('Submission not found');
+        let submission = subResult.rows[0];
+        if (submission.status !== 'SUBMITTED') {
+            throw createError.badRequest(`This submission is already ${submission.status.toLowerCase()}`);
+        }
+
+        const sets = [];
+        const setParams = [];
+        if (roles.includes('Director') && !submission.director_approved_by) {
+            setParams.push(req.user.id); sets.push(`director_approved_by = $${setParams.length}`);
+            sets.push(`director_approved_at = NOW()`);
+        }
+        if (roles.includes('Secretary') && !submission.secretary_approved_by) {
+            setParams.push(req.user.id); sets.push(`secretary_approved_by = $${setParams.length}`);
+            sets.push(`secretary_approved_at = NOW()`);
+        }
+        if (sets.length === 0) {
+            throw createError.conflict('You have already approved this submission');
+        }
+
+        setParams.push(id);
+        const updateResult = await client.query(
+            `UPDATE audit_submissions SET ${sets.join(', ')} WHERE id = $${setParams.length} RETURNING *`,
+            setParams
+        );
+        submission = updateResult.rows[0];
+
+        await logAction(req.user.id, ACTIONS.AUDIT_SUBMISSION_APPROVED_STEP, MODULES.SYSTEM, {
+            ipAddress:   req.ip,
+            recordType:  'audit_submissions',
+            recordId:    parseInt(id),
+            description: `Audit submission ID ${id} approved by ${roles.includes('Director') ? 'Director' : 'Secretary'}`,
+            client,
+        });
+
+        const bothApproved = !!submission.director_approved_by && !!submission.secretary_approved_by;
+        if (!bothApproved) {
+            return { submission, finalized: false };
+        }
+
+        // ------------------------------------------------------
+        // BOTH APPROVALS IN — finalize: generate references, create
+        // real `documents` rows, archive everything, link it all back.
+        // ------------------------------------------------------
+        const engagementResult = await client.query(
+            `SELECT id, name FROM audit_engagements WHERE id = $1`, [submission.engagement_id]
+        );
+        const engagement = engagementResult.rows[0];
+
+        const auditorResult = await client.query(
+            `SELECT first_name, last_name, email, auditor_company_name, auditor_company_initials, auditor_contact_phone
+             FROM users WHERE id = $1`, [submission.submitted_by]
+        );
+        const auditor = auditorResult.rows[0];
+
+        const commentsResult = await client.query(
+            `SELECT comment_text, created_at FROM audit_engagement_comments WHERE submission_id = $1 ORDER BY created_at ASC`,
+            [id]
+        );
+        const filesResult = await client.query(
+            `SELECT id, file_path, file_name, file_size_bytes, mime_type FROM audit_submission_files WHERE submission_id = $1 ORDER BY uploaded_at ASC`,
+            [id]
+        );
+
+        const moduleCode = buildAuditorModuleCode(auditor.first_name, auditor.auditor_company_initials);
+        const categoryId = await resolveAuditCategoryId(client);
+
+        // --- Feedback document (SYSTEM_GENERATED — re-rendered client-side
+        //     from template_data, same pattern as every other generated
+        //     document in the system) ---
+        const feedbackRef = await generateReference(client, moduleCode, 'FEEDBACK', 'DOCUMENT', req.user.id);
+        const feedbackTemplateData = {
+            engagement_name:  engagement.name,
+            auditor_name:     `${auditor.first_name} ${auditor.last_name}`,
+            auditor_company:  auditor.auditor_company_name,
+            auditor_initials: auditor.auditor_company_initials,
+            auditor_phone:    auditor.auditor_contact_phone,
+            auditor_email:    auditor.email,
+            submitted_at:     submission.submitted_at,
+            director_approved_at:  submission.director_approved_at,
+            secretary_approved_at: submission.secretary_approved_at,
+            comments:  commentsResult.rows,
+            files:     filesResult.rows.map(f => ({ file_name: f.file_name })),
+            reference_code: feedbackRef.referenceCode,
+        };
+        const feedbackDocResult = await client.query(`
+            INSERT INTO documents (
+                reference_id, category_id, title, document_type, source,
+                template_data, version, related_record_type, related_record_id,
+                status, created_by, approved_by, approved_at
+            ) VALUES ($1, $2, $3, 'AUDITOR_FEEDBACK', 'SYSTEM_GENERATED',
+                      $4, 1, 'audit_engagements', $5,
+                      'FINAL', $6, $7, NOW())
+            RETURNING id
+        `, [
+            feedbackRef.referenceId, categoryId,
+            `Auditor Feedback — ${engagement.name}`,
+            JSON.stringify(feedbackTemplateData),
+            submission.engagement_id,
+            submission.submitted_by, req.user.id,
+        ]);
+        const feedbackDocId = feedbackDocResult.rows[0].id;
+        await linkReferenceToRecord(client, feedbackRef.referenceId, feedbackDocId);
+        await client.query(
+            `INSERT INTO audit_engagement_documents (engagement_id, document_id, added_by) VALUES ($1, $2, $3)`,
+            [submission.engagement_id, feedbackDocId, req.user.id]
+        );
+
+        // --- Each uploaded report file (UPLOADED — points at the file
+        //     already sitting on disk since it was uploaded) ---
+        for (const file of filesResult.rows) {
+            const fileRef = await generateReference(client, moduleCode, 'REPORT', 'DOCUMENT', req.user.id);
+            const fileDocResult = await client.query(`
+                INSERT INTO documents (
+                    reference_id, category_id, title, document_type, source,
+                    file_path, file_name, file_size_bytes, mime_type, version,
+                    related_record_type, related_record_id,
+                    status, created_by, approved_by, approved_at
+                ) VALUES ($1, $2, $3, 'AUDIT_REPORT', 'UPLOADED',
+                          $4, $5, $6, $7, 1,
+                          'audit_engagements', $8,
+                          'FINAL', $9, $10, NOW())
+                RETURNING id
+            `, [
+                fileRef.referenceId, categoryId, file.file_name,
+                file.file_path, file.file_name, file.file_size_bytes, file.mime_type,
+                submission.engagement_id,
+                submission.submitted_by, req.user.id,
+            ]);
+            const fileDocId = fileDocResult.rows[0].id;
+            await linkReferenceToRecord(client, fileRef.referenceId, fileDocId);
+            await client.query(`UPDATE audit_submission_files SET document_id = $1 WHERE id = $2`, [fileDocId, file.id]);
+            await client.query(
+                `INSERT INTO audit_engagement_documents (engagement_id, document_id, added_by) VALUES ($1, $2, $3)`,
+                [submission.engagement_id, fileDocId, req.user.id]
+            );
+        }
+
+        const finalResult = await client.query(
+            `UPDATE audit_submissions SET status = 'APPROVED', feedback_document_id = $1 WHERE id = $2 RETURNING *`,
+            [feedbackDocId, id]
+        );
+
+        await logAction(req.user.id, ACTIONS.AUDIT_SUBMISSION_FINALIZED, MODULES.SYSTEM, {
+            ipAddress:   req.ip,
+            recordType:  'audit_submissions',
+            recordId:    parseInt(id),
+            newValues:   { feedback_document_id: feedbackDocId, report_files: filesResult.rows.length },
+            description: `Audit submission ID ${id} fully approved and archived — engagement "${engagement.name}"`,
+            client,
+        });
+
+        return { submission: finalResult.rows[0], finalized: true, auditor, engagement };
+    });
+
+    if (result.finalized) {
+        notify({
+            userId:  result.submission.submitted_by,
+            type:    'AUDIT_REPORT_APPROVED',
+            title:   'Audit report approved',
+            body:    `Your audit report for "${result.engagement.name}" has been approved and archived.`,
+            link:    '/audit',
+            module:  'SYSTEM',
+            recordType: 'audit_submissions',
+            recordId: result.submission.id,
+            email: {
+                subject: 'Your audit report has been approved',
+                html: await wrapEmail(emailParagraphs([
+                    `Hello ${result.auditor.first_name},`,
+                    `This confirms your audit report for <strong>${result.engagement.name}</strong> has been reviewed and approved by both a Director and a Secretary.`,
+                    `It has been archived in the company's records. Thank you for your work.`,
+                ]), { preheader: 'Your audit report has been approved and archived' }),
+            },
+        }).catch(() => {});
+    }
+
+    sendSuccess(res, result.submission, result.finalized ? 'Submission fully approved and archived' : 'Approval recorded');
+});
+
+// POST /api/audit/submissions/:id/reject
+// A single Director or Secretary rejecting is enough to send the whole
+// submission back — unlike approval, rejection does not need to wait
+// for the other reviewer's opinion.
+const rejectSubmission = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+    if (!reason || !reason.trim()) throw createError.badRequest('A rejection reason is required');
+
+    const roles = req.user.roles || [];
+    if (!roles.includes('Director') && !roles.includes('Secretary')) {
+        throw createError.forbidden('Only a Director or Secretary can reject an audit submission');
+    }
+
+    const result = await query(`
+        UPDATE audit_submissions
+        SET    status = 'REJECTED', rejected_by = $1, rejected_at = NOW(), rejection_reason = $2
+        WHERE  id = $3 AND status = 'SUBMITTED'
+        RETURNING *
+    `, [req.user.id, reason.trim(), id]);
+
+    if (result.rows.length === 0) {
+        throw createError.badRequest('Submission not found or already reviewed');
+    }
+    const submission = result.rows[0];
+
+    const auditorResult = await query(
+        `SELECT first_name, email FROM users WHERE id = $1`, [submission.submitted_by]
+    );
+    const engagementResult = await query(
+        `SELECT name FROM audit_engagements WHERE id = $1`, [submission.engagement_id]
+    );
+    const auditor = auditorResult.rows[0];
+    const engagement = engagementResult.rows[0];
+
+    await logAction(req.user.id, ACTIONS.AUDIT_SUBMISSION_REJECTED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_submissions',
+        recordId:    parseInt(id),
+        newValues:   { reason },
+        description: `Audit submission ID ${id} rejected — engagement "${engagement.name}"`,
+    });
+
+    notify({
+        userId:  submission.submitted_by,
+        type:    'AUDIT_REPORT_REJECTED',
+        title:   'Audit submission needs revision',
+        body:    `Your submission for "${engagement.name}" was not approved. Reason: ${reason.trim()}`,
+        link:    '/audit',
+        module:  'SYSTEM',
+        recordType: 'audit_submissions',
+        recordId: submission.id,
+        email: {
+            subject: 'Your audit submission needs revision',
+            html: await wrapEmail(emailParagraphs([
+                `Hello ${auditor.first_name},`,
+                `Your audit submission for <strong>${engagement.name}</strong> was reviewed and was not approved.`,
+                `Reason given: "${reason.trim()}"`,
+                `You can add further comments and files and finish the audit again through the External Audit portal.`,
+            ]), { preheader: 'Your audit submission needs revision' }),
+        },
+    }).catch(() => {});
+
+    sendSuccess(res, submission, 'Submission rejected');
+});
+
+// ============================================================================
+// EXTENSION OF ACCESS REQUESTS
+// ============================================================================
+
+// POST /api/audit/engagements/:id/extension-requests
+const requestExtension = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { requested_new_access_expires_at, reason } = req.body;
+    if (!requested_new_access_expires_at) throw createError.badRequest('A new requested access date is required');
+    if (!reason || !reason.trim()) throw createError.badRequest('A reason for the extension is required');
+
+    const engagement = await assertEngagementAccess(id, req.user.id);
+    const profile = await fetchAuditorProfile(req.user.id);
+
+    const existing = await query(
+        `SELECT 1 FROM audit_extension_requests WHERE engagement_id = $1 AND status = 'PENDING'`, [id]
+    );
+    if (existing.rows.length > 0) {
+        throw createError.badRequest('An extension request for this engagement is already pending review');
+    }
+
+    const result = await query(`
+        INSERT INTO audit_extension_requests
+            (engagement_id, requested_by, current_access_expires_at, requested_new_access_expires_at, reason)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+    `, [id, req.user.id, engagement.access_expires_at, requested_new_access_expires_at, reason.trim()]);
+
+    await logAction(req.user.id, ACTIONS.AUDIT_EXTENSION_REQUESTED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_extension_requests',
+        recordId:    result.rows[0].id,
+        newValues:   { requested_new_access_expires_at, reason },
+        description: `Extension requested for audit engagement ID ${id}`,
+    });
+
+    (async () => {
+        try {
+            const reviewers = await getDirectorsAndSecretaries();
+            const html = await wrapEmail(emailParagraphs([
+                `${profile.first_name} ${profile.last_name} (${profile.auditor_company_name}) has requested more time to complete the audit "${engagement.name}".`,
+                `Reason given: "${reason.trim()}"`,
+                `Please review this request in the External Audit review page.`,
+            ]), { preheader: 'An auditor has requested more time' });
+            await notifyMany(reviewers, 'AUDIT_EXTENSION_PENDING', () => ({
+                title: 'Audit extension request',
+                body:  `${profile.first_name} ${profile.last_name} has requested an extension for "${engagement.name}"`,
+                link:  '/audit-review',
+                module: 'SYSTEM',
+                recordType: 'audit_extension_requests',
+                recordId: result.rows[0].id,
+                email: { subject: 'Audit extension request', html },
+            }));
+        } catch { /* best-effort */ }
+    })();
+
+    sendCreated(res, result.rows[0], 'Extension request submitted');
+});
+
+// GET /api/audit/engagements/:id/extension-requests
+const getMyExtensionRequests = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await assertEngagementAccess(id, req.user.id);
+    const result = await query(
+        `SELECT * FROM audit_extension_requests WHERE engagement_id = $1 ORDER BY created_at DESC`, [id]
+    );
+    sendSuccess(res, result.rows);
+});
+
+// GET /api/audit/extension-requests?status=PENDING
+const listExtensionRequests = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const conditions = [];
+    const params = [];
+    if (status) { params.push(status); conditions.push(`x.status = $${params.length}`); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const result = await query(`
+        SELECT x.*, e.name AS engagement_name,
+               u.first_name || ' ' || u.last_name AS auditor_name, u.auditor_company_name
+        FROM   audit_extension_requests x
+        JOIN   audit_engagements e ON e.id = x.engagement_id
+        JOIN   users u             ON u.id = x.requested_by
+        ${where}
+        ORDER BY x.created_at DESC
+    `, params);
+    sendSuccess(res, result.rows);
+});
+
+// POST /api/audit/extension-requests/:id/approve
+const approveExtensionRequest = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reviewer_notes } = req.body;
+    const roles = req.user.roles || [];
+    if (!roles.includes('Director') && !roles.includes('Secretary')) {
+        throw createError.forbidden('Only a Director or Secretary can review extension requests');
+    }
+
+    const result = await withTransaction(async (client) => {
+        const reqResult = await client.query(
+            `SELECT * FROM audit_extension_requests WHERE id = $1 AND status = 'PENDING' FOR UPDATE`, [id]
+        );
+        if (reqResult.rows.length === 0) throw createError.badRequest('Request not found or already reviewed');
+        const extReq = reqResult.rows[0];
+
+        await client.query(
+            `UPDATE audit_engagements SET access_expires_at = $1 WHERE id = $2`,
+            [extReq.requested_new_access_expires_at, extReq.engagement_id]
+        );
+        const updated = await client.query(`
+            UPDATE audit_extension_requests
+            SET    status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW(), reviewer_notes = $2
+            WHERE  id = $3
+            RETURNING *
+        `, [req.user.id, reviewer_notes || null, id]);
+
+        await logAction(req.user.id, ACTIONS.AUDIT_EXTENSION_APPROVED, MODULES.SYSTEM, {
+            ipAddress:   req.ip,
+            recordType:  'audit_extension_requests',
+            recordId:    parseInt(id),
+            description: `Extension request ID ${id} approved — new access expiry ${extReq.requested_new_access_expires_at}`,
+            client,
+        });
+
+        return updated.rows[0];
+    });
+
+    const engagementResult = await query(`SELECT name FROM audit_engagements WHERE id = $1`, [result.engagement_id]);
+    const auditorResult = await query(`SELECT first_name FROM users WHERE id = $1`, [result.requested_by]);
+    const engagementName = engagementResult.rows[0]?.name;
+    const auditorFirstName = auditorResult.rows[0]?.first_name;
+
+    notify({
+        userId:  result.requested_by,
+        type:    'AUDIT_EXTENSION_APPROVED',
+        title:   'Extension approved',
+        body:    `Your extension request for "${engagementName}" has been approved.`,
+        link:    '/audit',
+        module:  'SYSTEM',
+        recordType: 'audit_extension_requests',
+        recordId: result.id,
+        email: {
+            subject: 'Your audit extension request was approved',
+            html: await wrapEmail(emailParagraphs([
+                `Hello ${auditorFirstName},`,
+                `Your request for more time on "${engagementName}" has been approved.`,
+                `Your new access expiry is <strong>${new Date(result.requested_new_access_expires_at).toDateString()}</strong>.`,
+            ]), { preheader: 'Your extension request was approved' }),
+        },
+    }).catch(() => {});
+
+    sendSuccess(res, result, 'Extension approved');
+});
+
+// POST /api/audit/extension-requests/:id/reject
+const rejectExtensionRequest = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reviewer_notes } = req.body;
+    const roles = req.user.roles || [];
+    if (!roles.includes('Director') && !roles.includes('Secretary')) {
+        throw createError.forbidden('Only a Director or Secretary can review extension requests');
+    }
+
+    const result = await query(`
+        UPDATE audit_extension_requests
+        SET    status = 'REJECTED', reviewed_by = $1, reviewed_at = NOW(), reviewer_notes = $2
+        WHERE  id = $3 AND status = 'PENDING'
+        RETURNING *
+    `, [req.user.id, reviewer_notes || null, id]);
+
+    if (result.rows.length === 0) throw createError.badRequest('Request not found or already reviewed');
+    const extReq = result.rows[0];
+
+    const engagementResult = await query(`SELECT name FROM audit_engagements WHERE id = $1`, [extReq.engagement_id]);
+    const auditorResult = await query(`SELECT first_name FROM users WHERE id = $1`, [extReq.requested_by]);
+    const engagementName = engagementResult.rows[0]?.name;
+    const auditorFirstName = auditorResult.rows[0]?.first_name;
+
+    await logAction(req.user.id, ACTIONS.AUDIT_EXTENSION_REJECTED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'audit_extension_requests',
+        recordId:    parseInt(id),
+        description: `Extension request ID ${id} rejected`,
+    });
+
+    notify({
+        userId:  extReq.requested_by,
+        type:    'AUDIT_EXTENSION_REJECTED',
+        title:   'Extension request declined',
+        body:    `Your extension request for "${engagementName}" was declined.`,
+        link:    '/audit',
+        module:  'SYSTEM',
+        recordType: 'audit_extension_requests',
+        recordId: extReq.id,
+        email: {
+            subject: 'Your audit extension request was declined',
+            html: await wrapEmail(emailParagraphs([
+                `Hello ${auditorFirstName},`,
+                `Your request for more time on "${engagementName}" was declined.`,
+                extReq.reviewer_notes ? `Note from the reviewer: "${extReq.reviewer_notes}"` : '',
+                `Please contact the company directly if you have questions.`,
+            ].filter(Boolean)), { preheader: 'Your extension request was declined' }),
+        },
+    }).catch(() => {});
+
+    sendSuccess(res, extReq, 'Extension rejected');
+});
+
 module.exports = {
     // Admin
     listEngagements, getEngagementById, createEngagement, updateEngagement, revokeEngagement,
@@ -720,4 +1619,13 @@ module.exports = {
     // Auditor
     getMyEngagements, getAllowedAccounts, getEngagementTransactions,
     getEngagementDocuments, previewEngagementDocument, getEngagementSummary,
+    // Auditor — submission workflow (v1.20.0)
+    getComments, addComment,
+    getReportFiles, uploadReportFile, deleteReportFile,
+    getEngagementSubmissions, finishAudit,
+    requestExtension, getMyExtensionRequests,
+    // Director / Secretary — review (v1.20.0)
+    listSubmissions, getSubmissionById, previewSubmissionFile,
+    approveSubmission, rejectSubmission,
+    listExtensionRequests, approveExtensionRequest, rejectExtensionRequest,
 };

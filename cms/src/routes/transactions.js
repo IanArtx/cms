@@ -17,11 +17,12 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireRoles } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireRoles } = require('../middleware/auth');
 const transactionsController = require('../controllers/transactionsController');
 
 // All routes require login
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // GET TRANSACTION LEDGER

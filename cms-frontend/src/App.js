@@ -41,6 +41,7 @@ import AboutPage from './pages/about/AboutPage';
 import RequisitionsPage from './pages/requisitions/RequisitionsPage';
 import AuditManagementPage from './pages/audit/AuditManagementPage';
 import AuditorPortalPage from './pages/audit/AuditorPortalPage';
+import AuditReviewPage from './pages/audit/AuditReviewPage';
 
 const queryClient = new QueryClient({
     defaultOptions: {
@@ -109,6 +110,11 @@ function App() {
                             <Route path="audit-management" element={
                                 <ProtectedRoute requiredRole="Admin">
                                     <AuditManagementPage />
+                                </ProtectedRoute>
+                            } />
+                            <Route path="audit-review" element={
+                                <ProtectedRoute requiredRole={['Director', 'Secretary']}>
+                                    <AuditReviewPage />
                                 </ProtectedRoute>
                             } />
                         </Route>

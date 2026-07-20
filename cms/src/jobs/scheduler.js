@@ -22,6 +22,9 @@ const {
 } = require('../services/reportService');
 const { calculateDailyAccrual, calculateSimpleInterest, calculateCompoundInterest } = require('../services/loanService');
 const { issueCertificatesForAllShareholders } = require('../services/certificateService');
+const { notify } = require('../services/notificationService');
+const { wrapEmail } = require('../services/emailTemplates');
+const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -495,6 +498,103 @@ const scheduleAnnualShareCertificates = () => {
 };
 
 // ============================================================
+// JOB 7: AUDIT ENGAGEMENT ACCESS-EXPIRY REMINDERS
+// Runs every day at 07:00. For every ACTIVE audit engagement with
+// an access_expires_at set, emails the auditor once at each of the
+// configured day-thresholds as that date approaches (7, 3, and 1
+// day(s) before). Dedup lives in audit_engagement_reminders_sent
+// (UNIQUE engagement_id + days_before) — same insert-and-detect-
+// conflict idiom as side_fund_dues above, so a re-run on the same
+// day is always safe.
+// ============================================================
+const AUDIT_REMINDER_DAY_THRESHOLDS = [7, 3, 1];
+
+const scheduleAuditAccessExpiryReminders = () => {
+    cron.schedule('0 7 * * *', async () => {
+        logger.info('Starting audit access-expiry reminder job...');
+        try {
+            const engagements = await query(`
+                SELECT e.id, e.name, e.access_expires_at
+                FROM   audit_engagements e
+                WHERE  e.status = 'ACTIVE' AND e.access_expires_at IS NOT NULL
+            `);
+
+            const msPerDay = 24 * 60 * 60 * 1000;
+            let sentCount = 0;
+
+            for (const engagement of engagements.rows) {
+                const daysRemaining = Math.ceil(
+                    (new Date(engagement.access_expires_at).getTime() - Date.now()) / msPerDay
+                );
+                if (!AUDIT_REMINDER_DAY_THRESHOLDS.includes(daysRemaining)) continue;
+
+                const usersResult = await query(`
+                    SELECT u.id, u.first_name, u.email
+                    FROM   audit_engagement_users eu
+                    JOIN   users u ON u.id = eu.user_id
+                    WHERE  eu.engagement_id = $1
+                `, [engagement.id]);
+
+                for (const auditor of usersResult.rows) {
+                    let dedupOk = true;
+                    try {
+                        const inserted = await query(`
+                            INSERT INTO audit_engagement_reminders_sent (engagement_id, days_before)
+                            VALUES ($1, $2)
+                            ON CONFLICT (engagement_id, days_before) DO NOTHING
+                            RETURNING id
+                        `, [engagement.id, daysRemaining]);
+                        dedupOk = inserted.rows.length > 0;
+                    } catch (err) {
+                        logger.error('Audit reminder dedup insert failed', { error: err.message });
+                        continue;
+                    }
+                    if (!dedupOk) continue;
+
+                    const expiryDate = new Date(engagement.access_expires_at).toDateString();
+                    await notify({
+                        userId:  auditor.id,
+                        type:    'AUDIT_ACCESS_EXPIRING',
+                        title:   `Audit access expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}`,
+                        body:    `Your access to "${engagement.name}" expires on ${expiryDate}.`,
+                        link:    '/audit',
+                        module:  'SYSTEM',
+                        recordType: 'audit_engagements',
+                        recordId: engagement.id,
+                        email: {
+                            subject: `Audit access expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}`,
+                            html: await wrapEmail(`
+                                <p style="margin:0 0 12px 0;">Hello ${auditor.first_name},</p>
+                                <p style="margin:0 0 12px 0;">Your access to the audit engagement <strong>${engagement.name}</strong>
+                                    expires on <strong>${expiryDate}</strong> (${daysRemaining} day${daysRemaining === 1 ? '' : 's'} from now).</p>
+                                <p style="margin:0 0 12px 0;">If you need more time to complete the audit, you can request an
+                                    extension from the External Audit portal before access expires.</p>
+                            `, { preheader: `Your audit access expires in ${daysRemaining} day(s)` }),
+                        },
+                    }).catch(() => {});
+
+                    await logAction(null, ACTIONS.AUDIT_REMINDER_SENT, MODULES.SYSTEM, {
+                        recordType:  'audit_engagements',
+                        recordId:    engagement.id,
+                        description: `Access-expiry reminder (${daysRemaining} day(s)) sent for engagement "${engagement.name}"`,
+                    }).catch(() => {});
+
+                    sentCount++;
+                }
+            }
+
+            logger.info(`Audit access-expiry reminder job completed — ${sentCount} reminder(s) sent`);
+        } catch (err) {
+            logger.error('Audit access-expiry reminder job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Audit access-expiry reminders scheduled: 0 7 * * *');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -509,6 +609,7 @@ const startAllJobs = () => {
     scheduleSideFundDefaultCheck();
     scheduleMonthlyShareCertificates();
     scheduleAnnualShareCertificates();
+    scheduleAuditAccessExpiryReminders();
     logger.info('All scheduled jobs started successfully');
 };
 

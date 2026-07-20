@@ -15,12 +15,13 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const documentsController = require('../controllers/documentsController');
 
 // All routes require login
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // TEMPLATE ROUTES

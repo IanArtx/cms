@@ -7,10 +7,11 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireRoles } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireRoles } = require('../middleware/auth');
 const dividendsController = require('../controllers/dividendsController');
 
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // AUTHORITY PAYMENTS — must come before /:id routes

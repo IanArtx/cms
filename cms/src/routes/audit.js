@@ -16,6 +16,7 @@ const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
 const { authenticate, requireRoles } = require('../middleware/auth');
+const { uploadSingle } = require('../middleware/upload');
 const auditController = require('../controllers/auditController');
 
 router.use(authenticate);
@@ -156,6 +157,144 @@ router.get('/engagements/:id/summary',
     validators.idParam('id'),
     validateRequest,
     auditController.getEngagementSummary
+);
+
+// ============================================================
+// AUDITOR — SUBMISSION WORKFLOW (v1.20.0)
+// ============================================================
+
+router.get('/engagements/:id/comments',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.getComments
+);
+
+router.post('/engagements/:id/comments',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    [body('comment_text').trim().notEmpty().withMessage('Comment text is required').isLength({ max: 5000 })],
+    validateRequest,
+    auditController.addComment
+);
+
+router.get('/engagements/:id/report-files',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.getReportFiles
+);
+
+router.post('/engagements/:id/report-files',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    ...uploadSingle('report', 'audit-reports'),
+    auditController.uploadReportFile
+);
+
+router.delete('/engagements/:id/report-files/:fileId',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validators.idParam('fileId'),
+    validateRequest,
+    auditController.deleteReportFile
+);
+
+router.get('/engagements/:id/submissions',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.getEngagementSubmissions
+);
+
+router.post('/engagements/:id/finish',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.finishAudit
+);
+
+router.post('/engagements/:id/extension-requests',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    [
+        body('requested_new_access_expires_at').isISO8601().withMessage('A valid new access date is required'),
+        body('reason').trim().notEmpty().withMessage('A reason is required').isLength({ max: 2000 }),
+    ],
+    validateRequest,
+    auditController.requestExtension
+);
+
+router.get('/engagements/:id/extension-requests',
+    requireRoles(['Auditor']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.getMyExtensionRequests
+);
+
+// ============================================================
+// DIRECTOR / SECRETARY — SUBMISSION REVIEW (v1.20.0)
+// ============================================================
+
+router.get('/submissions',
+    requireRoles(['Director', 'Secretary']),
+    [query('status').optional().isIn(['SUBMITTED', 'APPROVED', 'REJECTED'])],
+    validateRequest,
+    auditController.listSubmissions
+);
+
+router.get('/submissions/:id',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.getSubmissionById
+);
+
+router.get('/submissions/:id/files/:fileId',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    validators.idParam('fileId'),
+    validateRequest,
+    auditController.previewSubmissionFile
+);
+
+router.post('/submissions/:id/approve',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    validateRequest,
+    auditController.approveSubmission
+);
+
+router.post('/submissions/:id/reject',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    [body('reason').trim().notEmpty().withMessage('A rejection reason is required').isLength({ max: 2000 })],
+    validateRequest,
+    auditController.rejectSubmission
+);
+
+router.get('/extension-requests',
+    requireRoles(['Director', 'Secretary']),
+    [query('status').optional().isIn(['PENDING', 'APPROVED', 'REJECTED'])],
+    validateRequest,
+    auditController.listExtensionRequests
+);
+
+router.post('/extension-requests/:id/approve',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    [body('reviewer_notes').optional().trim().isLength({ max: 2000 })],
+    validateRequest,
+    auditController.approveExtensionRequest
+);
+
+router.post('/extension-requests/:id/reject',
+    requireRoles(['Director', 'Secretary']),
+    validators.idParam('id'),
+    [body('reviewer_notes').optional().trim().isLength({ max: 2000 })],
+    validateRequest,
+    auditController.rejectExtensionRequest
 );
 
 module.exports = router;

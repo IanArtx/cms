@@ -6,10 +6,11 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
 const sideFundController = require('../controllers/sideFundController');
 
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ------------------------------------------------------------
 // STATIC ROUTES — must be declared before any /:id route below.

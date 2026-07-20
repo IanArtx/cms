@@ -136,6 +136,44 @@ const requireRoles = (allowedRoles) => (req, res, next) => {
 };
 
 // ============================================================
+// BLOCK AUDITOR
+// The Auditor role is the system's only external, non-member
+// account type — by design it starts with zero permissions, and
+// every legitimate thing an auditor can do lives under /api/audit,
+// scoped to whichever engagement(s) an Admin explicitly attached
+// them to (see auditController.js's assertEngagementAccess).
+//
+// Most other route files were written before this role existed and
+// only gate individual actions behind requirePermissions/requireRoles
+// — but several read-only, dashboard-style endpoints (account
+// balances, upcoming events, and others like them) were deliberately
+// left open to "any authenticated user" so ordinary members without
+// a specific permission could still see them. An Auditor is also
+// "any authenticated user", so without this check they could see
+// full company balances and internal event details outside their
+// audited scope — exactly the kind of leak the audit portal's
+// engagement-scoping was built to prevent everywhere else.
+//
+// Apply this immediately after router.use(authenticate) in every
+// route file EXCEPT audit.js itself and the couple of self-service
+// routes an auditor legitimately needs (their own profile, their
+// own notifications, public branding).
+//
+// Usage:
+//   router.use(authenticate);
+//   router.use(blockAuditor);
+// ============================================================
+const blockAuditor = (req, res, next) => {
+    const userRoles = req.user?.roles || [];
+    if (userRoles.includes('Auditor')) {
+        return next(createError.forbidden(
+            'The Auditor role only has access to the External Audit portal.'
+        ));
+    }
+    next();
+};
+
+// ============================================================
 // REQUIRE PERMISSIONS
 // Checks that the authenticated user has ALL of the specified
 // permissions (not just any one of them).
@@ -208,6 +246,7 @@ module.exports = {
     requireEmailVerified,
     require2FA,
     requireRoles,
+    blockAuditor,
     requirePermissions,
     requireAnyPermission,
     isSelfOrHasPermission,

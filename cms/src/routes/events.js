@@ -13,11 +13,12 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireAnyPermission } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireAnyPermission } = require('../middleware/auth');
 const eventsController = require('../controllers/eventsController');
 
 // All routes require login
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // SPECIAL ROUTES — must come before /:id

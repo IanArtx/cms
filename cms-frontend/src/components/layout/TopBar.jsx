@@ -59,7 +59,15 @@ const PAGE_TITLES = {
 };
 
 const TopBar = ({ onMenuClick }) => {
-    const { user, logout, hasPermission } = useAuth();
+    const { user, logout, hasPermission, hasRole } = useAuth();
+    // The Auditor role is external and non-member — the account
+    // balances and the computed "upcoming events / pending approvals"
+    // notifications below are company-wide, not scoped to any one
+    // engagement, so they must never be fetched or shown here for an
+    // Auditor (the backend also blocks the underlying endpoints for
+    // this role — see middleware/auth.js blockAuditor — this is the
+    // matching frontend-side guard so the UI doesn't even try).
+    const isAuditor = hasRole('Auditor');
     const { branding } = useBranding();
     const navigate     = useNavigate();
     const location     = useLocation();
@@ -82,6 +90,15 @@ const TopBar = ({ onMenuClick }) => {
     // Combines upcoming events + pending approvals
     // --------------------------------------------------------
     useEffect(() => {
+        // Auditors never see company-wide balances or the computed
+        // events/approvals feed — skip both fetches entirely instead of
+        // relying on the API calls to fail quietly.
+        if (isAuditor) {
+            setNotifications([]);
+            setAccountSummary([]);
+            return;
+        }
+
         const loadNotifications = async () => {
             const notifs = [];
 
@@ -203,7 +220,7 @@ const TopBar = ({ onMenuClick }) => {
         accountsAPI.getSummary()
             .then(res => setAccountSummary(res.data.data || []))
             .catch(() => {});
-    }, [location.pathname, hasPermission]);
+    }, [location.pathname, hasPermission, isAuditor]);
 
     // --------------------------------------------------------
     // LOAD & POLL PERSISTED NOTIFICATIONS
@@ -351,18 +368,23 @@ const TopBar = ({ onMenuClick }) => {
                 they need to stay clickable no matter how tight space gets. */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
 
-                {/* Global Search */}
-                <button
-                    onClick={() => setSearchOpen(true)}
-                    style={{
-                        padding: '8px', borderRadius: '8px',
-                        border: 'none', background: 'none',
-                        cursor: 'pointer', color: '#6b7280',
-                    }}
-                    aria-label="Search"
-                >
-                    <MagnifyingGlassIcon style={{ width: '20px', height: '20px' }} />
-                </button>
+                {/* Global Search — searches across company-wide records,
+                    which is exactly what an Auditor must never reach
+                    outside their own engagement scope, so it's hidden
+                    rather than shown-then-blocked. */}
+                {!isAuditor && (
+                    <button
+                        onClick={() => setSearchOpen(true)}
+                        style={{
+                            padding: '8px', borderRadius: '8px',
+                            border: 'none', background: 'none',
+                            cursor: 'pointer', color: '#6b7280',
+                        }}
+                        aria-label="Search"
+                    >
+                        <MagnifyingGlassIcon style={{ width: '20px', height: '20px' }} />
+                    </button>
+                )}
 
                 {/* Notifications Bell */}
                 <div style={{ position: 'relative' }}>
@@ -620,7 +642,9 @@ const TopBar = ({ onMenuClick }) => {
                                     <p style={{
                                         fontSize: '11px', color: '#9ca3af', margin: 0,
                                     }}>
-                                        Showing pending approvals and upcoming events
+                                        {isAuditor
+                                            ? 'Showing your audit submission updates'
+                                            : 'Showing pending approvals and upcoming events'}
                                     </p>
                                 </div>
                             </div>

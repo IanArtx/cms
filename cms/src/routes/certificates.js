@@ -7,10 +7,11 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, requireRoles } = require('../middleware/auth');
+const { authenticate, blockAuditor, requireRoles } = require('../middleware/auth');
 const certificatesController = require('../controllers/certificatesController');
 
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // ISSUE A CERTIFICATE (on-demand)

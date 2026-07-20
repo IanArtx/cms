@@ -1963,6 +1963,95 @@ export const auditSummaryTemplate = (data) => {
 };
 
 // ============================================================
+// AUDITOR FEEDBACK TEMPLATE
+// SYSTEM_GENERATED — created once by approveSubmission() the moment
+// both a Director and Secretary have signed off (see auditController.js
+// finalize step). `data` is the documents.template_data payload that
+// gets persisted then, and re-rendered here on every subsequent
+// preview/download — same pattern as every other generated document.
+// ============================================================
+export const auditorFeedbackTemplate = (data) => {
+    const comments = data.comments || [];
+    const files     = data.files || [];
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Auditor Feedback — ${data.engagement_name || ''}</title>
+    <style>${getBaseStyles()}
+    .comment-item { margin-bottom:12px; padding:12px 14px;
+        background:#f9fafb; border-left:4px solid ${PRIMARY_COLOR};
+        border-radius:0 6px 6px 0; font-size:11px; line-height:1.6;
+        color:#374151; }
+    .comment-date { font-size:9px; color:#9ca3af; margin-bottom:4px; }
+    </style>
+</head>
+<body>
+<div class="page">
+    ${letterhead('Auditor Feedback', data.reference_code || '', new Date())}
+    <div class="doc-title">AUDITOR FEEDBACK</div>
+    <div class="doc-subtitle">${data.engagement_name || ''}</div>
+
+    <div class="meta-box cols-3">
+        <div class="meta-item">
+            <div class="meta-label">Auditor</div>
+            <div class="meta-value">${data.auditor_name || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Auditing Firm</div>
+            <div class="meta-value">${data.auditor_company || '—'} (${data.auditor_initials || '—'})</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Contact</div>
+            <div class="meta-value">${data.auditor_phone || '—'}<br>${data.auditor_email || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Submitted</div>
+            <div class="meta-value">${fmt.date(data.submitted_at)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Director Approval</div>
+            <div class="meta-value green">${fmt.date(data.director_approved_at)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Secretary Approval</div>
+            <div class="meta-value green">${fmt.date(data.secretary_approved_at)}</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Auditor Comments</div>
+        ${comments.length === 0
+            ? '<p style="font-size:11px;color:#9ca3af;">No comments were recorded.</p>'
+            : comments.map(c => `
+        <div class="comment-item">
+            <div class="comment-date">${fmt.date(c.created_at)}</div>
+            ${c.comment_text}
+        </div>`).join('')}
+    </div>
+
+    <div class="section">
+        <div class="section-title">Accompanying Report Files</div>
+        ${files.length === 0
+            ? '<p style="font-size:11px;color:#9ca3af;">No files were attached.</p>'
+            : `<table>
+                <thead><tr><th>File Name</th></tr></thead>
+                <tbody>${files.map(f => `<tr><td>${f.file_name}</td></tr>`).join('')}</tbody>
+            </table>`}
+    </div>
+
+    ${documentTrail([
+        { role: 'Submitted By', name: data.auditor_name, date: data.submitted_at },
+    ])}
+
+    ${footer()}
+</div>
+</body>
+</html>`;
+};
+
+// ============================================================
 // PRINT / EXPORT FUNCTION
 // Opens document in new tab and triggers print dialog
 // ============================================================

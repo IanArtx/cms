@@ -10,7 +10,7 @@ import { documentsAPI, categoriesAPI } from '../../api/endpoints';
 import { formatDate, formatFileSize, getErrorMessage, truncate } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
-    previewDocument, printDocument,
+    auditorFeedbackTemplate, previewDocument, printDocument,
 } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -34,10 +34,11 @@ import {
 // registered renderer) will show a friendly "can't be reconstructed"
 // message instead of failing silently.
 const GENERATED_RENDERERS = {
-    MEETING_AGENDA:  meetingAgendaTemplate,
-    MEETING_MINUTES: meetingMinutesTemplate,
-    RECEIPT:         receiptTemplate,
-    RESOLUTION:      resolutionTemplate,
+    MEETING_AGENDA:   meetingAgendaTemplate,
+    MEETING_MINUTES:  meetingMinutesTemplate,
+    RECEIPT:          receiptTemplate,
+    RESOLUTION:       resolutionTemplate,
+    AUDITOR_FEEDBACK: auditorFeedbackTemplate,
 };
 
 // Uploaded file types the browser can render inline in a new tab.

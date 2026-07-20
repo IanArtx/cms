@@ -6,10 +6,11 @@
 const router = require('express').Router();
 const { query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, blockAuditor } = require('../middleware/auth');
 const searchController = require('../controllers/searchController');
 
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // GLOBAL SEARCH

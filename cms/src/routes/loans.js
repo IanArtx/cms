@@ -14,11 +14,12 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
+const { authenticate, blockAuditor, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const loansController = require('../controllers/loansController');
 
 // All routes require login
 router.use(authenticate);
+router.use(blockAuditor);
 
 // ============================================================
 // LOANS RECEIVED (company borrows)

@@ -70,6 +70,7 @@ const Sidebar = ({ isOpen, onClose }) => {
         { label: 'Reports',      href: '/reports',      icon: ChartPieIcon,        show: true },
         { label: 'Members',      href: '/users',        icon: UsersIcon,           show: hasPermission('USER_VIEW_ALL') },
         { label: 'External Audit', href: '/audit-management', icon: ShieldCheckIcon, show: hasRole('Admin') },
+        { label: 'Audit Review', href: '/audit-review', icon: ShieldCheckIcon, show: hasRole(['Director', 'Secretary']) },
         { label: 'Settings',     href: '/settings',     icon: Cog6ToothIcon,       show: hasRole('Admin') },
         { label: 'About',        href:  '/about',       icon:  InformationCircleIcon,    show:  true,},
     ];

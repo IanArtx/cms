@@ -1,0 +1,340 @@
+// ============================================================
+// API ENDPOINTS
+// All API calls organised by module.
+// Every function returns a promise that resolves to the
+// response data. Errors are handled by the axios interceptor.
+// ============================================================
+
+import api from './axios';
+
+// ============================================================
+// AUTH
+// ============================================================
+export const authAPI = {
+    register:        (data) => api.post('/auth/register', data),
+    login:           (data) => api.post('/auth/login', data),
+    logout:          ()     => api.post('/auth/logout'),
+    refreshToken:    (data) => api.post('/auth/refresh', data),
+    forgotPassword:  (data) => api.post('/auth/forgot-password', data),
+    resetPassword:   (data) => api.post('/auth/reset-password', data),
+    verifyEmail:     (token) => api.get(`/auth/verify-email?token=${token}`),
+    // Unauthenticated — used by the Register page's role dropdown,
+    // since a visitor filling out that form has no token yet.
+    getPublicRoles:  ()     => api.get('/auth/roles'),
+    setup2FA:        ()     => api.post('/auth/2fa/setup'),
+    activate2FA:     (data) => api.post('/auth/2fa/activate', data),
+    verify2FA:       (data) => api.post('/auth/2fa/verify', data),
+};
+
+// ============================================================
+// USERS
+// ============================================================
+export const usersAPI = {
+    getMyProfile:    ()         => api.get('/users/me'),
+    updateMyProfile: (data)     => api.patch('/users/me', data),
+    getAllUsers:      (params)   => api.get('/users', { params }),
+    getUserById:     (id)       => api.get(`/users/${id}`),
+    deactivateUser:  (id)       => api.patch(`/users/${id}/deactivate`),
+    assignRole:      (id, data) => api.post(`/users/${id}/roles`, data),
+    revokeRole:      (id, roleId) => api.delete(`/users/${id}/roles/${roleId}`),
+    getRoleRequests: (params)   => api.get('/users/role-requests', { params }),
+    getAllRoles:      ()         => api.get('/users/roles'),
+    getShareholding: ()         => api.get('/users/shareholding'),
+    getShareholders:  ()       => api.get('/users/shareholders'),
+};
+
+// ============================================================
+// CATEGORIES
+// ============================================================
+export const categoriesAPI = {
+    getAll:    (params) => api.get('/categories', { params }),
+    create:    (data)   => api.post('/categories', data),
+    update:    (id, data) => api.patch(`/categories/${id}`, data),
+};
+
+// ============================================================
+// ACCOUNTS
+// ============================================================
+export const accountsAPI = {
+    getAll:           ()         => api.get('/accounts'),
+    getSummary:       ()         => api.get('/accounts/summary'),
+    getById:          (id)       => api.get(`/accounts/${id}`),
+    createPrimary:    (data)     => api.post('/accounts/primary', data),
+    createSecondary:  (data)     => api.post('/accounts', data),
+    createSavings:    (data)     => api.post('/accounts/savings', data),
+    updateAccount:    (id, data) => api.patch(`/accounts/${id}`, data),
+    updateFloorLimit: (id, data) => api.post(`/accounts/${id}/floor-limit`, data),
+    getCurrencies:    ()         => api.get('/accounts/currencies'),
+    addCurrency:      (data)     => api.post('/accounts/currencies', data),
+    updateCurrency:   (id, data) => api.patch(`/accounts/currencies/${id}`, data),
+};
+
+// ============================================================
+// TRANSACTIONS
+// ============================================================
+export const transactionsAPI = {
+    getAll:           (params) => api.get('/transactions', { params }),
+    getById:          (id)     => api.get(`/transactions/${id}`),
+    recordContribution: (data) => api.post('/transactions/contributions', data),
+    recordExpense:    (data)   => api.post('/transactions/expenses', data),
+    recordInflow:     (data)   => api.post('/transactions/inflows', data),
+    reverse:          (id, data) => api.post(`/transactions/${id}/reverse`, data),
+};
+
+// ============================================================
+// TRANSFERS
+// ============================================================
+export const transfersAPI = {
+    getAll:    (params)   => api.get('/transfers', { params }),
+    getById:   (id)       => api.get(`/transfers/${id}`),
+    initiate:  (data)     => api.post('/transfers', data),
+    update:    (id, data) => api.patch(`/transfers/${id}`, data),
+    approve:   (id, data) => api.post(`/transfers/${id}/approve`, data),
+    reject:    (id, data) => api.post(`/transfers/${id}/reject`, data),
+};
+
+// ============================================================
+// GRANTS
+// ============================================================
+export const grantsAPI = {
+    getAll:          (params)   => api.get('/grants', { params }),
+    getById:         (id)       => api.get(`/grants/${id}`),
+    create:          (data)     => api.post('/grants', data),
+    update:          (id, data) => api.patch(`/grants/${id}`, data),
+    approve:         (id)       => api.post(`/grants/${id}/approve`),
+    recordTranche:   (id, data) => api.post(`/grants/${id}/tranches`, data),
+    updateCondition: (id, conditionId, data) =>
+        api.patch(`/grants/${id}/conditions/${conditionId}`, data),
+};
+
+// ============================================================
+// LOANS
+// ============================================================
+export const loansAPI = {
+    getAllReceived:       (params)   => api.get('/loans/received', { params }),
+    getReceivedById:     (id)       => api.get(`/loans/received/${id}`),
+    createReceived:      (data)     => api.post('/loans/received', data),
+    updateReceived:      (id, data) => api.patch(`/loans/received/${id}`, data),
+    approveReceived:     (id)       => api.post(`/loans/received/${id}/approve`),
+    recordRepayment:     (id, data) => api.post(`/loans/received/${id}/repayments`, data),
+    amendRate:           (id, data) => api.post(`/loans/received/${id}/amend-rate`, data),
+    getAllGiven:          (params)   => api.get('/loans/given', { params }),
+    getGivenById:        (id)       => api.get(`/loans/given/${id}`),
+    createGiven:         (data)     => api.post('/loans/given', data),
+    updateGiven:         (id, data) => api.patch(`/loans/given/${id}`, data),
+    approveGiven:        (id)       => api.post(`/loans/given/${id}/approve`),
+    recordGivenRepayment:(id, data) => api.post(`/loans/given/${id}/repayments`, data),
+    amendGivenRate:      (id, data) => api.post(`/loans/given/${id}/amend-rate`, data),
+};
+
+// ============================================================
+// INVESTMENTS
+// ============================================================
+export const investmentsAPI = {
+    getAll:          (params)   => api.get('/investments', { params }),
+    getById:         (id)       => api.get(`/investments/${id}`),
+    create:          (data)     => api.post('/investments', data),
+    update:          (id, data) => api.patch(`/investments/${id}`, data),
+    approve:         (id)       => api.post(`/investments/${id}/approve`),
+    fund:            (id, data) => api.post(`/investments/${id}/fund`, data),
+    recordReturn:    (id, data) => api.post(`/investments/${id}/returns`, data),
+    updateStatus:    (id, data) => api.patch(`/investments/${id}/status`, data),
+    createProject:   (id, data) => api.post(`/investments/${id}/projects`, data),
+    getProject:      (id, projectId) =>
+        api.get(`/investments/${id}/projects/${projectId}`),
+    addMilestone:    (id, projectId, data) =>
+        api.post(`/investments/${id}/projects/${projectId}/milestones`, data),
+    updateMilestone: (id, projectId, milestoneId, data) =>
+        api.patch(`/investments/${id}/projects/${projectId}/milestones/${milestoneId}`, data),
+    payCoupon:       (id, couponId, data) =>
+        api.patch(`/investments/${id}/coupons/${couponId}/pay`, data),
+    recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
+    getPerformanceSummary: () => api.get('/investments/performance-summary'),
+};
+
+// ============================================================
+// EVENTS
+// ============================================================
+export const eventsAPI = {
+    getAll:      (params) => api.get('/events', { params }),
+    getById:     (id)     => api.get(`/events/${id}`),
+    getUpcoming: (days)   => api.get(`/events/upcoming?days=${days || 90}`),
+    getTypes:    ()       => api.get('/events/types'),
+    create:      (data)   => api.post('/events', data),
+    update:      (id, data) => api.patch(`/events/${id}`, data),
+    approve:     (id)     => api.post(`/events/${id}/approve`),
+    cancel:      (id, data) => api.post(`/events/${id}/cancel`, data),
+};
+
+// ============================================================
+// DOCUMENTS
+// ============================================================
+export const documentsAPI = {
+    getAll:         (params) => api.get('/documents', { params }),
+    getById:        (id)     => api.get(`/documents/${id}`),
+    // responseType 'blob' so this works for both a real file stream
+    // (UPLOADED) and a JSON payload (SYSTEM_GENERATED) — the caller
+    // reads the blob's type to tell the two apart.
+    download:       (id)     => api.get(`/documents/${id}/download`, { responseType: 'blob' }),
+    upload:         (data)   => api.post('/documents/upload', data, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    generate:       (data)   => api.post('/documents/generate', data),
+    approve:        (id)     => api.post(`/documents/${id}/approve`),
+    archive:        (id)     => api.post(`/documents/${id}/archive`),
+    newVersion:     (id, data) => api.post(`/documents/${id}/new-version`, data, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    getTemplates:   ()       => api.get('/documents/templates'),
+    createTemplate: (data)   => api.post('/documents/templates', data),
+};
+
+// ============================================================
+// SETTINGS (company branding)
+// ============================================================
+export const settingsAPI = {
+    getCompany:    ()     => api.get('/settings/company'),
+    updateCompany: (data) => api.patch('/settings/company', data),
+    uploadLogo:    (formData) => api.post('/settings/company/logo', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+};
+
+// ============================================================
+// REPORTS
+// ============================================================
+export const reportsAPI = {
+    getGeneral:        (params) => api.get('/reports/general', { params }),
+    getIndividual:     (userId, params) =>
+        api.get(`/reports/individual/${userId}`, { params }),
+    getMyReport:       (params) => api.get('/reports/me', { params }),
+    sendMonthly:       (data)   => api.post('/reports/send-monthly', data),
+    sendBroadcast:     (data)   => api.post('/reports/broadcast', data),
+    getLog:            (params) => api.get('/reports/log', { params }),
+    getAuditLog:       (params) => api.get('/reports/audit', { params }),
+};
+
+// ============================================================
+// DIVIDENDS & AUTHORITY PAYMENTS
+// ============================================================
+export const dividendsAPI = {
+    getAll:                  (params)   => api.get('/dividends', { params }),
+    getById:                 (id)       => api.get(`/dividends/${id}`),
+    declare:                 (data)     => api.post('/dividends', data),
+    update:                  (id, data) => api.patch(`/dividends/${id}`, data),
+    approve:                 (id)       => api.post(`/dividends/${id}/approve`),
+    getAllAuthorityPayments:  (params)   => api.get('/dividends/authority-payments', { params }),
+    recordAuthorityPayment:  (data)     => api.post('/dividends/authority-payments', data),
+};
+
+// ============================================================
+// MEMBER SAVINGS
+// ============================================================
+export const savingsAPI = {
+    // Flexible (ongoing balance) savings
+    getMySavings:     ()         => api.get('/savings/me'),
+    getMyBalance:     ()         => api.get('/savings/balance/me'),
+    getBalanceForUser: (userId)  => api.get(`/savings/balance/${userId}`),
+    getMyHandouts:    ()         => api.get('/savings/handouts/me'),
+    getAll:           (params)   => api.get('/savings', { params }),
+    create:           (data)     => api.post('/savings', data),
+    approve:          (id, data) => api.patch(`/savings/${id}/approve`, data),
+    reject:           (id, data) => api.patch(`/savings/${id}/reject`, data),
+    // Handouts
+    getAllHandouts:   (params)   => api.get('/savings/handouts', { params }),
+    createHandout:    (data)     => api.post('/savings/handouts', data),
+    confirmHandout:   (id)       => api.patch(`/savings/handouts/${id}/confirm`),
+    rejectHandout:    (id, data) => api.patch(`/savings/handouts/${id}/reject`, data),
+    // Company-wide interest settings
+    getSettings:      ()         => api.get('/savings/settings'),
+    updateSettings:   (data)     => api.patch('/savings/settings', data),
+    // Legacy fixed-term
+    createFixedTerm:  (data)     => api.post('/savings/fixed-term', data),
+    withdraw:         (id)       => api.post(`/savings/${id}/withdraw`),
+    // Pool "other" inflow — non-member credit into the savings pool
+    // (e.g. investment profit), same Treasurer/Assistant Treasurer
+    // approval pipeline as a member deposit.
+    getPoolInflows:   (params)   => api.get('/savings/pool-inflows', { params }),
+    createPoolInflow: (data)     => api.post('/savings/pool-inflows', data),
+    approvePoolInflow: (id, data) => api.patch(`/savings/pool-inflows/${id}/approve`, data),
+    rejectPoolInflow:  (id, data) => api.patch(`/savings/pool-inflows/${id}/reject`, data),
+};
+
+// ============================================================
+// SYSTEM (permissions management)
+// ============================================================
+export const systemAPI = {
+    getPermissions:        ()       => api.get('/system/permissions'),
+    getRolePermissions:    (roleId) => api.get(`/system/roles/${roleId}/permissions`),
+    updateRolePermissions: (roleId, codes) =>
+        api.put(`/system/roles/${roleId}/permissions`, { permission_codes: codes }),
+};
+
+// ============================================================
+// SIDE FUND
+// ============================================================
+export const sideFundAPI = {
+    getSettings:    ()         => api.get('/side-fund/settings'),
+    updateSettings: (data)     => api.patch('/side-fund/settings', data),
+    getMyDues:      ()         => api.get('/side-fund/dues/me'),
+    getAllDues:     (params)   => api.get('/side-fund/dues', { params }),
+    payDue:         (id, data) => api.patch(`/side-fund/dues/${id}/pay`, data),
+    getExpenses:    (params)   => api.get('/side-fund/expenses', { params }),
+    recordExpense:  (data)     => api.post('/side-fund/expenses', data),
+    recordDirectInflow: (data) => api.post('/side-fund/inflows', data),
+};
+
+// ============================================================
+// REQUISITIONS
+// ============================================================
+export const requisitionsAPI = {
+    getAll:    (params)   => api.get('/requisitions', { params }),
+    getMine:   ()         => api.get('/requisitions/me'),
+    create:    (data)     => api.post('/requisitions', data),
+    update:    (id, data) => api.patch(`/requisitions/${id}`, data),
+    approve:   (id, data) => api.post(`/requisitions/${id}/approve`, data),
+    reject:    (id, data) => api.post(`/requisitions/${id}/reject`, data),
+};
+
+export const notificationsAPI = {
+    getAll:         (params) => api.get('/notifications', { params }),
+    getUnreadCount: ()       => api.get('/notifications/unread-count'),
+    markAsRead:     (id)     => api.patch(`/notifications/${id}/read`),
+    markAllAsRead:  ()       => api.patch('/notifications/read-all'),
+};
+
+export const sharesAPI = {
+    getCurrentPrice: ()       => api.get('/shares/price'),
+    setPrice:        (data)   => api.post('/shares/price', data),
+    getHistory:      (params) => api.get('/shares/price/history', { params }),
+};
+
+// ============================================================
+// CURRENCY EXCHANGE RATES
+// Monthly, display-only rates for showing the share price/value
+// in other currencies.
+// ============================================================
+export const exchangeRatesAPI = {
+    getCurrent: ()       => api.get('/exchange-rates/current'),
+    setRate:    (data)   => api.post('/exchange-rates', data),
+    getHistory: (params) => api.get('/exchange-rates/history', { params }),
+};
+
+// ============================================================
+// CERTIFICATE OF SHARES
+// Same format for MONTHLY and ANNUAL — issued on demand here,
+// or automatically by the schedule (see Reports > Issue Now).
+// ============================================================
+export const certificatesAPI = {
+    issue:      (data)   => api.post('/certificates', data),
+    getMine:    (params) => api.get('/certificates/me', { params }),
+    getAll:     (params) => api.get('/certificates', { params }),
+    issueNow:   (data)   => api.post('/certificates/issue-now', data),
+};
+
+// ============================================================
+// GLOBAL SEARCH
+// ============================================================
+export const searchAPI = {
+    search: (q) => api.get('/search', { params: { q } }),
+};

@@ -1,0 +1,172 @@
+# ============================================================
+# RENDER BLUEPRINT — Company Management System (COMPANY B)
+#
+# This is the SECOND company's Blueprint — same codebase as
+# render.yaml (Company A), deployed as a completely separate,
+# independently-managed set of Render resources: its own backend,
+# its own frontend, and its own PostgreSQL database. Nothing here
+# is shared with Company A's deployment — different service names,
+# different database, different data. Two companies, one codebase,
+# zero shared state.
+#
+# WHY A SEPARATE FILE INSTEAD OF REUSING render.yaml:
+# Render ties a Blueprint's resources to the exact service names
+# inside its YAML file. Deploying render.yaml a second time from
+# the same repo would try to manage the SAME cms-backend/
+# cms-frontend/cms-db resources Company A already uses, which Render
+# explicitly warns against ("don't manage one resource with two
+# Blueprints"). This file uses different names (cms-b-*) so Render
+# treats it as a totally independent set of resources.
+#
+# HOW TO USE THIS FILE:
+# In the Render dashboard: New + -> Blueprint -> connect this same
+# GitHub repo again -> in the "Blueprint Path" field, type
+# "render.company-b.yaml" instead of leaving it on the default
+# render.yaml. Render will then create cms-b-backend, cms-b-frontend,
+# and cms-b-db as a brand new, separate deployment. Follow the exact
+# same steps as DEPLOYMENT_GUIDE.md from there — Step 3 (fill in
+# secrets), Step 4 (load schema.sql into THIS database), Step 5
+# (verify + bootstrap this company's own Admin, per
+# GOING_LIVE_GUIDE.md Step 4) — just pointed at these new services
+# instead of the original ones.
+#
+# BEFORE YOU PUSH THIS: replace every "COMPANY_B_NAME_HERE" and
+# "CB" placeholder below with the real second company's name and
+# initials. Everything else can be left as-is and changed later
+# through Settings > Company once you're logged in (same as Company
+# A's setup) — those two are the only values baked in at build time
+# that are worth getting right upfront.
+#
+# Nothing in this file is a secret. Real passwords and API keys are
+# entered by hand in the Render dashboard during setup — never commit
+# real secrets into this file or into git.
+# ============================================================
+
+databases:
+  - name: cms-b-db
+    databaseName: cms_b
+    user: cms_b
+    plan: starter
+    # Starter (not Free) so the database doesn't expire after 90
+    # days — this app holds real financial records.
+
+services:
+  # ----------------------------------------------------------
+  # BACKEND — Node/Express API
+  # ----------------------------------------------------------
+  - type: web
+    name: cms-b-backend
+    runtime: node
+    rootDir: cms
+    plan: starter
+    # Starter (not Free) — the Free plan spins the service down
+    # after 15 minutes of no traffic, which would silently stop
+    # the nightly/monthly scheduled jobs (interest accrual,
+    # overdue checks, monthly reports) from ever running.
+    buildCommand: npm install
+    # FRONTEND_URL is built here (not as a plain envVar) so it
+    # always has "https://" in front — the app's CORS check
+    # compares it against the browser's Origin header, which
+    # always includes the scheme.
+    startCommand: FRONTEND_URL="https://${FRONTEND_HOST}" npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_HOST
+        fromService:
+          name: cms-b-frontend
+          type: web
+          property: host
+      - key: DB_HOST
+        fromDatabase:
+          name: cms-b-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: cms-b-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: cms-b-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: cms-b-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: cms-b-db
+          property: password
+      - key: DB_SSL
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: TOTP_APP_NAME
+        value: "COMPANY_B_NAME_HERE CMS"
+      # --- Fill these in by hand in the Render dashboard after
+      # the first deploy (see DEPLOYMENT_GUIDE.md) — they're
+      # secrets/company details, not build config. Can be the same
+      # Gmail account Company A uses, or a separate one — your call. ---
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: MONTHLY_REPORT_CRON
+        value: "0 8 1 * *"
+      - key: COMPANY_NAME
+        value: "COMPANY_B_NAME_HERE"
+      - key: COMPANY_EMAIL
+        sync: false
+      - key: COMPANY_ADDRESS
+        sync: false
+
+  # ----------------------------------------------------------
+  # FRONTEND — React app, built once into static files
+  # ----------------------------------------------------------
+  - type: web
+    runtime: static
+    name: cms-b-frontend
+    rootDir: cms-frontend
+    # Same "build the URL in the shell" trick as the backend —
+    # Create React App bakes REACT_APP_* values into the built
+    # files at build time, so it has to be set here, not later.
+    buildCommand: REACT_APP_API_URL="https://${BACKEND_HOST}/api" npm install && npm run build
+    staticPublishPath: build
+    envVars:
+      - key: BACKEND_HOST
+        fromService:
+          name: cms-b-backend
+          type: web
+          property: host
+      - key: REACT_APP_COMPANY_NAME
+        value: "INVESTABO GLOBAL INVESTMENTS LIMITED"
+      - key: REACT_APP_COMPANY_INITIALS
+        value: "IGI"
+      # Keep this in sync with render.yaml's copy — same codebase,
+      # same version, both companies.
+      - key: REACT_APP_VERSION
+        value: "1.18.0"
+      # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
+      - key: REACT_APP_COMPANY_ADDRESS
+        sync: false
+    routes:
+      # Without this, refreshing the page on any inner route like
+      # /investments/5 returns a 404 — React Router handles that
+      # path in the browser, but the server needs to always hand
+      # back index.html and let React take over.
+      - type: rewrite
+        source: /*
+        destination: /index.html

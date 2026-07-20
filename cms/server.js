@@ -1,0 +1,185 @@
+// ============================================================
+// SERVER ENTRY POINT
+// Configures Express, registers all middleware and routes,
+// and starts listening for requests.
+// ============================================================
+
+require('dotenv').config();
+
+const express = require('express');
+const helmet  = require('helmet');
+const cors    = require('cors');
+const rateLimit = require('express-rate-limit');
+const path    = require('path');
+const fs      = require('fs');
+
+const logger             = require('./src/config/logger');
+const { checkConnection } = require('./src/config/database');
+const { verifyEmailConnection } = require('./src/config/email');
+const { globalErrorHandler, createError } = require('./src/utils/errors');
+
+// ============================================================
+// INITIALISE EXPRESS
+// ============================================================
+const app = express();
+
+// ============================================================
+// SECURITY MIDDLEWARE
+// These run on every request before routes are evaluated.
+// ============================================================
+
+// Helmet sets secure HTTP headers (prevents common web attacks)
+app.use(helmet());
+
+// CORS — defines which frontend origins can call this API
+app.use(cors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// Rate limits are much looser in development so page reloads and repeated
+// login attempts while testing don't lock you out. Production keeps the
+// strict limits — this only relaxes things when NODE_ENV=development.
+const isDev = process.env.NODE_ENV !== 'production';
+
+// Global rate limiter — prevents brute-force and DDoS
+// Production: 200 requests per IP per 15 minutes across all endpoints
+// Development: 5000 — effectively won't trip during normal testing
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isDev ? 5000 : 200,
+    message: { success: false, message: 'Too many requests. Please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use(globalLimiter);
+
+// Stricter rate limiter for authentication endpoints
+// Production: 10 attempts per IP per 15 minutes
+// Development: 200 — still catches a real runaway loop, but won't block
+// you after a handful of test logins
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isDev ? 200 : 10,
+    message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// ============================================================
+// BODY PARSING
+// ============================================================
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ============================================================
+// STATIC FILE SERVING
+// Uploaded documents are served from /uploads/*
+// In production, consider serving via nginx instead
+// ============================================================
+const uploadDir = process.env.UPLOAD_DIR || './uploads';
+fs.mkdirSync(uploadDir, { recursive: true });
+app.use('/uploads', express.static(path.resolve(uploadDir)));
+
+// ============================================================
+// HEALTH CHECK ENDPOINT
+// Used by monitoring tools and load balancers
+// ============================================================
+app.get('/health', (req, res) => {
+    res.json({
+        success: true,
+        status:  'OK',
+        service: process.env.COMPANY_NAME || 'CMS',
+        time:    new Date().toISOString(),
+    });
+});
+
+// ============================================================
+// API ROUTES
+// All routes are versioned under /api
+// ============================================================
+app.use('/api/auth',        authLimiter,                    require('./src/routes/auth'));
+app.use('/api/users',                                       require('./src/routes/users'));
+app.use('/api/categories',                                  require('./src/routes/categories'));
+
+// --- ROUTES TO BE ADDED IN SUBSEQUENT PARTS ---
+app.use('/api/accounts',     require('./src/routes/accounts'));
+app.use('/api/transactions', require('./src/routes/transactions'));
+app.use('/api/transfers',    require('./src/routes/transfers'));
+app.use('/api/grants',       require('./src/routes/grants'));
+app.use('/api/loans',        require('./src/routes/loans'));
+app.use('/api/investments',  require('./src/routes/investments'));
+app.use('/api/events',       require('./src/routes/events'));
+app.use('/api/documents',    require('./src/routes/documents'));
+app.use('/api/reports',      require('./src/routes/reports'));
+app.use('/api/system', require('./src/routes/system'));
+app.use('/api/dividends', require('./src/routes/dividends'));
+app.use('/api/savings', require('./src/routes/savings'));
+app.use('/api/side-fund', require('./src/routes/sideFund'));
+app.use('/api/requisitions', require('./src/routes/requisitions'));
+app.use('/api/settings', require('./src/routes/settings'));
+app.use('/api/notifications', require('./src/routes/notifications'));
+app.use('/api/shares', require('./src/routes/shares'));
+app.use('/api/exchange-rates', require('./src/routes/exchangeRates'));
+app.use('/api/certificates', require('./src/routes/certificates'));
+app.use('/api/search', require('./src/routes/search'));
+
+// app.use('/api/audit',        require('./src/routes/audit'));
+
+// ============================================================
+// 404 HANDLER
+// Catches any request that didn't match a route above
+// ============================================================
+app.use((req, res, next) => {
+    next(createError.notFound(`Route not found: ${req.method} ${req.path}`));
+});
+
+// ============================================================
+// GLOBAL ERROR HANDLER
+// Must be the LAST middleware registered
+// ============================================================
+app.use(globalErrorHandler);
+
+// ============================================================
+// START SERVER
+// ============================================================
+const PORT = parseInt(process.env.PORT) || 5000;
+
+const startServer = async () => {
+    // Verify database connection before accepting requests
+    const dbOk = await checkConnection();
+    if (!dbOk) {
+        logger.error('Cannot start server — database connection failed');
+        process.exit(1);
+    }
+
+    // Verify email connection (non-fatal — server still starts)
+    await verifyEmailConnection();
+
+    // Start scheduled jobs
+    const { startAllJobs } = require('./src/jobs/scheduler');
+    startAllJobs();
+
+    // Start listening
+    app.listen(PORT, () => {
+        logger.info(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+        logger.info(`📋 Health check: http://localhost:${PORT}/health`);
+    });
+};
+
+// Handle unhandled promise rejections (e.g. DB crashes mid-request)
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Promise Rejection:', { reason: reason?.message || reason });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+    logger.error('Uncaught Exception — shutting down:', { error: err.message, stack: err.stack });
+    process.exit(1);
+});
+
+startServer();
+
+module.exports = app;

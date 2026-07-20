@@ -1,0 +1,17 @@
+# This root .gitignore is a safety net — cms/ and cms-frontend/ each
+# have their own .gitignore too. Rules here catch anything at the
+# project root or anywhere the sub-folder rules don't reach.
+
+node_modules/
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+.vscode/
+.idea/
+.tmp.drivedownload/
+.tmp.driveupload/
+
+# Editable working copy of the company logo — the deployed asset
+# lives at cms-frontend/public/logo.png and is tracked normally.

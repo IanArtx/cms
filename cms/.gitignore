@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Real secrets — never commit these, only .env.example
+.env
+.env.local
+.env.*.local
+
+# Uploaded documents (user-generated, not source code)
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+npm-debug.log*
+*.log
+
+# OS/editor junk
+.DS_Store
+.vscode/
+.idea/
+
+# Temp sync/drive folders seen in this project directory
+.tmp.drivedownload/
+.tmp.driveupload/

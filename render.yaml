@@ -1,0 +1,141 @@
+# ============================================================
+# RENDER BLUEPRINT — Company Management System
+#
+# This one file tells Render how to build and run BOTH halves of
+# the app (the "cms" backend and the "cms-frontend" website) plus
+# the PostgreSQL database they share. Render calls this a
+# "Blueprint" — see DEPLOYMENT_GUIDE.md in this same folder for
+# the full, beginner-friendly walkthrough of how to use it.
+#
+# Nothing in this file is a secret. Real passwords and API keys
+# are entered by hand in the Render dashboard during setup (see
+# the guide) — never commit real secrets into this file or into git.
+# ============================================================
+
+databases:
+  - name: cms-db
+    databaseName: cms
+    user: cms
+    plan: starter
+    # Starter (not Free) so the database doesn't expire after 90
+    # days — this app holds real financial records.
+
+services:
+  # ----------------------------------------------------------
+  # BACKEND — Node/Express API
+  # ----------------------------------------------------------
+  - type: web
+    name: cms-backend
+    runtime: node
+    rootDir: cms
+    plan: starter
+    # Starter (not Free) — the Free plan spins the service down
+    # after 15 minutes of no traffic, which would silently stop
+    # the nightly/monthly scheduled jobs (interest accrual,
+    # overdue checks, monthly reports) from ever running.
+    buildCommand: npm install
+    # FRONTEND_URL is built here (not as a plain envVar) so it
+    # always has "https://" in front — the app's CORS check
+    # compares it against the browser's Origin header, which
+    # always includes the scheme.
+    startCommand: FRONTEND_URL="https://${FRONTEND_HOST}" npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_HOST
+        fromService:
+          name: cms-frontend
+          type: web
+          property: host
+      - key: DB_HOST
+        fromDatabase:
+          name: cms-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: cms-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: cms-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: cms-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: cms-db
+          property: password
+      - key: DB_SSL
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: TOTP_APP_NAME
+        value: "ZWECK TUKULA CMS"
+      # --- Fill these in by hand in the Render dashboard after
+      # the first deploy (see DEPLOYMENT_GUIDE.md) — they're
+      # secrets/company details, not build config. ---
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: MONTHLY_REPORT_CRON
+        value: "0 8 1 * *"
+      - key: COMPANY_NAME
+        value: "ZWECK TUKULA Ltd"
+      - key: COMPANY_EMAIL
+        sync: false
+      - key: COMPANY_ADDRESS
+        sync: false
+
+  # ----------------------------------------------------------
+  # FRONTEND — React app, built once into static files
+  # ----------------------------------------------------------
+  - type: web
+    runtime: static
+    name: cms-frontend
+    rootDir: cms-frontend
+    # Same "build the URL in the shell" trick as the backend —
+    # Create React App bakes REACT_APP_* values into the built
+    # files at build time, so it has to be set here, not later.
+    buildCommand: REACT_APP_API_URL="https://${BACKEND_HOST}/api" npm install && npm run build
+    staticPublishPath: build
+    envVars:
+      - key: BACKEND_HOST
+        fromService:
+          name: cms-backend
+          type: web
+          property: host
+      - key: REACT_APP_COMPANY_NAME
+        value: "ZWECK TUKULA Co. Limited"
+      - key: REACT_APP_COMPANY_INITIALS
+        value: "ZT"
+      # Bump this with every migration so the sidebar's version label
+      # stays accurate — it's a plain display string, nothing reads it.
+      - key: REACT_APP_VERSION
+        value: "1.18.0"
+      # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
+      - key: REACT_APP_COMPANY_ADDRESS
+        sync: false
+    routes:
+      # Without this, refreshing the page on any inner route like
+      # /investments/5 returns a 404 — React Router handles that
+      # path in the browser, but the server needs to always hand
+      # back index.html and let React take over.
+      - type: rewrite
+        source: /*
+        destination: /index.html

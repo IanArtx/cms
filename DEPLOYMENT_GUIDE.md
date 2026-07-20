@@ -12,9 +12,13 @@ scheduled nightly jobs — things like Vercel aren't built for that), and
 its free/low tiers are enough to get started without deep DevOps
 knowledge.
 
-**What it costs:** the Starter plan is used for the backend and the
-database (about $7/month each on Render as of mid-2026 — check
-[render.com/pricing](https://render.com/pricing) for the current rate).
+**What it costs:** the backend runs on Render's Starter web service plan
+(~$7/month) and the database runs on the Basic-256mb plan (~$6-7/month) —
+check [render.com/pricing](https://render.com/pricing) for the current
+rate, since Render occasionally renames/retires tiers (the database plan
+used to be called "Starter" too, but Render retired that name for new
+databases in mid-2026 in favor of Basic/Pro/Accelerated tiers — this
+project's `render.yaml` files already use the current name).
 The frontend (a static website) is free. Free-tier alternatives exist
 but they spin your server down after 15 minutes of inactivity, which
 would silently break the nightly scheduled jobs (interest accrual,

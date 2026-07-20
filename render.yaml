@@ -16,9 +16,14 @@ databases:
   - name: cms-db
     databaseName: cms
     user: cms
-    plan: starter
-    # Starter (not Free) so the database doesn't expire after 90
-    # days — this app holds real financial records.
+    plan: basic-256mb
+    # Render retired the legacy "starter" database plan for new
+    # databases (mid-2026) in favor of named Basic/Pro/Accelerated
+    # tiers. basic-256mb ($6-7/mo, 256MB RAM, 1GB storage) is the
+    # direct successor — a paid tier so the database doesn't expire
+    # after 90 days like the Free tier does, since this app holds
+    # real financial records. Web service "starter" plans below are
+    # unaffected — this naming change only applies to databases.
 
 services:
   # ----------------------------------------------------------

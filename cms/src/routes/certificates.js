@@ -7,11 +7,13 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, blockAuditor, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles } = require('../middleware/auth');
 const certificatesController = require('../controllers/certificatesController');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // ISSUE A CERTIFICATE (on-demand)
@@ -68,6 +70,28 @@ router.post('/issue-now',
     ],
     validateRequest,
     certificatesController.issueNow
+);
+
+// ============================================================
+// CERTIFICATE SIGNING ROUNDS (v1.23.0, Section 4.29)
+// GET /api/certificates/rounds must come before /rounds/:id for the
+// same reason /shareholders comes before /:id elsewhere in this app.
+// ============================================================
+router.get('/rounds',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
+    certificatesController.getRounds
+);
+
+router.get('/rounds/:id',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
+    certificatesController.getRoundById
+);
+
+// Signing itself is open to any role-assigned, consented member —
+// signSlot (signatureService) is what actually enforces that the
+// caller holds one of the round's required signatory roles.
+router.post('/rounds/:id/sign',
+    certificatesController.signRound
 );
 
 module.exports = router;

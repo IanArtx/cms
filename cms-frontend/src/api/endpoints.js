@@ -38,9 +38,14 @@ export const usersAPI = {
     assignRole:      (id, data) => api.post(`/users/${id}/roles`, data),
     revokeRole:      (id, roleId) => api.delete(`/users/${id}/roles/${roleId}`),
     getRoleRequests: (params)   => api.get('/users/role-requests', { params }),
+    getMyRoleRequest: ()        => api.get('/users/me/role-request'),
     getAllRoles:      ()         => api.get('/users/roles'),
     getShareholding: ()         => api.get('/users/shareholding'),
     getShareholders:  ()       => api.get('/users/shareholders'),
+    // v1.23.0 — digital consent + signature (Section 4.29)
+    updateSignature:         (dataUrl) => api.patch('/users/me/signature', { signature_data_url: dataUrl }),
+    getMembershipAgreement:  ()        => api.get('/users/me/membership-agreement'),
+    giveConsent:             ()        => api.post('/users/me/consent'),
 };
 
 // ============================================================
@@ -181,6 +186,11 @@ export const documentsAPI = {
     }),
     generate:       (data)   => api.post('/documents/generate', data),
     approve:        (id)     => api.post(`/documents/${id}/approve`),
+    // v1.23.0 — multi-signatory approval (Section 4.29)
+    sign:               (id) => api.post(`/documents/${id}/sign`),
+    getSignatures:      (id) => api.get(`/documents/${id}/signatures`),
+    // v1.24.0 — company stamps/seals (Section 4.30)
+    getStamps:          (id) => api.get(`/documents/${id}/stamps`),
     archive:        (id)     => api.post(`/documents/${id}/archive`),
     newVersion:     (id, data) => api.post(`/documents/${id}/new-version`, data, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -250,6 +260,25 @@ export const settingsAPI = {
     uploadLogo:    (formData) => api.post('/settings/company/logo', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),
+    // v1.23.0 — digital consent + multi-signatory approval (Section 4.29)
+    updateMembershipAgreement:  (content)   => api.patch('/settings/membership-agreement', { content }),
+    getSignatureRequirements:   ()          => api.get('/settings/signature-requirements'),
+    setSignatureRequirements:   (documentType, roleIds) =>
+        api.put(`/settings/signature-requirements/${documentType}`, { role_ids: roleIds }),
+    // v1.24.0 — company stamps/seals (Section 4.30)
+    getStamps:            ()          => api.get('/settings/stamps'),
+    uploadStamp:           (formData) => api.post('/settings/stamps', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    deactivateStamp:       (id)       => api.patch(`/settings/stamps/${id}/deactivate`),
+    getStampRequirements:  ()          => api.get('/settings/stamp-requirements'),
+    setStampRequirements:  (documentType, stampIds) =>
+        api.put(`/settings/stamp-requirements/${documentType}`, { stamp_ids: stampIds }),
+    // v1.25.0 — custom fiscal quarters (Section 4.10)
+    getFiscalQuarters:   ()       => api.get('/settings/fiscal-quarters'),
+    createFiscalQuarter: (data)   => api.post('/settings/fiscal-quarters', data),
+    updateFiscalQuarter: (id, data) => api.put(`/settings/fiscal-quarters/${id}`, data),
+    deleteFiscalQuarter: (id)     => api.delete(`/settings/fiscal-quarters/${id}`),
 };
 
 // ============================================================
@@ -274,7 +303,7 @@ export const dividendsAPI = {
     getById:                 (id)       => api.get(`/dividends/${id}`),
     declare:                 (data)     => api.post('/dividends', data),
     update:                  (id, data) => api.patch(`/dividends/${id}`, data),
-    approve:                 (id)       => api.post(`/dividends/${id}/approve`),
+    approve:                 (id, data) => api.post(`/dividends/${id}/approve`, data),
     getAllAuthorityPayments:  (params)   => api.get('/dividends/authority-payments', { params }),
     recordAuthorityPayment:  (data)     => api.post('/dividends/authority-payments', data),
 };
@@ -333,7 +362,16 @@ export const sideFundAPI = {
     payDue:         (id, data) => api.patch(`/side-fund/dues/${id}/pay`, data),
     getExpenses:    (params)   => api.get('/side-fund/expenses', { params }),
     recordExpense:  (data)     => api.post('/side-fund/expenses', data),
-    recordDirectInflow: (data) => api.post('/side-fund/inflows', data),
+    // v1.25.0 — per-member overrides + overpayment credit
+    getOverrides:   ()         => api.get('/side-fund/overrides'),
+    setOverride:    (userId, data) => api.put(`/side-fund/overrides/${userId}`, data),
+    clearOverride:  (userId)   => api.delete(`/side-fund/overrides/${userId}`),
+    getMyCredit:    ()         => api.get('/side-fund/credit/me'),
+    getAllCredit:   ()         => api.get('/side-fund/credit'),
+    // v1.26.0 — bulk pay-all-dues, per-member overdue summary
+    bulkPayDues:      (data) => api.patch('/side-fund/dues/bulk-pay', data),
+    getMyOverdue:     ()     => api.get('/side-fund/overdue/me'),
+    getAllOverdue:    ()     => api.get('/side-fund/overdue'),
 };
 
 // ============================================================
@@ -346,6 +384,44 @@ export const requisitionsAPI = {
     update:    (id, data) => api.patch(`/requisitions/${id}`, data),
     approve:   (id, data) => api.post(`/requisitions/${id}/approve`, data),
     reject:    (id, data) => api.post(`/requisitions/${id}/reject`, data),
+};
+
+// ============================================================
+// SERVICE FEES (v1.21.0) — contracted-staff monthly fee
+// arrangements and expense reimbursements.
+// ============================================================
+export const serviceFeesAPI = {
+    // Admin — agreements
+    listAgreements:   (params) => api.get('/service-fees/agreements', { params }),
+    getAgreement:     (id)     => api.get(`/service-fees/agreements/${id}`),
+    createAgreement:  (data)   => api.post('/service-fees/agreements', data),
+    updateAgreement:  (id, data) => api.patch(`/service-fees/agreements/${id}`, data),
+    recordPayment:    (id, data) => api.post(`/service-fees/agreements/${id}/pay`, data),
+
+    // Self-service
+    getMyAgreement:   ()       => api.get('/service-fees/my-agreement'),
+    getMyReimbursements: ()    => api.get('/service-fees/my-reimbursements'),
+    requestReimbursement: (data) => api.post('/service-fees/reimbursements', data, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+
+    // Treasurer — reimbursement review
+    listReimbursements:  (params) => api.get('/service-fees/reimbursements', { params }),
+    approveReimbursement: (id, data) => api.post(`/service-fees/reimbursements/${id}/approve`, data),
+    rejectReimbursement:  (id, data) => api.post(`/service-fees/reimbursements/${id}/reject`, data),
+    downloadReceipt:      (id) => api.get(`/service-fees/reimbursements/${id}/receipt`, { responseType: 'blob' }),
+};
+
+// ============================================================
+// STAFF ACCESS (v1.21.0) — per-document grants for finance-
+// restricted staff roles (e.g. Administrative Officer).
+// ============================================================
+export const staffAccessAPI = {
+    listGrants:   (params) => api.get('/staff-access/grants', { params }),
+    grantDocument: (data)  => api.post('/staff-access/grants', data),
+    revokeGrant:  (id)     => api.delete(`/staff-access/grants/${id}`),
+    getMyDocuments: ()     => api.get('/staff-access/my-documents'),
+    previewMyDocument: (documentId) => api.get(`/staff-access/my-documents/${documentId}`, { responseType: 'blob' }),
 };
 
 export const notificationsAPI = {
@@ -382,6 +458,10 @@ export const certificatesAPI = {
     getMine:    (params) => api.get('/certificates/me', { params }),
     getAll:     (params) => api.get('/certificates', { params }),
     issueNow:   (data)   => api.post('/certificates/issue-now', data),
+    // v1.23.0 — monthly/annual signing rounds (Section 4.29)
+    getRounds:      ()   => api.get('/certificates/rounds'),
+    getRoundById:   (id) => api.get(`/certificates/rounds/${id}`),
+    signRound:      (id) => api.post(`/certificates/rounds/${id}/sign`),
 };
 
 // ============================================================

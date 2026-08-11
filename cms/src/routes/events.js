@@ -13,11 +13,17 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireAnyPermission } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockAuditor, requirePermissions, requireAnyPermission } = require('../middleware/auth');
 const eventsController = require('../controllers/eventsController');
 
 // All routes require login
 router.use(authenticate);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+// Events aren't finance data — an Administrative Officer legitimately
+// manages meetings/minutes here (Section 4.29), so only the Auditor
+// (fully external, scoped to /api/audit only) is blocked from this
+// file. Everyone else's access is governed by EVENT_* permissions below.
 router.use(blockAuditor);
 
 // ============================================================

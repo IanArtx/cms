@@ -11,8 +11,32 @@ import TopBar from './TopBar';
 
 const AppLayout = () => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const { hasRole } = useAuth();
+    const { user, hasRole } = useAuth();
     const location = useLocation();
+
+    // A verified account with ZERO assigned roles has not been approved
+    // by an Admin yet — enforced centrally here, the same way the
+    // Auditor redirect below is, rather than trusting every individual
+    // page to notice. Without this, such an account would land straight
+    // on the Dashboard, which (like several other "any authenticated
+    // user" endpoints across this system) shows real company data.
+    // See requireAssignedRole in middleware/auth.js for the backend half
+    // of this fix, and PendingApprovalPage.jsx for where this sends them.
+    if ((user?.roles || []).length === 0) {
+        return <Navigate to="/pending-approval" replace />;
+    }
+
+    // A role-assigned account that hasn't yet consented to the
+    // Membership Agreement (and drawn a signature, same one-time
+    // step) is next in the same chain — enforced centrally here, the
+    // same reasoning as the pending-approval redirect above: consent
+    // is one-time gating logic that shouldn't depend on every
+    // individual page remembering to check for it. See requireConsent
+    // in middleware/auth.js for the backend half, and ConsentPage.jsx
+    // for where this sends them (Section 4.29).
+    if (!user?.has_consented) {
+        return <Navigate to="/consent" replace />;
+    }
 
     // The Auditor role is the one place in this app an external,
     // non-member party gets a login — every other page assumes an

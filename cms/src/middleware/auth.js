@@ -43,6 +43,7 @@ const authenticate = async (req, res, next) => {
             SELECT
                 u.id, u.uuid, u.email, u.first_name, u.last_name,
                 u.is_active, u.two_factor_enabled, u.is_email_verified,
+                u.signature_path,
                 -- Aggregate all active roles into an array
                 COALESCE(
                     array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL),
@@ -52,12 +53,18 @@ const authenticate = async (req, res, next) => {
                 COALESCE(
                     json_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL),
                     '[]'
-                ) AS permissions
+                ) AS permissions,
+                -- v1.23.0 — one-time Membership Agreement consent
+                -- (member_consents.user_id is UNIQUE, so this is a
+                -- plain 1:1 join; bool_or is only needed because the
+                -- roles/permissions joins above force a GROUP BY)
+                bool_or(mc.id IS NOT NULL) AS has_consented
             FROM users u
             LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
             LEFT JOIN roles r       ON r.id = ur.role_id AND r.is_active = TRUE
             LEFT JOIN role_permissions rp ON rp.role_id = r.id
             LEFT JOIN permissions p ON p.id = rp.permission_id
+            LEFT JOIN member_consents mc ON mc.user_id = u.id
             WHERE u.id = $1
             GROUP BY u.id
         `, [decoded.userId]);
@@ -111,6 +118,83 @@ const require2FA = (req, res, next) => {
 };
 
 // ============================================================
+// REQUIRE ASSIGNED ROLE
+// Blocks any request from an authenticated user holding ZERO
+// active roles — i.e. someone who has registered and verified
+// their email but has not yet been assigned a role by an Admin.
+//
+// This exists because "any authenticated user" was, throughout
+// this codebase, historically used to mean "any actual member" —
+// dozens of read-only endpoints (account balances, reports,
+// savings/side-fund summaries, category lists, and more) check
+// only `authenticate` with no further permission/role gate,
+// on the assumption that reaching them at all implied holding
+// at least one real role. `blockFinanceRestricted` narrowed that
+// gap for two *specific* known roles (Auditor, Administrative
+// Officer) but is a deny-list, not an allow-list — it does
+// nothing to stop a brand-new, role-less account from sailing
+// straight through and seeing the exact same data. This
+// middleware is the allow-list half of that fix: apply it
+// wherever blockFinanceRestricted (or an equivalent per-route
+// permission check) already assumes "some role exists".
+//
+// Deliberately NOT applied to: the handful of self-service /me
+// endpoints in users.js (a pending user must still be able to
+// see/edit their own profile and check their role-request
+// status), notifications.js (scoped to the caller, nothing to
+// leak), and settings.js's company-branding GET (needed to
+// render the pending-approval page itself, same as the login
+// page needs it pre-authentication).
+//
+// Usage:
+//   router.use(authenticate);
+//   router.use(requireAssignedRole);
+// ============================================================
+const requireAssignedRole = (req, res, next) => {
+    const userRoles = req.user?.roles || [];
+    if (userRoles.length === 0) {
+        return next(createError.forbidden(
+            'Your account has been verified but no role has been assigned yet. An Administrator needs to approve your account before you can access this.'
+        ));
+    }
+    next();
+};
+
+// ============================================================
+// REQUIRE CONSENT (v1.23.0, Section 4.29)
+// Blocks any request from a role-assigned user who has not yet
+// consented to the Membership Agreement (and, as part of the same
+// one-time step, drawn their personal signature). This is the gate
+// that runs immediately AFTER requireAssignedRole — a brand-new
+// member's journey is: verify email -> get a role assigned by an
+// Admin -> consent + sign -> full access. Same allow-list reasoning
+// as requireAssignedRole: apply it to the same route files, right
+// below it.
+//
+// Deliberately NOT applied to: the self-service /me endpoints in
+// users.js (the consent screen itself needs GET /users/me,
+// GET /users/me/membership-agreement, PATCH /users/me/signature,
+// and POST /users/me/consent to actually work), notifications.js,
+// and settings.js's company-branding GET — same carve-outs as
+// requireAssignedRole, for the same reason (the consent page needs
+// to render before consent exists, same as the pending-approval
+// page needs to render before a role exists).
+//
+// Usage:
+//   router.use(authenticate);
+//   router.use(requireAssignedRole);
+//   router.use(requireConsent);
+// ============================================================
+const requireConsent = (req, res, next) => {
+    if (!req.user?.has_consented) {
+        return next(createError.forbidden(
+            'You need to review and consent to the Membership Agreement, and set up your signature, before you can access this.'
+        ));
+    }
+    next();
+};
+
+// ============================================================
 // REQUIRE ROLES
 // Checks that the authenticated user holds at least one of
 // the specified roles.
@@ -136,42 +220,81 @@ const requireRoles = (allowedRoles) => (req, res, next) => {
 };
 
 // ============================================================
-// BLOCK AUDITOR
-// The Auditor role is the system's only external, non-member
-// account type — by design it starts with zero permissions, and
-// every legitimate thing an auditor can do lives under /api/audit,
-// scoped to whichever engagement(s) an Admin explicitly attached
-// them to (see auditController.js's assertEngagementAccess).
-//
-// Most other route files were written before this role existed and
-// only gate individual actions behind requirePermissions/requireRoles
-// — but several read-only, dashboard-style endpoints (account
-// balances, upcoming events, and others like them) were deliberately
-// left open to "any authenticated user" so ordinary members without
-// a specific permission could still see them. An Auditor is also
-// "any authenticated user", so without this check they could see
-// full company balances and internal event details outside their
-// audited scope — exactly the kind of leak the audit portal's
-// engagement-scoping was built to prevent everywhere else.
-//
-// Apply this immediately after router.use(authenticate) in every
-// route file EXCEPT audit.js itself and the couple of self-service
-// routes an auditor legitimately needs (their own profile, their
-// own notifications, public branding).
-//
-// Usage:
-//   router.use(authenticate);
-//   router.use(blockAuditor);
+// BLOCK ROLES (factory)
+// Generic building block behind blockAuditor and
+// blockFinanceRestricted below: rejects any request from a user
+// holding ANY of the given role names, with a caller-supplied
+// message. Kept generic (rather than one bespoke function per role)
+// specifically so the NEXT restricted-access role added to this
+// system — and there will be a next one — doesn't require inventing
+// a new near-duplicate function, just a new call to this factory.
 // ============================================================
-const blockAuditor = (req, res, next) => {
+const blockRoles = (roleNames, message) => (req, res, next) => {
     const userRoles = req.user?.roles || [];
-    if (userRoles.includes('Auditor')) {
-        return next(createError.forbidden(
-            'The Auditor role only has access to the External Audit portal.'
-        ));
+    if (roleNames.some(role => userRoles.includes(role))) {
+        return next(createError.forbidden(message));
     }
     next();
 };
+
+// ============================================================
+// BLOCK FINANCE-RESTRICTED ROLES
+// The system has two (and, by design, potentially more in future)
+// role types that are deliberately NOT full internal members:
+//   - Auditor: the system's only external, non-member account
+//     type. Zero permissions by design; everything it can legitimately
+//     do lives under /api/audit, scoped to whichever engagement(s) an
+//     Admin explicitly attached it to (auditController.js's
+//     assertEngagementAccess).
+//   - Administrative Officer: a hired, contracted staff role (ground
+//     work, meeting minutes, correspondence with authorities) that is
+//     explicitly NOT a shareholder and must never see company finances
+//     — except individual documents an Admin explicitly grants via
+//     staff_document_grants (see staffAccessController.js). Unlike the
+//     Auditor, this role keeps a normal multi-page sidebar (Events,
+//     Documents, its own Service Fees records) rather than being
+//     redirected to one single portal page.
+//
+// Many route files were written before either of these roles existed
+// and only gate individual actions behind requirePermissions/
+// requireRoles — but several read-only, dashboard-style endpoints
+// (account balances, upcoming events, and others like them) were
+// deliberately left open to "any authenticated user" so ordinary
+// members without a specific permission could still see them. Both
+// restricted roles are also "any authenticated user", so without this
+// check either could see full company balances and internal financial
+// detail outside what they're actually supposed to have — exactly the
+// class of leak the Auditor-visibility fix (v1.20.1) addressed, now
+// generalised so the same mistake isn't repeated for every future
+// restricted role one at a time.
+//
+// Apply this immediately after router.use(authenticate) in every
+// finance-adjacent route file EXCEPT audit.js and staffAccess.js/
+// serviceFees.js themselves, and the couple of self-service routes
+// every authenticated user legitimately needs (their own profile,
+// their own notifications, public company branding).
+//
+// Usage:
+//   router.use(authenticate);
+//   router.use(blockFinanceRestricted);
+// ============================================================
+const blockFinanceRestricted = blockRoles(
+    ['Auditor', 'Administrative Officer'],
+    'Your role does not have access to company financial data.'
+);
+
+// Kept as a distinct, differently-worded alias for the one place
+// (audit.js's own routes are naturally exempt already, so this only
+// matters for readability at call sites and in error messages) where
+// code specifically means "block the Auditor" rather than "block any
+// finance-restricted role" — currently unused directly since
+// blockFinanceRestricted covers every route blockAuditor used to,
+// but kept so a future finance-restricted-only route can still be
+// precise about which role it means.
+const blockAuditor = blockRoles(
+    ['Auditor'],
+    'The Auditor role only has access to the External Audit portal.'
+);
 
 // ============================================================
 // REQUIRE PERMISSIONS
@@ -245,8 +368,12 @@ module.exports = {
     authenticate,
     requireEmailVerified,
     require2FA,
+    requireAssignedRole,
+    requireConsent,
     requireRoles,
+    blockRoles,
     blockAuditor,
+    blockFinanceRestricted,
     requirePermissions,
     requireAnyPermission,
     isSelfOrHasPermission,

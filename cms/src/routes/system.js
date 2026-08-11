@@ -7,14 +7,16 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
 const { query } = require('../config/database');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const { asyncHandler, createError } = require('../utils/errors');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 router.use(requirePermissions(['SYSTEM_CONFIG']));
 
 // Create a new role

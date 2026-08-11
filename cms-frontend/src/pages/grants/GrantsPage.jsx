@@ -289,6 +289,7 @@ const TrancheModal = ({ isOpen, grant, onClose, onSuccess }) => {
                         <div>
                             <label className="label">Date Received *</label>
                             <input type="date" className="input" value={form.received_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({ ...p, received_date: e.target.value }))}
                                 required />
                         </div>

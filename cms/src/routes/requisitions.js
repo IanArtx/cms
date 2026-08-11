@@ -5,12 +5,14 @@
 
 const router = require('express').Router();
 const { body } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireRoles } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
 const requisitionsController = require('../controllers/requisitionsController');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // Get my own requisitions — any authenticated member
 router.get('/me',
@@ -26,9 +28,12 @@ router.get('/',
 // Create a requisition — any authenticated member
 // requisition_type: 'EXPENSE' (default, a money request),
 // 'CONTRIBUTION_ACKNOWLEDGEMENT' (asking the Treasurer to record
-// capital the member says they've already contributed), or
+// capital the member says they've already contributed),
 // 'SAVINGS_DEPOSIT' (asking to add money to their own savings —
-// see savingsController.js).
+// see savingsController.js), or 'SIDE_FUND_CONTRIBUTION' (v1.26.0 —
+// asking to record a side fund payment already made; just an amount
+// + date, the oldest-unpaid-first cascade sorts out which period(s)
+// it covers).
 router.post('/',
     [
         body('category_id')
@@ -49,10 +54,10 @@ router.post('/',
             .withMessage('Invalid priority'),
         body('requisition_type')
             .optional()
-            .isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT'])
+            .isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION'])
             .withMessage('Invalid requisition type'),
         body('contribution_date')
-            .optional().isISO8601().withMessage('Invalid contribution date'),
+            .optional().isISO8601().withMessage('Invalid contribution date').custom(notFutureDate),
     ],
     validateRequest,
     requisitionsController.createRequisition
@@ -69,8 +74,8 @@ router.patch('/:id',
         body('purpose').optional().trim().notEmpty(),
         body('required_by_date').optional().isISO8601(),
         body('priority').optional().isIn(['LOW', 'NORMAL', 'HIGH', 'URGENT']),
-        body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT']),
-        body('contribution_date').optional().isISO8601(),
+        body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION']),
+        body('contribution_date').optional().isISO8601().custom(notFutureDate),
     ],
     validateRequest,
     requisitionsController.editRequisition

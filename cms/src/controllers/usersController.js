@@ -23,6 +23,8 @@ const getMyProfile = asyncHandler(async (req, res) => {
             u.emergency_contact_name,
             u.emergency_contact_phone, u.two_factor_enabled,
             u.is_email_verified, u.last_login_at, u.created_at,
+            u.signature_path, u.signature_updated_at,
+            bool_or(mc.id IS NOT NULL) AS has_consented,
             COALESCE(
                 json_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
                 FILTER (WHERE r.id IS NOT NULL), '[]'
@@ -43,6 +45,7 @@ const getMyProfile = asyncHandler(async (req, res) => {
         LEFT JOIN roles r          ON r.id        = ur.role_id AND r.is_active = TRUE
         LEFT JOIN role_permissions rp ON rp.role_id = r.id
         LEFT JOIN permissions p    ON p.id        = rp.permission_id
+        LEFT JOIN member_consents mc ON mc.user_id = u.id
         WHERE u.id = $1
         GROUP BY u.id
     `, [req.user.id]);
@@ -180,6 +183,64 @@ const updateProfilePhoto = asyncHandler(async (req, res) => {
     );
 
     sendSuccess(res, { photo_path: photoPath }, 'Profile photo updated');
+});
+
+// ============================================================
+// UPDATE MY SIGNATURE (v1.23.0, Section 4.29)
+// PATCH /api/users/me/signature
+// Body: { signature_data_url } — a "data:image/png;base64,...."
+// string from the SignaturePad component (drawn, not uploaded — see
+// Section 4.29 for why draw-only was chosen). Saved to disk the same
+// way photo_path is (UPLOAD_DIR/signatures/...), not stored inline
+// in the database, so it can be served as a normal static file and
+// stays consistent with every other image this system stores.
+// Re-drawing later (e.g. after a mistake) simply overwrites
+// signature_path with a new file — it does not retroactively change
+// documents already signed, since those keep their own
+// signature_snapshot_path copy taken at signing time.
+// ============================================================
+const updateSignature = asyncHandler(async (req, res) => {
+    const { signature_data_url } = req.body;
+
+    if (!signature_data_url || !/^data:image\/png;base64,/.test(signature_data_url)) {
+        throw createError.badRequest('signature_data_url must be a base64 PNG data URL');
+    }
+
+    const base64Data = signature_data_url.replace(/^data:image\/png;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    if (buffer.length > 2 * 1024 * 1024) {
+        throw createError.badRequest('Signature image is too large (max 2MB)');
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const dir = path.join(process.env.UPLOAD_DIR || './uploads', 'signatures');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const filename = `${req.user.id}-${Date.now()}.png`;
+    fs.writeFileSync(path.join(dir, filename), buffer);
+
+    // Stored as a "/uploads/..." URL path (same convention as
+    // settingsController's logo_url), not a raw disk path — so it can
+    // be served directly and resolved to an absolute URL the same way
+    // certificateService.resolveAbsoluteAssetUrl already does for the
+    // company logo.
+    const signaturePath = `/uploads/signatures/${filename}`;
+
+    await query(
+        'UPDATE users SET signature_path = $1, signature_updated_at = NOW() WHERE id = $2',
+        [signaturePath, req.user.id]
+    );
+
+    await logAction(req.user.id, ACTIONS.SIGNATURE_UPDATED, MODULES.USERS, {
+        ipAddress:   req.ip,
+        recordType:  'users',
+        recordId:    req.user.id,
+        description: 'User set/updated their personal signature',
+    }).catch(() => {});
+
+    sendSuccess(res, { signature_path: signaturePath }, 'Signature saved');
 });
 
 // ============================================================
@@ -465,6 +526,78 @@ const getAllRoles = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// GET MY ROLE REQUEST (any authenticated user, including zero-role
+// accounts — this is the one thing a pending account most needs to
+// see: what they requested at registration and whether an Admin has
+// reviewed it yet. Feeds the pending-approval page, Section 4.29.)
+// GET /api/users/me/role-request
+// ============================================================
+const getMyRoleRequest = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT rr.id, rr.reason, rr.status, rr.created_at,
+               rr.review_notes, rr.reviewed_at,
+               r.name AS role_name
+        FROM   role_requests rr
+        JOIN   roles r ON r.id = rr.role_id
+        WHERE  rr.user_id = $1
+        ORDER BY rr.created_at DESC
+        LIMIT 1
+    `, [req.user.id]);
+
+    sendSuccess(res, result.rows[0] || null);
+});
+
+// ============================================================
+// GET MEMBERSHIP AGREEMENT + MY CONSENT STATUS (v1.23.0, Section
+// 4.29). Any authenticated user, including zero-role/not-yet-
+// consented accounts — this is what the Consent page itself reads.
+// GET /api/users/me/membership-agreement
+// ============================================================
+const getMembershipAgreement = asyncHandler(async (req, res) => {
+    const agreementResult = await query('SELECT content, version, updated_at FROM membership_agreement WHERE id = 1');
+    const consentResult = await query(
+        'SELECT agreement_version, consented_at FROM member_consents WHERE user_id = $1',
+        [req.user.id]
+    );
+
+    sendSuccess(res, {
+        agreement: agreementResult.rows[0] || null,
+        my_consent: consentResult.rows[0] || null,
+    });
+});
+
+// ============================================================
+// GIVE MEMBERSHIP CONSENT (v1.23.0, Section 4.29)
+// POST /api/users/me/consent
+// One-time — requires a signature already saved (draw it first via
+// PATCH /users/me/signature, same screen, before this call). Upserts
+// so a duplicate submit (e.g. a double-click) doesn't error.
+// ============================================================
+const giveConsent = asyncHandler(async (req, res) => {
+    if (!req.user.signature_path) {
+        throw createError.badRequest('Please draw your signature before consenting');
+    }
+
+    const agreementResult = await query('SELECT version FROM membership_agreement WHERE id = 1');
+    const version = agreementResult.rows[0]?.version || 1;
+
+    await query(`
+        INSERT INTO member_consents (user_id, agreement_version, ip_address, user_agent)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (user_id) DO NOTHING
+    `, [req.user.id, version, req.ip, req.headers['user-agent'] || null]);
+
+    await logAction(req.user.id, ACTIONS.MEMBERSHIP_CONSENT_GIVEN, MODULES.USERS, {
+        ipAddress:   req.ip,
+        recordType:  'member_consents',
+        recordId:    req.user.id,
+        description: `Member consented to Membership Agreement v${version}`,
+    }).catch(() => {});
+
+    sendSuccess(res, { consented: true }, 'Consent recorded');
+});
+
+// ============================================================
 // GET ALL SHAREHOLDING (visible to all members — aggregate view)
 // GET /api/users/shareholding
 // ============================================================
@@ -484,6 +617,7 @@ const getShareholding = asyncHandler(async (req, res) => {
 module.exports = {
     getMyProfile, updateMyProfile, updateProfilePhoto,
     getAllUsers, getUserById, deactivateUser,
-    assignRole, revokeRole, getRoleRequests,
+    assignRole, revokeRole, getRoleRequests, getMyRoleRequest,
     getAllRoles, getShareholding,
+    updateSignature, getMembershipAgreement, giveConsent,
 };

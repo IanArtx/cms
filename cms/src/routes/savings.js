@@ -5,12 +5,14 @@
 
 const router = require('express').Router();
 const { body } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireAnyPermission, requireRoles } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireRoles } = require('../middleware/auth');
 const savingsController = require('../controllers/savingsController');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ------------------------------------------------------------
 // STATIC ROUTES — must be declared before any /:id route below,
@@ -60,7 +62,7 @@ router.post('/handouts',
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('principal_amount').isFloat({ min: 0.01 }).withMessage('Principal must be greater than zero'),
         body('interest_amount').optional().isFloat({ min: 0 }),
-        body('handout_date').isISO8601().withMessage('A valid handout date is required'),
+        body('handout_date').isISO8601().withMessage('A valid handout date is required').custom(notFutureDate),
         body('notes').optional().trim(),
     ],
     validateRequest,
@@ -88,7 +90,7 @@ router.post('/fixed-term',
         body('principal_amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('interest_rate').optional().isFloat({ min: 0 }),
         body('interest_period').optional().isIn(['DAILY', 'WEEKLY', 'MONTHLY', 'ANNUALLY']),
-        body('deposit_date').isISO8601().withMessage('A valid deposit date is required'),
+        body('deposit_date').isISO8601().withMessage('A valid deposit date is required').custom(notFutureDate),
         body('maturity_date').isISO8601().withMessage('A valid maturity date is required'),
         body('notes').optional().trim(),
     ],
@@ -109,7 +111,7 @@ router.post('/',
         body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
-        body('deposit_date').isISO8601().withMessage('A valid deposit date is required'),
+        body('deposit_date').isISO8601().withMessage('A valid deposit date is required').custom(notFutureDate),
         body('notes').optional().trim(),
     ],
     validateRequest,
@@ -132,7 +134,7 @@ router.post('/pool-inflows',
     [
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
-        body('value_date').isISO8601().withMessage('A valid date is required'),
+        body('value_date').isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('description').trim().notEmpty().withMessage('A description is required'),
     ],
     validateRequest,

@@ -95,6 +95,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
                             <label className="label">Date *</label>
                             <input type="date" className="input"
                                 value={form.value_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, value_date: e.target.value }))}
                                 required />
@@ -220,6 +221,7 @@ const RecordReturnModal = ({ isOpen, onClose, onSuccess, investment }) => {
                             <label className="label">Date *</label>
                             <input type="date" className="input"
                                 value={form.return_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, return_date: e.target.value }))}
                                 required />
@@ -342,6 +344,7 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
                             <label className="label">Date *</label>
                             <input type="date" className="input"
                                 value={form.entry_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, entry_date: e.target.value }))}
                                 required />

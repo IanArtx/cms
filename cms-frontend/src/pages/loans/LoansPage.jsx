@@ -182,6 +182,7 @@ const CreateLoanReceivedModal = ({ isOpen, onClose, onSuccess, accounts, categor
                             <div>
                                 <label className="label">Disbursement Date</label>
                                 <input type="date" className="input" value={form.disbursement_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, disbursement_date: e.target.value }))} />
                             </div>
                             <div>
@@ -379,6 +380,7 @@ const CreateLoanGivenModal = ({ isOpen, onClose, onSuccess, accounts, categories
                             <div>
                                 <label className="label">Disbursement Date</label>
                                 <input type="date" className="input" value={form.disbursement_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, disbursement_date: e.target.value }))} />
                             </div>
                             <div>
@@ -500,6 +502,7 @@ export const RepaymentModal = ({ isOpen, loan, loanType, onClose, onSuccess }) =
                         <div>
                             <label className="label">Payment Date *</label>
                             <input type="date" className="input" value={form.payment_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))} required />
                         </div>
                         <div>

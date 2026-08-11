@@ -20,6 +20,9 @@ const ALLOWED_TYPES = {
     'image/gif':                                            'gif',
     'application/vnd.ms-excel':                             'xls',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    // v1.24.0 — company stamps/seals are uploaded as transparent PNG
+    // or SVG so they overlay cleanly onto a document.
+    'image/svg+xml':                                        'svg',
 };
 
 // Maximum file size from environment (default 20MB)
@@ -61,7 +64,7 @@ const fileFilter = (req, file, cb) => {
         cb(null, true);
     } else {
         cb(createError.badRequest(
-            `File type not allowed. Accepted types: PDF, Word, Excel, JPEG, PNG`
+            `File type not allowed. Accepted types: PDF, Word, Excel, JPEG, PNG, SVG`
         ), false);
     }
 };

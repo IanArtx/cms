@@ -13,13 +13,15 @@
 
 const router = require('express').Router();
 const { body, param } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const transfersController = require('../controllers/transfersController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET ALL TRANSFERS
@@ -63,7 +65,8 @@ router.post('/',
         body('category_id')
             .isInt({ min: 1 }).withMessage('A valid category is required'),
         body('value_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required')
+            .custom(notFutureDate),
         body('description')
             .optional().trim(),
     ],
@@ -82,7 +85,7 @@ router.patch('/:id',
         body('amount_sent').optional().isFloat({ min: 0.01 }),
         body('exchange_rate').optional().isFloat({ min: 0.00000001 }),
         body('category_id').optional().isInt({ min: 1 }),
-        body('value_date').optional().isISO8601(),
+        body('value_date').optional().isISO8601().custom(notFutureDate),
         body('description').optional().trim(),
     ],
     validateRequest,

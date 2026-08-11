@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { documentsAPI, categoriesAPI } from '../../api/endpoints';
+import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI } from '../../api/endpoints';
 import { formatDate, formatFileSize, getErrorMessage, truncate } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
@@ -25,6 +25,9 @@ import {
     ShieldCheckIcon,
     EyeIcon,
     ArrowDownTrayIcon,
+    UserPlusIcon,
+    XMarkIcon,
+    PencilSquareIcon,
 } from '@heroicons/react/24/outline';
 
 // Renderers for SYSTEM_GENERATED documents — same client-side template
@@ -73,16 +76,35 @@ const openDocument = async (doc, { forceDownload }) => {
     const blob = res.data;
 
     if (blob.type === 'application/json') {
-        // SYSTEM_GENERATED — re-render client-side from saved field values
+        // SYSTEM_GENERATED — re-render client-side from saved field values.
+        // The backend wraps this in the standard { success, message, data }
+        // envelope (sendSuccess), so the actual fields are under `.data` —
+        // reading them off the top-level object was the bug that made every
+        // generated document's preview/download report "can't be
+        // reconstructed" regardless of its type.
         const text = await blob.text();
-        const payload = JSON.parse(text);
+        const envelope = JSON.parse(text);
+        const payload = envelope.data || envelope;
         const renderer = GENERATED_RENDERERS[payload.document_type];
         if (!renderer) {
             throw new Error(
                 'This document type can\'t be reconstructed for preview/download.'
             );
         }
-        const html = renderer(payload.template_data);
+        // v1.24.0 — once fully approved/signed, fetch whichever
+        // company stamp(s) were baked onto this document (Section
+        // 4.30) so the re-rendered preview/download shows it. A
+        // draft (not yet fully_signed) never carries a stamp.
+        let templateData = payload.template_data;
+        if (doc.fully_signed) {
+            try {
+                const stampRes = await documentsAPI.getStamps(doc.id);
+                templateData = { ...templateData, stamps: stampRes.data.data || [] };
+            } catch {
+                // Best-effort — a stamp-lookup failure shouldn't block preview/download
+            }
+        }
+        const html = renderer(templateData);
         if (forceDownload) {
             printDocument(html, payload.title || doc.title);
         } else {
@@ -483,10 +505,259 @@ const CompanyArchive = ({ categories }) => {
 };
 
 // ============================================================
+// GRANT DOCUMENT ACCESS MODAL (Admin only)
+// Lets an Admin give a finance-restricted staff member (e.g. an
+// Administrative Officer) access to this one specific document,
+// without exposing every Financial-category document to them.
+// Mirrors the Audit Portal's per-document sharing pattern, but as
+// a standing grant rather than a time-boxed engagement.
+// ============================================================
+// ============================================================
+// SIGNATURES MODAL (v1.23.0, Section 4.29)
+// Shown for RESOLUTION/LOAN_AGREEMENT/GRANT_AGREEMENT documents once
+// signature slots exist (i.e. an Admin has configured
+// signature_requirements for that type and someone has called
+// Approve at least once). Lists every required role, who — if
+// anyone — has signed, and offers a Sign button to the current user
+// if their role still has a pending slot.
+// ============================================================
+const SignaturesModal = ({ isOpen, document, onClose, onSigned }) => {
+    const { hasRole } = useAuth();
+    const [signatures, setSignatures] = useState([]);
+    const [stamps, setStamps] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [signing, setSigning] = useState(false);
+    const [error, setError] = useState(null);
+
+    const load = useCallback(async () => {
+        if (!document) return;
+        try {
+            setLoading(true);
+            const [sigRes, stampRes] = await Promise.all([
+                documentsAPI.getSignatures(document.id),
+                documentsAPI.getStamps(document.id).catch(() => ({ data: { data: [] } })),
+            ]);
+            setSignatures(sigRes.data.data || []);
+            setStamps(stampRes.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, [document]);
+
+    useEffect(() => { if (isOpen) load(); }, [isOpen, load]);
+
+    if (!isOpen || !document) return null;
+
+    const myPendingSlot = signatures.find(s => s.status === 'PENDING' && hasRole(s.role_name));
+    const allSigned = signatures.length > 0 && signatures.every(s => s.status === 'SIGNED');
+
+    const handleSign = async () => {
+        setError(null);
+        setSigning(true);
+        try {
+            await documentsAPI.sign(document.id);
+            await load();
+            if (onSigned) onSigned();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSigning(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Signatures — {document.title}</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                        <XMarkIcon className="h-5 w-5" />
+                    </button>
+                </div>
+
+                {error && <ErrorMessage message={error} />}
+
+                {loading ? (
+                    <p className="text-sm text-gray-400">Loading...</p>
+                ) : signatures.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                        No signature requirement is configured for this document type
+                        (Settings &rarr; Signatories), or Approve hasn't been clicked yet.
+                    </p>
+                ) : (
+                    <div className="space-y-2 mb-4">
+                        {signatures.map(sig => (
+                            <div key={sig.role_id} className="flex items-center justify-between
+                                border border-gray-200 rounded-lg p-3">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-900">{sig.role_name}</p>
+                                    {sig.signer_name && (
+                                        <p className="text-xs text-gray-500">{sig.signer_name}</p>
+                                    )}
+                                </div>
+                                {sig.status === 'SIGNED' ? (
+                                    sig.signature_url ? (
+                                        <img src={sig.signature_url} alt="Signature" className="h-8" />
+                                    ) : (
+                                        <CheckIcon className="h-5 w-5 text-green-600" />
+                                    )
+                                ) : (
+                                    <span className="text-xs font-medium text-amber-600">Pending</span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {allSigned && (
+                    <p className="text-sm text-green-600 mb-3">Fully signed and finalised.</p>
+                )}
+
+                {stamps.length > 0 && (
+                    <div className="border-t border-gray-100 pt-3 mb-3">
+                        <p className="text-xs text-gray-500 mb-2">Company stamp applied</p>
+                        <div className="flex flex-wrap gap-3">
+                            {stamps.map(stamp => (
+                                <div key={stamp.stamp_id} className="flex flex-col items-center gap-1">
+                                    <img src={stamp.file_path} alt={stamp.name} className="h-12 w-12 object-contain" />
+                                    <span className="text-xs text-gray-500">{stamp.name}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {myPendingSlot && !allSigned && (
+                    <button onClick={handleSign} disabled={signing} className="btn-primary w-full text-sm">
+                        {signing ? 'Signing...' : `Sign as ${myPendingSlot.role_name}`}
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const GrantAccessModal = ({ isOpen, document, onClose }) => {
+    const [grants, setGrants] = useState([]);
+    const [users, setUsers] = useState([]);
+    const [userId, setUserId] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [listLoading, setListLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const loadGrants = useCallback(async () => {
+        if (!document) return;
+        try {
+            setListLoading(true);
+            const res = await staffAccessAPI.listGrants({ document_id: document.id });
+            setGrants(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setListLoading(false);
+        }
+    }, [document]);
+
+    useEffect(() => {
+        if (!isOpen || !document) return;
+        loadGrants();
+        usersAPI.getAllUsers().then(r => setUsers(r.data.data || [])).catch(() => {});
+    }, [isOpen, document, loadGrants]);
+
+    if (!isOpen || !document) return null;
+
+    const handleGrant = async (e) => {
+        e.preventDefault();
+        if (!userId) return;
+        setLoading(true);
+        setError(null);
+        try {
+            await staffAccessAPI.grantDocument({ document_id: document.id, user_id: parseInt(userId) });
+            setUserId('');
+            loadGrants();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleRevoke = async (grantId) => {
+        setLoading(true);
+        setError(null);
+        try {
+            await staffAccessAPI.revokeGrant(grantId);
+            loadGrants();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 max-h-screen overflow-y-auto">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Grant Document Access</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {truncate(document.title, 60)} — grants a finance-restricted staff member (e.g. an Administrative Officer) access to this document only.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+
+                    <div className="mb-4">
+                        <p className="text-xs font-semibold text-gray-500 mb-2">Currently granted to</p>
+                        {listLoading ? (
+                            <p className="text-sm text-gray-400">Loading...</p>
+                        ) : grants.length === 0 ? (
+                            <p className="text-sm text-gray-400">No one has been granted access to this document yet.</p>
+                        ) : (
+                            <ul className="space-y-1.5">
+                                {grants.map(g => (
+                                    <li key={g.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                                        <span className="text-sm text-gray-700">{g.user_name || g.user_email}</span>
+                                        <button onClick={() => handleRevoke(g.id)} disabled={loading}
+                                            className="p-1 rounded text-red-500 hover:bg-red-50 transition-colors" title="Revoke access">
+                                            <XMarkIcon className="h-4 w-4" />
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+
+                    <form onSubmit={handleGrant} className="flex items-end gap-2 pt-2 border-t border-gray-100">
+                        <div className="flex-1">
+                            <label className="label">Grant to</label>
+                            <select className="input" value={userId} onChange={e => setUserId(e.target.value)}>
+                                <option value="">Select person...</option>
+                                {users.map(u => (
+                                    <option key={u.id} value={u.id}>{u.first_name} {u.last_name} ({u.email})</option>
+                                ))}
+                            </select>
+                        </div>
+                        <button type="submit" disabled={loading || !userId} className="btn-primary">
+                            {loading ? 'Granting...' : 'Grant'}
+                        </button>
+                    </form>
+
+                    <div className="flex justify-end pt-4">
+                        <button type="button" onClick={onClose} className="btn-secondary">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN DOCUMENTS PAGE
 // ============================================================
 const DocumentsPage = () => {
-    const { hasPermission } = useAuth();
+    const { hasPermission, hasRole } = useAuth();
     const navigate = useNavigate();
     const [documents,  setDocuments]  = useState([]);
     const [categories, setCategories] = useState([]);
@@ -497,6 +768,10 @@ const DocumentsPage = () => {
     const [showUpload, setShowUpload] = useState(false);
     const [activeTab,  setActiveTab]  = useState('documents');
     const [actionLoading, setActionLoading] = useState(null);
+    const [grantingDoc, setGrantingDoc] = useState(null);
+    const [signaturesDoc, setSignaturesDoc] = useState(null);
+    const canGrantAccess = hasRole('Admin');
+    const SIGNABLE_DOCUMENT_TYPES = ['RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT'];
 
     const [typeFilter,   setTypeFilter]   = useState('');
     const [statusFilter, setStatusFilter] = useState('');
@@ -671,6 +946,23 @@ const DocumentsPage = () => {
                             <CheckIcon className="h-4 w-4" />
                         </button>
                     )}
+                    {/* v1.23.0 — multi-signatory approval (Section 4.29). Shown
+                        for signable types regardless of status, so anyone can
+                        check who's signed a FINAL document too, not just act
+                        on a pending one. */}
+                    {SIGNABLE_DOCUMENT_TYPES.includes(row.document_type) && (
+                        <button
+                            onClick={() => setSignaturesDoc(row)}
+                            className={`p-1.5 rounded-lg transition-colors ${
+                                row.fully_signed
+                                    ? 'bg-green-50 text-green-600 hover:bg-green-100'
+                                    : 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                            }`}
+                            title="Signatures"
+                        >
+                            <PencilSquareIcon className="h-4 w-4" />
+                        </button>
+                    )}
                     {['DRAFT','FINAL'].includes(row.status) &&
                      hasPermission('DOCUMENT_ARCHIVE') && (
                         <button
@@ -681,6 +973,17 @@ const DocumentsPage = () => {
                             title="Archive"
                         >
                             <ArchiveBoxIcon className="h-4 w-4" />
+                        </button>
+                    )}
+                    {canGrantAccess && (
+                        <button
+                            onClick={() => setGrantingDoc(row)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-purple-50 text-purple-600
+                                hover:bg-purple-100 transition-colors"
+                            title="Grant staff access"
+                        >
+                            <UserPlusIcon className="h-4 w-4" />
                         </button>
                     )}
                 </div>
@@ -800,6 +1103,19 @@ const DocumentsPage = () => {
                 onSuccess={loadDocuments}
                 categories={categories}
                 isArchive={false}
+            />
+
+            <GrantAccessModal
+                isOpen={!!grantingDoc}
+                document={grantingDoc}
+                onClose={() => setGrantingDoc(null)}
+            />
+
+            <SignaturesModal
+                isOpen={!!signaturesDoc}
+                document={signaturesDoc}
+                onClose={() => setSignaturesDoc(null)}
+                onSigned={loadDocuments}
             />
         </div>
     );

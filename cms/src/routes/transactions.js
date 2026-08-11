@@ -16,13 +16,15 @@
 
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireRoles } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
 const transactionsController = require('../controllers/transactionsController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET TRANSACTION LEDGER
@@ -60,13 +62,18 @@ router.post('/contributions',
         body('amount')
             .isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('contribution_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required')
+            .custom(notFutureDate),
         body('category_id')
             .isInt({ min: 1 }).withMessage('A valid category is required'),
         body('contributed_by')
             .optional().isInt({ min: 1 }).withMessage('Invalid member ID'),
         body('notes')
             .optional().trim(),
+        // v1.26.0 — optional side fund portion sliced out of the total;
+        // the remainder is what gets recorded as the contribution.
+        body('side_fund_amount')
+            .optional().isFloat({ min: 0.01 }).withMessage('Side fund portion must be greater than zero'),
     ],
     validateRequest,
     transactionsController.recordContribution
@@ -88,7 +95,8 @@ router.post('/expenses',
         body('description')
             .trim().notEmpty().withMessage('Description is required'),
         body('value_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required')
+            .custom(notFutureDate),
     ],
     validateRequest,
     transactionsController.recordExpense
@@ -110,7 +118,8 @@ router.post('/inflows',
         body('description')
             .trim().notEmpty().withMessage('Description is required'),
         body('value_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required')
+            .custom(notFutureDate),
     ],
     validateRequest,
     transactionsController.recordInflow

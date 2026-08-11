@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect } from 'react';
-import { usersAPI, authAPI, certificatesAPI } from '../../api/endpoints';
+import { usersAPI, authAPI, certificatesAPI, sideFundAPI } from '../../api/endpoints';
 import api from '../../api/axios';
 import { formatDate, formatRelativeTime, getErrorMessage } from '../../utils/helpers';
 import { shareCertificateTemplate, printDocument } from '../../utils/exportUtils';
@@ -13,6 +13,7 @@ import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import Avatar, { AVATAR_OPTIONS, IllustratedAvatar } from '../../components/common/Avatar';
+import SignaturePad from '../../components/common/SignaturePad';
 import { useAuth } from '../../contexts/AuthContext';
 import {
     UserCircleIcon,
@@ -20,6 +21,7 @@ import {
     ShieldCheckIcon,
     CameraIcon,
     PencilIcon,
+    PencilSquareIcon,
     CheckIcon,
     XMarkIcon,
     DocumentTextIcon,
@@ -480,12 +482,25 @@ const ProfilePage = () => {
     const [editSuccess,    setEditSuccess]      = useState(false);
     const [certLoading,    setCertLoading]      = useState(null); // 'MONTHLY' | 'ANNUAL' | null
     const [certError,      setCertError]        = useState(null);
+    const [signatureSaving, setSignatureSaving] = useState(false);
+    const [signatureError,  setSignatureError]  = useState(null);
+    const [signatureSuccess, setSignatureSuccess] = useState(false);
+    const [sideFundDues,   setSideFundDues]     = useState([]);
+    const [sideFundCredit, setSideFundCredit]   = useState(null);
 
     useEffect(() => {
         usersAPI.getMyProfile()
             .then(res => setProfile(res.data.data))
             .catch(() => {})
             .finally(() => setLoading(false));
+        // Side fund (v1.25.0) — every shareholder's own due history and any
+        // banked overpayment credit, shown alongside shareholding below.
+        Promise.all([sideFundAPI.getMyDues(), sideFundAPI.getMyCredit()])
+            .then(([duesRes, creditRes]) => {
+                setSideFundDues(duesRes.data.data || []);
+                setSideFundCredit(creditRes.data.data || null);
+            })
+            .catch(() => {});
     }, []);
 
     const reloadProfile = () => {
@@ -534,6 +549,28 @@ const ProfilePage = () => {
         } finally {
             setPhotoUploading(false);
             e.target.value = '';
+        }
+    };
+
+    // v1.23.0 — redraw signature (Section 4.29). The consent flow
+    // saves one at sign-up; this lets a member replace it later (e.g.
+    // they weren't happy with how it looked the first time). Existing
+    // signed documents are unaffected — they keep their own snapshot
+    // taken at signing time, not a live reference to this one.
+    const handleSignatureChange = async (dataUrl) => {
+        if (!dataUrl) return;
+        setSignatureSaving(true);
+        setSignatureError(null);
+        setSignatureSuccess(false);
+        try {
+            await usersAPI.updateSignature(dataUrl);
+            reloadProfile();
+            setSignatureSuccess(true);
+            setTimeout(() => setSignatureSuccess(false), 3000);
+        } catch (err) {
+            setSignatureError(getErrorMessage(err));
+        } finally {
+            setSignatureSaving(false);
         }
     };
 
@@ -660,10 +697,11 @@ const ProfilePage = () => {
             {/* Tabs */}
             <div className="flex gap-2 mb-6">
                 {[
-                    { key: 'summary',  label: 'Summary',          icon: UserCircleIcon },
-                    { key: 'personal', label: 'Personal Info',     icon: PencilIcon },
-                    { key: 'password', label: 'Password',          icon: KeyIcon },
-                    { key: '2fa',      label: 'Security',          icon: ShieldCheckIcon },
+                    { key: 'summary',   label: 'Summary',          icon: UserCircleIcon },
+                    { key: 'personal',  label: 'Personal Info',     icon: PencilIcon },
+                    { key: 'signature', label: 'Signature',         icon: PencilSquareIcon },
+                    { key: 'password',  label: 'Password',          icon: KeyIcon },
+                    { key: '2fa',       label: 'Security',          icon: ShieldCheckIcon },
                 ].map(tab => (
                     <button
                         key={tab.key}
@@ -780,6 +818,63 @@ const ProfilePage = () => {
                             </div>
                         )}
 
+                        {/* Side Fund */}
+                        {sideFundDues.length > 0 && (() => {
+                            const currentDue = sideFundDues[0]; // ORDER BY period DESC
+                            const outstanding = parseFloat(currentDue.amount_due) - parseFloat(currentDue.amount_paid);
+                            const creditBalance = parseFloat(sideFundCredit?.credit_balance || 0);
+                            const statusColor = {
+                                PAID: 'text-green-300',
+                                PARTIAL: 'text-yellow-300',
+                                PENDING: 'text-primary-200',
+                                DEFAULTED: 'text-red-300',
+                            }[currentDue.status] || 'text-primary-200';
+                            return (
+                                <div className="bg-gradient-to-r from-emerald-900
+                                    to-emerald-700 rounded-xl p-5 text-white mb-6">
+                                    <p className="text-sm text-emerald-200 mb-1">
+                                        My Side Fund — {currentDue.period}
+                                    </p>
+                                    <p className="text-4xl font-bold">
+                                        {outstanding > 0 ? outstanding.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '0.00'}
+                                    </p>
+                                    <p className={`text-sm mt-1 font-medium ${statusColor}`}>
+                                        {currentDue.status === 'PAID' ? 'Paid in full for this period'
+                                            : currentDue.status === 'DEFAULTED' ? 'Defaulted — overdue'
+                                            : currentDue.status === 'PARTIAL' ? 'Partially paid, balance outstanding'
+                                            : 'Outstanding for this period'}
+                                    </p>
+
+                                    <div className="grid grid-cols-2 gap-4 mt-4 pt-4
+                                        border-t border-white/20">
+                                        <div>
+                                            <p className="text-xs text-emerald-200">
+                                                Amount Due This Period
+                                            </p>
+                                            <p className="text-lg font-bold">
+                                                {parseFloat(currentDue.amount_due).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                            </p>
+                                        </div>
+                                        <div>
+                                            <p className="text-xs text-emerald-200">
+                                                Banked Credit
+                                            </p>
+                                            <p className="text-lg font-bold">
+                                                {creditBalance > 0
+                                                    ? creditBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                                                    : '—'}
+                                            </p>
+                                            {creditBalance > 0 && (
+                                                <p className="text-xs text-emerald-200 mt-1">
+                                                    Applied automatically to future months
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
                         {/* Info Grid */}
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
                             <div className="bg-gray-50 rounded-lg p-4">
@@ -881,6 +976,40 @@ const ProfilePage = () => {
                             onSuccess={handleEditSuccess}
                             onCancel={() => setActiveTab('summary')}
                         />
+                    </div>
+                )}
+
+                {/* SIGNATURE TAB (v1.23.0, Section 4.29) */}
+                {activeTab === 'signature' && (
+                    <div>
+                        <h3 className="section-title mb-2">My Signature</h3>
+                        <p className="text-sm text-gray-500 mb-4">
+                            This is attached to documents you approve (Resolutions, Loan/Grant
+                            Agreements, Share Certificates, and similar). Redrawing it here replaces
+                            it going forward — documents you've already signed keep the signature
+                            image as it looked at the time, unaffected by this change.
+                        </p>
+
+                        {profile?.signature_path && (
+                            <div className="mb-4">
+                                <p className="text-xs text-gray-400 mb-1">Current signature</p>
+                                <img src={profile.signature_path} alt="Current signature"
+                                    className="h-16 border border-gray-200 rounded-lg bg-white p-2" />
+                            </div>
+                        )}
+
+                        {signatureError && <ErrorMessage message={signatureError} />}
+                        {signatureSuccess && (
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                                <p className="text-sm text-green-700">Signature updated</p>
+                            </div>
+                        )}
+
+                        <p className="text-xs text-gray-400 mb-1">
+                            {profile?.signature_path ? 'Draw a new signature to replace it' : 'Draw your signature'}
+                        </p>
+                        <SignaturePad onChange={handleSignatureChange} />
+                        {signatureSaving && <p className="text-xs text-primary-600 mt-2">Saving...</p>}
                     </div>
                 )}
 

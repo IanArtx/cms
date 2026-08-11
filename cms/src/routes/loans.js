@@ -13,13 +13,15 @@
 
 const router = require('express').Router();
 const { body, param } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const loansController = require('../controllers/loansController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // LOANS RECEIVED (company borrows)
@@ -67,7 +69,7 @@ router.post('/received',
         body('due_date')
             .isISO8601().withMessage('A valid due date is required'),
         body('disbursement_date')
-            .optional().isISO8601().withMessage('Invalid disbursement date'),
+            .optional().isISO8601().withMessage('Invalid disbursement date').custom(notFutureDate),
         body('instalments')
             .optional().isInt({ min: 1 }).withMessage('Instalments must be a positive integer'),
         body('is_member_lender')
@@ -96,7 +98,7 @@ router.patch('/received/:id',
         body('interest_period').optional().isIn(['DAILY','WEEKLY','MONTHLY','ANNUALLY']),
         body('interest_calculation').optional().isIn(['SIMPLE','COMPOUND']),
         body('due_date').optional().isISO8601(),
-        body('disbursement_date').optional().isISO8601(),
+        body('disbursement_date').optional().isISO8601().custom(notFutureDate),
         body('instalments').optional().isInt({ min: 1 }),
     ],
     validateRequest,
@@ -129,7 +131,7 @@ router.post('/received/:id/repayments',
                 return true;
             }),
         body('payment_date')
-            .isISO8601().withMessage('A valid payment date is required'),
+            .isISO8601().withMessage('A valid payment date is required').custom(notFutureDate),
         body('schedule_id')
             .optional().isInt({ min: 1 }),
         body('notes')
@@ -201,7 +203,7 @@ router.post('/given',
         body('due_date')
             .isISO8601().withMessage('A valid due date is required'),
         body('disbursement_date')
-            .optional().isISO8601().withMessage('Invalid disbursement date'),
+            .optional().isISO8601().withMessage('Invalid disbursement date').custom(notFutureDate),
         body('instalments')
             .optional().isInt({ min: 1 }),
     ],
@@ -220,7 +222,7 @@ router.patch('/given/:id',
         body('interest_period').optional().isIn(['DAILY','WEEKLY','MONTHLY','ANNUALLY']),
         body('interest_calculation').optional().isIn(['SIMPLE','COMPOUND']),
         body('due_date').optional().isISO8601(),
-        body('disbursement_date').optional().isISO8601(),
+        body('disbursement_date').optional().isISO8601().custom(notFutureDate),
         body('instalments').optional().isInt({ min: 1 }),
     ],
     validateRequest,
@@ -250,7 +252,7 @@ router.post('/given/:id/repayments',
                 return true;
             }),
         body('payment_date')
-            .isISO8601().withMessage('A valid payment date is required'),
+            .isISO8601().withMessage('A valid payment date is required').custom(notFutureDate),
         body('schedule_id')
             .optional().isInt({ min: 1 }),
         body('notes')

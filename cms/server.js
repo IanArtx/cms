@@ -127,6 +127,8 @@ app.use('/api/certificates', require('./src/routes/certificates'));
 app.use('/api/search', require('./src/routes/search'));
 
 app.use('/api/audit', require('./src/routes/audit'));
+app.use('/api/staff-access', require('./src/routes/staffAccess'));
+app.use('/api/service-fees', require('./src/routes/serviceFees'));
 
 // ============================================================
 // 404 HANDLER

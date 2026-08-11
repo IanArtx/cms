@@ -5,12 +5,14 @@
 
 const router = require('express').Router();
 const { body } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
 const sideFundController = require('../controllers/sideFundController');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ------------------------------------------------------------
 // STATIC ROUTES — must be declared before any /:id route below.
@@ -53,26 +55,71 @@ router.post('/expenses',
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('description').trim().notEmpty().withMessage('A description is required'),
-        body('expense_date').isISO8601().withMessage('A valid expense date is required'),
+        body('expense_date').isISO8601().withMessage('A valid expense date is required').custom(notFutureDate),
     ],
     validateRequest,
     sideFundController.recordSideFundExpense
 );
 
-// Direct/batch inflow — money added straight to the fund that isn't
-// tied to any individual member's due (e.g. an existing balance being
-// brought in, or a lump-sum top-up). Treasurer/Assistant Treasurer.
-router.post('/inflows',
+// Bulk pay-all-dues (v1.26.0) — mark several/all members' monthly due
+// as paid in one batch entry. Per-row amounts are editable in the
+// frontend (not necessarily the full amount owed), so this is
+// validated as a plain array rather than assumed to equal what's
+// outstanding. Treasurer/Assistant Treasurer.
+router.patch('/dues/bulk-pay',
     requirePermissions(['SIDE_FUND_CONTRIBUTION_RECORD']),
     [
-        body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
-        body('value_date').optional().isISO8601(),
-        body('description').optional().trim(),
-        body('notes').optional().trim(),
+        body('paid_date').optional().isISO8601().custom(notFutureDate),
+        body('payments').isArray({ min: 1 }).withMessage('At least one member payment is required'),
+        body('payments.*.user_id').isInt({ min: 1 }).withMessage('Each payment needs a valid user_id'),
+        body('payments.*.amount').isFloat({ min: 0.01 }).withMessage('Each payment amount must be greater than zero'),
     ],
     validateRequest,
-    sideFundController.recordDirectInflow
+    sideFundController.bulkPayDues
+);
+
+// Overdue summary (v1.26.0) — own, then Treasurer/Admin's view of
+// every member currently overdue.
+router.get('/overdue/me', sideFundController.getMyOverdueSummary);
+
+router.get('/overdue',
+    requirePermissions(['SIDE_FUND_VIEW']),
+    sideFundController.getAllOverdueSummary
+);
+
+// ------------------------------------------------------------
+// PER-MEMBER AMOUNT OVERRIDES (v1.25.0) — SIDE_FUND_MANAGE, same
+// permission as the company-wide default.
+// ------------------------------------------------------------
+router.get('/overrides',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    sideFundController.getMemberOverrides
+);
+
+router.put('/overrides/:userId',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    validators.idParam('userId'),
+    [body('monthly_amount').isFloat({ min: 0 }).withMessage('monthly_amount must be zero or a positive number')],
+    validateRequest,
+    sideFundController.setMemberOverride
+);
+
+router.delete('/overrides/:userId',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    validators.idParam('userId'),
+    validateRequest,
+    sideFundController.clearMemberOverride
+);
+
+// ------------------------------------------------------------
+// OVERPAYMENT CREDIT (v1.25.0)
+// ------------------------------------------------------------
+router.get('/credit/me', sideFundController.getMyCredit);
+
+router.get('/credit',
+    requirePermissions(['SIDE_FUND_VIEW']),
+    sideFundController.getAllCredit
 );
 
 // ------------------------------------------------------------
@@ -86,7 +133,7 @@ router.patch('/dues/:id/pay',
     [
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
-        body('paid_date').optional().isISO8601(),
+        body('paid_date').optional().isISO8601().custom(notFutureDate),
         body('notes').optional().trim(),
     ],
     validateRequest,

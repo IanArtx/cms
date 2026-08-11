@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
+import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage, getInflowTypeLabel } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -26,10 +26,18 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const { user, hasPermission } = useAuth();
     const [form, setForm] = useState({
         amount: '', contribution_date: '', category_id: '',
-        notes: '', contributed_by: '',
+        notes: '', contributed_by: '', side_fund_amount: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    const [sideFundActive, setSideFundActive] = useState(false);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        sideFundAPI.getSettings()
+            .then(res => setSideFundActive(!!res.data.data?.is_active))
+            .catch(() => setSideFundActive(false));
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
@@ -41,11 +49,12 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
             await transactionsAPI.recordContribution({
                 ...form,
                 contributed_by: form.contributed_by || user.id,
+                side_fund_amount: form.side_fund_amount || undefined,
             });
             onSuccess();
             onClose();
             setForm({ amount: '', contribution_date: '', category_id: '',
-                notes: '', contributed_by: '' });
+                notes: '', contributed_by: '', side_fund_amount: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -55,6 +64,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
 
     const financeCategories = categories.filter(c => c.module === 'FINANCE');
     const canRecordForOthers = hasPermission('FINANCE_VIEW_ALL');
+    const sideFundPortion = parseFloat(form.side_fund_amount) || 0;
+    const totalAmount     = parseFloat(form.amount) || 0;
+    const contributionRemainder = Math.max(0, totalAmount - sideFundPortion);
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -101,10 +113,25 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                     ...p, amount: e.target.value }))}
                                 min="0.01" step="0.01" required />
                         </div>
+                        {sideFundActive && (
+                            <div>
+                                <label className="label">Side Fund Portion (optional)</label>
+                                <input type="number" className="input" value={form.side_fund_amount}
+                                    onChange={e => setForm(p => ({
+                                        ...p, side_fund_amount: e.target.value }))}
+                                    min="0" step="0.01" max={form.amount || undefined}
+                                    placeholder="0.00" />
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Sliced out of the total above and credited to this member's own side fund
+                                    dues. Contribution recorded: <strong>{contributionRemainder.toFixed(2)}</strong>
+                                </p>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Contribution Date *</label>
                             <input type="date" className="input"
                                 value={form.contribution_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, contribution_date: e.target.value }))}
                                 required />
@@ -235,6 +262,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
                         <div>
                             <label className="label">Date *</label>
                             <input type="date" className="input" value={form.value_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, value_date: e.target.value }))}
                                 required />

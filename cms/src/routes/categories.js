@@ -10,7 +10,7 @@ const { query, withTransaction } = require('../config/database');
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, requirePermissions } = require('../middleware/auth');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 
 // ============================================================
@@ -196,6 +196,8 @@ const updateCategory = asyncHandler(async (req, res) => {
 // ROUTES
 // ============================================================
 router.use(authenticate);
+router.use(requireAssignedRole);
+router.use(requireConsent);
 
 router.get('/',    getAllCategories);
 

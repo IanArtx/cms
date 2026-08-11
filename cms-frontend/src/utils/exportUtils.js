@@ -272,6 +272,17 @@ const getBaseStyles = () => `
         color: #374151;
     }
 
+    /* v1.24.0 — company stamps/seals (Section 4.30). Wrap
+       .signature-section in .stamp-overlay-wrap to position a stamp
+       image over/near it — never shown on a draft, only once
+       data.stamps is actually populated by the caller. */
+    .stamp-overlay-wrap { position: relative; }
+    .stamp-overlay {
+        position: absolute; right: 4%; bottom: -14px;
+        max-height: 100px; max-width: 140px; opacity: 0.92;
+        pointer-events: none;
+    }
+
     /* DOCUMENT TRAIL — who prepared/approved/was involved, and when */
     .trail-role {
         font-weight: 700;
@@ -364,6 +375,23 @@ const footer = () => `
     </div>
     <div class="confidential">CONFIDENTIAL — For authorised members only</div>
 `;
+
+// ============================================================
+// STAMP OVERLAY (v1.24.0, Section 4.30)
+// Renders whichever company stamp(s) were actually applied to a
+// fully approved/signed document, positioned over the signature
+// area. `data.stamps` — an array of { name, file_path } — is only
+// populated by the caller (DocumentsPage.openDocument) once the
+// document is confirmed fully_signed, so a draft never shows one.
+// Returns '' (nothing) when there's no stamp to show, so callers can
+// unconditionally splice this into their signature-section markup.
+// ============================================================
+const stampOverlay = (data) => {
+    if (!data?.stamps || data.stamps.length === 0) return '';
+    return data.stamps.map(stamp =>
+        `<img class="stamp-overlay" src="${stamp.file_path}" alt="${stamp.name || 'Company stamp'}" />`
+    ).join('');
+};
 
 // ============================================================
 // DOCUMENT TRAIL
@@ -1617,17 +1645,20 @@ export const resolutionTemplate = (data) => `<!DOCTYPE html>
         { role: 'Prepared By', name: data.prepared_by, date: data.generated_date },
     ])}
 
-    <div class="signature-section">
-        <div class="signature-block">
-            Chairperson: ${data.chairperson || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
+    <div class="stamp-overlay-wrap">
+        <div class="signature-section">
+            <div class="signature-block">
+                Chairperson: ${data.chairperson || '_______________'}<br>
+                Signature: _______________<br>
+                Date: _______________
+            </div>
+            <div class="signature-block">
+                Secretary: ${data.secretary || '_______________'}<br>
+                Signature: _______________<br>
+                Date: _______________
+            </div>
         </div>
-        <div class="signature-block">
-            Secretary: ${data.secretary || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
+        ${stampOverlay(data)}
     </div>
 
     ${footer()}
@@ -1705,10 +1736,13 @@ export const shareCertificateTemplate = (data) => {
         </div>
     </div>
 
-    <div class="signature-section">
-        <div class="signature-block">Company Secretary</div>
-        <div class="signature-block">Treasurer</div>
-        <div class="signature-block">Director</div>
+    <div class="stamp-overlay-wrap">
+        <div class="signature-section">
+            <div class="signature-block">Company Secretary</div>
+            <div class="signature-block">Treasurer</div>
+            <div class="signature-block">Director</div>
+        </div>
+        ${stampOverlay(data)}
     </div>
 
     <p class="confidential">

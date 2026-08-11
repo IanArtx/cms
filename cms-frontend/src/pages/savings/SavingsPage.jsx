@@ -95,6 +95,7 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories })
                             <div>
                                 <label className="label">Deposit Date *</label>
                                 <input type="date" className="input" value={form.deposit_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, deposit_date: e.target.value }))} required />
                             </div>
                         </div>
@@ -236,6 +237,7 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, cat
                         <div>
                             <label className="label">Handout Date *</label>
                             <input type="date" className="input" value={form.handout_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({ ...p, handout_date: e.target.value }))} required />
                         </div>
                         <div>
@@ -327,6 +329,7 @@ const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
                             <div>
                                 <label className="label">Date *</label>
                                 <input type="date" className="input" value={form.value_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, value_date: e.target.value }))} required />
                             </div>
                         </div>

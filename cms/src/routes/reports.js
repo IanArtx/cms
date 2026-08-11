@@ -14,12 +14,14 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
 const reportsController = require('../controllers/reportsController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET OWN PERSONAL REPORT

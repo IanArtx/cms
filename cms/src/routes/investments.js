@@ -14,13 +14,15 @@
 
 const router = require('express').Router();
 const { body, param } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireAnyPermission } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission } = require('../middleware/auth');
 const investmentsController = require('../controllers/investmentsController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET ALL INVESTMENTS
@@ -136,7 +138,7 @@ router.post('/:id/fund',
         body('amount')
             .isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('value_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('category_id')
             .optional().isInt({ min: 1 }),
         body('description')
@@ -162,7 +164,7 @@ router.post('/:id/returns',
             .isIn(['DIVIDEND','PROFIT_SHARE','CAPITAL_GAIN','INTEREST','RENTAL','OTHER'])
             .withMessage('Invalid return type'),
         body('return_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('notes')
             .optional().trim(),
     ],
@@ -186,7 +188,7 @@ router.post('/:id/transactions',
         body('amount')
             .isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('entry_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('description')
             .optional().trim(),
         body('category_id')
@@ -207,7 +209,7 @@ router.patch('/:id/coupons/:couponId/pay',
     validators.idParam('couponId'),
     [
         body('paid_date')
-            .optional().isISO8601().withMessage('Invalid payment date'),
+            .optional().isISO8601().withMessage('Invalid payment date').custom(notFutureDate),
         body('notes')
             .optional().trim(),
     ],
@@ -227,7 +229,7 @@ router.patch('/:id/status',
             .isIn(['PENDING','ACTIVE','ON_HOLD','COMPLETED','CANCELLED'])
             .withMessage('Invalid status'),
         body('actual_end_date')
-            .optional().isISO8601().withMessage('Invalid date'),
+            .optional().isISO8601().withMessage('Invalid date').custom(notFutureDate),
     ],
     validateRequest,
     investmentsController.updateInvestmentStatus

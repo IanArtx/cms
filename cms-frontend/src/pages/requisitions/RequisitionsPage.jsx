@@ -73,7 +73,8 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
 
     const isContribution = form.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT';
     const isSavingsDeposit = form.requisition_type === 'SAVINGS_DEPOSIT';
-    const needsDate = isContribution || isSavingsDeposit;
+    const isSideFund = form.requisition_type === 'SIDE_FUND_CONTRIBUTION';
+    const needsDate = isContribution || isSavingsDeposit || isSideFund;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -114,6 +115,8 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                             ? 'Ask the Treasurer to acknowledge and record capital you\'ve already contributed to the company.'
                             : isSavingsDeposit
                             ? 'Ask the Treasurer to record a savings deposit on your behalf. It will still need a Treasurer/Assistant Treasurer\'s approval before it\'s added to your balance.'
+                            : isSideFund
+                            ? 'Ask the Treasurer to record a side fund payment you\'ve already made. It will be applied to your oldest unpaid dues first.'
                             : 'Request money for a specific purpose. A Treasurer or Assistant Treasurer will review and approve or reject your request.'}
                     </p>
                     {error && (
@@ -129,7 +132,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                             <button type="button"
                                 onClick={() => setForm(p => ({ ...p, requisition_type: 'EXPENSE' }))}
                                 className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                                    !isContribution && !isSavingsDeposit
+                                    !isContribution && !isSavingsDeposit && !isSideFund
                                         ? 'border-primary-600 bg-primary-50 text-primary-700'
                                         : 'border-gray-200 text-gray-500 hover:bg-gray-50'
                                 }`}>
@@ -153,6 +156,15 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                 }`}>
                                 Request Savings Deposit
                             </button>
+                            <button type="button"
+                                onClick={() => setForm(p => ({ ...p, requisition_type: 'SIDE_FUND_CONTRIBUTION' }))}
+                                className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                                    isSideFund
+                                        ? 'border-primary-600 bg-primary-50 text-primary-700'
+                                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                                }`}>
+                                Acknowledge Side Fund Payment
+                            </button>
                         </div>
                     </div>
 
@@ -166,6 +178,8 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                     ? 'e.g. Capital contribution — July 2026'
                                     : isSavingsDeposit
                                     ? 'e.g. Savings deposit — July 2026'
+                                    : isSideFund
+                                    ? 'e.g. Side fund payment — July 2026'
                                     : 'Brief title for the request'}
                                 required />
                         </div>
@@ -203,7 +217,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="label">
-                                    {isContribution ? 'Amount Contributed *' : isSavingsDeposit ? 'Amount Deposited *' : 'Amount Requested *'}
+                                    {isContribution ? 'Amount Contributed *' : isSavingsDeposit ? 'Amount Deposited *' : isSideFund ? 'Amount Paid *' : 'Amount Requested *'}
                                 </label>
                                 <input type="number" className="input"
                                     value={form.amount_requested}
@@ -213,10 +227,11 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                             </div>
                             <div>
                                 <label className="label">
-                                    {isContribution ? 'Date Contributed *' : isSavingsDeposit ? 'Date Deposited *' : 'Required By'}
+                                    {isContribution ? 'Date Contributed *' : isSavingsDeposit ? 'Date Deposited *' : isSideFund ? 'Date Paid *' : 'Required By'}
                                 </label>
                                 <input type="date" className="input"
                                     value={needsDate ? form.contribution_date : form.required_by_date}
+                                    max={needsDate ? new Date().toISOString().slice(0, 10) : undefined}
                                     onChange={e => setForm(p => (needsDate
                                         ? { ...p, contribution_date: e.target.value }
                                         : { ...p, required_by_date: e.target.value }))}
@@ -226,7 +241,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
 
                         <div>
                             <label className="label">
-                                {isContribution ? 'How Did You Pay? *' : isSavingsDeposit ? 'Deposit Details *' : 'Purpose *'}
+                                {isContribution ? 'How Did You Pay? *' : isSavingsDeposit ? 'Deposit Details *' : isSideFund ? 'How Did You Pay? *' : 'Purpose *'}
                             </label>
                             <textarea className="input" rows={3}
                                 value={form.purpose}
@@ -236,6 +251,8 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                     ? 'e.g. Bank transfer to the company account on 15 July, ref #123456 — or cash handed to the Treasurer'
                                     : isSavingsDeposit
                                     ? 'e.g. Cash handed to the Treasurer on 15 July for my savings'
+                                    : isSideFund
+                                    ? 'e.g. Cash handed to the Treasurer on 15 July for my side fund due'
                                     : 'Explain clearly what the money will be used for...'}
                                 required />
                         </div>
@@ -259,6 +276,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                     : isEdit ? 'Save Changes'
                                     : isContribution ? 'Submit for Acknowledgement'
                                     : isSavingsDeposit ? 'Submit Deposit Request'
+                                    : isSideFund ? 'Submit for Acknowledgement'
                                     : 'Submit Requisition'}
                             </button>
                         </div>
@@ -284,6 +302,8 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
     if (!isOpen || !requisition) return null;
 
     const isContribution = requisition.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT';
+    const isSideFund = requisition.requisition_type === 'SIDE_FUND_CONTRIBUTION';
+    const noAccountNeeded = isContribution || isSideFund;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -291,7 +311,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
         setError(null);
         try {
             await requisitionsAPI.approve(requisition.id, {
-                account_id: isContribution
+                account_id: noAccountNeeded
                     ? undefined
                     : parseInt(form.account_id),
                 amount_approved: form.amount_approved
@@ -316,28 +336,28 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                 <div className="relative bg-white rounded-xl shadow-xl
                     max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">
-                        {isContribution ? 'Acknowledge Contribution' : 'Approve Requisition'}
+                        {isContribution ? 'Acknowledge Contribution' : isSideFund ? 'Acknowledge Side Fund Payment' : 'Approve Requisition'}
                     </h2>
                     <div className="bg-gray-50 rounded-lg p-3 mb-4">
                         <p className="text-sm font-medium text-gray-900">
                             {requisition.title}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
-                            {isContribution ? 'Contributed by' : 'Requested by'}{' '}
+                            {noAccountNeeded ? 'Contributed by' : 'Requested by'}{' '}
                             {requisition.requested_by_name} •{' '}
                             {requisition.category_trail}
                         </p>
                         <p className="text-sm font-bold text-primary-700 mt-2">
-                            {isContribution ? 'Amount Contributed: ' : 'Amount Requested: '}
+                            {isContribution ? 'Amount Contributed: ' : isSideFund ? 'Amount Paid: ' : 'Amount Requested: '}
                             {parseFloat(requisition.amount_requested).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         </p>
-                        {isContribution && requisition.contribution_date && (
+                        {noAccountNeeded && requisition.contribution_date && (
                             <p className="text-xs text-gray-500 mt-1">
-                                Date contributed: {requisition.contribution_date}
+                                Date paid: {requisition.contribution_date}
                             </p>
                         )}
                         <p className="text-xs text-gray-500 mt-1">
-                            {isContribution ? 'How they paid: ' : 'Purpose: '}
+                            {noAccountNeeded ? 'How they paid: ' : 'Purpose: '}
                             {requisition.purpose}
                         </p>
                     </div>
@@ -347,6 +367,12 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                             member's shareholding automatically — no account selection needed.
                         </div>
                     )}
+                    {isSideFund && (
+                        <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4 text-xs text-blue-700">
+                            Approving this will credit the side fund and apply it to this member's
+                            oldest unpaid dues first — no account selection needed.
+                        </div>
+                    )}
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error}
@@ -354,7 +380,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         </div>
                     )}
                     <form onSubmit={handleSubmit} className="space-y-4">
-                        {!isContribution && (
+                        {!noAccountNeeded && (
                             <div>
                                 <label className="label">Pay From Account *</label>
                                 <select className="input" value={form.account_id}
@@ -372,7 +398,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         )}
                         <div>
                             <label className="label">
-                                {isContribution ? 'Amount to Acknowledge' : 'Amount to Approve'}
+                                {noAccountNeeded ? 'Amount to Acknowledge' : 'Amount to Approve'}
                                 <span className="text-gray-400 font-normal ml-1">
                                     (leave blank to approve full amount)
                                 </span>
@@ -399,7 +425,9 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                                 className="btn-primary">
                                 {loading
                                     ? 'Processing...'
-                                    : isContribution ? 'Approve & Record Contribution' : 'Approve & Pay'}
+                                    : isContribution ? 'Approve & Record Contribution'
+                                    : isSideFund ? 'Approve & Record Side Fund Payment'
+                                    : 'Approve & Pay'}
                             </button>
                         </div>
                     </form>
@@ -589,6 +617,9 @@ const RequisitionsPage = () => {
                         {row.requisition_type === 'SAVINGS_DEPOSIT' && (
                             <span className="badge-blue text-[10px] px-1.5 py-0.5">Savings</span>
                         )}
+                        {row.requisition_type === 'SIDE_FUND_CONTRIBUTION' && (
+                            <span className="badge-blue text-[10px] px-1.5 py-0.5">Side Fund</span>
+                        )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
                 </div>
@@ -601,13 +632,15 @@ const RequisitionsPage = () => {
                     <p className="text-sm font-bold text-gray-900">
                         {parseFloat(row.amount_requested).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         {row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT' ? ' contributed'
-                            : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' deposited' : ' requested'}
+                            : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' deposited'
+                            : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' paid' : ' requested'}
                     </p>
                     {row.amount_approved && (
                         <p className="text-xs text-green-600 font-medium">
                             {parseFloat(row.amount_approved).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                             {row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT' ? ' acknowledged'
-                                : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' forwarded to Treasurer' : ' approved'}
+                                : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' forwarded to Treasurer'
+                                : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' acknowledged' : ' approved'}
                         </p>
                     )}
                 </div>
@@ -621,7 +654,7 @@ const RequisitionsPage = () => {
             header: 'Date',
             render: row => (
                 <span className="text-sm text-gray-500">
-                    {(row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT' || row.requisition_type === 'SAVINGS_DEPOSIT')
+                    {['CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION'].includes(row.requisition_type)
                         ? (row.contribution_date ? formatDate(row.contribution_date) : '—')
                         : (row.required_by_date ? formatDate(row.required_by_date) : '—')}
                 </span>
@@ -714,6 +747,9 @@ const RequisitionsPage = () => {
                         {row.requisition_type === 'SAVINGS_DEPOSIT' && (
                             <span className="badge-blue text-[10px] px-1.5 py-0.5">Savings</span>
                         )}
+                        {row.requisition_type === 'SIDE_FUND_CONTRIBUTION' && (
+                            <span className="badge-blue text-[10px] px-1.5 py-0.5">Side Fund</span>
+                        )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
                 </div>
@@ -763,7 +799,7 @@ const RequisitionsPage = () => {
                                 onClick={() => setApproveReq(row)}
                                 className="p-1.5 rounded-lg bg-green-50 text-green-600
                                     hover:bg-green-100 transition-colors"
-                                title={row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT'
+                                title={['CONTRIBUTION_ACKNOWLEDGEMENT', 'SIDE_FUND_CONTRIBUTION'].includes(row.requisition_type)
                                     ? 'Acknowledge' : 'Approve'}
                             >
                                 <CheckIcon className="h-4 w-4" />

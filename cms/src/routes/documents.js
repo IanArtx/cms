@@ -15,12 +15,22 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockAuditor, requirePermissions } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const documentsController = require('../controllers/documentsController');
 
 // All routes require login
 router.use(authenticate);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+// Documents are a mixed bag — some categories (Financial) are finance
+// data, most (meeting minutes, correspondence, legal/compliance) are
+// exactly what an Administrative Officer is hired to produce (Section
+// 4.29). So only the Auditor is blocked from this whole file; the
+// Administrative Officer's access to Financial-category documents
+// specifically is filtered inside the controller instead (see
+// isFinanceDocumentBlocked below), with staff_document_grants as the
+// one explicit exception an Admin can carve out per document.
 router.use(blockAuditor);
 
 // ============================================================
@@ -150,6 +160,34 @@ router.post('/:id/approve',
     validators.idParam('id'),
     validateRequest,
     documentsController.approveDocument
+);
+
+// ============================================================
+// SIGN DOCUMENT (v1.23.0, Section 4.29)
+// POST /api/documents/:id/sign
+// Fills the caller's role's pending signature slot — same
+// DOCUMENT_APPROVE permission as approving, since signing is the
+// per-signatory half of the same approval action.
+// ============================================================
+router.post('/:id/sign',
+    requirePermissions(['DOCUMENT_APPROVE']),
+    validators.idParam('id'),
+    validateRequest,
+    documentsController.signDocument
+);
+
+router.get('/:id/signatures',
+    validators.idParam('id'),
+    validateRequest,
+    documentsController.getDocumentSignatures
+);
+
+// v1.24.0 — whichever company stamp(s) were baked onto this document
+// once it became fully approved/signed (Section 4.30).
+router.get('/:id/stamps',
+    validators.idParam('id'),
+    validateRequest,
+    documentsController.getDocumentStamps
 );
 
 // ============================================================

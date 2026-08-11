@@ -49,11 +49,15 @@ databases:
     plan: basic-256mb
     # Render retired the legacy "starter" database plan for new
     # databases (mid-2026) in favor of named Basic/Pro/Accelerated
-    # tiers. basic-256mb ($6-7/mo, 256MB RAM, 1GB storage) is the
-    # direct successor — a paid tier so the database doesn't expire
-    # after 90 days like the Free tier does, since this app holds
-    # real financial records. Web service "starter" plans below are
-    # unaffected — this naming change only applies to databases.
+    # tiers. basic-256mb ($6/mo instance) is the direct successor —
+    # a paid tier so the database doesn't expire after 90 days like
+    # the Free tier does, since this app holds real financial
+    # records. Render's Blueprint deploy screen also attaches a
+    # 15 GB disk by default, billed separately at $0.30/GB/mo
+    # (~$4.50/mo) — so cms-b-db actually runs ~$10.50/mo total, not
+    # just the $6/mo instance price. Web service "starter" plans
+    # below are unaffected — this naming change only applies to
+    # databases.
 
 services:
   # ----------------------------------------------------------
@@ -163,7 +167,7 @@ services:
       # Keep this in sync with render.yaml's copy — same codebase,
       # same version, both companies.
       - key: REACT_APP_VERSION
-        value: "1.20.1"
+        value: "1.26.0"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

@@ -6,7 +6,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireRoles, isSelfOrHasPermission } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, isSelfOrHasPermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const usersController = require('../controllers/usersController');
 const { asyncHandler } = require('../utils/errors');
@@ -17,13 +17,34 @@ const { sendSuccess } = require('../utils/response');
 router.use(authenticate);
 
 // --- PUBLIC TO ALL AUTHENTICATED USERS ---
+// (deliberately NOT behind requireAssignedRole — a zero-role, pending
+// account still needs to see/edit its own profile and check whether
+// its role request has been reviewed yet)
 router.get('/me',                   usersController.getMyProfile);
 router.get('/roles',                usersController.getAllRoles);
+// The requester's own most recent role request (or null) — feeds the
+// pending-approval page a pending user is redirected to (Section 3).
+router.get('/me/role-request',      usersController.getMyRoleRequest);
+// Membership Agreement text + this user's consent status, and the
+// consent submission itself — feeds the Consent page a role-assigned-
+// but-not-yet-consented user is redirected to (Section 4.29). Also
+// deliberately NOT behind requireAssignedRole/requireConsent — this
+// is the one thing a not-yet-consented account most needs to reach.
+router.get('/me/membership-agreement', usersController.getMembershipAgreement);
+router.post('/me/consent',             usersController.giveConsent);
+// Draw-and-save a personal signature — needed before consent can be
+// given, and reusable later (Settings -> My Profile) to redraw it.
+router.patch('/me/signature',
+    [body('signature_data_url').notEmpty().withMessage('signature_data_url is required')],
+    validateRequest,
+    usersController.updateSignature
+);
 // Company-wide shareholding list — real member ownership data, not scoped
 // to the requester. Every other role that can reach this point is an
-// actual member; an Auditor is the one authenticated role that isn't, so
-// it's excluded here rather than opened up to everyone.
-router.get('/shareholding',         blockAuditor, usersController.getShareholding);
+// actual member; an Auditor is the one authenticated role that isn't, and
+// a zero-role pending account is another, so both are excluded here
+// rather than opened up to everyone.
+router.get('/shareholding',         requireAssignedRole, requireConsent, blockFinanceRestricted, usersController.getShareholding);
 
 router.patch('/me',
     [
@@ -47,12 +68,20 @@ router.patch('/me/photo',
 );
 
 // --- ADMIN / PRIVILEGED ROUTES ---
+// requireConsent added here too (v1.23.0) — these show/manage real
+// member data, the same reasoning as /shareholding above. Not
+// requireAssignedRole as well since requirePermissions already
+// implies holding a role (permissions are role-granted) — but
+// holding a role doesn't imply having consented, so that gate is
+// still needed explicitly.
 router.get('/',
+    requireConsent,
     requirePermissions(['USER_VIEW_ALL']),
     usersController.getAllUsers
 );
 
 router.get('/role-requests',
+    requireConsent,
     requirePermissions(['ROLE_ASSIGN']),
     usersController.getRoleRequests
 );
@@ -61,6 +90,7 @@ router.get('/role-requests',
 // NOTE: must stay above the '/:id' route below — otherwise Express treats
 // "shareholders" as the ':id' value and 422s on the "must be an integer" check.
 router.get('/shareholders',
+    requireConsent,
     requirePermissions(['FINANCE_TRANSACTION_CREATE']),
     asyncHandler(async (req, res) => {
         const result = await query(`
@@ -91,6 +121,7 @@ router.get('/:id',
 router.patch('/:id/deactivate',
     validators.idParam('id'),
     validateRequest,
+    requireConsent,
     requirePermissions(['USER_MANAGE']),
     usersController.deactivateUser
 );
@@ -99,6 +130,7 @@ router.post('/:id/roles',
     validators.idParam('id'),
     [body('role_id').isInt({ min: 1 }).withMessage('Role ID required')],
     validateRequest,
+    requireConsent,
     requirePermissions(['ROLE_ASSIGN']),
     usersController.assignRole
 );
@@ -107,6 +139,7 @@ router.delete('/:id/roles/:roleId',
     validators.idParam('id'),
     validators.idParam('roleId'),
     validateRequest,
+    requireConsent,
     requirePermissions(['ROLE_ASSIGN']),
     usersController.revokeRole
 );

@@ -15,11 +15,13 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, requireRoles } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const auditController = require('../controllers/auditController');
 
 router.use(authenticate);
+router.use(requireAssignedRole);
+router.use(requireConsent);
 
 // ============================================================
 // ADMIN — ENGAGEMENT MANAGEMENT

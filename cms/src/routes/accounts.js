@@ -14,12 +14,14 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
 const accountsController = require('../controllers/accountsController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // Bank details — shared by primary/secondary creation and update.
 // The "required unless virtual" rule is enforced in the controller

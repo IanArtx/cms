@@ -69,7 +69,7 @@ const getOrCreateSavingsBalance = async (client, userId, currencyId) => {
 // ============================================================
 const getSavingsAccount = async (client) => {
     const account = await client.query(`
-        SELECT id, currency_id, name
+        SELECT id, currency_id, name, account_type, reference_prefix
         FROM   accounts
         WHERE  account_type = 'SAVINGS' AND is_active = TRUE
     `);
@@ -1272,6 +1272,7 @@ module.exports = {
     getAllSavings,
     getAllSavingsHandouts,
     getOrCreateSavingsBalance,
+    getSavingsAccount,
     createSavingsPoolInflow,
     approveSavingsPoolInflow,
     rejectSavingsPoolInflow,

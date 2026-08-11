@@ -238,6 +238,7 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
                             <label className="label">Value Date *</label>
                             <input type="date" className="input"
                                 value={form.value_date}
+                                max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({
                                     ...p, value_date: e.target.value }))}
                                 required />

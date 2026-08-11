@@ -18,6 +18,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { applySideFundPayment } = require('../services/sideFundService');
 
 // ============================================================
 // INTERNAL HELPER — GET CURRENT FLOOR LIMIT
@@ -361,12 +362,111 @@ const creditShareholderContribution = async (client, {
 };
 
 // ============================================================
+// CREDIT SIDE FUND CONTRIBUTION (shared core logic, v1.26.0)
+// The side-fund slice of a Transactions contribution — a completely
+// separate ledger transaction (posted to the side fund's OWN parent
+// account, not the primary account) so the two envelopes never mix,
+// then applied to that member's own dues oldest-unpaid-first via the
+// same applySideFundPayment every other side fund payment path uses.
+// Must be called from inside an existing `withTransaction` block.
+// ============================================================
+const creditSideFundContribution = async (client, {
+    userId, amount, contributionDate, categoryId, recordedByUserId,
+}) => {
+    const configResult = await client.query('SELECT * FROM side_fund_config WHERE id = 1 FOR UPDATE');
+    const config = configResult.rows[0];
+    if (!config || !config.is_active) {
+        throw createError.badRequest('The side fund is not currently active — remove the side fund portion or activate it first');
+    }
+    if (!config.parent_account_id) {
+        throw createError.badRequest('The side fund has no parent account configured');
+    }
+
+    const memberResult = await client.query(
+        'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+        [userId]
+    );
+    if (memberResult.rows.length === 0) {
+        throw createError.notFound('Contributing member not found');
+    }
+    const member = memberResult.rows[0];
+
+    const account = await client.query(
+        'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
+        [config.parent_account_id]
+    );
+    const parentAccount = account.rows[0];
+
+    const { referenceId, referenceCode } = await generateReference(
+        client, resolveModuleCode(parentAccount), 'SF-IN', 'TRANSACTION', recordedByUserId
+    );
+
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId:       config.parent_account_id,
+        transactionType: 'CREDIT',
+        inflowType:      'SIDE_FUND_CONTRIBUTION_IN',
+        amount,
+        currencyId:      parentAccount.currency_id,
+        categoryId,
+        description:     `Side fund portion of contribution — ${member.first_name} ${member.last_name}`,
+        valueDate:       contributionDate,
+        createdBy:       recordedByUserId,
+        referenceId,
+    });
+    await linkReferenceToRecord(client, referenceId, transactionId);
+
+    const { settled, creditBanked } = await applySideFundPayment(client, {
+        userId,
+        amount,
+        transactionId,
+        referenceCode,
+        paidDate:   contributionDate,
+        recordedBy: recordedByUserId,
+    });
+
+    await client.query(`
+        UPDATE side_fund_config
+        SET    current_balance = current_balance + $1, updated_at = NOW()
+        WHERE  id = 1
+    `, [amount]);
+
+    await logAction(recordedByUserId, ACTIONS.SIDE_FUND_DUE_PAID, MODULES.FINANCE, {
+        recordType:  'side_fund_dues',
+        newValues:   { referenceCode, amount, settled, creditBanked, balanceBefore, balanceAfter },
+        description: `Side fund portion of contribution: ${member.first_name} ${member.last_name} — ${amount} (${referenceCode})`,
+        client,
+    });
+
+    notify({
+        userId,
+        type:       'SIDE_FUND_DUE_PAID',
+        title:      'Side fund contribution recorded',
+        body:       `Your side fund payment of ${amount} was recorded (reference ${referenceCode}).` +
+            (settled.length > 1 ? ` It settled ${settled.length} months' dues.` : '') +
+            (creditBanked > 0 ? ` ${creditBanked} was banked as credit toward future months.` : ''),
+        link:       `/side-fund`,
+        module:     'FINANCE',
+        recordType: 'side_fund_dues',
+        recordId:   settled.length > 0 ? settled[0].due_id : null,
+    });
+
+    return { transactionId, balanceBefore, balanceAfter, referenceCode, settled, creditBanked, member };
+};
+
+// ============================================================
 // RECORD SHAREHOLDER CONTRIBUTION
 // POST /api/transactions/contributions
 // Treasurer/Assistant Treasurer only. contributed_by: the member
 // making the contribution — defaults to the logged-in user if not
 // provided, or can be set to record on behalf of any member.
 // Shareholding % is auto-recalculated after every contribution.
+//
+// v1.26.0 — an optional side_fund_amount can be sliced out of the
+// total: that portion is auto-credited to the side fund (tied to
+// this same member's own dues), and only the REMAINDER is recorded
+// as the capital contribution. This is now the only way a Side Fund
+// payment can ride along with a Transactions entry — the old
+// standalone "Add Funds Directly" side fund feature is gone.
 // ============================================================
 const recordContribution = asyncHandler(async (req, res) => {
     const {
@@ -375,6 +475,7 @@ const recordContribution = asyncHandler(async (req, res) => {
         category_id,
         notes,
         contributed_by, // user_id of the contributing member
+        side_fund_amount,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -382,37 +483,77 @@ const recordContribution = asyncHandler(async (req, res) => {
             ? parseInt(contributed_by)
             : req.user.id;
 
-        const { transactionId, balanceBefore, balanceAfter, referenceCode, contributor } =
-            await creditShareholderContribution(client, {
+        const totalAmount = parseFloat(amount);
+        const sideFundAmount = side_fund_amount ? parseFloat(side_fund_amount) : 0;
+
+        if (sideFundAmount < 0) {
+            throw createError.badRequest('The side fund portion cannot be negative');
+        }
+        if (sideFundAmount > totalAmount) {
+            throw createError.badRequest('The side fund portion cannot exceed the total amount');
+        }
+        const contributionAmount = parseFloat((totalAmount - sideFundAmount).toFixed(4));
+
+        let sideFund = null;
+        if (sideFundAmount > 0) {
+            sideFund = await creditSideFundContribution(client, {
+                userId:            contributorId,
+                amount:            sideFundAmount,
+                contributionDate:  contribution_date,
+                categoryId:        category_id,
+                recordedByUserId:  req.user.id,
+            });
+        }
+
+        let contribution = null;
+        if (contributionAmount > 0) {
+            contribution = await creditShareholderContribution(client, {
                 contributorId,
-                amount,
+                amount: contributionAmount,
                 contributionDate: contribution_date,
                 categoryId:       category_id,
                 notes,
                 recordedByUserId: req.user.id,
             });
+        }
 
-        await logAction(req.user.id, ACTIONS.CONTRIBUTION_CREATED, MODULES.FINANCE, {
-            ipAddress:   req.ip,
-            recordType:  'transactions',
-            recordId:    transactionId,
-            newValues:   {
-                amount, referenceCode, balanceBefore, balanceAfter,
-                contributorId,
-                contributorName: `${contributor.first_name} ${contributor.last_name}`,
-            },
-            description: `Contribution: ${referenceCode} — ${contributor.first_name} ${contributor.last_name}: ${amount}`,
-            client,
-        });
+        if (!contribution && !sideFund) {
+            throw createError.badRequest('Amount must be greater than zero');
+        }
+
+        const contributorName = contribution
+            ? `${contribution.contributor.first_name} ${contribution.contributor.last_name}`
+            : `${sideFund.member.first_name} ${sideFund.member.last_name}`;
+
+        if (contribution) {
+            await logAction(req.user.id, ACTIONS.CONTRIBUTION_CREATED, MODULES.FINANCE, {
+                ipAddress:   req.ip,
+                recordType:  'transactions',
+                recordId:    contribution.transactionId,
+                newValues:   {
+                    amount: contributionAmount, referenceCode: contribution.referenceCode,
+                    balanceBefore: contribution.balanceBefore, balanceAfter: contribution.balanceAfter,
+                    contributorId, contributorName,
+                },
+                description: `Contribution: ${contribution.referenceCode} — ${contributorName}: ${contributionAmount}`,
+                client,
+            });
+        }
 
         sendCreated(res, {
-            reference:        referenceCode,
-            transaction_id:   transactionId,
-            contributor_name: `${contributor.first_name} ${contributor.last_name}`,
-            amount,
-            balance_before:   balanceBefore,
-            balance_after:    balanceAfter,
-        }, `Contribution recorded for ${contributor.first_name} ${contributor.last_name}. Reference: ${referenceCode}`);
+            reference:            contribution ? contribution.referenceCode : null,
+            transaction_id:       contribution ? contribution.transactionId : null,
+            contributor_name:     contributorName,
+            amount:               contributionAmount,
+            balance_before:       contribution ? contribution.balanceBefore : null,
+            balance_after:        contribution ? contribution.balanceAfter : null,
+            side_fund_amount:     sideFundAmount,
+            side_fund_reference:  sideFund ? sideFund.referenceCode : null,
+            side_fund_settled:    sideFund ? sideFund.settled : [],
+            side_fund_credit_banked: sideFund ? sideFund.creditBanked : 0,
+        }, `Contribution recorded for ${contributorName}` +
+            (contribution ? `. Reference: ${contribution.referenceCode}` : '') +
+            (sideFund ? ` — ${sideFundAmount} side fund portion recorded (${sideFund.referenceCode})` : ''));
     });
 });
 
@@ -779,6 +920,7 @@ const getTransactionById = asyncHandler(async (req, res) => {
 module.exports = {
     recordContribution,
     creditShareholderContribution,
+    creditSideFundContribution,
     recordExpense,
     recordInflow,
     reverseTransaction,

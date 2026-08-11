@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { accountsAPI, usersAPI, categoriesAPI, settingsAPI, systemAPI } from '../../api/endpoints';
-import { getErrorMessage } from '../../utils/helpers';
+import { getErrorMessage, formatDate } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -22,6 +22,11 @@ import {
     BuildingOffice2Icon,
     ArrowUpTrayIcon,
     ShieldCheckIcon,
+    DocumentCheckIcon,
+    ClipboardDocumentCheckIcon,
+    CheckBadgeIcon,
+    TrashIcon,
+    CalendarDaysIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -956,6 +961,696 @@ const CompanyTab = () => {
 };
 
 // ============================================================
+// SIGNATORIES TAB (v1.23.0, Section 4.29)
+// Which roles must sign each of the four multi-signature-eligible
+// document types before it counts as approved. Leaving a type with
+// zero roles selected turns the requirement off entirely for that
+// type — it falls back to the original single-approver flow.
+// ============================================================
+const SIGNABLE_TYPES = [
+    { key: 'RESOLUTION',       label: 'Resolutions' },
+    { key: 'LOAN_AGREEMENT',   label: 'Loan Agreements' },
+    { key: 'GRANT_AGREEMENT',  label: 'Grant Agreements' },
+    { key: 'SHARE_CERTIFICATE', label: 'Share Certificates (monthly/annual rounds)' },
+];
+
+const SignatoriesTab = () => {
+    const [roles, setRoles] = useState([]);
+    const [selected, setSelected] = useState({}); // { RESOLUTION: Set(roleId), ... }
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(null); // which type key is currently saving
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const [rolesRes, reqRes] = await Promise.all([
+                usersAPI.getAllRoles(),
+                settingsAPI.getSignatureRequirements(),
+            ]);
+            setRoles(rolesRes.data.data);
+            const byType = reqRes.data.data;
+            const next = {};
+            for (const t of SIGNABLE_TYPES) {
+                next[t.key] = new Set((byType[t.key] || []).map(r => r.role_id));
+            }
+            setSelected(next);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const toggleRole = (typeKey, roleId) => {
+        setSelected(prev => {
+            const next = new Set(prev[typeKey]);
+            if (next.has(roleId)) next.delete(roleId); else next.add(roleId);
+            return { ...prev, [typeKey]: next };
+        });
+    };
+
+    const handleSave = async (typeKey) => {
+        setError(null);
+        setSuccess(null);
+        setSaving(typeKey);
+        try {
+            const roleIds = Array.from(selected[typeKey] || []);
+            await settingsAPI.setSignatureRequirements(typeKey, roleIds);
+            setSuccess(roleIds.length === 0
+                ? `Multi-signature requirement turned off for this document type.`
+                : `Saved — ${roleIds.length} role(s) must now sign this document type.`);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(null);
+        }
+    };
+
+    if (loading) return <LoadingSpinner />;
+
+    return (
+        <div className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Signatories</h3>
+            <p className="text-sm text-gray-500 mb-6">
+                Choose which roles must sign each document type before it counts as approved.
+                A document isn't final until every selected role has signed. Leave a type with
+                no roles selected to keep it on the original single-approver flow.
+            </p>
+
+            {error && <ErrorMessage message={error} />}
+            {success && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                    <p className="text-sm text-green-700">{success}</p>
+                </div>
+            )}
+
+            <div className="space-y-6">
+                {SIGNABLE_TYPES.map(type => (
+                    <div key={type.key} className="border border-gray-200 rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-3">{type.label}</h4>
+                        <div className="flex flex-wrap gap-3 mb-3">
+                            {roles.map(role => (
+                                <label key={role.id} className="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={selected[type.key]?.has(role.id) || false}
+                                        onChange={() => toggleRole(type.key, role.id)}
+                                    />
+                                    {role.name}
+                                </label>
+                            ))}
+                        </div>
+                        <button
+                            onClick={() => handleSave(type.key)}
+                            disabled={saving === type.key}
+                            className="btn-secondary text-xs"
+                        >
+                            {saving === type.key ? 'Saving...' : 'Save'}
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// STAMPS TAB (v1.24.0, Section 4.30)
+// Upload named stamp/seal images (Treasury, Secretariat, etc.) and
+// choose which stamp(s) auto-attach to each document type once it's
+// fully approved/signed. Share Certificates are capped at ONE stamp
+// (radio buttons instead of checkboxes) — the database itself
+// enforces this, this is just the matching UI.
+// ============================================================
+const STAMPABLE_TYPES = [
+    { key: 'RESOLUTION',                  label: 'Resolutions' },
+    { key: 'LOAN_AGREEMENT',              label: 'Loan Agreements' },
+    { key: 'GRANT_AGREEMENT',             label: 'Grant Agreements' },
+    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual rounds) — one stamp only' },
+    { key: 'CONTRACT',                    label: 'Contracts' },
+    { key: 'MEETING_MINUTES',             label: 'Meeting Minutes' },
+    { key: 'MEETING_AGENDA',              label: 'Meeting Agendas' },
+    { key: 'INVESTMENT_PROPOSAL',         label: 'Investment Proposals' },
+    { key: 'FINANCIAL_REPORT_GENERAL',    label: 'Financial Reports (General)' },
+    { key: 'FINANCIAL_REPORT_INDIVIDUAL', label: 'Financial Reports (Individual)' },
+    { key: 'RECEIPT',                     label: 'Receipts' },
+    { key: 'AUDITOR_FEEDBACK',            label: 'Auditor Feedback' },
+    { key: 'AUDIT_REPORT',                label: 'Audit Reports' },
+    { key: 'OTHER',                       label: 'Other' },
+];
+
+const StampsTab = () => {
+    const [stamps, setStamps] = useState([]);
+    const [requirements, setRequirements] = useState({}); // { RESOLUTION: Set(stampId), ... }
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+    const [saving, setSaving] = useState(null); // which type key is currently saving
+
+    const [stampName, setStampName] = useState('');
+    const [stampFile, setStampFile] = useState(null);
+    const [uploading, setUploading] = useState(false);
+
+    // v1.24.1 — company-wide on/off switch. Configuration below (upload,
+    // per-type assignment) can still be edited while this is off — it
+    // just isn't applied to any real document until switched on.
+    const [stampsEnabled, setStampsEnabled] = useState(false);
+    const [togglingSwitch, setTogglingSwitch] = useState(false);
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const [stampsRes, reqRes, companyRes] = await Promise.all([
+                settingsAPI.getStamps(),
+                settingsAPI.getStampRequirements(),
+                settingsAPI.getCompany(),
+            ]);
+            setStamps(stampsRes.data.data);
+            const byType = reqRes.data.data;
+            const next = {};
+            for (const t of STAMPABLE_TYPES) {
+                next[t.key] = new Set((byType[t.key] || []).map(s => s.stamp_id));
+            }
+            setRequirements(next);
+            setStampsEnabled(!!companyRes.data.data?.stamps_enabled);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const handleToggleSwitch = async () => {
+        setError(null);
+        setSuccess(null);
+        setTogglingSwitch(true);
+        const next = !stampsEnabled;
+        try {
+            await settingsAPI.updateCompany({ stamps_enabled: next });
+            setStampsEnabled(next);
+            setSuccess(next
+                ? 'Company stamps are now ON — configured stamps will start applying to newly finalised documents and certificates.'
+                : 'Company stamps are now OFF — nothing will be stamped until this is switched back on. Existing configuration is kept.');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setTogglingSwitch(false);
+        }
+    };
+
+    const activeStamps = stamps.filter(s => s.is_active);
+
+    const handleUpload = async () => {
+        if (!stampFile || !stampName.trim()) return;
+        setError(null);
+        setSuccess(null);
+        setUploading(true);
+        try {
+            const formData = new FormData();
+            formData.append('stamp', stampFile);
+            formData.append('name', stampName.trim());
+            await settingsAPI.uploadStamp(formData);
+            setStampName('');
+            setStampFile(null);
+            setSuccess('Stamp uploaded');
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const handleDeactivate = async (id, name) => {
+        if (!window.confirm(`Deactivate the "${name}" stamp? It will stop being assigned to any document type, but already-stamped documents keep it.`)) return;
+        setError(null);
+        try {
+            await settingsAPI.deactivateStamp(id);
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    };
+
+    const toggleStamp = (typeKey, stampId, singleSelect) => {
+        setRequirements(prev => {
+            if (singleSelect) {
+                const already = prev[typeKey]?.has(stampId);
+                return { ...prev, [typeKey]: already ? new Set() : new Set([stampId]) };
+            }
+            const next = new Set(prev[typeKey]);
+            if (next.has(stampId)) next.delete(stampId); else next.add(stampId);
+            return { ...prev, [typeKey]: next };
+        });
+    };
+
+    const handleSave = async (typeKey) => {
+        setError(null);
+        setSuccess(null);
+        setSaving(typeKey);
+        try {
+            const stampIds = Array.from(requirements[typeKey] || []);
+            await settingsAPI.setStampRequirements(typeKey, stampIds);
+            setSuccess(stampIds.length === 0
+                ? 'No stamp assigned to this document type anymore.'
+                : `Saved — ${stampIds.length} stamp(s) will now be applied to this document type once fully approved.`);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(null);
+        }
+    };
+
+    if (loading) return <LoadingSpinner />;
+
+    return (
+        <div className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Company Stamps & Seals</h3>
+            <p className="text-sm text-gray-500 mb-6">
+                Upload named stamp images (Treasury, Secretariat, or any other department) and
+                choose which document types they auto-attach to once fully approved/signed. A
+                document type with nothing selected is never stamped. Share Certificates can only
+                carry one stamp at a time.
+            </p>
+
+            <div className={`flex items-center justify-between border rounded-lg p-4 mb-6 ${
+                stampsEnabled ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'
+            }`}>
+                <div>
+                    <p className="text-sm font-semibold text-gray-900">
+                        Company stamps are currently {stampsEnabled ? 'ON' : 'OFF'}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                        {stampsEnabled
+                            ? 'Configured stamps below are being applied to newly finalised documents and certificates.'
+                            : 'Nothing is being stamped anywhere, even if stamps are uploaded and assigned below. Turn this on when the company is ready to start using it.'}
+                    </p>
+                </div>
+                <button
+                    onClick={handleToggleSwitch}
+                    disabled={togglingSwitch || loading}
+                    className={stampsEnabled ? 'btn-secondary text-sm' : 'btn-primary text-sm'}
+                >
+                    {togglingSwitch ? 'Saving...' : stampsEnabled ? 'Turn Off' : 'Turn On'}
+                </button>
+            </div>
+
+            {error && <ErrorMessage message={error} />}
+            {success && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                    <p className="text-sm text-green-700">{success}</p>
+                </div>
+            )}
+
+            {/* Upload new stamp */}
+            <div className="border border-gray-200 rounded-lg p-4 mb-6">
+                <h4 className="text-sm font-semibold text-gray-900 mb-3">Upload a stamp</h4>
+                <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                        <label className="block text-xs text-gray-500 mb-1">Name</label>
+                        <input
+                            type="text"
+                            className="input"
+                            placeholder="e.g. Treasury"
+                            value={stampName}
+                            onChange={e => setStampName(e.target.value)}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-gray-500 mb-1">Image (PNG or transparent SVG)</label>
+                        <input
+                            type="file"
+                            accept="image/png,image/svg+xml"
+                            onChange={e => setStampFile(e.target.files?.[0] || null)}
+                            className="text-sm text-gray-500"
+                        />
+                    </div>
+                    <button
+                        onClick={handleUpload}
+                        disabled={uploading || !stampFile || !stampName.trim()}
+                        className="btn-primary text-sm flex items-center gap-2"
+                    >
+                        <ArrowUpTrayIcon className="h-4 w-4" />
+                        {uploading ? 'Uploading...' : 'Upload'}
+                    </button>
+                </div>
+            </div>
+
+            {/* Existing stamps */}
+            <div className="mb-8">
+                <h4 className="text-sm font-semibold text-gray-900 mb-3">Uploaded stamps</h4>
+                {stamps.length === 0 ? (
+                    <p className="text-sm text-gray-400">No stamps uploaded yet.</p>
+                ) : (
+                    <div className="flex flex-wrap gap-4">
+                        {stamps.map(stamp => (
+                            <div key={stamp.id} className={`border rounded-lg p-3 flex flex-col items-center gap-2 w-32
+                                ${stamp.is_active ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>
+                                <img src={stamp.file_path} alt={stamp.name}
+                                    className="h-16 w-16 object-contain" />
+                                <span className="text-xs text-gray-700 text-center">{stamp.name}</span>
+                                {stamp.is_active ? (
+                                    <button
+                                        onClick={() => handleDeactivate(stamp.id, stamp.name)}
+                                        className="text-xs text-red-600 hover:text-red-800 flex items-center gap-1"
+                                    >
+                                        <TrashIcon className="h-3 w-3" /> Deactivate
+                                    </button>
+                                ) : (
+                                    <span className="text-xs text-gray-400">Deactivated</span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Per-document-type stamp assignment */}
+            <div className="space-y-6">
+                {STAMPABLE_TYPES.map(type => {
+                    const singleSelect = type.key === 'SHARE_CERTIFICATE';
+                    return (
+                        <div key={type.key} className="border border-gray-200 rounded-lg p-4">
+                            <h4 className="text-sm font-semibold text-gray-900 mb-3">{type.label}</h4>
+                            {activeStamps.length === 0 ? (
+                                <p className="text-xs text-gray-400 mb-3">Upload a stamp above first.</p>
+                            ) : (
+                                <div className="flex flex-wrap gap-3 mb-3">
+                                    {activeStamps.map(stamp => (
+                                        <label key={stamp.id} className="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer">
+                                            <input
+                                                type={singleSelect ? 'radio' : 'checkbox'}
+                                                name={singleSelect ? `stamp-${type.key}` : undefined}
+                                                checked={requirements[type.key]?.has(stamp.id) || false}
+                                                onChange={() => toggleStamp(type.key, stamp.id, singleSelect)}
+                                            />
+                                            {stamp.name}
+                                        </label>
+                                    ))}
+                                    {singleSelect && requirements[type.key]?.size > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setRequirements(prev => ({ ...prev, [type.key]: new Set() }))}
+                                            className="text-xs text-gray-400 hover:text-gray-600 underline"
+                                        >
+                                            Clear
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            <button
+                                onClick={() => handleSave(type.key)}
+                                disabled={saving === type.key || activeStamps.length === 0}
+                                className="btn-secondary text-xs"
+                            >
+                                {saving === type.key ? 'Saving...' : 'Save'}
+                            </button>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// FISCAL QUARTERS TAB (v1.25.0, Section 4.10)
+// The company's own financial-year quarters, as fully custom date
+// ranges — not constrained to equal 3-month blocks. Purely a
+// lookup/labelling table: Reports and documents show whichever
+// configured quarter a given date falls inside, alongside the
+// normal calendar month/year. It never changes any actual figures.
+// ============================================================
+const FiscalQuartersTab = () => {
+    const [quarters, setQuarters] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [editingId, setEditingId] = useState(null); // null = not editing, 'new' = creating
+    const [form, setForm] = useState({ label: '', start_date: '', end_date: '' });
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await settingsAPI.getFiscalQuarters();
+            setQuarters(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const startCreate = () => {
+        setEditingId('new');
+        setForm({ label: '', start_date: '', end_date: '' });
+        setError(null);
+        setSuccess(null);
+    };
+
+    const startEdit = (q) => {
+        setEditingId(q.id);
+        setForm({ label: q.label, start_date: q.start_date?.slice(0, 10) || '', end_date: q.end_date?.slice(0, 10) || '' });
+        setError(null);
+        setSuccess(null);
+    };
+
+    const cancelEdit = () => {
+        setEditingId(null);
+        setForm({ label: '', start_date: '', end_date: '' });
+    };
+
+    const handleSave = async () => {
+        if (!form.label.trim() || !form.start_date || !form.end_date) {
+            setError('Label, start date, and end date are all required');
+            return;
+        }
+        if (new Date(form.end_date) < new Date(form.start_date)) {
+            setError('End date cannot be before start date');
+            return;
+        }
+        setSaving(true);
+        setError(null);
+        try {
+            if (editingId === 'new') {
+                await settingsAPI.createFiscalQuarter(form);
+                setSuccess('Fiscal quarter created');
+            } else {
+                await settingsAPI.updateFiscalQuarter(editingId, form);
+                setSuccess('Fiscal quarter updated');
+            }
+            cancelEdit();
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleDelete = async (q) => {
+        if (!window.confirm(`Delete the fiscal quarter "${q.label}"? Reports already generated keep showing it — only future reports stop matching this range.`)) return;
+        setError(null);
+        try {
+            await settingsAPI.deleteFiscalQuarter(q.id);
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    };
+
+    if (loading) return <LoadingSpinner />;
+
+    return (
+        <div className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Fiscal Quarters</h3>
+            <p className="text-sm text-gray-500 mb-6">
+                Define your company's own financial-year quarters as exact date ranges — they don't have to be
+                equal three-month blocks. Reports and documents show whichever quarter a date falls inside,
+                purely as a label; it never changes any actual figures.
+            </p>
+
+            {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+            {success && (
+                <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                    {success}
+                </div>
+            )}
+
+            <div className="divide-y divide-gray-100 mb-4">
+                {quarters.map(q => (
+                    editingId === q.id ? (
+                        <div key={q.id} className="py-3 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                            <div>
+                                <label className="label">Label</label>
+                                <input type="text" className="input" value={form.label}
+                                    onChange={e => setForm(p => ({ ...p, label: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="label">Start Date</label>
+                                <input type="date" className="input" value={form.start_date}
+                                    onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="label">End Date</label>
+                                <input type="date" className="input" value={form.end_date}
+                                    onChange={e => setForm(p => ({ ...p, end_date: e.target.value }))} />
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
+                                    {saving ? 'Saving...' : 'Save'}
+                                </button>
+                                <button onClick={cancelEdit} className="btn-secondary text-sm">Cancel</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div key={q.id} className="py-3 flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-gray-900">{q.label}</p>
+                                <p className="text-xs text-gray-400">
+                                    {formatDate(q.start_date)} — {formatDate(q.end_date)}
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button onClick={() => startEdit(q)}
+                                    className="text-xs text-primary-700 hover:text-primary-800 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50 transition-colors">
+                                    Edit
+                                </button>
+                                <button onClick={() => handleDelete(q)}
+                                    className="text-xs text-red-600 hover:text-red-700 font-medium px-2 py-1 rounded border border-red-200 hover:bg-red-50 transition-colors">
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                    )
+                ))}
+                {quarters.length === 0 && editingId !== 'new' && (
+                    <p className="text-sm text-gray-400 py-4 text-center">No fiscal quarters defined yet</p>
+                )}
+            </div>
+
+            {editingId === 'new' ? (
+                <div className="border-t border-gray-100 pt-4 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                    <div>
+                        <label className="label">Label *</label>
+                        <input type="text" className="input" value={form.label} placeholder="e.g. Q1 2026"
+                            onChange={e => setForm(p => ({ ...p, label: e.target.value }))} />
+                    </div>
+                    <div>
+                        <label className="label">Start Date *</label>
+                        <input type="date" className="input" value={form.start_date}
+                            onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} />
+                    </div>
+                    <div>
+                        <label className="label">End Date *</label>
+                        <input type="date" className="input" value={form.end_date}
+                            onChange={e => setForm(p => ({ ...p, end_date: e.target.value }))} />
+                    </div>
+                    <div className="flex gap-2">
+                        <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
+                            {saving ? 'Saving...' : 'Create'}
+                        </button>
+                        <button onClick={cancelEdit} className="btn-secondary text-sm">Cancel</button>
+                    </div>
+                </div>
+            ) : (
+                <button onClick={startCreate} className="btn-secondary flex items-center gap-2 text-sm">
+                    <PlusIcon className="h-4 w-4" />
+                    Add Fiscal Quarter
+                </button>
+            )}
+        </div>
+    );
+};
+
+// ============================================================
+// MEMBERSHIP AGREEMENT TAB (v1.23.0, Section 4.29)
+// The text every new member reads and consents to once, at
+// /consent, before they can use the rest of the system.
+// ============================================================
+const MembershipAgreementTab = () => {
+    const [content, setContent] = useState('');
+    const [version, setVersion] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await usersAPI.getMembershipAgreement();
+            setContent(res.data.data.agreement?.content || '');
+            setVersion(res.data.data.agreement?.version || null);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const handleSave = async () => {
+        setError(null);
+        setSuccess(null);
+        setSaving(true);
+        try {
+            const res = await settingsAPI.updateMembershipAgreement(content);
+            setVersion(res.data.data.version);
+            setSuccess('Membership Agreement updated. Members who already consented are not asked to re-consent — this is a one-time step per member (see Section 4.29 of the CMS Bible).');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (loading) return <LoadingSpinner />;
+
+    return (
+        <div className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Membership Agreement</h3>
+            <p className="text-sm text-gray-500 mb-1">
+                Shown to every new member at /consent — they must read and agree to this,
+                and draw their signature, before they can use the rest of the system.
+            </p>
+            {version && <p className="text-xs text-gray-400 mb-4">Current version: {version}</p>}
+
+            {error && <ErrorMessage message={error} />}
+            {success && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                    <p className="text-sm text-green-700">{success}</p>
+                </div>
+            )}
+
+            <textarea
+                className="input"
+                rows={14}
+                value={content}
+                onChange={e => setContent(e.target.value)}
+                placeholder="Write the Membership Agreement text members will read and consent to..."
+            />
+
+            <div className="flex justify-end mt-4">
+                <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
+                    {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN SETTINGS PAGE
 // ============================================================
 const SettingsPage = () => {
@@ -982,6 +1677,10 @@ const SettingsPage = () => {
         { key: 'currencies', label: 'Currencies', icon: BanknotesIcon },
         { key: 'roles',      label: 'Roles',      icon: UserGroupIcon },
         { key: 'categories', label: 'Categories', icon: TagIcon },
+        { key: 'signatories', label: 'Signatories', icon: DocumentCheckIcon },
+        { key: 'stamps',      label: 'Stamps',      icon: CheckBadgeIcon },
+        { key: 'fiscal-quarters', label: 'Fiscal Quarters', icon: CalendarDaysIcon },
+        { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
     ];
 
     return (
@@ -1014,6 +1713,10 @@ const SettingsPage = () => {
                 {activeTab === 'currencies' && <CurrenciesTab />}
                 {activeTab === 'roles'      && <RolesTab />}
                 {activeTab === 'categories' && <CategoriesTab />}
+                {activeTab === 'signatories' && <SignatoriesTab />}
+                {activeTab === 'stamps' && <StampsTab />}
+                {activeTab === 'fiscal-quarters' && <FiscalQuartersTab />}
+                {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
             </div>
         </div>
     );

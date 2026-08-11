@@ -51,23 +51,33 @@ const Sidebar = ({ isOpen, onClose }) => {
     // intentionally "show: true" for every normal member/staff role.
     const isAuditorOnly = hasRole('Auditor');
 
+    // Administrative Officer (v1.21.0): a hired/contracted staff role
+    // that, unlike the Auditor, keeps a normal multi-page sidebar —
+    // just with every finance-adjacent item removed. The backend
+    // already hard-blocks these routes for this role
+    // (blockFinanceRestricted, middleware/auth.js), so this is about
+    // not showing a link that would only ever lead to a 403, not the
+    // actual security boundary.
+    const isAdminOfficer = hasRole('Administrative Officer');
+
     const navItems = isAuditorOnly ? [
         { label: 'Audit', href: '/audit', icon: ShieldCheckIcon, show: true },
     ] : [
         { label: 'Dashboard',    href: '/',             icon: HomeIcon,            show: true },
-        { label: 'Accounts',     href: '/accounts',     icon: BuildingLibraryIcon, show: hasPermission('FINANCE_VIEW_ALL') },
-        { label: 'Transactions', href: '/transactions', icon: BanknotesIcon,       show: hasPermission('FINANCE_VIEW_ALL') },
-        { label: 'Transfers',    href: '/transfers',    icon: ArrowsRightLeftIcon, show: hasPermission('FINANCE_VIEW_ALL') },
-        { label: 'Requisitions', href:  '/requisitions',icon:  ClipboardDocumentListIcon,  show:  true,},
-        { label: 'Grants',       href: '/grants',       icon: GiftIcon,            show: hasPermission('GRANT_VIEW') },
-        { label: 'Loans',        href: '/loans',        icon: CreditCardIcon,      show: hasPermission('LOAN_VIEW') },
-        { label: 'Investments',  href: '/investments',  icon: ChartBarIcon,        show: hasPermission('INVESTMENT_VIEW') },
-        { label: 'Dividends',    href:  '/dividends',   icon:  BanknotesIcon,      show:  hasPermission('FINANCE_VIEW_ALL'),},
-        { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  true,},
-        { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  true,},
+        { label: 'Accounts',     href: '/accounts',     icon: BuildingLibraryIcon, show: hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer },
+        { label: 'Transactions', href: '/transactions', icon: BanknotesIcon,       show: hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer },
+        { label: 'Transfers',    href: '/transfers',    icon: ArrowsRightLeftIcon, show: hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer },
+        { label: 'Requisitions', href:  '/requisitions',icon:  ClipboardDocumentListIcon,  show:  !isAdminOfficer,},
+        { label: 'Grants',       href: '/grants',       icon: GiftIcon,            show: hasPermission('GRANT_VIEW') && !isAdminOfficer },
+        { label: 'Loans',        href: '/loans',        icon: CreditCardIcon,      show: hasPermission('LOAN_VIEW') && !isAdminOfficer },
+        { label: 'Investments',  href: '/investments',  icon: ChartBarIcon,        show: hasPermission('INVESTMENT_VIEW') && !isAdminOfficer },
+        { label: 'Dividends',    href:  '/dividends',   icon:  BanknotesIcon,      show:  hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer,},
+        { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  !isAdminOfficer,},
+        { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  !isAdminOfficer,},
+        { label: 'Service Fees', href: '/service-fees', icon: WalletIcon,          show: true },
         { label: 'Events',       href: '/events',       icon: CalendarDaysIcon,    show: hasPermission('EVENT_VIEW') },
         { label: 'Documents',    href: '/documents',    icon: DocumentTextIcon,    show: hasPermission('DOCUMENT_VIEW') },
-        { label: 'Reports',      href: '/reports',      icon: ChartPieIcon,        show: true },
+        { label: 'Reports',      href: '/reports',      icon: ChartPieIcon,        show: !isAdminOfficer },
         { label: 'Members',      href: '/users',        icon: UsersIcon,           show: hasPermission('USER_VIEW_ALL') },
         { label: 'External Audit', href: '/audit-management', icon: ShieldCheckIcon, show: hasRole('Admin') },
         { label: 'Audit Review', href: '/audit-review', icon: ShieldCheckIcon, show: hasRole(['Director', 'Secretary']) },

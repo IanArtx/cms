@@ -23,6 +23,22 @@ const {
 } = require('../services/reportService');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { getQuarterForDate } = require('../services/fiscalService');
+
+// ============================================================
+// ATTACH THE CONFIGURED FISCAL QUARTER (v1.25.0) a report's period
+// falls into, if an Admin has set one up covering it — looked up
+// against the LAST day of the reported month, since that's the
+// closing date the report's figures are as-of. Purely a label
+// (report.fiscal_quarter = { id, label, start_date, end_date } or
+// null) — never changes any of the report's actual figures, which
+// stay strictly calendar-month based as they always have.
+// ============================================================
+const attachFiscalQuarter = async (report, year, month) => {
+    const periodEndDate = new Date(year, month, 0).toISOString().split('T')[0]; // last day of `month`
+    report.fiscal_quarter = await getQuarterForDate(periodEndDate).catch(() => null);
+    return report;
+};
 
 // ============================================================
 // GET GENERAL COMPANY REPORT (on demand)
@@ -38,6 +54,7 @@ const getGeneralReport = asyncHandler(async (req, res) => {
     }
 
     const report = await generateGeneralReport(year, month);
+    await attachFiscalQuarter(report, year, month);
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
         ipAddress:   req.ip,
@@ -73,6 +90,7 @@ const getIndividualReport = asyncHandler(async (req, res) => {
     if (!report) {
         throw createError.notFound('Member not found');
     }
+    await attachFiscalQuarter(report, year, month);
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
         ipAddress:   req.ip,
@@ -100,6 +118,7 @@ const getMyReport = asyncHandler(async (req, res) => {
     if (!report) {
         throw createError.notFound('Report could not be generated');
     }
+    await attachFiscalQuarter(report, year, month);
 
     sendSuccess(res, report, `Your report for ${report.period}`);
 });

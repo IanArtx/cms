@@ -109,7 +109,12 @@ CREATE TABLE users (
     last_login_at               TIMESTAMPTZ,
     created_at                  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    created_by                  INTEGER REFERENCES users(id)
+    created_by                  INTEGER REFERENCES users(id),
+    -- v1.23.0 — personal signature, drawn on a signature pad at
+    -- consent time (Section 4.29), stored as a PNG the same way
+    -- photo_path/branding logos are.
+    signature_path               TEXT,
+    signature_updated_at         TIMESTAMPTZ
 );
 
 ALTER TABLE currencies
@@ -393,7 +398,13 @@ CREATE TABLE share_certificates (
     issued_by         INTEGER REFERENCES users(id),
     email_sent        BOOLEAN       NOT NULL DEFAULT FALSE,
     email_error       TEXT,
-    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- v1.23.0 — which monthly/annual signing round (if any) this
+    -- certificate belongs to (Section 4.29.3). NULL for certificates
+    -- issued before this feature existed, or via the on-demand
+    -- single-certificate path, which isn't part of the signing-round
+    -- gate.
+    signing_round_id  INTEGER
 );
 
 CREATE INDEX idx_share_certs_user ON share_certificates (user_id, issued_at DESC);
@@ -437,7 +448,11 @@ CREATE TABLE transactions (
                          'GRANT_REFUND',       -- returning unused grant funds
                          'SIDE_FUND_CONTRIBUTION_IN', -- member's monthly side fund due paid
                          'SIDE_FUND_DIRECT_IN',       -- lump-sum/batch top-up added directly to the side fund
-                         'SAVINGS_POOL_OTHER_IN'      -- non-member inflow into the savings pool (e.g. investment profit), approved
+                         'SAVINGS_POOL_OTHER_IN',     -- non-member inflow into the savings pool (e.g. investment profit), approved
+                         'SERVICE_FEE_OUT',           -- monthly service fee paid to a contracted staff member
+                         'SERVICE_REIMBURSEMENT_OUT', -- expense reimbursement paid to a contracted staff member
+                         'DIVIDEND_OUT',              -- dividend debited from the declaring account
+                         'DIVIDEND_SAVINGS_IN'        -- dividend credited into the Savings account for distribution
                      )),
     amount           NUMERIC(20,4) NOT NULL,
     currency_id      INTEGER       NOT NULL REFERENCES currencies(id),
@@ -1220,7 +1235,14 @@ CREATE TABLE documents (
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     created_by          INTEGER      NOT NULL REFERENCES users(id),
     approved_by         INTEGER REFERENCES users(id),
-    approved_at         TIMESTAMPTZ
+    approved_at         TIMESTAMPTZ,
+    -- v1.23.0 — multi-signatory approval (Section 4.29). For document
+    -- types with active signature_requirements rows, approved_by/at
+    -- are set once the LAST required signature lands (not by a single
+    -- approveDocument call). fully_signed is the reliable flag to
+    -- check either way.
+    fully_signed        BOOLEAN      NOT NULL DEFAULT FALSE,
+    fully_signed_at     TIMESTAMPTZ
 );
 
 CREATE TABLE document_access (
@@ -1342,6 +1364,17 @@ CREATE TABLE dividends (
     created_by       INTEGER       NOT NULL REFERENCES users(id),
     approved_by      INTEGER REFERENCES users(id),
     approved_at      TIMESTAMPTZ,
+    -- The two legs posted on approval (v1.22.0): transaction_id is the
+    -- debit from this dividend's own account; savings_transaction_id is
+    -- the credit into the single Savings account, from which every
+    -- shareholder's savings_balances share (below) is drawn.
+    -- exchange_rate is the manually-entered rate used to convert into
+    -- the Savings account's currency (1 if they already match) — see
+    -- dividend_distributions.credited_amount for each shareholder's
+    -- actual converted share.
+    transaction_id         INTEGER REFERENCES transactions(id),
+    savings_transaction_id INTEGER REFERENCES transactions(id),
+    exchange_rate           NUMERIC(20,8),
     CONSTRAINT positive_dividend_total CHECK (total_amount > 0)
 );
 
@@ -1353,10 +1386,15 @@ CREATE TABLE dividend_distributions (
     user_id            INTEGER       NOT NULL REFERENCES users(id),
     shares_at_time     NUMERIC(20,4) NOT NULL,
     percentage_at_time NUMERIC(8,4)  NOT NULL,
-    amount             NUMERIC(20,4) NOT NULL,
+    amount             NUMERIC(20,4) NOT NULL,  -- declared share, in the dividend's own currency
     status             VARCHAR(30)   NOT NULL DEFAULT 'PENDING'
                        CHECK (status IN ('PENDING','PAID')),
     transaction_id     INTEGER REFERENCES transactions(id),
+    -- credited_amount/exchange_rate (v1.22.0): the actual amount added
+    -- to this shareholder's savings_balances, in the Savings account's
+    -- own currency, and the rate used to get there from `amount` above.
+    credited_amount    NUMERIC(20,4),
+    exchange_rate      NUMERIC(20,8),
     paid_at            TIMESTAMPTZ,
     created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     CONSTRAINT positive_distribution_amount CHECK (amount > 0)
@@ -1799,7 +1837,8 @@ INSERT INTO roles (name, description, is_system_role) VALUES
     ('Assistant Secretary', 'Supports Secretary with events and documents',          TRUE),
     ('Coordinator',         'Operational coordination and project tracking',         TRUE),
     ('Shareholder',         'Capital contributor — personal and general dashboard',  TRUE),
-    ('Auditor',             'External auditor — read-only access to a specific scoped audit engagement, nothing else', TRUE);
+    ('Auditor',             'External auditor — read-only access to a specific scoped audit engagement, nothing else', TRUE),
+    ('Administrative Officer', 'Hired/contracted staff — meetings, minutes, and correspondence; no finance access except individually granted documents', TRUE);
 
 INSERT INTO categories (parent_id, module, name, abbreviation, description) VALUES
     -- Finance
@@ -1808,6 +1847,7 @@ INSERT INTO categories (parent_id, module, name, abbreviation, description) VALU
     (NULL, 'FINANCE', 'Transfer',       'TRF',  'Inter-account transfers'),
     (NULL, 'FINANCE', 'Loan',           'LN',   'All loan activity'),
     (NULL, 'FINANCE', 'Grant',          'GRN',  'All grant activity'),
+    (NULL, 'FINANCE', 'Service Fees',   'SVC',  'Contracted staff service fees and expense reimbursements'),
     -- Documents
     (NULL, 'DOCUMENT', 'Financial',     'FIN',  'Financial documents'),
     (NULL, 'DOCUMENT', 'Corporate',     'CORP', 'Corporate governance documents'),
@@ -1925,6 +1965,12 @@ CREATE TABLE company_settings (
     vision         TEXT,
     core_values    TEXT,
     motto          VARCHAR(300),
+    -- v1.24.1 — master on/off switch for the company stamps/seals
+    -- feature (Section 4.30). Defaults FALSE — an Admin must
+    -- deliberately turn it on; per-document-type configuration
+    -- (document_stamp_requirements) can still be set up while off,
+    -- it just isn't applied to anything until this is TRUE.
+    stamps_enabled BOOLEAN      NOT NULL DEFAULT FALSE,
     updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_by     INTEGER REFERENCES users(id),
     CONSTRAINT single_row_only CHECK (id = 1)
@@ -2173,5 +2219,341 @@ CREATE INDEX idx_audit_extension_requests_engagement   ON audit_extension_reques
 CREATE INDEX idx_audit_extension_requests_status        ON audit_extension_requests (status);
 
 -- ============================================================
--- END OF SCHEMA — v1.6.0
+-- GROUP 17: ADMINISTRATIVE OFFICER — STAFF DOCUMENT GRANTS
+--           AND SERVICE FEES (v1.21.0)
+-- Support for hired/contracted staff (see the "Administrative
+-- Officer" role above): per-document access grants for the
+-- otherwise finance-blocked documents this role can't see by
+-- default, plus a recurring service-fee arrangement and expense
+-- reimbursement flow for a contracted (not payroll/employee)
+-- relationship.
+-- ============================================================
+
+-- Direct, ongoing per-user document access grant — no time-boxed
+-- "engagement" wrapper, unlike the Audit Portal, since this is a
+-- standing staff relationship rather than a fixed-period audit.
+CREATE TABLE staff_document_grants (
+    id          SERIAL PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id),
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    granted_by  INTEGER NOT NULL REFERENCES users(id),
+    granted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at  TIMESTAMPTZ,
+    revoked_by  INTEGER REFERENCES users(id),
+    UNIQUE (document_id, user_id)
+);
+
+-- One row per contracted person's standing monthly fee arrangement.
+CREATE TABLE service_fee_agreements (
+    id             SERIAL PRIMARY KEY,
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    monthly_amount NUMERIC(20,4) NOT NULL,
+    currency_id    INTEGER NOT NULL REFERENCES currencies(id),
+    account_id     INTEGER NOT NULL REFERENCES accounts(id),
+    category_id    INTEGER NOT NULL REFERENCES categories(id),
+    start_date     DATE NOT NULL,
+    end_date       DATE,
+    status         VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+                   CHECK (status IN ('ACTIVE', 'ENDED')),
+    notes          TEXT,
+    created_by     INTEGER NOT NULL REFERENCES users(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_monthly_amount CHECK (monthly_amount > 0),
+    CONSTRAINT service_fee_end_after_start CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+-- Each actual monthly payment, tied to a real posted transaction.
+CREATE TABLE service_fee_payments (
+    id             SERIAL PRIMARY KEY,
+    agreement_id   INTEGER NOT NULL REFERENCES service_fee_agreements(id),
+    amount         NUMERIC(20,4) NOT NULL,
+    payment_date   DATE NOT NULL,
+    transaction_id INTEGER REFERENCES transactions(id),
+    notes          TEXT,
+    paid_by        INTEGER NOT NULL REFERENCES users(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_service_fee_payment CHECK (amount > 0)
+);
+
+-- Ad hoc expense reimbursement requests from a contracted person —
+-- structurally similar to a Requisitions EXPENSE request, kept
+-- separate since Requisitions' other request type
+-- (CONTRIBUTION_ACKNOWLEDGEMENT) is a shareholder concept that
+-- doesn't apply to contracted, non-shareholder staff.
+CREATE TABLE service_reimbursement_requests (
+    id                SERIAL PRIMARY KEY,
+    reference_id      INTEGER NOT NULL REFERENCES references_registry(id),
+    user_id           INTEGER NOT NULL REFERENCES users(id),
+    amount            NUMERIC(20,4) NOT NULL,
+    currency_id       INTEGER NOT NULL REFERENCES currencies(id),
+    category_id       INTEGER NOT NULL REFERENCES categories(id),
+    description       TEXT NOT NULL,
+    expense_date      DATE NOT NULL,
+    receipt_file_path TEXT,
+    receipt_file_name TEXT,
+    status            VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                      CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    account_id        INTEGER REFERENCES accounts(id),
+    transaction_id    INTEGER REFERENCES transactions(id),
+    reviewed_by       INTEGER REFERENCES users(id),
+    reviewed_at       TIMESTAMPTZ,
+    review_notes      TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_reimbursement_amount CHECK (amount > 0)
+);
+
+CREATE INDEX idx_staff_document_grants_user            ON staff_document_grants (user_id);
+CREATE INDEX idx_staff_document_grants_doc              ON staff_document_grants (document_id);
+CREATE INDEX idx_service_fee_agreements_user            ON service_fee_agreements (user_id);
+CREATE INDEX idx_service_fee_payments_agreement         ON service_fee_payments (agreement_id);
+CREATE INDEX idx_service_reimbursement_requests_user    ON service_reimbursement_requests (user_id);
+
+
+-- ============================================================
+-- GROUP 20: DIGITAL CONSENT, SIGNATURES & MULTI-SIGNATORY APPROVAL
+-- (v1.23.0, Section 4.29)
+-- ============================================================
+
+-- Singleton row — the Membership Agreement text every new member
+-- reads and consents to once, before using the rest of the system.
+CREATE TABLE membership_agreement (
+    id          INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    content     TEXT NOT NULL DEFAULT 'This company''s Membership Agreement has not been set yet. An Administrator needs to add it in Settings before new members can complete sign-up.',
+    version     INTEGER NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by  INTEGER REFERENCES users(id)
+);
+INSERT INTO membership_agreement (id) VALUES (1);
+
+-- One-time consent record per member (UNIQUE user_id) — which
+-- Membership Agreement version they consented to, when, and basic
+-- provenance. Not re-triggered by later edits to the agreement text.
+CREATE TABLE member_consents (
+    id                SERIAL PRIMARY KEY,
+    user_id           INTEGER NOT NULL UNIQUE REFERENCES users(id),
+    agreement_version INTEGER NOT NULL,
+    consented_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip_address        VARCHAR(64),
+    user_agent        TEXT
+);
+
+-- Admin-configured: which roles must sign which document type before
+-- it counts as approved. A document type with zero active rows here
+-- has no multi-signature requirement — it keeps using the original
+-- single-approver approveDocument flow.
+CREATE TABLE signature_requirements (
+    id            SERIAL PRIMARY KEY,
+    document_type VARCHAR(30) NOT NULL
+                  CHECK (document_type IN (
+                      'RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'
+                  )),
+    role_id       INTEGER NOT NULL REFERENCES roles(id),
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by    INTEGER REFERENCES users(id),
+    UNIQUE (document_type, role_id)
+);
+
+-- One row per required-role signing slot on a specific signable
+-- thing. target_type/target_id points at either a `documents` row or
+-- a `certificate_signing_rounds` row. required_role_id is a ROLE —
+-- whoever currently holds it may fill the slot; signed_by records
+-- who actually did. signature_snapshot_path is a copy of that
+-- person's users.signature_path taken at signing time, so a later
+-- change to their stored signature never alters something already
+-- signed.
+CREATE TABLE document_signatures (
+    id                      SERIAL PRIMARY KEY,
+    target_type             VARCHAR(20) NOT NULL
+                            CHECK (target_type IN ('DOCUMENT', 'CERTIFICATE_ROUND')),
+    target_id               INTEGER NOT NULL,
+    required_role_id        INTEGER NOT NULL REFERENCES roles(id),
+    status                  VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                            CHECK (status IN ('PENDING', 'SIGNED')),
+    signed_by               INTEGER REFERENCES users(id),
+    signature_snapshot_path TEXT,
+    signed_at               TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (target_type, target_id, required_role_id)
+);
+CREATE INDEX idx_doc_signatures_target ON document_signatures (target_type, target_id);
+
+-- One row per (certificate_type, period_label) monthly/annual batch.
+-- Every share_certificates row issued in that batch links to it via
+-- signing_round_id; the round itself is what gets signed (one
+-- signature covers every certificate in it), and certificates are
+-- only rendered-with-signatures and emailed once the round is
+-- FULLY_SIGNED.
+CREATE TABLE certificate_signing_rounds (
+    id                SERIAL PRIMARY KEY,
+    certificate_type  VARCHAR(20) NOT NULL CHECK (certificate_type IN ('MONTHLY', 'ANNUAL')),
+    period_label      VARCHAR(20) NOT NULL,
+    status            VARCHAR(20) NOT NULL DEFAULT 'OPEN'
+                      CHECK (status IN ('OPEN', 'FULLY_SIGNED')),
+    opened_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    opened_by         INTEGER REFERENCES users(id),
+    fully_signed_at   TIMESTAMPTZ,
+    UNIQUE (certificate_type, period_label)
+);
+
+-- Forward-reference FK — share_certificates is defined earlier in
+-- this file than certificate_signing_rounds, same pattern as the
+-- grants -> documents forward references above.
+ALTER TABLE share_certificates
+    ADD CONSTRAINT fk_share_cert_signing_round
+    FOREIGN KEY (signing_round_id) REFERENCES certificate_signing_rounds(id);
+
+-- ============================================================
+-- GROUP 21: COMPANY STAMPS & SEALS (v1.24.0, Section 4.30)
+-- Admin-uploaded named stamp images (Treasury, Secretariat, etc.),
+-- auto-attached to a document/certificate round once it becomes
+-- fully approved/signed. Opt-in per document_type, same shape as
+-- GROUP 20's signature_requirements. document_stamps_applied
+-- snapshots exactly which stamp(s) actually got applied at the
+-- moment of finalisation, so a later config change never alters an
+-- already-finalised document.
+-- ============================================================
+
+-- One row per uploaded stamp image. mime_type restricted to PNG and
+-- SVG (transparent-background formats) so a stamp overlays cleanly.
+CREATE TABLE company_stamps (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(100) NOT NULL,
+    file_path   TEXT NOT NULL,
+    mime_type   VARCHAR(50) NOT NULL CHECK (mime_type IN ('image/png', 'image/svg+xml')),
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by  INTEGER REFERENCES users(id)
+);
+
+-- Which stamp(s) apply to which document_type. A type with zero
+-- active rows never gets stamped.
+CREATE TABLE document_stamp_requirements (
+    id            SERIAL PRIMARY KEY,
+    document_type VARCHAR(30) NOT NULL
+                  CHECK (document_type IN (
+                      'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
+                      'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
+                      'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT',
+                      'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER', 'SHARE_CERTIFICATE'
+                  )),
+    stamp_id      INTEGER NOT NULL REFERENCES company_stamps(id),
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by    INTEGER REFERENCES users(id),
+    UNIQUE (document_type, stamp_id)
+);
+
+-- Structural enforcement of "monthly share certificates only get a
+-- treasury stamp": SHARE_CERTIFICATE may have at most ONE active
+-- stamp requirement at a time, whichever stamp the Admin has placed
+-- there — not a hardcoded stamp name.
+CREATE UNIQUE INDEX idx_one_active_stamp_per_share_cert
+    ON document_stamp_requirements (document_type)
+    WHERE document_type = 'SHARE_CERTIFICATE' AND is_active = TRUE;
+
+-- Snapshot of which stamp(s) were actually baked onto a specific
+-- document/round the moment it became fully approved/signed. Mirrors
+-- document_signatures' polymorphic target shape.
+CREATE TABLE document_stamps_applied (
+    id          SERIAL PRIMARY KEY,
+    target_type VARCHAR(20) NOT NULL CHECK (target_type IN ('DOCUMENT', 'CERTIFICATE_ROUND')),
+    target_id   INTEGER NOT NULL,
+    stamp_id    INTEGER NOT NULL REFERENCES company_stamps(id),
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (target_type, target_id, stamp_id)
+);
+CREATE INDEX idx_doc_stamps_applied_target ON document_stamps_applied (target_type, target_id);
+
+-- ============================================================
+-- GROUP 22: SIDE FUND PER-MEMBER OVERRIDES & OVERPAYMENT CREDIT,
+-- CUSTOM FISCAL QUARTERS (v1.25.0, Section 4.10)
+-- ============================================================
+
+-- side_fund_dues — whether a due was settled with a real payment or
+-- drawn down from previously-banked credit (added here since
+-- side_fund_dues itself is defined earlier in GROUP 14b).
+ALTER TABLE side_fund_dues ADD COLUMN paid_from_credit BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- One row per member with a custom monthly amount instead of the
+-- company-wide default (side_fund_config.monthly_amount). No row =
+-- uses the default.
+CREATE TABLE side_fund_member_overrides (
+    user_id        INTEGER PRIMARY KEY REFERENCES users(id),
+    monthly_amount NUMERIC(20,4) NOT NULL CHECK (monthly_amount >= 0),
+    set_by         INTEGER REFERENCES users(id),
+    set_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- One row per member — running balance of overpayment banked but not
+-- yet applied to a due. Drawn down automatically as new monthly dues
+-- are generated.
+CREATE TABLE side_fund_member_credit (
+    user_id        INTEGER PRIMARY KEY REFERENCES users(id),
+    credit_balance NUMERIC(20,4) NOT NULL DEFAULT 0 CHECK (credit_balance >= 0),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Auditable log of every time a member's credit balance changed —
+-- banked (positive delta) or applied against a specific due
+-- (negative delta).
+CREATE TABLE side_fund_credit_ledger (
+    id             SERIAL PRIMARY KEY,
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    delta          NUMERIC(20,4) NOT NULL,
+    reason         TEXT NOT NULL,
+    related_due_id INTEGER REFERENCES side_fund_dues(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_side_fund_credit_ledger_user ON side_fund_credit_ledger (user_id, created_at DESC);
+
+-- Admin-defined custom financial-year quarters — fully custom
+-- start/end dates, not required to be equal 3-month blocks.
+CREATE TABLE fiscal_quarters (
+    id         SERIAL PRIMARY KEY,
+    label      VARCHAR(50) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date   DATE NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fiscal_quarter_valid_range CHECK (end_date >= start_date)
+);
+CREATE INDEX idx_fiscal_quarters_range ON fiscal_quarters (start_date, end_date);
+
+-- ============================================================
+-- GROUP 23: SIDE FUND STRICT PER-MEMBER ATTRIBUTION (v1.26.0,
+-- Section 4.10) — every side fund inflow must be tied to a specific
+-- member's own due; the old unattributed "Add Funds Directly"
+-- lump-sum top-up is gone.
+-- ============================================================
+
+-- side_fund_dues.due_date — the last day of the due's own period
+-- month, stored explicitly (rather than recomputed from `period`
+-- every time) so overdue amounts can be reported per member
+-- precisely and consistently everywhere (added here since
+-- side_fund_dues itself is defined earlier in GROUP 14b).
+ALTER TABLE side_fund_dues ADD COLUMN due_date DATE NOT NULL;
+
+-- Widen requisitions.requisition_type so a member can request/
+-- acknowledge a side fund payment the same way they already can for
+-- a capital contribution or a savings deposit (Section 4.9).
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'requisitions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%requisition_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE requisitions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE requisitions ADD CONSTRAINT requisitions_requisition_type_check
+        CHECK (requisition_type IN (
+            'EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION'
+        ));
+END $$;
+
+-- ============================================================
+-- END OF SCHEMA — v1.26.0
 -- ============================================================

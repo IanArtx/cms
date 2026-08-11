@@ -22,6 +22,9 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('./re
 const { getBranding } = require('./emailTemplates');
 const { sendEmail } = require('../config/email');
 const { logAction, ACTIONS, MODULES } = require('./auditService');
+const { ensureSignatureSlots, getSignatureStatus } = require('./signatureService');
+const { applyStamps, getAppliedStamps } = require('./stampService');
+const { notifyMany } = require('./notificationService');
 const logger = require('../config/logger');
 
 // ============================================================
@@ -166,8 +169,16 @@ const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel
 // RENDER CERTIFICATE HTML (server-side — used for the PDF
 // attachment only; the on-demand/interactive path renders its
 // own copy client-side via exportUtils.shareCertificateTemplate).
+//
+// v1.23.0 (Section 4.29): `signatures`, if supplied, is the
+// getSignatureStatus('CERTIFICATE_ROUND', roundId) result — one
+// block per required role, showing that person's actual signature
+// image once SIGNED. When omitted (on-demand single-certificate
+// issuance, which isn't part of the signing-round gate — Section
+// 4.29's known-issues note), falls back to the original three blank
+// signature lines so that path's output is unchanged.
 // ============================================================
-const renderCertificateHtml = async (cert) => {
+const renderCertificateHtml = async (cert, signatures = null, stamps = null) => {
     const branding = await getBranding();
 
     const issuedDate = new Date(cert.issued_at).toLocaleDateString('en-GB', {
@@ -200,11 +211,16 @@ const renderCertificateHtml = async (cert) => {
         table.figures td { padding:8px 10px; border:1px solid #e5e7eb; font-size:12px; }
         table.figures td.label { color:#6b7280; width:45%; }
         table.figures td.value { font-weight:700; }
-        .signatures { display:flex; justify-content:space-between; margin-top:60px; }
+        .signatures { display:flex; justify-content:space-between; margin-top:60px; flex-wrap:wrap; }
         .sig-block { width:30%; text-align:center; }
-        .sig-line { border-top:1px solid #1a1a1a; margin-bottom:6px; padding-top:36px; }
+        .sig-line { border-top:1px solid #1a1a1a; margin-bottom:6px; padding-top:36px; position:relative; }
+        .sig-line img { position:absolute; bottom:2px; left:50%; transform:translateX(-50%); max-height:34px; max-width:90%; }
         .sig-title { font-size:11px; color:#6b7280; }
+        .sig-name { font-size:10px; color:#1a1a1a; font-weight:700; margin-top:2px; }
         .disclaimer { margin-top:50px; font-size:9.5px; color:#9ca3af; text-align:center; line-height:1.5; }
+        .stamp-wrap { position:relative; }
+        .stamp { position:absolute; right:6%; bottom:-10px; max-height:110px; max-width:150px;
+            opacity:0.92; pointer-events:none; }
     </style>
     </head>
     <body>
@@ -237,10 +253,24 @@ const renderCertificateHtml = async (cert) => {
             <tr><td class="label">Date Issued</td><td class="value">${issuedDate}</td></tr>
         </table>
 
-        <div class="signatures">
-            <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Company Secretary</div></div>
-            <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Treasurer</div></div>
-            <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Director</div></div>
+        <div class="stamp-wrap">
+            <div class="signatures">
+                ${(signatures && signatures.length > 0
+                    ? signatures.map(sig => `
+                        <div class="sig-block">
+                            <div class="sig-line">${sig.signature_url ? `<img src="${resolveAbsoluteAssetUrl(sig.signature_url)}" />` : ''}</div>
+                            <div class="sig-title">${sig.role_name}</div>
+                            ${sig.signer_name ? `<div class="sig-name">${sig.signer_name}</div>` : ''}
+                        </div>`).join('')
+                    : `
+                        <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Company Secretary</div></div>
+                        <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Treasurer</div></div>
+                        <div class="sig-block"><div class="sig-line"></div><div class="sig-title">Director</div></div>`
+                )}
+            </div>
+            ${(stamps && stamps.length > 0)
+                ? stamps.map(stamp => `<img class="stamp" src="${resolveAbsoluteAssetUrl(stamp.file_path)}" alt="${stamp.name}" />`).join('')
+                : ''}
         </div>
 
         <p class="disclaimer">
@@ -277,9 +307,12 @@ const renderCertificatePdfBuffer = async (html) => {
 
 // ============================================================
 // EMAIL A CERTIFICATE TO ITS HOLDER (PDF attachment)
+// `signatures`, if supplied, is baked into the PDF (Section 4.29) —
+// see renderCertificateHtml above. `stamps`, if supplied, is baked in
+// the same way (Section 4.30).
 // ============================================================
-const emailCertificateToUser = async (cert) => {
-    const html = await renderCertificateHtml(cert);
+const emailCertificateToUser = async (cert, signatures = null, stamps = null) => {
+    const html = await renderCertificateHtml(cert, signatures, stamps);
     const pdfBuffer = await renderCertificatePdfBuffer(html);
 
     const label = cert.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly';
@@ -298,10 +331,105 @@ const emailCertificateToUser = async (cert) => {
 };
 
 // ============================================================
-// ISSUE + EMAIL CERTIFICATES FOR EVERY ACTIVE SHAREHOLDER
+// FIND-OR-CREATE THE SIGNING ROUND for a (certificateType,
+// periodLabel) batch (v1.23.0, Section 4.29). Safe to call more than
+// once for the same period — returns the existing round rather than
+// erroring, since certificate_signing_rounds has a UNIQUE
+// (certificate_type, period_label) constraint.
+// ============================================================
+const openOrGetSigningRound = async (certificateType, periodLabel, openedBy = null) => {
+    const existing = await query(
+        `SELECT * FROM certificate_signing_rounds WHERE certificate_type = $1 AND period_label = $2`,
+        [certificateType, periodLabel]
+    );
+    if (existing.rows.length > 0) return existing.rows[0];
+
+    const result = await query(`
+        INSERT INTO certificate_signing_rounds (certificate_type, period_label, opened_by)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (certificate_type, period_label) DO UPDATE SET certificate_type = EXCLUDED.certificate_type
+        RETURNING *
+    `, [certificateType, periodLabel, openedBy]);
+    return result.rows[0];
+};
+
+// ============================================================
+// RENDER + EMAIL EVERY CERTIFICATE IN A FULLY-SIGNED ROUND
+// Called once, right after the last required signature lands
+// (certificatesController.signRound). Baking the same signature set
+// into every certificate in the round, rather than re-checking
+// per-certificate, is correct because one round covers exactly one
+// batch — every certificate in it shares the same signatories.
+// ============================================================
+const emailRoundCertificates = async (roundId) => {
+    const signatures = await getSignatureStatus('CERTIFICATE_ROUND', roundId);
+    const stamps = await getAppliedStamps('CERTIFICATE_ROUND', roundId);
+
+    const certsResult = await query(`
+        SELECT sc.id, sc.certificate_type, sc.period_label, sc.shares_held, sc.percentage,
+               sc.price_per_share, sc.currency_id, sc.share_value, sc.issued_at,
+               c.code AS currency_code, c.symbol AS currency_symbol,
+               r.reference_code,
+               u.id AS user_id, u.first_name, u.last_name, u.email
+        FROM   share_certificates sc
+        JOIN   references_registry r ON r.id = sc.reference_id
+        JOIN   users u ON u.id = sc.user_id
+        LEFT JOIN currencies c ON c.id = sc.currency_id
+        WHERE  sc.signing_round_id = $1
+    `, [roundId]);
+
+    let emailed = 0, failed = 0;
+    const errors = [];
+
+    for (const row of certsResult.rows) {
+        const cert = {
+            id: row.id,
+            reference_code: row.reference_code,
+            issued_at: row.issued_at,
+            certificate_type: row.certificate_type,
+            period_label: row.period_label,
+            shares_held: row.shares_held,
+            percentage: row.percentage,
+            price_per_share: row.price_per_share,
+            currency_id: row.currency_id,
+            currency_code: row.currency_code,
+            currency_symbol: row.currency_symbol,
+            share_value: row.share_value,
+            user: { id: row.user_id, first_name: row.first_name, last_name: row.last_name, email: row.email },
+        };
+
+        try {
+            await emailCertificateToUser(cert, signatures, stamps);
+            await query(`UPDATE share_certificates SET email_sent = TRUE, email_error = NULL WHERE id = $1`, [cert.id]);
+            emailed++;
+        } catch (emailErr) {
+            logger.error('Signed certificate email failed', { userId: row.user_id, error: emailErr.message });
+            await query(`UPDATE share_certificates SET email_error = $1 WHERE id = $2`, [emailErr.message, cert.id]);
+            failed++;
+            errors.push({ userId: row.user_id, error: emailErr.message });
+        }
+    }
+
+    return { total: certsResult.rows.length, emailed, failed, errors };
+};
+
+// ============================================================
+// ISSUE CERTIFICATES FOR EVERY ACTIVE SHAREHOLDER
 // Used by both the scheduled cron jobs and the Admin "issue now"
 // manual trigger — so testing it manually exercises exactly the
 // same code path the schedule will run automatically.
+//
+// v1.23.0 (Section 4.29): every certificate issued here is grouped
+// into one certificate_signing_rounds row for this (type, period).
+//   - If an Admin has configured signature_requirements for
+//     SHARE_CERTIFICATE, certificates are issued but NOT emailed yet
+//     — the round stays OPEN, signatories are notified, and emailing
+//     happens later via emailRoundCertificates once fully signed
+//     (certificatesController.signRound).
+//   - If nothing is configured, behaviour is unchanged from before
+//     this feature existed: issue and email immediately, and the
+//     round is marked FULLY_SIGNED right away (kept only so the
+//     Signing Rounds screen still shows a consistent history).
 // ============================================================
 const issueCertificatesForAllShareholders = async (certificateType, issuedBy = null) => {
     const shareholders = await query(`
@@ -312,8 +440,31 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
         AND    sr.shares_held > 0
     `);
 
+    const now = new Date();
+    const periodLabel = certificateType === 'ANNUAL'
+        ? String(now.getFullYear())
+        : String(now.getFullYear()) + String(now.getMonth() + 1).padStart(2, '0');
+
+    const round = await openOrGetSigningRound(certificateType, periodLabel, issuedBy);
+
+    const { hasRequirements, roles } = await withTransaction(async (client) =>
+        ensureSignatureSlots(client, 'CERTIFICATE_ROUND', round.id, 'SHARE_CERTIFICATE')
+    );
+
     let issued = 0, emailed = 0, failed = 0;
     const errors = [];
+
+    // v1.24.0 — if there's no signature requirement, this round is
+    // effectively "approved" the instant it's created (no one needs
+    // to sign it), so whichever stamp is configured for
+    // SHARE_CERTIFICATE (Section 4.30) applies right away, before the
+    // per-shareholder emailing loop below. If a signature requirement
+    // IS configured, stamping instead happens once the round is fully
+    // signed (certificatesController.signRound).
+    let immediateStamps = [];
+    if (!hasRequirements) {
+        immediateStamps = await applyStamps('CERTIFICATE_ROUND', round.id, 'SHARE_CERTIFICATE').catch(() => []);
+    }
 
     for (const row of shareholders.rows) {
         try {
@@ -321,19 +472,25 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
                 userId: row.user_id,
                 certificateType,
                 issuedBy,
+                periodLabel,
             });
+            await query('UPDATE share_certificates SET signing_round_id = $1 WHERE id = $2', [round.id, cert.id]);
             issued++;
 
-            try {
-                await emailCertificateToUser(cert);
-                await query(`UPDATE share_certificates SET email_sent = TRUE WHERE id = $1`, [cert.id]);
-                emailed++;
-            } catch (emailErr) {
-                logger.error('Certificate email failed', { userId: row.user_id, error: emailErr.message });
-                await query(`UPDATE share_certificates SET email_error = $1 WHERE id = $2`,
-                    [emailErr.message, cert.id]);
-                failed++;
-                errors.push({ userId: row.user_id, error: emailErr.message });
+            if (!hasRequirements) {
+                // No signature requirement configured — original
+                // behaviour, email immediately.
+                try {
+                    await emailCertificateToUser(cert, null, immediateStamps);
+                    await query(`UPDATE share_certificates SET email_sent = TRUE WHERE id = $1`, [cert.id]);
+                    emailed++;
+                } catch (emailErr) {
+                    logger.error('Certificate email failed', { userId: row.user_id, error: emailErr.message });
+                    await query(`UPDATE share_certificates SET email_error = $1 WHERE id = $2`,
+                        [emailErr.message, cert.id]);
+                    failed++;
+                    errors.push({ userId: row.user_id, error: emailErr.message });
+                }
             }
         } catch (err) {
             logger.error('Certificate issuance failed', { userId: row.user_id, error: err.message });
@@ -342,7 +499,41 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
         }
     }
 
-    return { total: shareholders.rows.length, issued, emailed, failed, errors };
+    if (!hasRequirements) {
+        // Nothing to sign — close the round immediately so it doesn't
+        // sit "OPEN" forever on the Signing Rounds screen.
+        await query(
+            `UPDATE certificate_signing_rounds SET status = 'FULLY_SIGNED', fully_signed_at = NOW() WHERE id = $1 AND status = 'OPEN'`,
+            [round.id]
+        );
+    } else if (roles.length > 0) {
+        // Notify each configured signatory role's current holder(s)
+        // that a new round needs their signature.
+        const roleIds = roles.map(r => r.role_id);
+        const signatoriesResult = await query(`
+            SELECT DISTINCT u.id, u.first_name, u.email
+            FROM   user_roles ur
+            JOIN   users u ON u.id = ur.user_id AND u.is_active = TRUE
+            WHERE  ur.role_id = ANY($1::int[]) AND ur.revoked_at IS NULL
+        `, [roleIds]);
+
+        await notifyMany(signatoriesResult.rows, 'CERTIFICATE_ROUND_OPENED', (recipient) => ({
+            title: `${certificateType === 'ANNUAL' ? 'Annual' : 'Monthly'} Certificate of Shares round needs your signature`,
+            body:  `${issued} certificate(s) for ${periodLabel} are ready and waiting on your signature.`,
+            link:  '/certificates',
+            module: 'SYSTEM',
+            recordType: 'certificate_signing_rounds',
+            recordId: round.id,
+            email: {
+                subject: `Certificates awaiting your signature — ${periodLabel}`,
+                html: `<p>Dear ${recipient.first_name},</p>
+                       <p>${issued} Certificate(s) of Shares for ${periodLabel} are ready and waiting on your signature.
+                       Please sign in to the system to review and sign.</p>`,
+            },
+        })).catch(() => {});
+    }
+
+    return { total: shareholders.rows.length, issued, emailed, failed, errors, roundId: round.id, requiresSignatures: hasRequirements };
 };
 
 module.exports = {
@@ -352,4 +543,6 @@ module.exports = {
     renderCertificatePdfBuffer,
     emailCertificateToUser,
     issueCertificatesForAllShareholders,
+    openOrGetSigningRound,
+    emailRoundCertificates,
 };

@@ -14,7 +14,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, Cog6ToothIcon, BanknotesIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, Cog6ToothIcon, BanknotesIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
 // SETTINGS / ACTIVATION MODAL — Admin/Treasurer
@@ -128,6 +128,7 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
     const [form, setForm] = useState({ amount: '', category_id: '', paid_date: '', notes: '' });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [result, setResult] = useState(null);
 
     useEffect(() => {
         if (isOpen && due) {
@@ -138,6 +139,7 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
                 paid_date: new Date().toISOString().slice(0, 10),
                 notes: '',
             });
+            setResult(null);
         }
     }, [isOpen, due]);
 
@@ -151,9 +153,14 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
         setLoading(true);
         setError(null);
         try {
-            await sideFundAPI.payDue(due.id, { ...form, amount: parseFloat(form.amount) });
+            const res = await sideFundAPI.payDue(due.id, { ...form, amount: parseFloat(form.amount) });
+            // Paying more than the outstanding amount for this one period is
+            // allowed — the backend cascades any extra to this member's
+            // other unpaid periods (oldest first) and banks whatever's left
+            // as credit toward future months. Show that outcome here rather
+            // than closing silently, since it can affect several periods.
+            setResult(res.data.data);
             onSuccess();
-            onClose();
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -161,56 +168,319 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
         }
     };
 
+    const handleDone = () => {
+        setResult(null);
+        onClose();
+    };
+
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={result ? handleDone : onClose} />
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Side Fund Payment</h2>
-                    <p className="text-sm text-gray-400 mb-4">
-                        {due.member_name} — {due.period}. Outstanding: {formatNumber(outstanding)}
-                    </p>
-                    {error && (
-                        <div className="mb-4">
-                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
-                        </div>
-                    )}
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label className="label">Category *</label>
-                            <select className="input" value={form.category_id}
-                                onChange={e => setForm(p => ({ ...p, category_id: e.target.value }))} required>
-                                <option value="">Select category...</option>
-                                {financeCategories.map(c => (
-                                    <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
+                    {result ? (
+                        <>
+                            <h2 className="text-lg font-semibold text-gray-900 mb-1">Payment Recorded</h2>
+                            <p className="text-sm text-gray-400 mb-4">Reference: {result.reference}</p>
+                            <div className="space-y-2 mb-4">
+                                {result.settled?.map((s, i) => (
+                                    <div key={i} className="flex justify-between text-sm bg-gray-50 rounded-lg px-3 py-2">
+                                        <span className="text-gray-700">{s.period}{s.new_status === 'PAID' ? ' — cleared' : ` — ${s.new_status.toLowerCase()}`}</span>
+                                        <span className="font-medium text-gray-900">{formatNumber(s.amount_applied)}</span>
+                                    </div>
                                 ))}
-                            </select>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <div>
-                                <label className="label">Amount *</label>
-                                <input type="number" className="input" value={form.amount}
-                                    onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
-                                    min="0.01" max={outstanding} step="0.01" required />
+                                {parseFloat(result.credit_banked || 0) > 0 && (
+                                    <div className="flex justify-between text-sm bg-green-50 rounded-lg px-3 py-2">
+                                        <span className="text-green-700">Banked as credit for future months</span>
+                                        <span className="font-medium text-green-700">{formatNumber(result.credit_banked)}</span>
+                                    </div>
+                                )}
                             </div>
-                            <div>
-                                <label className="label">Date Paid *</label>
-                                <input type="date" className="input" value={form.paid_date}
-                                    onChange={e => setForm(p => ({ ...p, paid_date: e.target.value }))} required />
+                            {result.settled?.length > 1 && (
+                                <p className="text-xs text-gray-400 mb-4">
+                                    The extra amount was applied to this member's oldest unpaid periods first.
+                                </p>
+                            )}
+                            <div className="flex justify-end pt-2">
+                                <button onClick={handleDone} className="btn-primary">Done</button>
                             </div>
-                        </div>
-                        <div>
-                            <label className="label">Notes</label>
-                            <textarea className="input" rows={2} value={form.notes}
-                                onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
-                        </div>
-                        <div className="flex justify-end gap-3 pt-2">
-                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-                            <button type="submit" disabled={loading} className="btn-primary">
-                                {loading ? 'Recording...' : 'Record Payment'}
-                            </button>
-                        </div>
-                    </form>
+                        </>
+                    ) : (
+                        <>
+                            <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Side Fund Payment</h2>
+                            <p className="text-sm text-gray-400 mb-1">
+                                {due.member_name} — {due.period}. Outstanding: {formatNumber(outstanding)}
+                            </p>
+                            <p className="text-xs text-gray-400 mb-4">
+                                Paying more than the outstanding amount is fine — the extra first clears any of
+                                this member's other unpaid periods (oldest first), then anything left over is
+                                banked as credit toward their future months' dues.
+                            </p>
+                            {error && (
+                                <div className="mb-4">
+                                    <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                                </div>
+                            )}
+                            <form onSubmit={handleSubmit} className="space-y-4">
+                                <div>
+                                    <label className="label">Category *</label>
+                                    <select className="input" value={form.category_id}
+                                        onChange={e => setForm(p => ({ ...p, category_id: e.target.value }))} required>
+                                        <option value="">Select category...</option>
+                                        {financeCategories.map(c => (
+                                            <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="label">Amount *</label>
+                                        <input type="number" className="input" value={form.amount}
+                                            onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
+                                            min="0.01" step="0.01" required />
+                                    </div>
+                                    <div>
+                                        <label className="label">Date Paid *</label>
+                                        <input type="date" className="input" value={form.paid_date}
+                                            max={new Date().toISOString().slice(0, 10)}
+                                            onChange={e => setForm(p => ({ ...p, paid_date: e.target.value }))} required />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="label">Notes</label>
+                                    <textarea className="input" rows={2} value={form.notes}
+                                        onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                                </div>
+                                <div className="flex justify-end gap-3 pt-2">
+                                    <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                    <button type="submit" disabled={loading} className="btn-primary">
+                                        {loading ? 'Recording...' : 'Record Payment'}
+                                    </button>
+                                </div>
+                            </form>
+                        </>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// BULK PAY DUES MODAL — Treasurer/Assistant Treasurer (v1.26.0)
+// For the common case where most/all members paid their monthly due
+// on time: lists everyone with an outstanding due for the selected
+// period, pre-checked with their full outstanding amount, but each
+// row's amount can be edited before submitting (per the treasurer's
+// choice — this isn't locked to "exactly what's owed").
+// ============================================================
+const currentPeriod = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
+    const [period, setPeriod] = useState(currentPeriod());
+    const [candidates, setCandidates] = useState([]);
+    const [selected, setSelected] = useState({});   // user_id -> bool
+    const [amounts, setAmounts] = useState({});      // user_id -> string
+    const [categoryId, setCategoryId] = useState('');
+    const [paidDate, setPaidDate] = useState(new Date().toISOString().slice(0, 10));
+    const [loadingList, setLoadingList] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [result, setResult] = useState(null);
+
+    const loadCandidates = useCallback(async () => {
+        setLoadingList(true);
+        setError(null);
+        try {
+            const res = await sideFundAPI.getAllDues({ period, limit: 500 });
+            const rows = (res.data.data || []).filter(r => r.status !== 'PAID');
+            setCandidates(rows);
+            const sel = {}; const amt = {};
+            rows.forEach(r => {
+                sel[r.user_id] = true;
+                amt[r.user_id] = (parseFloat(r.amount_due) - parseFloat(r.amount_paid)).toFixed(2);
+            });
+            setSelected(sel);
+            setAmounts(amt);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoadingList(false);
+        }
+    }, [period]);
+
+    useEffect(() => {
+        if (isOpen) {
+            setResult(null);
+            loadCandidates();
+        }
+    }, [isOpen, loadCandidates]);
+
+    if (!isOpen) return null;
+
+    const financeCategories = categories.filter(c => c.module === 'FINANCE');
+    const selectedRows = candidates.filter(r => selected[r.user_id] && parseFloat(amounts[r.user_id] || 0) > 0);
+    const totalAmount = selectedRows.reduce((sum, r) => sum + (parseFloat(amounts[r.user_id]) || 0), 0);
+
+    const toggleAll = (checked) => {
+        const sel = {};
+        candidates.forEach(r => { sel[r.user_id] = checked; });
+        setSelected(sel);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (selectedRows.length === 0) {
+            setError('Select at least one member with an amount greater than zero');
+            return;
+        }
+        if (!categoryId) {
+            setError('Select a category');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await sideFundAPI.bulkPayDues({
+                category_id: categoryId,
+                paid_date: paidDate,
+                payments: selectedRows.map(r => ({ user_id: r.user_id, amount: parseFloat(amounts[r.user_id]) })),
+            });
+            setResult(res.data.data);
+            onSuccess();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDone = () => {
+        setResult(null);
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={result ? handleDone : onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-screen overflow-y-auto">
+                    {result ? (
+                        <>
+                            <h2 className="text-lg font-semibold text-gray-900 mb-1">Bulk Payment Recorded</h2>
+                            <p className="text-sm text-gray-400 mb-4">
+                                Reference: {result.reference} — {result.results.length} member(s), total {formatNumber(result.total_amount)}
+                            </p>
+                            <div className="space-y-2 mb-4">
+                                {result.results.map((r, i) => {
+                                    const candidate = candidates.find(c => c.user_id === r.user_id);
+                                    return (
+                                        <div key={i} className="flex justify-between text-sm bg-gray-50 rounded-lg px-3 py-2">
+                                            <span className="text-gray-700">{candidate?.member_name || `Member #${r.user_id}`}</span>
+                                            <span className="font-medium text-gray-900">
+                                                {formatNumber(r.amount)}
+                                                {parseFloat(r.credit_banked || 0) > 0 && (
+                                                    <span className="text-green-600 text-xs ml-1">
+                                                        (+{formatNumber(r.credit_banked)} credit)
+                                                    </span>
+                                                )}
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="flex justify-end pt-2">
+                                <button onClick={handleDone} className="btn-primary">Done</button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <h2 className="text-lg font-semibold text-gray-900 mb-1">Bulk Pay Dues</h2>
+                            <p className="text-sm text-gray-400 mb-4">
+                                Mark several members' monthly due as paid in one entry. Each amount is editable —
+                                untick anyone who didn't pay, or adjust an amount before submitting.
+                            </p>
+                            {error && (
+                                <div className="mb-4">
+                                    <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                                </div>
+                            )}
+                            <form onSubmit={handleSubmit} className="space-y-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="label">Period</label>
+                                        <input type="month" className="input" value={period}
+                                            max={currentPeriod()}
+                                            onChange={e => setPeriod(e.target.value)} />
+                                    </div>
+                                    <div>
+                                        <label className="label">Category *</label>
+                                        <select className="input" value={categoryId}
+                                            onChange={e => setCategoryId(e.target.value)} required>
+                                            <option value="">Select category...</option>
+                                            {financeCategories.map(c => (
+                                                <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="label">Date Paid *</label>
+                                        <input type="date" className="input" value={paidDate}
+                                            max={new Date().toISOString().slice(0, 10)}
+                                            onChange={e => setPaidDate(e.target.value)} required />
+                                    </div>
+                                </div>
+
+                                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                                    <div className="flex items-center justify-between bg-gray-50 px-3 py-2 border-b border-gray-200">
+                                        <label className="flex items-center gap-2 text-xs font-medium text-gray-500">
+                                            <input type="checkbox"
+                                                checked={candidates.length > 0 && candidates.every(r => selected[r.user_id])}
+                                                onChange={e => toggleAll(e.target.checked)} />
+                                            Select all
+                                        </label>
+                                        <span className="text-xs text-gray-400">
+                                            {selectedRows.length} selected — total {formatNumber(totalAmount)}
+                                        </span>
+                                    </div>
+                                    <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
+                                        {loadingList ? (
+                                            <p className="text-sm text-gray-400 text-center py-6">Loading...</p>
+                                        ) : candidates.length === 0 ? (
+                                            <p className="text-sm text-gray-400 text-center py-6">
+                                                No outstanding dues for {period}
+                                            </p>
+                                        ) : candidates.map(row => (
+                                            <div key={row.user_id} className="flex items-center gap-3 px-3 py-2">
+                                                <input type="checkbox" checked={!!selected[row.user_id]}
+                                                    onChange={e => setSelected(p => ({ ...p, [row.user_id]: e.target.checked }))} />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-medium text-gray-900 truncate">{row.member_name}</p>
+                                                    <p className="text-xs text-gray-400">
+                                                        Owes {formatNumber(parseFloat(row.amount_due) - parseFloat(row.amount_paid))} — <StatusBadge status={row.status} />
+                                                    </p>
+                                                </div>
+                                                <input type="number" className="input w-28" min="0" step="0.01"
+                                                    value={amounts[row.user_id] || ''}
+                                                    disabled={!selected[row.user_id]}
+                                                    onChange={e => setAmounts(p => ({ ...p, [row.user_id]: e.target.value }))} />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="flex justify-end gap-3 pt-2">
+                                    <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                    <button type="submit" disabled={loading || selectedRows.length === 0} className="btn-primary">
+                                        {loading ? 'Recording...' : `Record ${selectedRows.length} Payment(s)`}
+                                    </button>
+                                </div>
+                            </form>
+                        </>
+                    )}
                 </div>
             </div>
         </div>
@@ -280,6 +550,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, categories, currentBal
                             <div>
                                 <label className="label">Expense Date *</label>
                                 <input type="date" className="input" value={form.expense_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, expense_date: e.target.value }))} required />
                             </div>
                         </div>
@@ -303,96 +574,193 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, categories, currentBal
 };
 
 // ============================================================
-// RECORD DIRECT / BATCH INFLOW MODAL — Treasurer/Assistant Treasurer
-// For adding money straight to the fund that isn't tied to any one
-// member's due — e.g. an existing balance being brought in, or a
-// lump-sum top-up.
+// PER-MEMBER OVERRIDES PANEL — Admin/Treasurer (v1.25.0)
+// Every active shareholder pays the company default monthly amount
+// unless they have their own override here. Setting/clearing an
+// override only affects dues generated from next month onward — the
+// same "forward-only" rule as the company-wide default.
 // ============================================================
-const RecordDirectInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
-    const [form, setForm] = useState({ amount: '', category_id: '', value_date: '', description: '', notes: '' });
-    const [loading, setLoading] = useState(false);
+const OverridesPanel = ({ config }) => {
+    const [rows, setRows] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+    const [editingUserId, setEditingUserId] = useState(null);
+    const [editAmount, setEditAmount] = useState('');
+    const [saving, setSaving] = useState(false);
 
-    if (!isOpen) return null;
-
-    const financeCategories = categories.filter(c => c.module === 'FINANCE');
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setLoading(true);
-        setError(null);
+    const load = useCallback(async () => {
         try {
-            await sideFundAPI.recordDirectInflow({ ...form, amount: parseFloat(form.amount) });
-            onSuccess();
-            onClose();
-            setForm({ amount: '', category_id: '', value_date: '', description: '', notes: '' });
+            setLoading(true);
+            const res = await sideFundAPI.getOverrides();
+            setRows(res.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
             setLoading(false);
         }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const startEdit = (row) => {
+        setEditingUserId(row.user_id);
+        setEditAmount(row.monthly_amount != null ? String(row.monthly_amount) : '');
+        setSuccess(null);
+        setError(null);
+    };
+
+    const cancelEdit = () => {
+        setEditingUserId(null);
+        setEditAmount('');
+    };
+
+    const handleSave = async (userId) => {
+        if (editAmount === '' || isNaN(parseFloat(editAmount))) {
+            setError('Enter a valid amount');
+            return;
+        }
+        setSaving(true);
+        setError(null);
+        try {
+            await sideFundAPI.setOverride(userId, { monthly_amount: parseFloat(editAmount) });
+            setSuccess("Override saved — applies from next month's due onward.");
+            setEditingUserId(null);
+            setEditAmount('');
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleClear = async (userId) => {
+        if (!window.confirm("Clear this member's override? They'll go back to the company default from next month.")) return;
+        setSaving(true);
+        setError(null);
+        try {
+            await sideFundAPI.clearOverride(userId);
+            setSuccess('Override cleared — back to the company default.');
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
     };
 
     return (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
-            <div className="flex min-h-full items-center justify-center p-4">
-                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Add Funds Directly</h2>
-                    <p className="text-sm text-gray-400 mb-4">
-                        Not tied to any individual member's due — e.g. an existing balance
-                        being brought in, or a lump-sum top-up. Recorded as a general ledger
-                        inflow in the account the fund is held.
-                    </p>
-                    {error && (
-                        <div className="mb-4">
-                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
-                        </div>
-                    )}
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label className="label">Category *</label>
-                            <select className="input" value={form.category_id}
-                                onChange={e => setForm(p => ({ ...p, category_id: e.target.value }))} required>
-                                <option value="">Select category...</option>
-                                {financeCategories.map(c => (
-                                    <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <div>
-                                <label className="label">Amount *</label>
-                                <input type="number" className="input" value={form.amount}
-                                    onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
-                                    min="0.01" step="0.01" required />
-                            </div>
-                            <div>
-                                <label className="label">Date</label>
-                                <input type="date" className="input" value={form.value_date}
-                                    onChange={e => setForm(p => ({ ...p, value_date: e.target.value }))} />
-                            </div>
-                        </div>
-                        <div>
-                            <label className="label">Description</label>
-                            <input type="text" className="input" value={form.description}
-                                onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
-                                placeholder="e.g. Existing balance brought forward" />
-                        </div>
-                        <div>
-                            <label className="label">Notes</label>
-                            <textarea className="input" rows={2} value={form.notes}
-                                onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
-                        </div>
-                        <div className="flex justify-end gap-3 pt-2">
-                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-                            <button type="submit" disabled={loading} className="btn-primary">
-                                {loading ? 'Recording...' : 'Add Funds'}
-                            </button>
-                        </div>
-                    </form>
+        <div className="card">
+            <p className="text-sm text-gray-400 mb-4">
+                Every shareholder pays the company default of {formatNumber(config?.monthly_amount || 0)} per
+                month unless they have their own override below. Changes only affect dues generated from next
+                month onward.
+            </p>
+            {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+            {success && (
+                <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                    {success}
                 </div>
-            </div>
+            )}
+            {loading ? (
+                <p className="text-sm text-gray-400">Loading...</p>
+            ) : (
+                <div className="divide-y divide-gray-100">
+                    {rows.map(row => {
+                        const isEditing = editingUserId === row.user_id;
+                        return (
+                            <div key={row.user_id} className="flex items-center justify-between py-3 gap-4">
+                                <div className="min-w-0">
+                                    <p className="text-sm font-medium text-gray-900">{row.member_name}</p>
+                                    <p className="text-xs text-gray-400">
+                                        {row.monthly_amount != null
+                                            ? `Override: ${formatNumber(row.monthly_amount)}`
+                                            : `Default: ${formatNumber(config?.monthly_amount || 0)}`}
+                                        {row.set_by_name ? ` — set by ${row.set_by_name}` : ''}
+                                    </p>
+                                </div>
+                                {isEditing ? (
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <input type="number" className="input w-28" value={editAmount}
+                                            onChange={e => setEditAmount(e.target.value)} min="0" step="0.01" autoFocus />
+                                        <button onClick={() => handleSave(row.user_id)} disabled={saving}
+                                            className="text-xs text-primary-700 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50">
+                                            {saving ? 'Saving...' : 'Save'}
+                                        </button>
+                                        <button onClick={cancelEdit} className="text-xs text-gray-500 px-2 py-1">Cancel</button>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <button onClick={() => startEdit(row)}
+                                            className="text-xs text-primary-700 hover:text-primary-800 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50 transition-colors">
+                                            {row.monthly_amount != null ? 'Edit' : 'Set Override'}
+                                        </button>
+                                        {row.monthly_amount != null && (
+                                            <button onClick={() => handleClear(row.user_id)} disabled={saving}
+                                                className="text-xs text-red-600 hover:text-red-700 font-medium px-2 py-1 rounded border border-red-200 hover:bg-red-50 transition-colors">
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                    {rows.length === 0 && (
+                        <p className="text-sm text-gray-400 py-4 text-center">No active shareholders found</p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ============================================================
+// MEMBER CREDIT PANEL — Treasurer/Admin (v1.25.0)
+// Members currently sitting on banked credit — money paid ahead of
+// what was owed, held back to auto-cover future months' dues as
+// they're generated.
+// ============================================================
+const CreditPanel = () => {
+    const [rows, setRows] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const res = await sideFundAPI.getAllCredit();
+                setRows(res.data.data || []);
+            } catch (err) {
+                setError(getErrorMessage(err));
+            } finally {
+                setLoading(false);
+            }
+        })();
+    }, []);
+
+    return (
+        <div className="card">
+            <p className="text-sm text-gray-400 mb-4">
+                Money members have paid ahead of what they owed. It's held back and automatically applied to
+                their own future months' dues as they're generated — no action needed from Treasury.
+            </p>
+            {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+            {loading ? (
+                <p className="text-sm text-gray-400">Loading...</p>
+            ) : rows.length === 0 ? (
+                <p className="text-sm text-gray-400 py-4 text-center">No members currently hold side fund credit</p>
+            ) : (
+                <div className="divide-y divide-gray-100">
+                    {rows.map(row => (
+                        <div key={row.user_id} className="flex items-center justify-between py-3">
+                            <p className="text-sm font-medium text-gray-900">{row.member_name}</p>
+                            <p className="text-sm font-bold text-green-700">{formatNumber(row.credit_balance)}</p>
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 };
@@ -404,7 +772,10 @@ const SideFundPage = () => {
     const { hasPermission } = useAuth();
     const [config, setConfig] = useState(null);
     const [myDues, setMyDues] = useState([]);
+    const [myCredit, setMyCredit] = useState(null);
+    const [myOverdue, setMyOverdue] = useState(null);
     const [allDues, setAllDues] = useState([]);
+    const [allOverdue, setAllOverdue] = useState([]);
     const [expenses, setExpenses] = useState([]);
     const [accounts, setAccounts] = useState([]);
     const [categories, setCategories] = useState([]);
@@ -413,7 +784,7 @@ const SideFundPage = () => {
     const [activeTab, setActiveTab] = useState('mine');
     const [showSettings, setShowSettings] = useState(false);
     const [showExpense, setShowExpense] = useState(false);
-    const [showDirectInflow, setShowDirectInflow] = useState(false);
+    const [showBulkPay, setShowBulkPay] = useState(false);
     const [payingDue, setPayingDue] = useState(null);
 
     const canManage      = hasPermission('SIDE_FUND_MANAGE');
@@ -435,8 +806,14 @@ const SideFundPage = () => {
 
     const loadMine = useCallback(async () => {
         try {
-            const res = await sideFundAPI.getMyDues();
-            setMyDues(res.data.data || []);
+            const [duesRes, creditRes, overdueRes] = await Promise.all([
+                sideFundAPI.getMyDues(),
+                sideFundAPI.getMyCredit(),
+                sideFundAPI.getMyOverdue(),
+            ]);
+            setMyDues(duesRes.data.data || []);
+            setMyCredit(creditRes.data.data || null);
+            setMyOverdue(overdueRes.data.data || null);
         } catch (err) {
             setError(getErrorMessage(err));
         }
@@ -445,12 +822,14 @@ const SideFundPage = () => {
     const loadAll = useCallback(async () => {
         if (!canView) return;
         try {
-            const [duesRes, expRes] = await Promise.all([
+            const [duesRes, expRes, overdueRes] = await Promise.all([
                 sideFundAPI.getAllDues({ limit: 100 }),
                 sideFundAPI.getExpenses({ limit: 100 }),
+                sideFundAPI.getAllOverdue(),
             ]);
             setAllDues(duesRes.data.data || []);
             setExpenses(expRes.data.data || []);
+            setAllOverdue(overdueRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         }
@@ -524,9 +903,9 @@ const SideFundPage = () => {
                             </button>
                         )}
                         {isActive && canRecordDue && (
-                            <button onClick={() => setShowDirectInflow(true)} className="btn-secondary flex items-center gap-2">
-                                <PlusIcon className="h-4 w-4" />
-                                Add Funds Directly
+                            <button onClick={() => setShowBulkPay(true)} className="btn-secondary flex items-center gap-2">
+                                <CheckCircleIcon className="h-4 w-4" />
+                                Bulk Pay Dues
                             </button>
                         )}
                         {isActive && canRecordExpense && (
@@ -582,6 +961,32 @@ const SideFundPage = () => {
                 </div>
             )}
 
+            {isActive && parseFloat(myOverdue?.overdue_amount || 0) > 0 && (
+                <div className="card flex items-center justify-between mb-6 bg-red-50 border-red-100">
+                    <div>
+                        <p className="text-sm font-medium text-red-800">
+                            You have {myOverdue.overdue_count} overdue month{myOverdue.overdue_count > 1 ? 's' : ''}
+                        </p>
+                        <p className="text-xs text-red-700 mt-0.5">
+                            Past due date and still unpaid — pay the oldest first to clear arrears.
+                        </p>
+                    </div>
+                    <p className="text-xl font-bold text-red-700">{formatNumber(myOverdue.overdue_amount)}</p>
+                </div>
+            )}
+
+            {isActive && parseFloat(myCredit?.credit_balance || 0) > 0 && (
+                <div className="card flex items-center justify-between mb-6 bg-green-50 border-green-100">
+                    <div>
+                        <p className="text-sm font-medium text-green-800">You have banked side fund credit</p>
+                        <p className="text-xs text-green-700 mt-0.5">
+                            This is applied automatically to your future months' dues as they're generated.
+                        </p>
+                    </div>
+                    <p className="text-xl font-bold text-green-700">{formatNumber(myCredit.credit_balance)}</p>
+                </div>
+            )}
+
             <div className="flex gap-2 mb-6 flex-wrap">
                 <button onClick={() => setActiveTab('mine')}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
@@ -597,7 +1002,17 @@ const SideFundPage = () => {
                             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'expenses' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                             Spending History
                         </button>
+                        <button onClick={() => setActiveTab('credit')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'credit' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            Member Credit
+                        </button>
                     </>
+                )}
+                {canManage && (
+                    <button onClick={() => setActiveTab('overrides')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'overrides' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        Member Overrides
+                    </button>
                 )}
             </div>
 
@@ -613,14 +1028,34 @@ const SideFundPage = () => {
             )}
 
             {activeTab === 'all' && canView && (
-                <DataTable
-                    columns={allDuesColumns}
-                    data={allDues}
-                    loading={loading}
-                    emptyMessage="No side fund dues found"
-                    searchable
-                    searchPlaceholder="Search all dues..."
-                />
+                <>
+                    {allOverdue.length > 0 && (
+                        <div className="card mb-4 bg-red-50 border-red-100">
+                            <p className="text-sm font-medium text-red-800 mb-2">
+                                {allOverdue.length} member{allOverdue.length > 1 ? 's' : ''} currently overdue
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                {allOverdue.map(o => (
+                                    <div key={o.user_id} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-red-100">
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-medium text-gray-900 truncate">{o.member_name}</p>
+                                            <p className="text-xs text-gray-400">{o.overdue_count} month{o.overdue_count > 1 ? 's' : ''} overdue</p>
+                                        </div>
+                                        <p className="text-sm font-bold text-red-700 flex-shrink-0 ml-2">{formatNumber(o.overdue_amount)}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    <DataTable
+                        columns={allDuesColumns}
+                        data={allDues}
+                        loading={loading}
+                        emptyMessage="No side fund dues found"
+                        searchable
+                        searchPlaceholder="Search all dues..."
+                    />
+                </>
             )}
 
             {activeTab === 'expenses' && canView && (
@@ -633,6 +1068,10 @@ const SideFundPage = () => {
                     searchPlaceholder="Search expenses..."
                 />
             )}
+
+            {activeTab === 'credit' && canView && <CreditPanel />}
+
+            {activeTab === 'overrides' && canManage && <OverridesPanel config={config} />}
 
             <SettingsModal
                 isOpen={showSettings}
@@ -655,9 +1094,9 @@ const SideFundPage = () => {
                 due={payingDue}
                 categories={categories}
             />
-            <RecordDirectInflowModal
-                isOpen={showDirectInflow}
-                onClose={() => setShowDirectInflow(false)}
+            <BulkPayModal
+                isOpen={showBulkPay}
+                onClose={() => setShowBulkPay(false)}
                 onSuccess={refreshAll}
                 categories={categories}
             />

@@ -4,7 +4,7 @@
 // Allows on-demand generation and monthly report sending.
 // ============================================================
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { reportsAPI, certificatesAPI } from '../../api/endpoints';
 import { formatCurrency, formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -18,7 +18,195 @@ import {
     ArrowPathIcon,
     MegaphoneIcon,
     DocumentTextIcon,
+    CheckIcon,
+    ChevronDownIcon,
+    ChevronUpIcon,
 } from '@heroicons/react/24/outline';
+
+// ============================================================
+// CERTIFICATE SIGNING ROUNDS PANEL (v1.23.0, Section 4.29)
+// Every monthly/annual certificate batch (issued by the buttons
+// above, or automatically by the schedule) is grouped into one
+// signing round. If Settings -> Signatories has roles configured for
+// SHARE_CERTIFICATE, a round stays OPEN — and certificates aren't
+// emailed — until every required role signs it. Visible to Treasurer/
+// Assistant Treasurer/Admin, same audience as the certificate list
+// itself (routes/certificates.js).
+// ============================================================
+const SigningRoundsPanel = () => {
+    const { hasRole } = useAuth();
+    const [rounds, setRounds] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [expandedId, setExpandedId] = useState(null);
+    const [expandedData, setExpandedData] = useState(null);
+    const [expandLoading, setExpandLoading] = useState(false);
+    const [signing, setSigning] = useState(false);
+
+    const canSee = hasRole('Treasurer') || hasRole('Assistant Treasurer') || hasRole('Admin');
+
+    const loadRounds = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await certificatesAPI.getRounds();
+            setRounds(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { if (canSee) loadRounds(); }, [canSee, loadRounds]);
+
+    const toggleExpand = async (round) => {
+        if (expandedId === round.id) {
+            setExpandedId(null);
+            setExpandedData(null);
+            return;
+        }
+        setExpandedId(round.id);
+        setExpandLoading(true);
+        try {
+            const res = await certificatesAPI.getRoundById(round.id);
+            setExpandedData(res.data.data);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setExpandLoading(false);
+        }
+    };
+
+    const handleSign = async (roundId) => {
+        setError(null);
+        setSigning(true);
+        try {
+            await certificatesAPI.signRound(roundId);
+            const res = await certificatesAPI.getRoundById(roundId);
+            setExpandedData(res.data.data);
+            await loadRounds();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSigning(false);
+        }
+    };
+
+    if (!canSee) return null;
+
+    return (
+        <div className="card mb-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Certificate Signing Rounds</h3>
+            <p className="text-sm text-gray-500 mb-4">
+                Each monthly/annual certificate batch is grouped into one round here. If signatories
+                are configured (Settings &rarr; Signatories), certificates aren't emailed to shareholders
+                until every required role signs the round.
+            </p>
+
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+
+            {loading ? (
+                <LoadingSpinner />
+            ) : rounds.length === 0 ? (
+                <p className="text-sm text-gray-400">No certificate rounds yet.</p>
+            ) : (
+                <div className="space-y-2">
+                    {rounds.map(round => {
+                        const isExpanded = expandedId === round.id;
+                        const mySlot = isExpanded && expandedData?.signatures?.find(
+                            s => s.status === 'PENDING' && hasRole(s.role_name)
+                        );
+                        return (
+                            <div key={round.id} className="border border-gray-200 rounded-lg">
+                                <button
+                                    onClick={() => toggleExpand(round)}
+                                    className="w-full flex items-center justify-between p-3 text-left"
+                                >
+                                    <div>
+                                        <span className="text-sm font-medium text-gray-900">
+                                            {round.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly'} — {round.period_label}
+                                        </span>
+                                        <span className="text-xs text-gray-400 ml-2">
+                                            {round.certificate_count} certificate(s)
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                            round.status === 'FULLY_SIGNED'
+                                                ? 'bg-green-100 text-green-700'
+                                                : 'bg-amber-100 text-amber-700'
+                                        }`}>
+                                            {round.status === 'FULLY_SIGNED' ? 'Fully signed' : 'Open'}
+                                        </span>
+                                        {isExpanded
+                                            ? <ChevronUpIcon className="h-4 w-4 text-gray-400" />
+                                            : <ChevronDownIcon className="h-4 w-4 text-gray-400" />
+                                        }
+                                    </div>
+                                </button>
+
+                                {isExpanded && (
+                                    <div className="border-t border-gray-100 p-3">
+                                        {expandLoading ? (
+                                            <p className="text-xs text-gray-400">Loading...</p>
+                                        ) : expandedData?.signatures?.length === 0 ? (
+                                            <p className="text-xs text-gray-400">
+                                                No signature requirement configured for Share Certificates
+                                                (Settings &rarr; Signatories) — this round emailed immediately.
+                                            </p>
+                                        ) : (
+                                            <div className="space-y-2 mb-3">
+                                                {expandedData?.signatures?.map(sig => (
+                                                    <div key={sig.role_id} className="flex items-center justify-between text-sm">
+                                                        <span className="text-gray-700">
+                                                            {sig.role_name}
+                                                            {sig.signer_name && (
+                                                                <span className="text-gray-400"> — {sig.signer_name}</span>
+                                                            )}
+                                                        </span>
+                                                        {sig.status === 'SIGNED' ? (
+                                                            sig.signature_url
+                                                                ? <img src={sig.signature_url} alt="Signature" className="h-6" />
+                                                                : <CheckIcon className="h-4 w-4 text-green-600" />
+                                                        ) : (
+                                                            <span className="text-xs font-medium text-amber-600">Pending</span>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                        {expandedData?.stamps?.length > 0 && (
+                                            <div className="mb-3">
+                                                <p className="text-xs text-gray-400 mb-1">Company stamp applied</p>
+                                                <div className="flex flex-wrap gap-3">
+                                                    {expandedData.stamps.map(stamp => (
+                                                        <div key={stamp.stamp_id} className="flex flex-col items-center gap-1">
+                                                            <img src={stamp.file_path} alt={stamp.name} className="h-10 w-10 object-contain" />
+                                                            <span className="text-xs text-gray-500">{stamp.name}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {mySlot && (
+                                            <button
+                                                onClick={() => handleSign(round.id)}
+                                                disabled={signing}
+                                                className="btn-primary text-xs"
+                                            >
+                                                {signing ? 'Signing...' : `Sign as ${mySlot.role_name}`}
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // ============================================================
 // REPORT PERIOD SELECTOR
@@ -228,9 +416,11 @@ const ReportsPage = () => {
         setError(null);
         try {
             const res = await certificatesAPI.issueNow({ certificate_type: certificateType });
-            const { issued, emailed, total } = res.data.data;
+            const { issued, emailed, total, requiresSignatures } = res.data.data;
             setSuccessMsg(
-                `Certificates issued: ${issued}/${total}. Emailed: ${emailed}.`
+                requiresSignatures
+                    ? `Certificates issued: ${issued}/${total}. Waiting on signatures before emailing — see Certificate Signing Rounds below.`
+                    : `Certificates issued: ${issued}/${total}. Emailed: ${emailed}.`
             );
         } catch (err) {
             setError(getErrorMessage(err));
@@ -463,6 +653,9 @@ const ReportsPage = () => {
                 </div>
             )}
 
+            {/* Certificate Signing Rounds (v1.23.0, Section 4.29) */}
+            <SigningRoundsPanel />
+
             {/* Loading */}
             {loading && (
                 <div className="flex justify-center py-12">
@@ -474,9 +667,17 @@ const ReportsPage = () => {
             {!loading && generalReport && activeTab === 'general' && (
                 <div className="space-y-6">
                     <div className="flex items-center justify-between">
-                        <h2 className="text-xl font-bold text-gray-900">
-                            General Company Report — {generalReport.period}
-                        </h2>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900">
+                                General Company Report — {generalReport.period}
+                            </h2>
+                            {generalReport.fiscal_quarter && (
+                                <span className="inline-block mt-1 text-xs font-medium text-primary-700
+                                    bg-primary-50 px-2 py-0.5 rounded-full">
+                                    {generalReport.fiscal_quarter.label}
+                                </span>
+                            )}
+                        </div>
                         <span className="text-sm text-gray-400">
                             Generated {new Date(generalReport.generated_at)
                                 .toLocaleString('en-GB')}
@@ -629,9 +830,17 @@ const ReportsPage = () => {
             {!loading && individualReport && activeTab === 'individual' && (
                 <div className="space-y-6">
                     <div className="flex items-center justify-between">
-                        <h2 className="text-xl font-bold text-gray-900">
-                            Personal Report — {individualReport.period}
-                        </h2>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900">
+                                Personal Report — {individualReport.period}
+                            </h2>
+                            {individualReport.fiscal_quarter && (
+                                <span className="inline-block mt-1 text-xs font-medium text-primary-700
+                                    bg-primary-50 px-2 py-0.5 rounded-full">
+                                    {individualReport.fiscal_quarter.label}
+                                </span>
+                            )}
+                        </div>
                     </div>
 
                     {/* Member Details */}

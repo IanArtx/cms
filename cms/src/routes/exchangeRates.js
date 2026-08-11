@@ -8,11 +8,13 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, blockAuditor, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles } = require('../middleware/auth');
 const exchangeRatesController = require('../controllers/exchangeRatesController');
 
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET CURRENT EXCHANGE RATES

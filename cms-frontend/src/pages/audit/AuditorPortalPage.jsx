@@ -257,8 +257,12 @@ const AuditorPortalPage = () => {
             const blob = res.data;
 
             if (blob.type === 'application/json') {
+                // Same envelope shape as DocumentsPage.jsx — backend wraps the
+                // actual fields under `.data` (sendSuccess), so they must be
+                // read from there, not off the top-level parsed object.
                 const text = await blob.text();
-                const payload = JSON.parse(text);
+                const envelope = JSON.parse(text);
+                const payload = envelope.data || envelope;
                 const renderer = GENERATED_RENDERERS[payload.document_type];
                 if (!renderer) {
                     throw new Error('This document type can\'t be reconstructed for preview.');

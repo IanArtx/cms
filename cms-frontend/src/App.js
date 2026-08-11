@@ -34,11 +34,14 @@ import ProfilePage from './pages/profile/ProfilePage';
 import GenerateDocumentPage from './pages/documents/GenerateDocumentPage';
 import SettingsPage from './pages/settings/SettingsPage';
 import VerifyEmailPage from './pages/auth/VerifyEmailPage';
+import PendingApprovalPage from './pages/auth/PendingApprovalPage';
+import ConsentPage from './pages/auth/ConsentPage';
 import DividendsPage from './pages/dividends/DividendsPage';
 import SavingsPage from './pages/savings/SavingsPage';
 import SideFundPage from './pages/sideFund/SideFundPage';
 import AboutPage from './pages/about/AboutPage';
 import RequisitionsPage from './pages/requisitions/RequisitionsPage';
+import ServiceFeesPage from './pages/serviceFees/ServiceFeesPage';
 import AuditManagementPage from './pages/audit/AuditManagementPage';
 import AuditorPortalPage from './pages/audit/AuditorPortalPage';
 import AuditReviewPage from './pages/audit/AuditReviewPage';
@@ -71,6 +74,34 @@ function App() {
                             /login before ever reaching this page. */}
                         <Route path="/verify-email" element={<VerifyEmailPage />} />
 
+                        {/* Protected, but deliberately OUTSIDE AppLayout — a
+                            zero-role account has no Sidebar/TopBar to show.
+                            AppLayout.jsx redirects here for any such account;
+                            this route renders standalone, same shape as the
+                            public auth pages above it. */}
+                        <Route
+                            path="/pending-approval"
+                            element={
+                                <ProtectedRoute>
+                                    <PendingApprovalPage />
+                                </ProtectedRoute>
+                            }
+                        />
+
+                        {/* Same reasoning as /pending-approval above — a
+                            role-assigned-but-not-yet-consented account has no
+                            Sidebar/TopBar to show either, so this renders
+                            standalone too, right after the pending-approval
+                            step in the same onboarding chain (Section 4.29). */}
+                        <Route
+                            path="/consent"
+                            element={
+                                <ProtectedRoute>
+                                    <ConsentPage />
+                                </ProtectedRoute>
+                            }
+                        />
+
                         {/* Protected routes — all inside AppLayout */}
                         <Route
                             path="/"
@@ -102,6 +133,7 @@ function App() {
                             <Route path="side-fund" element={<SideFundPage />} />
                             <Route path="about" element={<AboutPage />} />
                             <Route path="requisitions" element={<RequisitionsPage />} />
+                            <Route path="service-fees" element={<ServiceFeesPage />} />
                             <Route path="audit" element={
                                 <ProtectedRoute requiredRole="Auditor">
                                     <AuditorPortalPage />

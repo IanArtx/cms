@@ -78,8 +78,10 @@ const DeclareDividendModal = ({ isOpen, onClose, onSuccess, accounts, categories
                         {isEdit ? 'Edit Dividend' : 'Declare Dividend'}
                     </h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        The total amount will be split automatically based on
-                        each shareholder's registered percentage.
+                        The total amount is split automatically based on each
+                        shareholder's registered percentage. Once approved, each
+                        share is credited directly to that shareholder's own
+                        Savings balance.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -129,6 +131,7 @@ const DeclareDividendModal = ({ isOpen, onClose, onSuccess, accounts, categories
                             <div>
                                 <label className="label">Declaration Date *</label>
                                 <input type="date" className="input" value={form.declaration_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, declaration_date: e.target.value }))}
                                     required />
                             </div>
@@ -144,6 +147,109 @@ const DeclareDividendModal = ({ isOpen, onClose, onSuccess, accounts, categories
                             </button>
                             <button type="submit" disabled={loading} className="btn-primary">
                                 {loading ? 'Saving...' : (isEdit ? 'Save Changes' : 'Declare Dividend')}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// APPROVE DIVIDEND MODAL
+// Approving now credits every shareholder's own Savings balance
+// with their share (Section 4.12) — this replaced a single lump
+// company-account debit with no per-shareholder crediting. If the
+// dividend's currency differs from the single Savings account's
+// currency, a Treasurer must enter the actual conversion rate here;
+// this system's stored exchange rates are display-only and are
+// deliberately never used for real money movements (same rule
+// cross-currency Transfers already follow), so there is no
+// auto-filled rate to fall back on.
+// ============================================================
+const ApproveDividendModal = ({ isOpen, dividend, onClose, onSuccess }) => {
+    const [rate, setRate] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => { setRate(''); setError(null); }, [dividend, isOpen]);
+
+    if (!isOpen || !dividend) return null;
+
+    const needsRate = !!dividend.needs_exchange_rate;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await dividendsAPI.approve(dividend.id, needsRate ? { exchange_rate: parseFloat(rate) } : undefined);
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const converted = needsRate && rate
+        ? (parseFloat(dividend.total_amount) * parseFloat(rate)).toLocaleString('en-US', { maximumFractionDigits: 2 })
+        : null;
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Approve &amp; Pay Dividend</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {dividend.reference_code} — {dividend.shareholder_count} shareholder{dividend.shareholder_count === 1 ? '' : 's'}.
+                        Each share will be credited to that member's own Savings balance.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+
+                    <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm">
+                        <div className="flex justify-between">
+                            <span className="text-gray-500">Total declared</span>
+                            <span className="font-bold text-gray-900">
+                                {dividend.currency_code} {parseFloat(dividend.total_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                            </span>
+                        </div>
+                        {needsRate ? (
+                            <div className="flex justify-between mt-1">
+                                <span className="text-gray-500">Will credit (Savings, {dividend.savings_currency_code})</span>
+                                <span className="font-bold text-primary-700">{converted ?? '—'}</span>
+                            </div>
+                        ) : (
+                            <div className="flex justify-between mt-1">
+                                <span className="text-gray-500">Savings currency</span>
+                                <span className="font-medium text-gray-700">{dividend.currency_code} (matches)</span>
+                            </div>
+                        )}
+                    </div>
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        {needsRate && (
+                            <div>
+                                <label className="label">
+                                    Exchange rate — 1 {dividend.currency_code} = ? {dividend.savings_currency_code} *
+                                </label>
+                                <input type="number" className="input" min="0.00000001" step="any"
+                                    value={rate} onChange={e => setRate(e.target.value)} required
+                                    placeholder="e.g. 3800" />
+                                <p className="text-xs text-gray-400 mt-1">
+                                    This dividend was declared in {dividend.currency_code}, but the Savings account
+                                    holds {dividend.savings_currency_code}. Enter today's actual rate — the system
+                                    doesn't apply one automatically.
+                                </p>
+                            </div>
+                        )}
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Approving...' : 'Approve & Credit Savings'}
                             </button>
                         </div>
                     </form>
@@ -224,6 +330,12 @@ const DividendDetailModal = ({ isOpen, dividend, onClose }) => {
                                         {dividend.currency_code}{' '}
                                         {parseFloat(d.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                                     </p>
+                                    {d.status === 'PAID' && d.credited_amount != null && (
+                                        <p className="text-xs text-green-600">
+                                            Credited: {dividend.savings_currency_code || ''}{' '}
+                                            {parseFloat(d.credited_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                        </p>
+                                    )}
                                     <StatusBadge status={d.status} />
                                 </div>
                             </div>
@@ -379,6 +491,7 @@ const AuthorityPaymentModal = ({ isOpen, onClose, onSuccess, accounts, categorie
                             <div>
                                 <label className="label">Payment Date *</label>
                                 <input type="date" className="input" value={form.payment_date}
+                                    max={new Date().toISOString().slice(0, 10)}
                                     onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))}
                                     required />
                             </div>
@@ -426,7 +539,7 @@ const DividendsPage = () => {
     const [showAuthPay,   setShowAuthPay]   = useState(false);
     const [viewDividend,  setViewDividend]  = useState(null);
     const [editingRecord, setEditingRecord] = useState(null);
-    const [actionLoading, setActionLoading] = useState(null);
+    const [approvingDividend, setApprovingDividend] = useState(null);
 
     const isTreasurer = hasRole(['Treasurer', 'Admin']);
 
@@ -477,18 +590,6 @@ const DividendsPage = () => {
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data)).catch(() => {});
     }, [loadDividends, loadAuthPayments]);
 
-    const handleApproveDividend = async (id) => {
-        setActionLoading(id);
-        try {
-            await dividendsAPI.approve(id);
-            loadDividends();
-        } catch (err) {
-            setError(getErrorMessage(err));
-        } finally {
-            setActionLoading(null);
-        }
-    };
-
     const handleViewDividend = async (id) => {
         try {
             const res = await dividendsAPI.getById(id);
@@ -530,10 +631,15 @@ const DividendsPage = () => {
         {
             header: 'Total Amount',
             render: row => (
-                <span className="text-sm font-bold text-gray-900">
-                    {row.currency_code}{' '}
-                    {parseFloat(row.total_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                </span>
+                <div>
+                    <span className="text-sm font-bold text-gray-900">
+                        {row.currency_code}{' '}
+                        {parseFloat(row.total_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                    </span>
+                    {row.status === 'PENDING' && row.needs_exchange_rate && (
+                        <p className="text-[11px] text-amber-600 mt-0.5">Rate needed to credit savings</p>
+                    )}
+                </div>
             ),
         },
         {
@@ -578,8 +684,7 @@ const DividendsPage = () => {
                     )}
                     {row.status === 'PENDING' && isTreasurer && (
                         <button
-                            onClick={() => handleApproveDividend(row.id)}
-                            disabled={actionLoading === row.id}
+                            onClick={() => setApprovingDividend(row)}
                             className="p-1.5 rounded-lg bg-green-50 text-green-600
                                 hover:bg-green-100 transition-colors"
                             title="Approve and Pay"
@@ -770,6 +875,12 @@ const DividendsPage = () => {
                 isOpen={!!viewDividend}
                 dividend={viewDividend}
                 onClose={() => setViewDividend(null)}
+            />
+            <ApproveDividendModal
+                isOpen={!!approvingDividend}
+                dividend={approvingDividend}
+                onClose={() => setApprovingDividend(null)}
+                onSuccess={loadDividends}
             />
         </div>
     );

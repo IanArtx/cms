@@ -9,6 +9,8 @@
 //   4. Daily overdue check         — every day at 00:05am
 //   5. Monthly share certificates  — 1st of every month at 10am
 //   6. Annual share certificates   — 1st of January at 10:10am
+//   6b. Certificate signing reminders — daily 08:00, last week of month
+//   6c. Document signature reminders — daily 08:30
 //   7. Side fund due generation    — 1st of every month at 00:15
 //   8. Side fund default check     — 1st of every month at 00:20
 // ============================================================
@@ -22,7 +24,8 @@ const {
 } = require('../services/reportService');
 const { calculateDailyAccrual, calculateSimpleInterest, calculateCompoundInterest } = require('../services/loanService');
 const { issueCertificatesForAllShareholders } = require('../services/certificateService');
-const { notify } = require('../services/notificationService');
+const { getSignatureStatus, notifyPendingSignatories } = require('../services/signatureService');
+const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 
@@ -365,9 +368,17 @@ const scheduleDailySavingsAccrual = () => {
 // JOB 4c: MONTHLY SIDE FUND DUE GENERATION
 // Runs on the 1st of every month at 00:15 (after the daily accrual
 // jobs). Creates one side_fund_dues row per active shareholder for
-// the new month, using whatever monthly_amount is set on
-// side_fund_config at that time. Does nothing if the side fund
+// the new month, using that member's own side_fund_member_overrides
+// amount if one is set (v1.25.0), otherwise the company-wide
+// side_fund_config.monthly_amount. Does nothing if the side fund
 // isn't active. Safe to re-run — ON CONFLICT DO NOTHING per member.
+//
+// v1.25.0 — right after a new due is created, this also checks
+// whether that member has a banked side_fund_member_credit balance
+// (from a past overpayment) and immediately draws it down against
+// the new due — no new transaction is posted here, since the money
+// already moved into the account back when the credit was originally
+// banked; this step only reallocates it to a specific due.
 // ============================================================
 const scheduleSideFundDueGeneration = () => {
     cron.schedule('15 0 1 * *', async () => {
@@ -384,25 +395,61 @@ const scheduleSideFundDueGeneration = () => {
             const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
             const shareholders = await query(`
-                SELECT sr.user_id
+                SELECT sr.user_id, smo.monthly_amount AS override_amount
                 FROM   shareholding_registry sr
                 JOIN   users u ON u.id = sr.user_id
+                LEFT JOIN side_fund_member_overrides smo ON smo.user_id = sr.user_id
                 WHERE  sr.effective_to IS NULL
                 AND    u.is_active = TRUE
             `);
 
             let created = 0;
+            let creditApplied = 0;
             for (const s of shareholders.rows) {
+                const dueAmount = s.override_amount != null ? s.override_amount : config.monthly_amount;
+                // due_date (v1.26.0) is always the last day of this due's
+                // own period month — the fund is a flat monthly amount, so
+                // "overdue" is simply "past that date and still unpaid".
                 const result = await query(`
-                    INSERT INTO side_fund_dues (user_id, period, amount_due, status)
-                    VALUES ($1, $2, $3, 'PENDING')
+                    INSERT INTO side_fund_dues (user_id, period, amount_due, status, due_date)
+                    VALUES ($1, $2, $3, 'PENDING',
+                        ($2 || '-01')::date + INTERVAL '1 month' - INTERVAL '1 day')
                     ON CONFLICT (user_id, period) DO NOTHING
                     RETURNING id
-                `, [s.user_id, period, config.monthly_amount]);
-                if (result.rows.length > 0) created++;
+                `, [s.user_id, period, dueAmount]);
+                if (result.rows.length === 0) continue;
+                created++;
+                const newDueId = result.rows[0].id;
+
+                // Draw down any banked credit against this brand-new due.
+                const creditResult = await query(
+                    'SELECT credit_balance FROM side_fund_member_credit WHERE user_id = $1',
+                    [s.user_id]
+                );
+                const creditBalance = parseFloat(creditResult.rows[0]?.credit_balance || 0);
+                if (creditBalance > 0) {
+                    const applied = Math.min(creditBalance, parseFloat(dueAmount));
+                    const newStatus = applied >= parseFloat(dueAmount) ? 'PAID' : 'PARTIAL';
+                    await query(`
+                        UPDATE side_fund_dues
+                        SET    amount_paid = $1, status = $2, paid_from_credit = TRUE,
+                               paid_date = CURRENT_DATE, updated_at = NOW()
+                        WHERE  id = $3
+                    `, [applied, newStatus, newDueId]);
+                    await query(`
+                        UPDATE side_fund_member_credit
+                        SET    credit_balance = credit_balance - $1, updated_at = NOW()
+                        WHERE  user_id = $2
+                    `, [applied, s.user_id]);
+                    await query(`
+                        INSERT INTO side_fund_credit_ledger (user_id, delta, reason, related_due_id)
+                        VALUES ($1, $2, $3, $4)
+                    `, [s.user_id, -applied, `Applied automatically to ${period} due`, newDueId]);
+                    creditApplied++;
+                }
             }
 
-            logger.info(`Side fund due generation completed — ${created} dues created for ${period}`);
+            logger.info(`Side fund due generation completed — ${created} dues created for ${period}, credit auto-applied to ${creditApplied}`);
         } catch (err) {
             logger.error('Side fund due generation job failed', { error: err.message });
         }
@@ -495,6 +542,120 @@ const scheduleAnnualShareCertificates = () => {
     });
 
     logger.info(`Annual share certificates scheduled: ${cronExpression}`);
+};
+
+// ============================================================
+// JOB 6b: CERTIFICATE SIGNING ROUND REMINDERS (v1.23.0, Section 4.29)
+// Runs every day at 08:00 during the last week of the month
+// (day-of-month 24-31 covers it regardless of month length — cron
+// simply never matches on months shorter than the day given). For
+// any still-OPEN certificate_signing_rounds row, reminds whichever
+// signatories still have a PENDING slot that accounts should be up
+// to date by now and their signature is overdue. Safe to run more
+// than once a day/week — it just re-notifies, there's no dedup
+// table, since a signatory who already signed no longer has a
+// PENDING slot to be reminded about.
+// ============================================================
+const scheduleCertificateSigningReminders = () => {
+    cron.schedule('0 8 24-31 * *', async () => {
+        logger.info('Starting certificate signing round reminder job...');
+        try {
+            const openRounds = await query(`
+                SELECT id, certificate_type, period_label
+                FROM   certificate_signing_rounds
+                WHERE  status = 'OPEN'
+            `);
+
+            let remindersSent = 0;
+
+            for (const round of openRounds.rows) {
+                const signatures = await getSignatureStatus('CERTIFICATE_ROUND', round.id);
+                const pendingRoleIds = signatures.filter(s => s.status === 'PENDING').map(s => s.role_id);
+                if (pendingRoleIds.length === 0) continue;
+
+                const signatoriesResult = await query(`
+                    SELECT DISTINCT u.id, u.first_name, u.email
+                    FROM   user_roles ur
+                    JOIN   users u ON u.id = ur.user_id AND u.is_active = TRUE
+                    WHERE  ur.role_id = ANY($1::int[]) AND ur.revoked_at IS NULL
+                `, [pendingRoleIds]);
+
+                await notifyMany(signatoriesResult.rows, 'CERTIFICATE_ROUND_REMINDER', (recipient) => ({
+                    title: `Last week of the month — Certificate of Shares signature still pending`,
+                    body:  `The ${round.period_label} certificate round is still waiting on your signature. Please review now that accounts are up to date.`,
+                    link:  '/certificates',
+                    module: 'SYSTEM',
+                    recordType: 'certificate_signing_rounds',
+                    recordId: round.id,
+                    email: {
+                        subject: `Reminder: Certificate of Shares signature pending — ${round.period_label}`,
+                        html: `<p>Dear ${recipient.first_name},</p>
+                               <p>It's the last week of the month — the ${round.period_label} Certificate of Shares
+                               round is still waiting on your signature. Please sign in to review and sign it now
+                               that accounts for the period are up to date.</p>`,
+                    },
+                })).catch(() => {});
+
+                remindersSent += signatoriesResult.rows.length;
+            }
+
+            logger.info(`Certificate signing round reminder job completed — ${remindersSent} reminder(s) sent across ${openRounds.rows.length} open round(s)`);
+        } catch (err) {
+            logger.error('Certificate signing round reminder job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Certificate signing round reminders scheduled: 0 8 24-31 * *');
+};
+
+// ============================================================
+// JOB 6c: DOCUMENT SIGNATURE REMINDERS (v1.23.1, Section 4.29)
+// Runs every day at 08:30. For any DOCUMENT (Resolution/Loan/Grant
+// Agreement) with at least one still-PENDING signature slot, reminds
+// (bell + email) whoever currently holds a role with an open slot.
+// Unlike the certificate round reminder (which only makes sense
+// during the last week of the month), a Resolution can be opened for
+// signature any day of the month, so this simply reminds daily for
+// as long as any slot on it stays PENDING — no dedup table, since a
+// signatory who already signed no longer has a PENDING slot to be
+// reminded about.
+// ============================================================
+const scheduleDocumentSignatureReminders = () => {
+    cron.schedule('30 8 * * *', async () => {
+        logger.info('Starting document signature reminder job...');
+        try {
+            const openDocs = await query(`
+                SELECT DISTINCT d.id, d.title
+                FROM   documents d
+                JOIN   document_signatures ds ON ds.target_type = 'DOCUMENT' AND ds.target_id = d.id
+                WHERE  ds.status = 'PENDING'
+            `);
+
+            let remindersSent = 0;
+            for (const doc of openDocs.rows) {
+                const { notified } = await notifyPendingSignatories('DOCUMENT', doc.id, 'DOCUMENT_SIGNATURE_REMINDER', {
+                    title: `Signature still pending: ${doc.title}`,
+                    link: '/documents',
+                    recordType: 'documents',
+                    emailSubject: `Reminder: your signature is needed — ${doc.title}`,
+                    buildEmailHtml: (recipient) => `<p>Dear ${recipient.first_name},</p>
+                        <p>The document <strong>${doc.title}</strong> is still waiting on your signature
+                        (${recipient.roleNames.join(', ')}). Please sign in to review and sign it.</p>`,
+                });
+                remindersSent += notified;
+            }
+
+            logger.info(`Document signature reminder job completed — ${remindersSent} reminder(s) sent across ${openDocs.rows.length} document(s)`);
+        } catch (err) {
+            logger.error('Document signature reminder job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Document signature reminders scheduled: 30 8 * * *');
 };
 
 // ============================================================
@@ -609,6 +770,8 @@ const startAllJobs = () => {
     scheduleSideFundDefaultCheck();
     scheduleMonthlyShareCertificates();
     scheduleAnnualShareCertificates();
+    scheduleCertificateSigningReminders();
+    scheduleDocumentSignatureReminders();
     scheduleAuditAccessExpiryReminders();
     logger.info('All scheduled jobs started successfully');
 };

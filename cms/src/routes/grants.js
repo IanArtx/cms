@@ -13,13 +13,15 @@
 
 const router = require('express').Router();
 const { body, param } = require('express-validator');
-const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, blockAuditor, requirePermissions, requireAnyPermission } = require('../middleware/auth');
+const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission } = require('../middleware/auth');
 const grantsController = require('../controllers/grantsController');
 
 // All routes require login
 router.use(authenticate);
-router.use(blockAuditor);
+router.use(requireAssignedRole);
+router.use(requireConsent);
+router.use(blockFinanceRestricted);
 
 // ============================================================
 // GET ALL GRANTS
@@ -119,7 +121,7 @@ router.post('/:id/tranches',
         body('amount')
             .isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('received_date')
-            .isISO8601().withMessage('A valid date is required'),
+            .isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('notes')
             .optional().trim(),
     ],

@@ -10,7 +10,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
-const { postTransaction, creditShareholderContribution } = require('./transactionsController');
+const { postTransaction, creditShareholderContribution, creditSideFundContribution } = require('./transactionsController');
 const { createPendingFlexibleDeposit } = require('./savingsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
@@ -36,12 +36,14 @@ const createRequisition = asyncHandler(async (req, res) => {
     } = req.body;
 
     const type = requisition_type || 'EXPENSE';
+    const isAcknowledgementType = (t) =>
+        t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' || t === 'SIDE_FUND_CONTRIBUTION';
 
-    if ((type === 'CONTRIBUTION_ACKNOWLEDGEMENT' || type === 'SAVINGS_DEPOSIT') && !contribution_date) {
+    if (isAcknowledgementType(type) && !contribution_date) {
         throw createError.badRequest(
-            type === 'SAVINGS_DEPOSIT'
-                ? 'Please provide the date you made the savings deposit'
-                : 'Please provide the date you made the contribution'
+            type === 'SAVINGS_DEPOSIT' ? 'Please provide the date you made the savings deposit' :
+            type === 'SIDE_FUND_CONTRIBUTION' ? 'Please provide the date you made the side fund payment' :
+            'Please provide the date you made the contribution'
         );
     }
 
@@ -66,7 +68,7 @@ const createRequisition = asyncHandler(async (req, res) => {
             purpose.trim(), required_by_date || null,
             priority || 'NORMAL',
             type,
-            (type === 'CONTRIBUTION_ACKNOWLEDGEMENT' || type === 'SAVINGS_DEPOSIT') ? contribution_date : null,
+            isAcknowledgementType(type) ? contribution_date : null,
         ]);
 
         const reqId = result.rows[0].id;
@@ -307,6 +309,79 @@ const approveRequisition = asyncHandler(async (req, res) => {
                 savings_reference:     savRefCode,
                 savings_id:            savingsId,
             }, 'Savings deposit request forwarded to the Treasurer/Assistant Treasurer for approval');
+        }
+
+        // ----------------------------------------------------------
+        // SIDE FUND CONTRIBUTION (v1.26.0) — member is asking us to
+        // record a side fund payment they've already made. Just like
+        // CONTRIBUTION_ACKNOWLEDGEMENT, this runs the exact same
+        // crediting logic as every other side fund payment path
+        // (applySideFundPayment, oldest-unpaid-period-first) — no
+        // month picker on the request itself, the cascade sorts out
+        // which period(s) it covers.
+        // ----------------------------------------------------------
+        if (req_.requisition_type === 'SIDE_FUND_CONTRIBUTION') {
+            const {
+                transactionId, balanceBefore, balanceAfter,
+                referenceCode: txRefCode, settled, creditBanked,
+            } = await creditSideFundContribution(client, {
+                userId:            req_.requested_by,
+                amount:            approvedAmount,
+                contributionDate:  req_.contribution_date || new Date().toISOString().split('T')[0],
+                categoryId:        req_.category_id,
+                recordedByUserId:  req.user.id,
+            });
+
+            await client.query(`
+                UPDATE requisitions
+                SET    status          = 'APPROVED',
+                       amount_approved = $1,
+                       transaction_id  = $2,
+                       reviewed_by     = $3,
+                       reviewed_at     = NOW(),
+                       review_notes    = $4
+                WHERE  id = $5
+            `, [approvedAmount, transactionId, req.user.id, review_notes || null, id]);
+
+            await logAction(req.user.id, ACTIONS.REQUISITION_APPROVED, MODULES.FINANCE, {
+                ipAddress:   req.ip,
+                recordType:  'requisitions',
+                recordId:    parseInt(id),
+                newValues:   { txRefCode, approvedAmount, settled, creditBanked, balanceBefore, balanceAfter },
+                description: `Side fund contribution acknowledged: ${req_.reference_code} — ` +
+                             `${req_.first_name} ${req_.last_name}: ${approvedAmount}`,
+                client,
+            });
+
+            notify({
+                userId:     req_.requested_by,
+                type:       'REQUISITION_APPROVED',
+                title:      'Side fund contribution approved',
+                body:       `Your requisition "${req_.title}" (${req_.reference_code}) was approved and the side fund payment has been recorded.`,
+                link:       `/side-fund`,
+                module:     'FINANCE',
+                recordType: 'requisitions',
+                recordId:   parseInt(id),
+                email: {
+                    subject: `Requisition approved — ${req_.reference_code}`,
+                    html:    await wrapEmail(`
+                        <p>Dear ${req_.first_name},</p>
+                        <p>Your requisition <strong>${req_.title}</strong> (${req_.reference_code}) has been approved and the side fund payment recorded.</p>
+                        ${review_notes ? `<p style="color:#6b7280;">Reviewer notes: ${review_notes}</p>` : ''}
+                    `, { preheader: 'Your requisition has been approved' }),
+                },
+            });
+
+            return sendSuccess(res, {
+                status:                'APPROVED',
+                requisition_type:      'SIDE_FUND_CONTRIBUTION',
+                amount_approved:       approvedAmount,
+                transaction_reference: txRefCode,
+                settled,
+                credit_banked:         creditBanked,
+                balance_before:        balanceBefore,
+                balance_after:         balanceAfter,
+            }, 'Side fund contribution acknowledged and recorded');
         }
 
         // ----------------------------------------------------------
@@ -596,12 +671,13 @@ const editRequisition = asyncHandler(async (req, res) => {
         }
 
         const newType = requisition_type || requisition.requisition_type;
-        if ((newType === 'CONTRIBUTION_ACKNOWLEDGEMENT' || newType === 'SAVINGS_DEPOSIT') &&
-            !(contribution_date || requisition.contribution_date)) {
+        const isAcknowledgementType = (t) =>
+            t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' || t === 'SIDE_FUND_CONTRIBUTION';
+        if (isAcknowledgementType(newType) && !(contribution_date || requisition.contribution_date)) {
             throw createError.badRequest(
-                newType === 'SAVINGS_DEPOSIT'
-                    ? 'Please provide the date the savings deposit was made'
-                    : 'Please provide the date the contribution was made'
+                newType === 'SAVINGS_DEPOSIT' ? 'Please provide the date the savings deposit was made' :
+                newType === 'SIDE_FUND_CONTRIBUTION' ? 'Please provide the date the side fund payment was made' :
+                'Please provide the date the contribution was made'
             );
         }
 
@@ -624,7 +700,7 @@ const editRequisition = asyncHandler(async (req, res) => {
             amount_requested || null, purpose ? purpose.trim() : null,
             required_by_date !== undefined ? required_by_date : requisition.required_by_date,
             priority || null, newType,
-            (newType === 'CONTRIBUTION_ACKNOWLEDGEMENT' || newType === 'SAVINGS_DEPOSIT')
+            isAcknowledgementType(newType)
                 ? (contribution_date || requisition.contribution_date) : null,
             id,
         ]);

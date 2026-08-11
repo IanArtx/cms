@@ -13,17 +13,22 @@ its free/low tiers are enough to get started without deep DevOps
 knowledge.
 
 **What it costs:** the backend runs on Render's Starter web service plan
-(~$7/month) and the database runs on the Basic-256mb plan (~$6-7/month) —
-check [render.com/pricing](https://render.com/pricing) for the current
-rate, since Render occasionally renames/retires tiers (the database plan
-used to be called "Starter" too, but Render retired that name for new
-databases in mid-2026 in favor of Basic/Pro/Accelerated tiers — this
-project's `render.yaml` files already use the current name).
-The frontend (a static website) is free. Free-tier alternatives exist
-but they spin your server down after 15 minutes of inactivity, which
-would silently break the nightly scheduled jobs (interest accrual,
-overdue checks, monthly reports) — not worth the savings for a system
-tracking real money.
+(~$7/month) and the database runs on the Basic-256mb plan (~$6/month for
+the instance). Render's Blueprint deploy screen also attaches a 15 GB
+disk to the database by default, billed separately at $0.30/GB/month
+(~$4.50/month) — so the database line item is actually ~$10.50/month
+total, not just the $6/month instance price. Add it up and one company's
+full stack (backend + database + disk) runs about **$17.50/month**; the
+frontend (a static website) is free. Check
+[render.com/pricing](https://render.com/pricing) for the current rate,
+since Render occasionally renames/retires tiers or changes disk pricing
+(the database plan used to be called "Starter" too, but Render retired
+that name for new databases in mid-2026 in favor of Basic/Pro/Accelerated
+tiers — this project's `render.yaml` files already use the current
+name). Free-tier alternatives exist but they spin your server down
+after 15 minutes of inactivity, which would silently break the nightly
+scheduled jobs (interest accrual, overdue checks, monthly reports) —
+not worth the savings for a system tracking real money.
 
 ---
 

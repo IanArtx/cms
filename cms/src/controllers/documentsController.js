@@ -16,8 +16,47 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
+const { ensureSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories, SIGNABLE_DOCUMENT_TYPES } = require('../services/signatureService');
+const { applyStamps, getAppliedStamps } = require('../services/stampService');
 const path = require('path');
 const fs   = require('fs');
+
+// ============================================================
+// FINANCE DOCUMENT GATE (v1.21.0)
+// The Administrative Officer role sees this whole module (Events
+// too — see routes/documents.js and routes/events.js, which only
+// block the Auditor, not this role) because most of what lives
+// here — meeting minutes, correspondence, legal/compliance filings —
+// is exactly what that role is hired to produce. The one carve-out
+// is the "Financial" document category (and any of its
+// sub-categories): those stay invisible to this role by default,
+// with staff_document_grants (staffAccessController.js) as the one
+// explicit, per-document exception an Admin can grant. Every other
+// role is unaffected by this check.
+// ============================================================
+const isFinanceRestrictedStaffRole = (req) =>
+    (req.user?.roles || []).includes('Administrative Officer');
+
+const isFinanceCategoryAbbrev = (fullAbbreviation) =>
+    !!fullAbbreviation && (fullAbbreviation === 'FIN' || fullAbbreviation.startsWith('FIN-'));
+
+// Used by getDocumentById / downloadDocument, which fetch a single
+// document by ID and need to check both the category and, if it's a
+// Financial one, whether this specific user has an explicit grant.
+const assertDocumentVisible = async (req, documentId, categoryFullAbbreviation) => {
+    if (!isFinanceRestrictedStaffRole(req)) return;
+    if (!isFinanceCategoryAbbrev(categoryFullAbbreviation)) return;
+
+    const grant = await query(
+        `SELECT 1 FROM staff_document_grants WHERE document_id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+        [documentId, req.user.id]
+    );
+    if (grant.rows.length === 0) {
+        throw createError.forbidden(
+            'This is a financial document. Ask an Admin to grant you access to this specific document if you need it.'
+        );
+    }
+};
 
 // ============================================================
 // UPLOAD A DOCUMENT
@@ -211,15 +250,66 @@ const generateDocument = asyncHandler(async (req, res) => {
 // APPROVE DOCUMENT
 // POST /api/documents/:id/approve
 // Moves document from DRAFT to FINAL status.
+//
+// v1.23.0 (Section 4.29): for RESOLUTION/LOAN_AGREEMENT/
+// GRANT_AGREEMENT documents, if an Admin has configured
+// signature_requirements for that type, this call no longer
+// finalises the document directly — instead it opens the required
+// signature slots (idempotent — a second approve call on the same
+// document just returns the current status rather than erroring) and
+// the document only becomes FINAL once every required role signs via
+// POST /documents/:id/sign. If nothing is configured for that type,
+// behaviour is unchanged from before this feature existed.
 // ============================================================
 const approveDocument = asyncHandler(async (req, res) => {
     const { id } = req.params;
+
+    const docResult = await query('SELECT id, title, status, document_type FROM documents WHERE id = $1', [id]);
+    if (docResult.rows.length === 0) {
+        throw createError.notFound('Document not found');
+    }
+    const doc = docResult.rows[0];
+
+    if (SIGNABLE_DOCUMENT_TYPES.includes(doc.document_type)) {
+        // Checked BEFORE ensureSignatureSlots so we can tell "opening
+        // for the first time" apart from "already open, Approve was
+        // clicked again" — only the former should notify signatories,
+        // otherwise every repeat click would re-email everyone.
+        const alreadyHadSlots = (await getSignatureStatus('DOCUMENT', doc.id)).length > 0;
+
+        const { hasRequirements, roles } = await withTransaction(async (client) =>
+            ensureSignatureSlots(client, 'DOCUMENT', doc.id, doc.document_type)
+        );
+
+        if (hasRequirements) {
+            if (!alreadyHadSlots) {
+                await notifyPendingSignatories('DOCUMENT', doc.id, 'DOCUMENT_SIGNATURE_REQUESTED', {
+                    title: `Signature needed: ${doc.title}`,
+                    link: '/documents',
+                    recordType: 'documents',
+                    emailSubject: `Your signature is needed — ${doc.title}`,
+                    buildEmailHtml: (recipient) => `<p>Dear ${recipient.first_name},</p>
+                        <p>The document <strong>${doc.title}</strong> needs your signature (${recipient.roleNames.join(', ')}).
+                        Please sign in to review and sign it.</p>`,
+                });
+            }
+
+            const signatures = await getSignatureStatus('DOCUMENT', doc.id);
+            if (doc.status !== 'DRAFT') {
+                return sendSuccess(res, { ...doc, signatures }, 'This document requires multiple signatures — signing slots are open');
+            }
+            return sendSuccess(res, { ...doc, signatures },
+                `Signature slots opened for: ${roles.map(r => r.role_name).join(', ')}. The document becomes final once everyone signs.`);
+        }
+    }
 
     const result = await query(`
         UPDATE documents
         SET    status      = 'FINAL',
                approved_by = $1,
-               approved_at = NOW()
+               approved_at = NOW(),
+               fully_signed = TRUE,
+               fully_signed_at = NOW()
         WHERE  id = $2
         AND    status = 'DRAFT'
         RETURNING id, title, status
@@ -236,7 +326,86 @@ const approveDocument = asyncHandler(async (req, res) => {
         description: `Document approved: ID ${id}`,
     });
 
+    // v1.24.0 — apply whichever company stamp(s) are configured for
+    // this document type, now that it is fully approved/finalised.
+    // No-op (empty array) if nothing is configured for this type.
+    await applyStamps('DOCUMENT', doc.id, doc.document_type).catch(() => {});
+
     sendSuccess(res, result.rows[0], 'Document approved and finalised');
+});
+
+// ============================================================
+// SIGN A DOCUMENT (v1.23.0, Section 4.29)
+// POST /api/documents/:id/sign
+// Fills the caller's role's pending signature slot (opened by
+// approveDocument above). Once every required role has signed, the
+// document flips to FINAL automatically.
+// ============================================================
+const signDocument = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const docResult = await query('SELECT id, title, status, document_type FROM documents WHERE id = $1', [id]);
+    if (docResult.rows.length === 0) throw createError.notFound('Document not found');
+    const doc = docResult.rows[0];
+
+    const { allSigned, signerName } = await withTransaction(async (client) =>
+        signSlot(client, { targetType: 'DOCUMENT', targetId: doc.id, userId: req.user.id })
+    );
+
+    await logAction(req.user.id, ACTIONS.DOCUMENT_SIGNED, MODULES.DOCUMENTS, {
+        ipAddress:   req.ip,
+        recordType:  'documents',
+        recordId:    doc.id,
+        description: `${signerName} signed document "${doc.title}"`,
+    }).catch(() => {});
+
+    if (allSigned) {
+        await query(`
+            UPDATE documents
+            SET    status = 'FINAL', approved_by = $1, approved_at = NOW(),
+                   fully_signed = TRUE, fully_signed_at = NOW()
+            WHERE  id = $2
+        `, [req.user.id, doc.id]);
+
+        await logAction(req.user.id, ACTIONS.DOCUMENT_FULLY_SIGNED, MODULES.DOCUMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'documents',
+            recordId:    doc.id,
+            description: `Document "${doc.title}" fully signed and finalised`,
+        }).catch(() => {});
+
+        // v1.24.0 — apply whichever company stamp(s) are configured
+        // for this document type now that every required signature
+        // is in.
+        await applyStamps('DOCUMENT', doc.id, doc.document_type).catch(() => {});
+    }
+
+    const signatures = await getSignatureStatus('DOCUMENT', doc.id);
+    sendSuccess(res, { fully_signed: allSigned, signatures },
+        allSigned ? 'Document fully signed and finalised' : 'Signature recorded');
+});
+
+// ============================================================
+// GET DOCUMENT SIGNATURE STATUS
+// GET /api/documents/:id/signatures
+// ============================================================
+const getDocumentSignatures = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const signatures = await getSignatureStatus('DOCUMENT', id);
+    sendSuccess(res, signatures);
+});
+
+// ============================================================
+// GET APPLIED STAMPS (v1.24.0, Section 4.30)
+// GET /api/documents/:id/stamps
+// Whichever company stamp(s) were actually baked onto this document
+// once it became fully approved/signed. Empty array for a draft, or
+// for a finalised document whose type has no stamp configured.
+// ============================================================
+const getDocumentStamps = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const stamps = await getAppliedStamps('DOCUMENT', id);
+    sendSuccess(res, stamps);
 });
 
 // ============================================================
@@ -402,11 +571,27 @@ const getAllDocuments = asyncHandler(async (req, res) => {
         params.push(related_record_id);
     }
 
+    // Finance-restricted staff (Administrative Officer): hide Financial-
+    // category documents (and sub-categories) unless individually
+    // granted via staff_document_grants. Joined against category_paths'
+    // full_abbreviation, which is already joined into this query below.
+    if (isFinanceRestrictedStaffRole(req)) {
+        p++; conditions.push(`(
+            NOT (cp.full_abbreviation = 'FIN' OR cp.full_abbreviation LIKE 'FIN-%')
+            OR d.id IN (SELECT document_id FROM staff_document_grants WHERE user_id = $${p} AND revoked_at IS NULL)
+        )`);
+        params.push(req.user.id);
+    }
+
     const where = 'WHERE ' + conditions.join(' AND ');
 
-    const countResult = await query(
-        `SELECT COUNT(*) AS total FROM documents d ${where}`, params
-    );
+    const countResult = await query(`
+        SELECT COUNT(*) AS total
+        FROM   documents d
+        JOIN   categories cat    ON cat.id = d.category_id
+        JOIN   category_paths cp ON cp.category_id = d.category_id
+        ${where}
+    `, params);
     const total = parseInt(countResult.rows[0].total);
 
     params.push(limit, offset);
@@ -420,6 +605,7 @@ const getAllDocuments = asyncHandler(async (req, res) => {
             d.file_size_bytes,
             d.version,
             d.status,
+            d.fully_signed,
             d.created_at,
             d.related_record_type,
             d.related_record_id,
@@ -455,8 +641,9 @@ const getDocumentById = asyncHandler(async (req, res) => {
             d.*,
             r.reference_code,
             r.public_id,
-            cat.name     AS category_name,
-            cp.full_path AS category_trail,
+            cat.name             AS category_name,
+            cp.full_path         AS category_trail,
+            cp.full_abbreviation AS category_full_abbreviation,
             u.first_name  || ' ' || u.last_name AS created_by_name,
             approver.first_name || ' ' || approver.last_name AS approved_by_name,
             -- Version history
@@ -486,6 +673,8 @@ const getDocumentById = asyncHandler(async (req, res) => {
         throw createError.notFound('Document not found');
     }
 
+    await assertDocumentVisible(req, id, result.rows[0].category_full_abbreviation);
+
     sendSuccess(res, result.rows[0]);
 });
 
@@ -504,9 +693,12 @@ const downloadDocument = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
     const result = await query(
-        `SELECT id, title, source, document_type, template_data,
-                file_path, file_name, mime_type
-         FROM   documents WHERE id = $1`,
+        `SELECT d.id, d.title, d.source, d.document_type, d.template_data,
+                d.file_path, d.file_name, d.mime_type,
+                cp.full_abbreviation AS category_full_abbreviation
+         FROM   documents d
+         JOIN   category_paths cp ON cp.category_id = d.category_id
+         WHERE  d.id = $1`,
         [id]
     );
 
@@ -514,6 +706,8 @@ const downloadDocument = asyncHandler(async (req, res) => {
         throw createError.notFound('Document not found');
     }
     const doc = result.rows[0];
+
+    await assertDocumentVisible(req, id, doc.category_full_abbreviation);
 
     if (doc.source === 'UPLOADED') {
         if (!doc.file_path || !fs.existsSync(doc.file_path)) {
@@ -575,6 +769,9 @@ module.exports = {
     uploadDocument,
     generateDocument,
     approveDocument,
+    signDocument,
+    getDocumentSignatures,
+    getDocumentStamps,
     createNewVersion,
     archiveDocument,
     getAllDocuments,

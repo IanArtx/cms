@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI } from '../../api/endpoints';
+import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI, sideFundAPI } from '../../api/endpoints';
 import { formatDate, formatCurrency, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -19,6 +19,7 @@ import {
     CalendarDaysIcon,
     ArrowTrendingUpIcon,
     TrophyIcon,
+    WalletIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -120,6 +121,9 @@ const ShareholderDashboard = () => {
     const [shareholding, setShareholding] = useState([]);
     const [performance,  setPerformance]  = useState(null);
     const [sharePrice,   setSharePrice]   = useState(null);
+    const [sideFund,        setSideFund]        = useState(null);
+    const [sideFundOverdue, setSideFundOverdue]  = useState(null);
+    const [sideFundCredit,  setSideFundCredit]   = useState(null);
     const [loading,      setLoading]      = useState(true);
     const [error,        setError]        = useState(null);
 
@@ -135,6 +139,9 @@ const ShareholderDashboard = () => {
                     shareholdingRes,
                     performanceRes,
                     sharePriceRes,
+                    sideFundRes,
+                    sideFundOverdueRes,
+                    sideFundCreditRes,
                 ] = await Promise.allSettled([
                     usersAPI.getMyProfile(),
                     reportsAPI.getMyReport({
@@ -146,6 +153,9 @@ const ShareholderDashboard = () => {
                     usersAPI.getShareholding(),
                     investmentsAPI.getPerformanceSummary(),
                     sharesAPI.getCurrentPrice(),
+                    sideFundAPI.getSettings(),
+                    sideFundAPI.getMyOverdue(),
+                    sideFundAPI.getMyCredit(),
                 ]);
 
                 if (profileRes.status === 'fulfilled') {
@@ -168,6 +178,15 @@ const ShareholderDashboard = () => {
                 }
                 if (sharePriceRes.status === 'fulfilled') {
                     setSharePrice(sharePriceRes.value.data.data || null);
+                }
+                if (sideFundRes.status === 'fulfilled') {
+                    setSideFund(sideFundRes.value.data.data || null);
+                }
+                if (sideFundOverdueRes.status === 'fulfilled') {
+                    setSideFundOverdue(sideFundOverdueRes.value.data.data || null);
+                }
+                if (sideFundCreditRes.status === 'fulfilled') {
+                    setSideFundCredit(sideFundCreditRes.value.data.data || null);
                 }
             } catch (err) {
                 setError(getErrorMessage(err));
@@ -263,6 +282,26 @@ const ShareholderDashboard = () => {
                     color="yellow"
                     to="/events"
                 />
+                {sideFund?.is_active && (
+                    <StatCard
+                        title="My Side Fund"
+                        value={sideFundOverdue?.overdue_amount > 0
+                            ? `EUR ${parseFloat(sideFundOverdue.overdue_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} overdue`
+                            : sideFundCredit?.credit_balance > 0
+                                ? `EUR ${parseFloat(sideFundCredit.credit_balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credit`
+                                : 'Up to date'
+                        }
+                        subtitle={sideFundOverdue?.overdue_count > 0
+                            ? `${sideFundOverdue.overdue_count} month${sideFundOverdue.overdue_count > 1 ? 's' : ''} unpaid`
+                            : sideFundCredit?.credit_balance > 0
+                                ? 'Banked for future months'
+                                : 'No dues overdue'
+                        }
+                        icon={WalletIcon}
+                        color={sideFundOverdue?.overdue_amount > 0 ? 'yellow' : 'green'}
+                        to="/side-fund"
+                    />
+                )}
             </div>
 
             {/* Main Content Grid */}

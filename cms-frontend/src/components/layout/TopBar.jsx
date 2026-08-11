@@ -65,9 +65,16 @@ const TopBar = ({ onMenuClick }) => {
     // notifications below are company-wide, not scoped to any one
     // engagement, so they must never be fetched or shown here for an
     // Auditor (the backend also blocks the underlying endpoints for
-    // this role — see middleware/auth.js blockAuditor — this is the
-    // matching frontend-side guard so the UI doesn't even try).
+    // this role — see middleware/auth.js blockFinanceRestricted — this
+    // is the matching frontend-side guard so the UI doesn't even try).
     const isAuditor = hasRole('Auditor');
+    // Administrative Officer (v1.21.0): a hired/contracted staff role
+    // that also must never see company balances or company-wide
+    // search — but UNLIKE the Auditor, this role legitimately manages
+    // Events, so the upcoming-events fetch below stays on for them;
+    // only the balance fetch and the search button are skipped.
+    const isAdminOfficer = hasRole('Administrative Officer');
+    const isFinanceBlockedRole = isAuditor || isAdminOfficer;
     const { branding } = useBranding();
     const navigate     = useNavigate();
     const location     = useLocation();
@@ -217,10 +224,18 @@ const TopBar = ({ onMenuClick }) => {
         };
 
         loadNotifications();
-        accountsAPI.getSummary()
-            .then(res => setAccountSummary(res.data.data || []))
-            .catch(() => {});
-    }, [location.pathname, hasPermission, isAuditor]);
+        // Account balances are finance data — skip the fetch entirely
+        // for both finance-restricted roles (Auditor never reaches this
+        // line at all thanks to the early return above; Administrative
+        // Officer does reach it, since they still get the events fetch).
+        if (isFinanceBlockedRole) {
+            setAccountSummary([]);
+        } else {
+            accountsAPI.getSummary()
+                .then(res => setAccountSummary(res.data.data || []))
+                .catch(() => {});
+        }
+    }, [location.pathname, hasPermission, isAuditor, isFinanceBlockedRole]);
 
     // --------------------------------------------------------
     // LOAD & POLL PERSISTED NOTIFICATIONS
@@ -369,10 +384,11 @@ const TopBar = ({ onMenuClick }) => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
 
                 {/* Global Search — searches across company-wide records,
-                    which is exactly what an Auditor must never reach
-                    outside their own engagement scope, so it's hidden
-                    rather than shown-then-blocked. */}
-                {!isAuditor && (
+                    which is exactly what a finance-restricted role
+                    (Auditor, Administrative Officer) must never reach,
+                    so it's hidden rather than shown-then-blocked — the
+                    backend fully blocks /api/search for both roles. */}
+                {!isFinanceBlockedRole && (
                     <button
                         onClick={() => setSearchOpen(true)}
                         style={{

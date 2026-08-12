@@ -184,7 +184,12 @@ const ApproveDividendModal = ({ isOpen, dividend, onClose, onSuccess }) => {
         setLoading(true);
         setError(null);
         try {
-            await dividendsAPI.approve(dividend.id, needsRate ? { exchange_rate: parseFloat(rate) } : undefined);
+            // Always send a real object, even when there's nothing to fill
+            // in — axios sends no request body at all for `undefined`, which
+            // means no Content-Type header goes out either, so Express's
+            // JSON body parser never runs and req.body arrives as
+            // `undefined` server-side instead of `{}` (v1.26.2 bug fix).
+            await dividendsAPI.approve(dividend.id, needsRate ? { exchange_rate: parseFloat(rate) } : {});
             onSuccess();
             onClose();
         } catch (err) {

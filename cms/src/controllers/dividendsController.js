@@ -181,7 +181,13 @@ const declareDividend = asyncHandler(async (req, res) => {
 // ============================================================
 const approveDividend = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { exchange_rate } = req.body;
+    // Defensive default (v1.26.2) — this endpoint has no required body
+    // fields when the dividend's currency already matches the Savings
+    // account's, so a caller sending no request body at all is legitimate;
+    // Express's JSON body parser only ever populates req.body when a
+    // request actually carries a JSON Content-Type, otherwise it's left
+    // `undefined` rather than `{}`.
+    const { exchange_rate } = req.body || {};
 
     await withTransaction(async (client) => {
         // Get the dividend

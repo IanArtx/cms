@@ -233,7 +233,7 @@ const AuditReviewPage = () => {
                                     <span className={statusBadgeClass(detail.status)}>{detail.status}</span>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
+                                <div className="grid grid-cols-2 sm:grid-cols-2 gap-4 mb-4 text-sm">
                                     <div>
                                         <p className="text-gray-400 text-xs">Auditor</p>
                                         <p>{detail.auditor_name}</p>

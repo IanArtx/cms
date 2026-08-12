@@ -4,83 +4,269 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
+/* ============================================================
+   CSS VARIABLES — for the handful of layout components (TopBar,
+   Sidebar) that set colours via inline `style={{...}}` instead of
+   Tailwind classes, because part of their styling already depends
+   on runtime values (the branding colour from the database). Those
+   components reference these variables directly (e.g.
+   `backgroundColor: 'var(--cms-surface)'`) so they still pick up
+   dark mode even though they're not using `dark:` utility classes.
+   ============================================================ */
+:root {
+  --cms-surface:          #ffffff;
+  --cms-surface-hover:    #f9fafb;
+  --cms-surface-divider:  #f3f4f6;
+  --cms-border:           #e5e7eb;
+  --cms-text-primary:     #111827;
+  --cms-text-secondary:   #6b7280;
+  --cms-text-muted:       #9ca3af;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cms-surface:          #1f2937;
+    --cms-surface-hover:    #374151;
+    --cms-surface-divider:  #374151;
+    --cms-border:           #4b5563;
+    --cms-text-primary:     #f9fafb;
+    --cms-text-secondary:   #cbd5e1;
+    --cms-text-muted:       #9ca3af;
+  }
+}
+
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-gray-50 text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100
+           transition-colors duration-150;
   }
 }
 
 @layer components {
+  /* ============================================================
+     BUTTONS
+     ============================================================ */
   .btn-primary {
     @apply bg-primary-700 text-white px-4 py-2 rounded-lg font-medium
            hover:bg-primary-800 focus:outline-none focus:ring-2
-           focus:ring-primary-500 focus:ring-offset-2 transition-colors;
+           focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
+           transition-colors;
   }
 
   .btn-secondary {
     @apply bg-white text-gray-700 px-4 py-2 rounded-lg font-medium border
            border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2
-           focus:ring-primary-500 focus:ring-offset-2 transition-colors;
+           focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
+           transition-colors
+           dark:bg-gray-800 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-700;
   }
 
   .btn-danger {
     @apply bg-red-600 text-white px-4 py-2 rounded-lg font-medium
            hover:bg-red-700 focus:outline-none focus:ring-2
-           focus:ring-red-500 focus:ring-offset-2 transition-colors;
+           focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
+           transition-colors;
   }
 
+  /* ============================================================
+     CARDS / TILES
+     ============================================================ */
   .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6;
+    @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6
+           dark:bg-gray-800 dark:border-gray-700 transition-colors duration-150;
   }
 
+  /* A card that carries the brand gradient instead of a flat white/dark
+     fill — used for banners and highlighted summary tiles. Text inside
+     should use the white/light utility classes below since the
+     background is always dark regardless of light/dark mode. */
+  .card-gradient {
+    @apply bg-brand-gradient rounded-xl shadow-md p-6 text-white border-0;
+  }
+
+  /* Softer gradient tile — for stat cards that need to stay readable
+     with dark body text, e.g. dashboard KPI tiles. */
+  .card-gradient-soft {
+    @apply bg-brand-gradient-soft dark:bg-brand-gradient-soft-dark
+           rounded-xl shadow-sm border border-primary-100 dark:border-gray-700
+           p-6 transition-colors duration-150;
+  }
+
+  /* ============================================================
+     PAGE / SECTION BANNERS
+     ============================================================ */
+  .page-banner {
+    @apply bg-brand-gradient rounded-2xl shadow-md p-5 sm:p-6 mb-6 text-white
+           relative overflow-hidden;
+  }
+
+  /* ============================================================
+     FORM CONTROLS
+     ============================================================ */
   .input {
     @apply block w-full rounded-lg border-gray-300 shadow-sm
-           focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+           focus:border-primary-500 focus:ring-primary-500 sm:text-sm
+           dark:bg-gray-900 dark:border-gray-600 dark:text-gray-100
+           dark:placeholder-gray-500;
   }
 
   .label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
+    @apply block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300;
   }
 
+  /* ============================================================
+     BADGES
+     ============================================================ */
   .badge-green {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-green-100 text-green-800;
+           font-medium bg-green-100 text-green-800
+           dark:bg-green-900/40 dark:text-green-300;
   }
 
   .badge-yellow {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-yellow-100 text-yellow-800;
+           font-medium bg-yellow-100 text-yellow-800
+           dark:bg-yellow-900/40 dark:text-yellow-300;
   }
 
   .badge-red {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-red-100 text-red-800;
+           font-medium bg-red-100 text-red-800
+           dark:bg-red-900/40 dark:text-red-300;
   }
 
   .badge-blue {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-blue-100 text-blue-800;
+           font-medium bg-blue-100 text-blue-800
+           dark:bg-blue-900/40 dark:text-blue-300;
   }
 
   .badge-gray {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-gray-100 text-gray-800;
+           font-medium bg-gray-100 text-gray-800
+           dark:bg-gray-700 dark:text-gray-300;
   }
 
+  /* ============================================================
+     TABLES
+     ============================================================ */
   .table-header {
     @apply px-6 py-3 text-left text-xs font-medium text-gray-500
-           uppercase tracking-wider;
+           uppercase tracking-wider dark:text-gray-400;
   }
 
   .table-cell {
-    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900;
+    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100;
   }
 
+  /* Wraps a scrollable table with a mirrored scrollbar ABOVE the table
+     in addition to the browser's native one below it — long tables no
+     longer force a scroll all the way down just to find the horizontal
+     scrollbar. See DataTable.jsx for the small script that keeps the
+     two scroll positions in sync. */
+  .table-scroll-top {
+    @apply overflow-x-auto overflow-y-hidden;
+    height: 14px;
+  }
+
+  .table-scroll-top-inner {
+    height: 1px;
+  }
+
+  .table-scroll-bottom {
+    @apply overflow-x-auto max-w-full;
+  }
+
+  /* ============================================================
+     TYPOGRAPHY
+     ============================================================ */
   .page-title {
-    @apply text-2xl font-bold text-gray-900;
+    @apply text-2xl font-bold text-gray-900 dark:text-gray-50;
   }
 
   .section-title {
-    @apply text-lg font-semibold text-gray-900;
+    @apply text-lg font-semibold text-gray-900 dark:text-gray-50;
   }
+}
+
+/* ============================================================
+   DARK MODE — BLANKET COVERAGE FOR RAW UTILITY CLASSES
+   ============================================================
+   The shared classes above (.card, .btn-*, .badge-*, etc.) already
+   carry their own `dark:` variants. But ~40 page files also reach
+   for raw Tailwind colour utilities directly in JSX (bg-white,
+   text-gray-700, border-gray-200, bg-green-50 for an alert box,
+   etc.) — over a thousand occurrences across the app. Rewriting
+   every one of those individually would mean touching nearly every
+   page file by hand.
+
+   Instead, this block re-targets those SAME utility classes globally,
+   the moment the OS is in dark mode. It's placed after `@tailwind
+   utilities` (and outside any `@layer`), so in the compiled CSS it
+   comes after Tailwind's own utility rules — same selector
+   specificity (one class), later in the file, wins the cascade
+   automatically, no `!important` needed. Any page using these
+   standard gray/neutral/alert-colour classes gets dark mode for
+   free, including pages written before this change and any written
+   after it, without editing the page itself.
+
+   This does NOT catch one-off inline `style={{ color: '#111827' }}`
+   props (a handful of layout components use those for values that
+   come from the database, like branding colour) — those are handled
+   individually where they matter (see TopBar.jsx, Sidebar.jsx).
+   ============================================================ */
+@media (prefers-color-scheme: dark) {
+  /* Neutral surfaces */
+  .bg-white     { background-color: #1f2937; } /* gray-800 */
+  .bg-gray-50   { background-color: #111827; } /* gray-900 */
+  .bg-gray-100  { background-color: #1f2937; } /* gray-800 */
+  .bg-gray-200  { background-color: #374151; } /* gray-700 */
+
+  .hover\:bg-gray-50:hover  { background-color: #1f2937; }
+  .hover\:bg-gray-100:hover { background-color: #374151; }
+  .hover\:bg-gray-200:hover { background-color: #4b5563; }
+
+  /* Neutral text */
+  .text-gray-900 { color: #f9fafb; }
+  .text-gray-800 { color: #f3f4f6; }
+  .text-gray-700 { color: #e5e7eb; }
+  .text-gray-600 { color: #d1d5db; }
+  .text-gray-500 { color: #9ca3af; }
+  .text-gray-400 { color: #6b7280; }
+
+  .hover\:text-gray-700:hover { color: #f3f4f6; }
+  .hover\:text-gray-900:hover { color: #f9fafb; }
+
+  /* Neutral borders / dividers */
+  .border-gray-100 { border-color: #374151; }
+  .border-gray-200 { border-color: #374151; }
+  .border-gray-300 { border-color: #4b5563; }
+  .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: #374151; }
+  .divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: #374151; }
+
+  /* Light alert/callout boxes (bg-{colour}-50 + border-{colour}-200 +
+     text-{colour}-800 is the recurring pattern for inline notices) —
+     deepened so they read as tinted panels on a dark page instead of
+     bright white cutouts. */
+  .bg-blue-50    { background-color: rgba(59, 130, 246, 0.12); }
+  .bg-green-50   { background-color: rgba(34, 197, 94, 0.12); }
+  .bg-red-50     { background-color: rgba(239, 68, 68, 0.12); }
+  .bg-yellow-50  { background-color: rgba(234, 179, 8, 0.12); }
+  .bg-amber-50   { background-color: rgba(245, 158, 11, 0.12); }
+  .bg-purple-50  { background-color: rgba(168, 85, 247, 0.12); }
+  .bg-teal-50    { background-color: rgba(20, 184, 166, 0.12); }
+
+  .border-blue-200   { border-color: rgba(59, 130, 246, 0.35); }
+  .border-green-200  { border-color: rgba(34, 197, 94, 0.35); }
+  .border-red-200    { border-color: rgba(239, 68, 68, 0.35); }
+  .border-yellow-200 { border-color: rgba(234, 179, 8, 0.35); }
+  .border-amber-200  { border-color: rgba(245, 158, 11, 0.35); }
+  .border-purple-200 { border-color: rgba(168, 85, 247, 0.35); }
+
+  .text-blue-800   { color: #93c5fd; }
+  .text-green-800  { color: #86efac; }
+  .text-red-800    { color: #fca5a5; }
+  .text-yellow-800 { color: #fde047; }
+  .text-amber-800  { color: #fcd34d; }
+  .text-purple-800 { color: #d8b4fe; }
 }

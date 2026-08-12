@@ -300,8 +300,8 @@ const TopBar = ({ onMenuClick }) => {
 
     return (
         <header className="px-3 sm:px-6" style={{
-            backgroundColor: 'white',
-            borderBottom:    '1px solid #e5e7eb',
+            backgroundColor: 'var(--cms-surface)',
+            borderBottom:    '1px solid var(--cms-border)',
             height:          '64px',
             display:         'flex',
             alignItems:      'center',
@@ -320,7 +320,7 @@ const TopBar = ({ onMenuClick }) => {
                     style={{
                         padding: '8px', borderRadius: '8px',
                         border: 'none', background: 'none',
-                        cursor: 'pointer', color: '#6b7280',
+                        cursor: 'pointer', color: 'var(--cms-text-secondary)',
                     }}
                     aria-label="Open menu"
                 >
@@ -330,12 +330,12 @@ const TopBar = ({ onMenuClick }) => {
                 <div style={{ minWidth: 0, overflow: 'hidden' }}>
                     <h2 style={{
                         fontSize: '16px', fontWeight: '600',
-                        color: '#111827', margin: 0,
+                        color: 'var(--cms-text-primary)', margin: 0,
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>
                         {pageTitle}
                     </h2>
-                    <p className="hidden sm:block" style={{ fontSize: '11px', color: '#9ca3af', margin: 0 }}>
+                    <p className="hidden sm:block" style={{ fontSize: '11px', color: 'var(--cms-text-muted)', margin: 0 }}>
                         {branding.company_name}
                     </p>
                 </div>
@@ -357,7 +357,7 @@ const TopBar = ({ onMenuClick }) => {
                     {accountSummary.map((account, i) => (
                         <div key={i} style={{ textAlign: 'center', minWidth: 0, maxWidth: '170px', flexShrink: 1 }}>
                             <p style={{
-                                fontSize: '11px', color: '#9ca3af',
+                                fontSize: '11px', color: 'var(--cms-text-muted)',
                                 margin: 0, whiteSpace: 'nowrap',
                                 overflow: 'hidden', textOverflow: 'ellipsis',
                             }}>
@@ -394,7 +394,7 @@ const TopBar = ({ onMenuClick }) => {
                         style={{
                             padding: '8px', borderRadius: '8px',
                             border: 'none', background: 'none',
-                            cursor: 'pointer', color: '#6b7280',
+                            cursor: 'pointer', color: 'var(--cms-text-secondary)',
                         }}
                         aria-label="Search"
                     >
@@ -412,8 +412,8 @@ const TopBar = ({ onMenuClick }) => {
                         style={{
                             position: 'relative', padding: '8px',
                             borderRadius: '8px', border: 'none',
-                            background: notifOpen ? '#f3f4f6' : 'none',
-                            cursor: 'pointer', color: '#6b7280',
+                            background: notifOpen ? 'var(--cms-surface-hover)' : 'none',
+                            cursor: 'pointer', color: 'var(--cms-text-secondary)',
                         }}
                     >
                         <BellIcon style={{ width: '20px', height: '20px' }} />
@@ -442,22 +442,22 @@ const TopBar = ({ onMenuClick }) => {
                                 position: 'absolute', right: 0,
                                 top: 'calc(100% + 8px)', width: '360px',
                                 maxWidth: 'calc(100vw - 32px)',
-                                backgroundColor: 'white', borderRadius: '12px',
+                                backgroundColor: 'var(--cms-surface)', borderRadius: '12px',
                                 boxShadow: '0 10px 40px rgba(0,0,0,0.12)',
-                                border: '1px solid #e5e7eb', zIndex: 20,
+                                border: '1px solid var(--cms-border)', zIndex: 20,
                                 overflow: 'hidden',
                             }}>
                                 {/* Header */}
                                 <div style={{
                                     padding: '12px 16px',
-                                    borderBottom: '1px solid #f3f4f6',
+                                    borderBottom: '1px solid var(--cms-surface-divider)',
                                     display: 'flex',
                                     justifyContent: 'space-between',
                                     alignItems: 'center',
                                 }}>
                                     <p style={{
                                         fontSize: '13px', fontWeight: '600',
-                                        color: '#111827', margin: 0,
+                                        color: 'var(--cms-text-primary)', margin: 0,
                                     }}>
                                         Notifications
                                     </p>
@@ -493,7 +493,7 @@ const TopBar = ({ onMenuClick }) => {
                                 {dbNotifs.length > 0 && (
                                     <div style={{
                                         maxHeight: '260px', overflowY: 'auto',
-                                        borderBottom: '1px solid #f3f4f6',
+                                        borderBottom: '1px solid var(--cms-surface-divider)',
                                     }}>
                                         {dbNotifs.map(notif => (
                                             <div
@@ -501,20 +501,20 @@ const TopBar = ({ onMenuClick }) => {
                                                 onClick={() => handleNotifClick(notif)}
                                                 style={{
                                                     padding: '10px 16px',
-                                                    borderBottom: '1px solid #f9fafb',
+                                                    borderBottom: '1px solid var(--cms-surface-divider)',
                                                     display: 'flex',
                                                     alignItems: 'flex-start',
                                                     gap: '10px',
                                                     cursor: 'pointer',
-                                                    backgroundColor: notif.is_read ? 'white' : '#f0f7ff',
+                                                    backgroundColor: notif.is_read ? 'var(--cms-surface)' : 'var(--cms-surface-hover)',
                                                     transition: 'background 0.15s',
                                                 }}
                                                 onMouseEnter={e => {
-                                                    e.currentTarget.style.backgroundColor = '#f9fafb';
+                                                    e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
                                                 }}
                                                 onMouseLeave={e => {
                                                     e.currentTarget.style.backgroundColor =
-                                                        notif.is_read ? 'white' : '#f0f7ff';
+                                                        notif.is_read ? 'var(--cms-surface)' : 'var(--cms-surface-hover)';
                                                 }}
                                             >
                                                 <div style={{
@@ -526,13 +526,13 @@ const TopBar = ({ onMenuClick }) => {
                                                     <p style={{
                                                         fontSize: '13px',
                                                         fontWeight: notif.is_read ? '500' : '700',
-                                                        color: '#111827', margin: 0,
+                                                        color: 'var(--cms-text-primary)', margin: 0,
                                                     }}>
                                                         {notif.title}
                                                     </p>
                                                     {notif.body && (
                                                         <p style={{
-                                                            fontSize: '12px', color: '#6b7280',
+                                                            fontSize: '12px', color: 'var(--cms-text-secondary)',
                                                             margin: '2px 0 0', overflow: 'hidden',
                                                             textOverflow: 'ellipsis',
                                                             display: '-webkit-box',
@@ -543,7 +543,7 @@ const TopBar = ({ onMenuClick }) => {
                                                         </p>
                                                     )}
                                                     <p style={{
-                                                        fontSize: '11px', color: '#9ca3af',
+                                                        fontSize: '11px', color: 'var(--cms-text-muted)',
                                                         margin: '2px 0 0',
                                                     }}>
                                                         {timeAgo(notif.created_at)}
@@ -559,7 +559,7 @@ const TopBar = ({ onMenuClick }) => {
                                     dbNotifs.length === 0 && (
                                         <div style={{
                                             padding: '24px', textAlign: 'center',
-                                            color: '#9ca3af', fontSize: '13px',
+                                            color: 'var(--cms-text-muted)', fontSize: '13px',
                                         }}>
                                             No pending notifications
                                         </div>
@@ -575,16 +575,16 @@ const TopBar = ({ onMenuClick }) => {
                                                 }}
                                                 style={{
                                                     padding: '12px 16px',
-                                                    borderBottom: '1px solid #f9fafb',
+                                                    borderBottom: '1px solid var(--cms-surface-divider)',
                                                     display: 'flex',
                                                     alignItems: 'flex-start',
                                                     gap: '12px',
                                                     cursor: 'pointer',
-                                                    backgroundColor: 'white',
+                                                    backgroundColor: 'var(--cms-surface)',
                                                     transition: 'background 0.15s',
                                                 }}
                                                 onMouseEnter={e => {
-                                                    e.currentTarget.style.backgroundColor = '#f9fafb';
+                                                    e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
                                                 }}
                                                 onMouseLeave={e => {
                                                     e.currentTarget.style.backgroundColor = 'white';
@@ -614,7 +614,7 @@ const TopBar = ({ onMenuClick }) => {
                                                         <p style={{
                                                             fontSize: '13px',
                                                             fontWeight: '600',
-                                                            color: '#111827',
+                                                            color: 'var(--cms-text-primary)',
                                                             margin: 0,
                                                         }}>
                                                             {notif.title}
@@ -635,7 +635,7 @@ const TopBar = ({ onMenuClick }) => {
                                                     </div>
                                                     <p style={{
                                                         fontSize: '12px',
-                                                        color: '#6b7280',
+                                                        color: 'var(--cms-text-secondary)',
                                                         margin: 0,
                                                         overflow: 'hidden',
                                                         textOverflow: 'ellipsis',
@@ -652,11 +652,11 @@ const TopBar = ({ onMenuClick }) => {
                                 {/* Footer */}
                                 <div style={{
                                     padding: '10px 16px',
-                                    borderTop: '1px solid #f3f4f6',
+                                    borderTop: '1px solid var(--cms-surface-divider)',
                                     textAlign: 'center',
                                 }}>
                                     <p style={{
-                                        fontSize: '11px', color: '#9ca3af', margin: 0,
+                                        fontSize: '11px', color: 'var(--cms-text-muted)', margin: 0,
                                     }}>
                                         {isAuditor
                                             ? 'Showing your audit submission updates'
@@ -679,13 +679,13 @@ const TopBar = ({ onMenuClick }) => {
                             display: 'flex', alignItems: 'center', gap: '8px',
                             padding: '6px 10px', borderRadius: '8px',
                             border: 'none',
-                            background: userMenuOpen ? '#f3f4f6' : 'none',
+                            background: userMenuOpen ? 'var(--cms-surface-hover)' : 'none',
                             cursor: 'pointer',
                         }}
                     >
                         <Avatar user={user} size={32} />
                         <span className="hidden sm:inline" style={{
-                            fontSize: '13px', fontWeight: '500', color: '#374151',
+                            fontSize: '13px', fontWeight: '500', color: 'var(--cms-text-secondary)',
                         }}>
                             {user?.first_name} {user?.last_name}
                         </span>
@@ -701,23 +701,23 @@ const TopBar = ({ onMenuClick }) => {
                             <div style={{
                                 position: 'absolute', right: 0,
                                 top: 'calc(100% + 8px)', width: '220px',
-                                backgroundColor: 'white', borderRadius: '12px',
+                                backgroundColor: 'var(--cms-surface)', borderRadius: '12px',
                                 boxShadow: '0 10px 40px rgba(0,0,0,0.12)',
-                                border: '1px solid #e5e7eb', zIndex: 20,
+                                border: '1px solid var(--cms-border)', zIndex: 20,
                                 overflow: 'hidden',
                             }}>
                                 <div style={{
                                     padding: '12px 16px',
-                                    borderBottom: '1px solid #f3f4f6',
+                                    borderBottom: '1px solid var(--cms-surface-divider)',
                                 }}>
                                     <p style={{
                                         fontSize: '13px', fontWeight: '600',
-                                        color: '#111827', margin: 0,
+                                        color: 'var(--cms-text-primary)', margin: 0,
                                     }}>
                                         {user?.first_name} {user?.last_name}
                                     </p>
                                     <p style={{
-                                        fontSize: '11px', color: '#6b7280',
+                                        fontSize: '11px', color: 'var(--cms-text-secondary)',
                                         margin: '2px 0 0', overflow: 'hidden',
                                         textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                     }}>
@@ -737,23 +737,23 @@ const TopBar = ({ onMenuClick }) => {
                                             padding: '8px 12px', borderRadius: '8px',
                                             border: 'none', background: 'none',
                                             cursor: 'pointer', fontSize: '13px',
-                                            color: '#374151', textAlign: 'left',
+                                            color: 'var(--cms-text-secondary)', textAlign: 'left',
                                         }}
                                         onMouseEnter={e => {
-                                            e.currentTarget.style.backgroundColor = '#f9fafb';
+                                            e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
                                         }}
                                         onMouseLeave={e => {
                                             e.currentTarget.style.backgroundColor = 'transparent';
                                         }}
                                     >
                                         <UserIcon style={{
-                                            width: '16px', height: '16px', color: '#9ca3af',
+                                            width: '16px', height: '16px', color: 'var(--cms-text-muted)',
                                         }} />
                                         My Profile
                                     </button>
 
                                     <div style={{
-                                        height: '1px', backgroundColor: '#f3f4f6', margin: '4px 0',
+                                        height: '1px', backgroundColor: 'var(--cms-surface-divider)', margin: '4px 0',
                                     }} />
 
                                     <button

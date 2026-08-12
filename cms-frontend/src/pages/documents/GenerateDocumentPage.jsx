@@ -314,6 +314,8 @@ const GenerateDocumentPage = () => {
             <PageHeader
                 title="Generate Document"
                 subtitle="Fill in the form to generate a professional document"
+                showBack
+                backTo="/documents"
                 actions={
                     <button onClick={() => navigate('/documents')}
                         className="btn-secondary flex items-center gap-2">

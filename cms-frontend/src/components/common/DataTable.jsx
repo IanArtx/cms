@@ -4,7 +4,7 @@
 // Handles loading states, empty states, and pagination.
 // ============================================================
 
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import LoadingSpinner from './LoadingSpinner';
 import { ChevronLeftIcon, ChevronRightIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 
@@ -35,6 +35,46 @@ const DataTable = ({
 }) => {
     const [searchTerm, setSearchTerm] = useState('');
 
+    // --------------------------------------------------------
+    // DUAL SCROLLBAR (top + bottom)
+    // Long tables here can run to 10+ columns — the browser's native
+    // horizontal scrollbar sits at the very bottom of the table, so on
+    // a tall table you have to scroll all the way down just to reach
+    // it. This mirrors a second, always-visible scrollbar ABOVE the
+    // table: a 1px-tall spacer div sized to the table's true (scrollable)
+    // width, wrapped in its own overflow-x:auto strip. Dragging either
+    // scrollbar keeps the other in sync via scrollLeft.
+    // --------------------------------------------------------
+    const topScrollRef    = useRef(null);
+    const bottomScrollRef = useRef(null);
+    const spacerRef       = useRef(null);
+    const syncingRef      = useRef(false);
+
+    const measure = useCallback(() => {
+        if (!bottomScrollRef.current || !spacerRef.current) return;
+        spacerRef.current.style.width = `${bottomScrollRef.current.scrollWidth}px`;
+    }, []);
+
+    useEffect(() => {
+        measure();
+        window.addEventListener('resize', measure);
+        return () => window.removeEventListener('resize', measure);
+    }, [measure, data, columns]);
+
+    const handleTopScroll = () => {
+        if (syncingRef.current) { syncingRef.current = false; return; }
+        if (!topScrollRef.current || !bottomScrollRef.current) return;
+        syncingRef.current = true;
+        bottomScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+    };
+
+    const handleBottomScroll = () => {
+        if (syncingRef.current) { syncingRef.current = false; return; }
+        if (!topScrollRef.current || !bottomScrollRef.current) return;
+        syncingRef.current = true;
+        topScrollRef.current.scrollLeft = bottomScrollRef.current.scrollLeft;
+    };
+
     const filteredData = (searchable && searchTerm.trim())
         ? data.filter(row => rowMatches(row, searchTerm.trim().toLowerCase()))
         : data;
@@ -64,7 +104,23 @@ const DataTable = ({
                     </div>
                 </div>
             )}
-            <div className="overflow-x-auto max-w-full">
+            {/* Top scrollbar — mirrors the real one below so it's reachable
+                without scrolling past a tall table first. Purely a scroll
+                handle: 1px tall, no visible content, hidden entirely if the
+                table doesn't overflow (nothing to grab). */}
+            <div
+                ref={topScrollRef}
+                onScroll={handleTopScroll}
+                className="table-scroll-top border-b border-gray-200 dark:border-gray-700"
+            >
+                <div ref={spacerRef} className="table-scroll-top-inner" />
+            </div>
+
+            <div
+                ref={bottomScrollRef}
+                onScroll={handleBottomScroll}
+                className="table-scroll-bottom"
+            >
                 <table className="min-w-full divide-y divide-gray-200">
                     {/* Table Header */}
                     <thead className="bg-gray-50">

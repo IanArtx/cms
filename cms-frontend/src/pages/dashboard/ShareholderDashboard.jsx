@@ -70,11 +70,14 @@ const PerformanceCard = ({ performance }) => {
 // STAT CARD
 // ============================================================
 const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue', to = null }) => {
+    // Icon chip carries a small gradient rather than a flat tint — the
+    // "colourful tile" treatment, kept to the chip so the card body
+    // itself stays readable in both light and dark mode.
     const colors = {
-        blue:   'bg-blue-50 text-blue-700',
-        green:  'bg-green-50 text-green-700',
-        purple: 'bg-purple-50 text-purple-700',
-        yellow: 'bg-yellow-50 text-yellow-700',
+        blue:   'bg-gradient-to-br from-blue-500 to-indigo-600 text-white',
+        green:  'bg-gradient-to-br from-emerald-500 to-teal-600 text-white',
+        purple: 'bg-gradient-to-br from-purple-500 to-fuchsia-600 text-white',
+        yellow: 'bg-gradient-to-br from-amber-400 to-orange-500 text-white',
     };
 
     const content = (
@@ -86,7 +89,7 @@ const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue', to = nul
                     <p className="mt-1 text-xs text-gray-400">{subtitle}</p>
                 )}
             </div>
-            <div className={`p-3 rounded-xl ${colors[color]}`}>
+            <div className={`p-3 rounded-xl shadow-sm ${colors[color]}`}>
                 <Icon className="h-6 w-6" />
             </div>
         </div>

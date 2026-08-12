@@ -138,7 +138,7 @@ const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, cat
                                 value={form.monthly_amount}
                                 onChange={e => setForm(p => ({ ...p, monthly_amount: e.target.value }))} required />
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="label">Paying Account *</label>
                                 <select className="input" value={form.account_id}
@@ -363,7 +363,7 @@ const RequestReimbursementModal = ({ isOpen, onClose, onSuccess, currencies, cat
                     </p>
                     {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
                     <form onSubmit={handleSubmit} className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="label">Amount *</label>
                                 <input type="number" className="input" min="0.01" step="0.01"

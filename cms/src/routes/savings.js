@@ -57,8 +57,10 @@ router.get('/handouts',
 router.post('/handouts',
     requirePermissions(['SAVINGS_HANDOUT_CREATE']),
     [
+        // No account_id here — a handout always pays out of the one
+        // dedicated SAVINGS account, resolved server-side, never chosen
+        // by the client (Section 4.11).
         body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
-        body('account_id').isInt({ min: 1 }).withMessage('A valid account is required'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('principal_amount').isFloat({ min: 0.01 }).withMessage('Principal must be greater than zero'),
         body('interest_amount').optional().isFloat({ min: 0 }),

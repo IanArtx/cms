@@ -356,9 +356,17 @@ const rejectSavingsDeposit = asyncHandler(async (req, res) => {
 // POST /api/savings/handouts
 // Nothing moves yet — sits PENDING_CONFIRMATION until the receiving
 // member confirms it (see confirmSavingsHandout).
+//
+// The source account is never client-supplied — a handout is always
+// paid out of the one dedicated SAVINGS account (getSavingsAccount,
+// Section 4.11), exactly like a deposit is always credited into it.
+// Previously this trusted an `account_id` from the request body,
+// which let a handout be recorded against any active account
+// (Primary, a Secondary/operational account, etc.) — money that was
+// never actually in the member's savings.
 // ============================================================
 const createSavingsHandout = asyncHandler(async (req, res) => {
-    const { user_id, account_id, category_id, principal_amount, interest_amount, handout_date, notes } = req.body;
+    const { user_id, category_id, principal_amount, interest_amount, handout_date, notes } = req.body;
 
     await withTransaction(async (client) => {
         const memberResult = await client.query(
@@ -388,12 +396,7 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
             );
         }
 
-        const account = await client.query(
-            'SELECT id, currency_id FROM accounts WHERE id = $1 AND is_active = TRUE', [account_id]
-        );
-        if (account.rows.length === 0) {
-            throw createError.notFound('Account not found');
-        }
+        const savingsAccount = await getSavingsAccount(client);
 
         const total = principal + interest;
 
@@ -409,8 +412,8 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id
         `, [
-            referenceId, user_id, account_id, category_id, principal, interest, total,
-            account.rows[0].currency_id, handout_date, notes || null, req.user.id,
+            referenceId, user_id, savingsAccount.id, category_id, principal, interest, total,
+            savingsAccount.currency_id, handout_date, notes || null, req.user.id,
         ]);
 
         const handoutId = result.rows[0].id;

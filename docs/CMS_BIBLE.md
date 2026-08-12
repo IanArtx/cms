@@ -1,8 +1,8 @@
 # The CMS Bible
 ### The Complete Technical Reference for the ZWECK TUKULA Ltd Company Management System
 
-**Version documented:** 1.26.0
-**Last updated:** 11 August 2026
+**Version documented:** 1.26.1
+**Last updated:** 12 August 2026
 **Status:** Living document — update this file in the same session as any code change (see "How to Keep This Document Alive" near the end).
 
 ---
@@ -821,6 +821,7 @@ Handles the personal savings pool — members deposit into the single, dedicated
 - Handouts post a DEBIT (`inflow_type='SAVINGS_HANDOUT_OUT'`) — subject to the ordinary "never go negative" check (a member can't be handed out more than the SAVINGS account currently holds in aggregate, since it's a single pooled account, not per-member sub-balances at the ledger level — per-member totals are tracked via the `savings_deposits`/`savings_handouts` rows themselves, summed).
 - **Fixed this session's diagnostic-report predecessor**: the previously reported crash where a savings handout could be posted with `category_id: null` (violating `transactions.category_id NOT NULL`) is marked **FIXED** in `SYSTEM_DIAGNOSTIC_REPORT.md` — the handout flow now requires/derives a valid category before calling `postTransaction`.
 - A member's savings balance is a derived figure: sum of their `savings_deposits` minus sum of their `savings_handouts`, not a stored running balance.
+- **Fixed (v1.26.1) — a handout could be paid from any account, not just Savings.** `createSavingsHandout` used to trust an `account_id` sent from the request body, checking only that it was *some* active account — so a handout could be recorded against the Primary account or any Secondary/operational account, money that was never actually sitting in the member's savings. It's now resolved server-side via the same `getSavingsAccount(client)` helper every other savings entry point already used (deposits, fixed-term withdrawals) — a handout is always paid out of the one dedicated SAVINGS account, full stop, and the client can no longer choose otherwise. The "Pay From Account" dropdown was removed from `RecordHandoutModal` (`SavingsPage.jsx`) to match — there's nothing to choose. `POST /savings/handouts` no longer accepts `account_id` at all.
 
 ##### 11.4 API endpoints (`cms/src/routes/savings.js`, prefix `/api/savings`)
 | Method | Path | Permission | Description |
@@ -828,7 +829,7 @@ Handles the personal savings pool — members deposit into the single, dedicated
 | GET | `/deposits` | `FINANCE_VIEW_ALL` (or own records for regular members) | List deposits |
 | POST | `/deposits` | Treasurer/Asst. Treasurer | Record a deposit |
 | GET | `/handouts` | same scoping | List handouts |
-| POST | `/handouts` | Treasurer/Asst. Treasurer | Record a handout |
+| POST | `/handouts` | Treasurer/Asst. Treasurer | Record a handout — always paid from the SAVINGS account, resolved server-side (v1.26.1); no `account_id` in the request |
 | GET | `/balance/:userId` | scoped | A member's derived savings balance |
 
 ##### 11.5 Frontend
@@ -836,6 +837,7 @@ Handles the personal savings pool — members deposit into the single, dedicated
 
 ##### 11.6 Known issues (Savings)
 - The `category_id` null-crash fix (Critical Fix, per diagnostic report) should be spot-checked again after any future refactor of the handout flow, since it was a real production-crash bug once already.
+- Sections 11.1/11.2 above describe an earlier, simpler design (a flat `savings_deposits` table, immediate handouts) that predates the current flexible/fixed-term split, the member-confirms-before-it-posts handout workflow (`PENDING_CONFIRMATION` → `confirmSavingsHandout`/`rejectSavingsHandout`), `savings_balances`/`member_savings`, and Savings Pool inflows — all implemented in code but not yet reflected here. Flagged for a fuller rewrite of this section, same treatment Section 4.10 (Side Fund) already got.
 
 ---
 
@@ -1334,7 +1336,7 @@ Two fully independent Blueprint files exist in the repo root, one per company, s
 | Company name (env) | `ZWECK TUKULA Ltd` | `COMPANY_B_NAME_HERE` placeholder → frontend `REACT_APP_COMPANY_NAME` currently set to `INVESTABO GLOBAL INVESTMENTS LIMITED` |
 | Company initials | `ZT` | `IGI` |
 | TOTP app name | `ZWECK TUKULA CMS` | `COMPANY_B_NAME_HERE CMS` (placeholder, not yet updated to match IGI) |
-| `REACT_APP_VERSION` | `1.26.0` | `1.26.0` (kept in sync manually — a pure display string, nothing reads it programmatically) |
+| `REACT_APP_VERSION` | `1.26.1` | `1.26.1` (kept in sync manually — a pure display string, nothing reads it programmatically) |
 
 Both Blueprints provision: 1 Postgres database (`basic-256mb` plan, ~$6-7/mo — the paid successor to the retired "starter" DB plan, chosen specifically because this app holds real financial records and the Free tier's 90-day expiry is unacceptable), 1 backend web service (`starter` plan — specifically *not* Free, because Free spins down after 15 minutes idle and would silently kill the scheduled cron jobs), 1 frontend static site (free — static sites don't spin down the same way and cost nothing on Render). Total: roughly **$13-14/month per company**.
 
@@ -1965,6 +1967,7 @@ Derived from the `cms/migration_vX.X.0.sql` files' own header comments — each 
 | 1.25.0 | **Side Fund per-member overrides & overpayment credit, custom fiscal quarters, system-wide future-date validation (Sections 4.10, 4.19.6, 4.26.7).** Side Fund: an Admin/Treasurer can now set a different fixed monthly due for an individual shareholder (`side_fund_member_overrides`, opt-in, forward-only) instead of everyone paying the single company-wide default; a payment can now exceed what was owed — the extra clears the member's other outstanding dues oldest-first, then anything left over is banked as running credit (`side_fund_member_credit`, `side_fund_credit_ledger`) and automatically drawn down against their future months' dues as the monthly due-generation job creates them, with no new ledger transaction posted for that reallocation step. Fiscal Quarters: a new Admin-configurable `fiscal_quarters` table lets the company define its own financial-year quarters as fully custom date ranges (not required to be equal three-month blocks); Reports now attach a matched quarter's label alongside the calendar period, purely as a label. Future-date validation: a single reusable `notFutureDate` validator, added onto the existing date-field validation chains for every field across the system that represents money actually moving or an event that already happened (contribution/payment/expense/disbursement/deposit dates and similar) — deliberately not applied to legitimately forward-looking fields like due dates or term end dates — backed up on the frontend with `max={today}` on the matching date pickers. New tables: `side_fund_member_overrides`, `side_fund_member_credit`, `side_fund_credit_ledger`, `fiscal_quarters`; new column `side_fund_dues.paid_from_credit`. Migration `migration_v1.25.0.sql`. |
 | 1.25.1 | **Fixed: every generated document's preview/download was broken (Section 4.21.3).** `DocumentsPage.jsx` and `AuditorPortalPage.jsx` were both reading a SYSTEM_GENERATED document's `document_type`/`template_data`/`title` off the top level of the parsed JSON response, instead of unwrapping the standard `{ success, message, data }` envelope every backend response actually uses — so `GENERATED_RENDERERS[payload.document_type]` was always `undefined` and any Meeting Minutes, Meeting Agenda, Receipt, Resolution, or Auditor Feedback document failed to preview or download with "This document type can't be reconstructed," regardless of its actual type. Code-only, no schema migration. |
 | 1.26.0 | **Side Fund: strictly per-member attribution (Sections 4.9, 4.2, 4.10).** Closed the gap where money could enter the fund without being tied to any member (the v1.25.0 "Add Funds Directly" feature) — every shilling in the pool is now always traceable to a specific member's own dues, which is what makes accurate overdue tracking possible. Removed `recordDirectInflow`/`POST /side-fund/inflows` entirely, with no replacement — there is no way to seed an unattributed balance anymore. New shared `services/sideFundService.js`'s `applySideFundPayment()` is now the single oldest-unpaid-first payment-application choke point used by all four ways money can now reach a member's dues: (1) the existing single-due payment (`PATCH /dues/:id/pay`, now applies across the member's whole standing, not just the clicked row); (2) new bulk pay-all-dues (`PATCH /dues/bulk-pay`, one pooled ledger transaction, per-member amounts editable, for the common "everyone paid on time" case); (3) an optional `side_fund_amount` on a Transactions contribution (`POST /transactions/contributions`), sliced out of the total and credited to that same member's dues while the remainder is recorded as the capital contribution; (4) a new `SIDE_FUND_CONTRIBUTION` requisition type, acknowledged the same way as a contribution or savings deposit. `side_fund_dues.due_date` (the last day of each due's own period month) is now an explicit stored column rather than recomputed from `period`, backing two new overdue-summary endpoints (`GET /overdue/me`, `GET /overdue`). The plain Shareholder dashboard (`ShareholderDashboard.jsx`), which previously had no side fund visibility at all, now shows a "My Side Fund" card. Migration `migration_v1.26.0.sql`: adds `side_fund_dues.due_date` (NOT NULL, backfilled), widens `requisitions.requisition_type` to add `SIDE_FUND_CONTRIBUTION`. |
+| 1.26.1 | **Fixed: a Savings handout could be paid from any account, not just Savings (Section 4.11.3).** `createSavingsHandout` trusted a client-supplied `account_id`, checking only that it belonged to *some* active account — a handout could be recorded against the Primary account or any Secondary/operational account, debiting money that was never actually the member's savings. Now resolved server-side via `getSavingsAccount()`, the same helper every other savings entry point (deposits, fixed-term withdrawals) already used — always the one dedicated SAVINGS account, no exceptions. The "Pay From Account" picker was removed from the Record Handout modal to match; `POST /savings/handouts` no longer accepts `account_id`. Code-only, no schema migration. |
 
 ---
 

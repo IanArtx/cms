@@ -11,7 +11,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { savingsAPI, usersAPI, accountsAPI, categoriesAPI } from '../../api/endpoints';
+import { savingsAPI, usersAPI, categoriesAPI } from '../../api/endpoints';
 import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -120,9 +120,9 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories })
 // ============================================================
 // RECORD HANDOUT MODAL (Treasurer/Assistant Treasurer)
 // ============================================================
-const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, categories }) => {
+const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories }) => {
     const [form, setForm] = useState({
-        user_id: '', account_id: '', category_id: '', principal_amount: '',
+        user_id: '', category_id: '', principal_amount: '',
         interest_amount: '', handout_date: '', notes: '',
     });
     const [memberBalance, setMemberBalance] = useState(null);
@@ -157,7 +157,7 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, cat
             });
             onSuccess();
             onClose();
-            setForm({ user_id: '', account_id: '', category_id: '', principal_amount: '', interest_amount: '', handout_date: '', notes: '' });
+            setForm({ user_id: '', category_id: '', principal_amount: '', interest_amount: '', handout_date: '', notes: '' });
             setMemberBalance(null);
         } catch (err) {
             setError(getErrorMessage(err));
@@ -173,7 +173,8 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, cat
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Savings Handout</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        Nothing moves yet — the member must confirm they received it before this posts.
+                        Always paid out of the Savings account — nothing moves yet, the member must
+                        confirm they received it before this posts.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -199,16 +200,6 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, accounts, cat
                                 </p>
                             </div>
                         )}
-                        <div>
-                            <label className="label">Pay From Account *</label>
-                            <select className="input" value={form.account_id}
-                                onChange={e => setForm(p => ({ ...p, account_id: e.target.value }))} required>
-                                <option value="">Select account...</option>
-                                {accounts.map(a => (
-                                    <option key={a.id} value={a.id}>{a.name}</option>
-                                ))}
-                            </select>
-                        </div>
                         <div>
                             <label className="label">Category *</label>
                             <select className="input" value={form.category_id}
@@ -459,7 +450,6 @@ const SavingsPage = () => {
     const [allSavings, setAllSavings] = useState([]);
     const [allHandouts, setAllHandouts] = useState([]);
     const [members, setMembers] = useState([]);
-    const [accounts, setAccounts] = useState([]);
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -528,7 +518,6 @@ const SavingsPage = () => {
         loadManage();
         if (canCreate || canHandout) {
             usersAPI.getAllUsers({ limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
-            accountsAPI.getAll().then(r => setAccounts(r.data.data || [])).catch(() => {});
             categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         }
     }, [loadMine, loadApprovals, loadManage, canCreate, canHandout]);
@@ -916,7 +905,6 @@ const SavingsPage = () => {
                 onClose={() => setShowHandout(false)}
                 onSuccess={refreshAll}
                 members={members}
-                accounts={accounts}
                 categories={categories}
             />
             <RecordPoolInflowModal

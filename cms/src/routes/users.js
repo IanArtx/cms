@@ -89,6 +89,16 @@ router.get('/role-requests',
 // Get all shareholders — for contribution form dropdown
 // NOTE: must stay above the '/:id' route below — otherwise Express treats
 // "shareholders" as the ':id' value and 422s on the "must be an integer" check.
+//
+// Fixed (v1.27.3): this used to INNER JOIN shareholding_registry, which
+// only has a row for a member AFTER their first contribution has already
+// been recorded — so a brand-new Shareholder with zero contributions so
+// far could never appear in the dropdown used to record their very first
+// one. Now driven off holding the Shareholder role itself (the actual
+// eligibility rule), with shareholding_registry LEFT JOINed in just to
+// show existing shares_held/percentage when there is any — NULL for
+// someone who hasn't contributed yet, which the frontend already
+// handles (it only appends the "— X% shareholding" suffix when present).
 router.get('/shareholders',
     requireConsent,
     requirePermissions(['FINANCE_TRANSACTION_CREATE']),
@@ -102,9 +112,10 @@ router.get('/shareholders',
                 sr.shares_held,
                 sr.percentage
             FROM   users u
-            JOIN   shareholding_registry sr ON sr.user_id = u.id
-            WHERE  sr.effective_to IS NULL
-            AND    u.is_active = TRUE
+            JOIN   user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+            JOIN   roles r       ON r.id = ur.role_id AND r.name = 'Shareholder' AND r.is_active = TRUE
+            LEFT JOIN shareholding_registry sr ON sr.user_id = u.id AND sr.effective_to IS NULL
+            WHERE  u.is_active = TRUE
             ORDER BY u.first_name, u.last_name
         `);
         sendSuccess(res, result.rows);

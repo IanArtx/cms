@@ -152,7 +152,13 @@ services:
     # Same "build the URL in the shell" trick as the backend —
     # Create React App bakes REACT_APP_* values into the built
     # files at build time, so it has to be set here, not later.
-    buildCommand: REACT_APP_API_URL="https://${BACKEND_HOST}/api" npm install && npm run build
+    # `export` matters — `VAR=value cmd1 && cmd2` only applies VAR to
+    # cmd1 in shell syntax, not to whatever follows the `&&`. Since CRA
+    # only reads REACT_APP_API_URL during `npm run build` (the second
+    # command), the un-exported form silently baked in the fallback
+    # ('http://localhost:5000/api') on every build, no matter how many
+    # times you redeployed or cleared the cache.
+    buildCommand: export REACT_APP_API_URL="https://${BACKEND_HOST}/api" && npm install && npm run build
     staticPublishPath: build
     envVars:
       - key: BACKEND_HOST

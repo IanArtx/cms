@@ -95,9 +95,16 @@
   /* ============================================================
      PAGE / SECTION BANNERS
      ============================================================ */
+  /* No overflow-hidden here on purpose (v1.27.1 fix) — a gradient
+     background already respects rounded corners on its own in CSS, and
+     several pages put a dropdown menu (e.g. Transactions' "Record"
+     button) inside the banner's actions area that opens BELOW the
+     button via absolute positioning. overflow-hidden was clipping the
+     bottom of those dropdowns — e.g. "Record Expense" was invisible
+     under "Record Contribution" since it fell outside this box. */
   .page-banner {
     @apply bg-brand-gradient rounded-2xl shadow-md p-5 sm:p-6 mb-6 text-white
-           relative overflow-hidden;
+           relative;
   }
 
   /* ============================================================

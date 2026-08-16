@@ -47,7 +47,13 @@ services:
     # always has "https://" in front — the app's CORS check
     # compares it against the browser's Origin header, which
     # always includes the scheme.
-    startCommand: FRONTEND_URL="https://${FRONTEND_HOST}" npm start
+    # Same fix as cms-frontend's buildCommand — FRONTEND_HOST (fromService/
+    # property:host) is Render's INTERNAL hostname ("cms-frontend-xxxx"),
+    # not the public address, so the CORS check below (server.js compares
+    # the browser's real Origin header against this exact string) rejected
+    # every request from the actual live frontend until ".onrender.com"
+    # is appended here too.
+    startCommand: FRONTEND_URL="https://${FRONTEND_HOST}.onrender.com" npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -127,7 +133,15 @@ services:
     # command), the un-exported form silently baked in the fallback
     # ('http://localhost:5000/api') on every build, no matter how many
     # times you redeployed or cleared the cache.
-    buildCommand: export REACT_APP_API_URL="https://${BACKEND_HOST}/api" && npm install && npm run build
+    #
+    # `.onrender.com` is appended by hand because BACKEND_HOST (via
+    # fromService/property:host) resolves to Render's INTERNAL private-
+    # network hostname (e.g. "cms-backend-bukm"), not the public address
+    # — internal hostnames are only reachable from other Render services,
+    # never from an end user's browser. This is Render's own documented
+    # pattern for exactly this situation (see
+    # community.render.com/t/reference-service-external-url-in-render-yaml/16110).
+    buildCommand: export REACT_APP_API_URL="https://${BACKEND_HOST}.onrender.com/api" && npm install && npm run build
     staticPublishPath: build
     envVars:
       - key: BACKEND_HOST

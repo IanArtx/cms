@@ -214,11 +214,38 @@ install of this app hits once). Here's how to break that loop:
    the Admin role to yourself, using yourself as the "assigned by" — a
    one-time exception to the normal flow where an Admin assigns roles to
    other people.
-4. Log out and back in (or just refresh) so the app picks up your new role.
-   You should now see every menu item, including **Users** and **Settings**.
-5. From here on, use **Users → Assign Role** in the app itself for every
-   other person — this manual database step is only ever needed once, for
-   the very first Admin.
+4. **Grant yourself actual permissions — don't skip this.** Holding the
+   Admin *role* isn't the same as having any *permissions* yet:
+   `role_permissions` ships completely empty, for every role, including
+   Admin. Most of Settings (adding a currency, editing roles/permissions
+   themselves, sending broadcasts, and more) is gated behind
+   `requirePermissions([...])` checks, which read from that empty table —
+   so without this step you'll hit "Missing required permissions: ..."
+   errors the moment you try to use almost anything under Settings. Same
+   chicken-and-egg shape as Step 3 above (you'd need `SYSTEM_CONFIG` to
+   grant `SYSTEM_CONFIG` to yourself), so it's fixed the same way — one
+   more direct database statement, right after the one above:
+   ```
+   psql "PASTE_YOUR_CONNECTION_STRING" -c "
+     INSERT INTO role_permissions (role_id, permission_id, granted_by)
+     SELECT r.id, p.id, u.id
+     FROM roles r
+     CROSS JOIN permissions p
+     JOIN users u ON u.email = 'YOUR_EMAIL_HERE'
+     WHERE r.name = 'Admin'
+     ON CONFLICT (role_id, permission_id) DO NOTHING;
+   "
+   ```
+   This grants the Admin role *every* permission that exists in one shot,
+   rather than discovering and patching them one at a time. `ON CONFLICT
+   DO NOTHING` makes it safe to re-run later without erroring.
+5. Log out and back in (or just refresh) so the app picks up your new role
+   and permissions. You should now see every menu item, including **Users**
+   and **Settings**, and be able to actually use them.
+6. From here on, use **Users → Assign Role** and **Settings → Roles →
+   Permissions** in the app itself for every other person/role — these
+   manual database steps are only ever needed once, for the very first
+   Admin.
 
 ---
 

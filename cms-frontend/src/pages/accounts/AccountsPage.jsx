@@ -29,10 +29,10 @@ import {
 } from 'recharts';
 
 // ============================================================
-// CREATE ACCOUNT MODAL (Secondary or, one-time, the SAVINGS account)
+// CREATE ACCOUNT MODAL (Secondary, or one-time, PRIMARY/SAVINGS)
 // ============================================================
-const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasSavingsAccount }) => {
-    const [accountType, setAccountType] = useState('SECONDARY');
+const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimaryAccount, hasSavingsAccount, initialType = 'SECONDARY' }) => {
+    const [accountType, setAccountType] = useState(initialType);
     const [form, setForm]       = useState({
         name: '', currency_id: '', description: '', reference_prefix: '',
         is_virtual: false, bank_name: '', bank_branch: '', bank_account_number: '', swift_routing_code: '',
@@ -40,16 +40,42 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasSavings
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
 
+    // Re-sync to whichever tab the page asked us to open on (e.g. the
+    // "Set Up Primary Account" banner button) every time the modal opens —
+    // otherwise it would keep showing whatever tab was last selected.
+    useEffect(() => {
+        if (isOpen) setAccountType(initialType);
+    }, [isOpen, initialType]);
+
     if (!isOpen) return null;
 
     const isSavings = accountType === 'SAVINGS';
+    const isPrimary = accountType === 'PRIMARY';
+
+    // Which tabs are worth showing at all — Secondary is always available
+    // (unlimited), Primary/Savings only while they don't exist yet (both
+    // are one-time, singleton accounts). If both singletons are already
+    // set up, there's nothing to toggle — the modal is Secondary-only.
+    const availableTypes = [
+        'SECONDARY',
+        ...(!hasPrimaryAccount ? ['PRIMARY'] : []),
+        ...(!hasSavingsAccount ? ['SAVINGS'] : []),
+    ];
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
         try {
-            if (isSavings) {
+            if (isPrimary) {
+                // Primary is always EUR, decided server-side — no currency_id sent.
+                await accountsAPI.createPrimary({
+                    name: form.name, description: form.description,
+                    is_virtual: form.is_virtual, bank_name: form.bank_name,
+                    bank_branch: form.bank_branch, bank_account_number: form.bank_account_number,
+                    swift_routing_code: form.swift_routing_code,
+                });
+            } else if (isSavings) {
                 await accountsAPI.createSavings(form);
             } else {
                 await accountsAPI.createSecondary({
@@ -77,30 +103,50 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasSavings
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                        {isSavings ? 'Set Up Savings Account' : 'Create Secondary Account'}
+                        {isPrimary ? 'Set Up Primary Account' : isSavings ? 'Set Up Savings Account' : 'Create Secondary Account'}
                     </h2>
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />
                         </div>
                     )}
-                    {!hasSavingsAccount && (
+                    {availableTypes.length > 1 && (
                         <div className="flex items-center gap-2 mb-4 border border-gray-200 rounded-lg p-1">
-                            <button type="button"
-                                onClick={() => setAccountType('SECONDARY')}
-                                className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
-                                    !isSavings ? 'bg-primary-600 text-white' : 'text-gray-500'
-                                }`}>
-                                Secondary Account
-                            </button>
-                            <button type="button"
-                                onClick={() => setAccountType('SAVINGS')}
-                                className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
-                                    isSavings ? 'bg-amber-600 text-white' : 'text-gray-500'
-                                }`}>
-                                Savings Account
-                            </button>
+                            {availableTypes.includes('SECONDARY') && (
+                                <button type="button"
+                                    onClick={() => setAccountType('SECONDARY')}
+                                    className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
+                                        accountType === 'SECONDARY' ? 'bg-primary-600 text-white' : 'text-gray-500'
+                                    }`}>
+                                    Secondary
+                                </button>
+                            )}
+                            {availableTypes.includes('PRIMARY') && (
+                                <button type="button"
+                                    onClick={() => setAccountType('PRIMARY')}
+                                    className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
+                                        isPrimary ? 'bg-indigo-600 text-white' : 'text-gray-500'
+                                    }`}>
+                                    Primary
+                                </button>
+                            )}
+                            {availableTypes.includes('SAVINGS') && (
+                                <button type="button"
+                                    onClick={() => setAccountType('SAVINGS')}
+                                    className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
+                                        isSavings ? 'bg-amber-600 text-white' : 'text-gray-500'
+                                    }`}>
+                                    Savings
+                                </button>
+                            )}
                         </div>
+                    )}
+                    {isPrimary && (
+                        <p className="text-xs text-gray-500 mb-4 bg-indigo-50 border border-indigo-100 rounded-lg p-2.5">
+                            One-time setup. This is the company's main operating account —
+                            always created in EUR. Most contributions, grants, loans and
+                            general transactions post against this account by default.
+                        </p>
                     )}
                     {isSavings && (
                         <p className="text-xs text-gray-500 mb-4 bg-amber-50 border border-amber-100 rounded-lg p-2.5">
@@ -117,26 +163,32 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasSavings
                                 onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
                                 required />
                         </div>
-                        <div>
-                            <label className="label">Currency *</label>
-                            <select className="input" value={form.currency_id}
-                                onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))}
-                                required>
-                                <option value="">Select currency...</option>
-                                {currencies.map(c => (
-                                    <option key={c.id} value={c.id}>
-                                        {c.code} — {c.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
+                        {isPrimary ? (
+                            <p className="text-xs text-gray-400 -mt-2">
+                                Currency: <span className="font-medium text-gray-600">EUR</span> (fixed — the primary account is always set up in Euros)
+                            </p>
+                        ) : (
+                            <div>
+                                <label className="label">Currency *</label>
+                                <select className="input" value={form.currency_id}
+                                    onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))}
+                                    required>
+                                    <option value="">Select currency...</option>
+                                    {currencies.map(c => (
+                                        <option key={c.id} value={c.id}>
+                                            {c.code} — {c.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Description</label>
                             <textarea className="input" rows={2} value={form.description}
                                 onChange={e => setForm(p => ({
                                     ...p, description: e.target.value }))} />
                         </div>
-                        {!isSavings && (
+                        {accountType === 'SECONDARY' && (
                             <div>
                                 <label className="label">Reference Prefix</label>
                                 <input type="text" className="input" maxLength={10}
@@ -1378,6 +1430,7 @@ const AccountsPage = () => {
     const [loading,       setLoading]       = useState(true);
     const [error,         setError]         = useState(null);
     const [showCreate,    setShowCreate]    = useState(false);
+    const [createInitialType, setCreateInitialType] = useState('SECONDARY');
     const [floorAccount,  setFloorAccount]  = useState(null);
     const [showPriceModal, setShowPriceModal] = useState(false);
     const [showRateModal,  setShowRateModal]  = useState(false);
@@ -1438,6 +1491,7 @@ const AccountsPage = () => {
         );
     }
 
+    const hasPrimaryAccount = accounts.some(a => a.account_type === 'PRIMARY');
     const hasSavingsAccount = accounts.some(a => a.account_type === 'SAVINGS');
 
     return (
@@ -1448,7 +1502,10 @@ const AccountsPage = () => {
                 actions={
                     hasPermission('SYSTEM_CONFIG') && (
                         <button
-                            onClick={() => setShowCreate(true)}
+                            onClick={() => {
+                                setCreateInitialType('SECONDARY');
+                                setShowCreate(true);
+                            }}
                             className="btn-primary flex items-center gap-2"
                         >
                             <PlusIcon className="h-4 w-4" />
@@ -1465,6 +1522,23 @@ const AccountsPage = () => {
                 </div>
             )}
 
+            {!hasPrimaryAccount && hasPermission('SYSTEM_CONFIG') && (
+                <div className="mb-6 flex items-center justify-between gap-4
+                    bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3">
+                    <p className="text-sm text-indigo-800">
+                        No primary account has been set up yet. This is the company's
+                        main operating account (always EUR) — most contributions and
+                        general transactions need it to exist first.
+                    </p>
+                    <button onClick={() => {
+                        setCreateInitialType('PRIMARY');
+                        setShowCreate(true);
+                    }} className="btn-secondary text-sm whitespace-nowrap">
+                        Set Up Primary Account
+                    </button>
+                </div>
+            )}
+
             {!hasSavingsAccount && hasPermission('SYSTEM_CONFIG') && (
                 <div className="mb-6 flex items-center justify-between gap-4
                     bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
@@ -1472,8 +1546,10 @@ const AccountsPage = () => {
                         No savings account has been set up yet. Member savings deposits
                         will be rejected until one exists.
                     </p>
-                    <button onClick={() => setShowCreate(true)}
-                        className="btn-secondary text-sm whitespace-nowrap">
+                    <button onClick={() => {
+                        setCreateInitialType('SAVINGS');
+                        setShowCreate(true);
+                    }} className="btn-secondary text-sm whitespace-nowrap">
                         Set Up Savings Account
                     </button>
                 </div>
@@ -1515,7 +1591,9 @@ const AccountsPage = () => {
                 onClose={() => setShowCreate(false)}
                 onSuccess={loadData}
                 currencies={currencies}
+                hasPrimaryAccount={hasPrimaryAccount}
                 hasSavingsAccount={hasSavingsAccount}
+                initialType={createInitialType}
             />
             <FloorLimitModal
                 isOpen={!!floorAccount}

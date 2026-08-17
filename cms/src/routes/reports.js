@@ -57,6 +57,18 @@ router.get('/audit',
 );
 
 // ============================================================
+// GET CHART OF ACCOUNTS
+// GET /api/reports/chart-of-accounts
+// A live, as-of-right-now snapshot of every money pool — gated by
+// FINANCE_VIEW_ALL (not REPORT_VIEW_ALL) since it's a live balance
+// snapshot, not a generated/archived report.
+// ============================================================
+router.get('/chart-of-accounts',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    reportsController.getChartOfAccounts
+);
+
+// ============================================================
 // GET GENERAL COMPANY REPORT
 // GET /api/reports/general?year=2026&month=6
 // ============================================================

@@ -1736,6 +1736,98 @@ Personal signatures (Section 4.29) prove *who* signed something. This module add
 
 ---
 
+#### 31. Money Market Fund (MMF) Sub-Accounts (v1.28.0)
+
+##### 31.1 Purpose
+
+Ugandan companies commonly place idle cash into a Money Market Fund (MMF) — interest accrues daily but is usually reported/credited by the provider once a month. This module lets an Admin/Treasurer carve out part of any Primary or Secondary account's balance into one or more dedicated MMF sub-accounts. The money is genuinely gone from the parent account the moment it's topped up (not just earmarked) and lives in its own running balance, earns manually-recorded monthly interest, can incur exactly one kind of expense (a management fee), and is credited back to the parent account for real on withdrawal. Built as a standalone module (not an extension of Investments) with its own tables, its own dedicated page, and its own ROI wired into the existing Investments best/worst performance comparison — a deliberate architecture choice made after clarifying requirements, since an MMF's cash flow shape (top-up/withdraw at any time, principal-preserving, single fee type) doesn't fit the Investments module's budget/expenditure/returns model.
+
+##### 31.2 Data model
+
+- **`mmf_accounts`** — one row per MMF sub-account: `parent_account_id` (the Primary/Secondary account it's drawn from), `name`, `provider` (free text, e.g. "Stanbic Bank Uganda"), `currency_id` (always inherited from the parent account), `current_balance`/`total_principal_in`/`total_withdrawn`/`total_interest`/`total_management_fees` (running totals, maintained the same non-recomputed way `accounts.current_balance` is), `status` (`ACTIVE`/`CLOSED`). Multiple MMFs are allowed at once, each independently tied to one parent account.
+- **`mmf_transactions`** — one row per top-up, withdrawal, interest entry, or management fee entry (`entry_type`). TOPUP/WITHDRAWAL carry a `transaction_id` linking to a real general-ledger `transactions` row (posted via the same `postTransaction()` choke point everything else in the system uses); INTEREST/MANAGEMENT_FEE never touch the parent account or the ledger at all — they only move `mmf_accounts.current_balance`. `interest_period` (first-of-month) is set only on INTEREST rows, backed by a **partial unique index** (`idx_mmf_interest_period_unique`) that makes it structurally impossible to record two interest entries for the same MMF in the same calendar month.
+- `transactions.inflow_type` widened to add `MMF_TOPUP_OUT`/`MMF_WITHDRAWAL_IN`, so a top-up/withdrawal is traceable in the general ledger as its own type rather than being lumped into generic `EXPENSE`/`OTHER_INCOME`.
+- New permissions `MMF_VIEW`/`MMF_MANAGE` (module `INVESTMENTS`, since MMF sits alongside Investments in the sidebar and in permission management) — like every permission in this system, neither is auto-granted to any role including Admin; must be granted via Settings → Roles → Permissions after this migration runs.
+
+##### 31.3 Business rules / key logic
+
+- **Money leaving a parent account for an MMF is a real debit, not a soft hold.** Top-up posts `DEBIT`/`MMF_TOPUP_OUT` against the parent account via `postTransaction()` — the parent account's `current_balance` genuinely drops, so it stops counting toward that account's spendable funds exactly as the original request specified ("not counted towards the current balance of that account but only 'expected'").
+- **Withdrawal is the mirror image** — `CREDIT`/`MMF_WITHDRAWAL_IN` against the parent account, capped at the MMF's own `current_balance` (can't withdraw more than the MMF holds). Can happen at any time, in any amount, same as a top-up.
+- **Interest is entered manually, once per calendar month, and never touches the parent account.** `POST /mmf/:id/interest` takes an `amount` and `interest_period` (any date within the target month, normalised server-side to that month's 1st) — matches how Investment returns are already recorded (Treasurer/Admin types in the real figure), deliberately not a rate-based auto-accrual job. Only increases `mmf_accounts.current_balance`/`total_interest`.
+- **The management fee is the only allowed expense**, and is deducted straight from the MMF's own balance (`current_balance -= amount`, `total_management_fees += amount`) rather than posted as a separate ledger transaction against the parent account — this is how MMF providers actually charge it (netted off the fund), and matches "paid at withdrawal or at regular intervals."
+- **ROI formula**, mirroring the Investments module's own formula exactly: `ROUND(((total_interest - total_management_fees) / total_principal_in * 100)::numeric, 2)` when `total_principal_in > 0`, else `0`.
+- **Closing an MMF requires a zero balance first** — no auto-withdraw shortcut; the remaining balance must be explicitly withdrawn via the normal withdrawal action before `POST /mmf/:id/close` will succeed. This keeps closing a pure record-keeping step, never a way to move money.
+- **MMF vs. Investments ROI comparison** — `GET /investments/performance-summary` (Section 4.13, no `INVESTMENT_VIEW` gate, shown on every dashboard) now `UNION ALL`s active/completed investments with active/closed MMFs sharing the same `{id, name, investment_type, status, roi_percentage}` shape (`investment_type: 'MMF'` for MMF rows), ordered by ROI across both — so an MMF genuinely competes for "best/worst performing" alongside every other investment, per the original request. The frontend `PerformanceCard` (Dashboard, Shareholder Dashboard) tags MMF rows with a small "MMF" badge and compares `id` + `investment_type` together (not `id` alone) when deciding whether to show both rows, since an investment and an MMF sub-account could otherwise coincidentally share the same numeric `id` across their two separate tables.
+
+##### 31.4 API endpoints (`cms/src/routes/mmf.js`, prefix `/api/mmf`)
+
+| Method | Endpoint | Access | Purpose |
+|---|---|---|---|
+| GET | `/mmf` | `MMF_VIEW` | List all MMF sub-accounts, with computed `roi_percentage` |
+| GET | `/mmf/performance-summary` | Any authenticated user | Best/worst MMF by ROI (dashboard-safe, no `MMF_VIEW` gate) |
+| GET | `/mmf/:id` | `MMF_VIEW` | Full detail — totals, ROI, and every transaction (for the funding/return chart) |
+| POST | `/mmf` | `MMF_MANAGE` | Create an MMF sub-account; optional `initial_amount` funds it in the same request |
+| POST | `/mmf/:id/topup` | `MMF_MANAGE` | Add money — debits the parent account for real |
+| POST | `/mmf/:id/withdraw` | `MMF_MANAGE` | Remove money — credits the parent account for real |
+| POST | `/mmf/:id/interest` | `MMF_MANAGE` | Manual monthly interest entry (one per calendar month) |
+| POST | `/mmf/:id/fee` | `MMF_MANAGE` | Management fee — deducted from the MMF's own balance |
+| POST | `/mmf/:id/close` | `MMF_MANAGE` | Close (requires `current_balance = 0`) |
+
+Also see `GET /investments/performance-summary` (Section 31.3) for the merged ROI comparison.
+
+##### 31.5 Frontend
+
+- **Sidebar → "Money Market Funds"** (`/mmf`, gated on `MMF_VIEW`), positioned right after Investments.
+- **`MmfPage.jsx`** — list of every MMF sub-account (reference, name/provider/parent account, current balance, principal in, interest earned, ROI, status), with a "New MMF" modal that can optionally fund it on creation in one step.
+- **`MmfDetailPage.jsx`** — a dedicated management page per MMF: a gradient stats banner (current balance, ROI, principal in/withdrawn/interest/fees), Top Up / Withdraw / Record Interest / Record Management Fee / Close actions, a **funding chart** (running balance over time, `recharts` `LineChart`) and a **return chart** (interest vs. management fees by month, grouped `BarChart`) built client-side from the transaction history, plus a full transaction table.
+- **Investments Performance Card** (Dashboard, Shareholder Dashboard) — unchanged UI, now transparently includes MMF rows via the merged backend endpoint (Section 31.3).
+
+##### 31.6 Known issues / open items
+
+- No rate-based interest projection or reminder to record the month's interest — purely manual entry, by design (matches how Investment returns already work), so a month can be skipped with nothing surfacing that fact anywhere yet.
+- The funding/return charts on `MmfDetailPage.jsx` are computed client-side from the `transactions` array returned by `GET /mmf/:id` rather than a dedicated aggregation endpoint — fine at the transaction volumes a single MMF sub-account realistically sees, but would need a real GROUP BY query if that ever changes.
+
+---
+
+#### 32. Chart of Accounts (v1.28.0)
+
+##### 32.1 Purpose
+
+A single, live, as-of-right-now page showing the current state of every money pool in the system — Accounts (Primary/Secondary/Savings), Side Fund, outstanding Loans (received and given), active Investments, active Money Market Funds, and active Grants. Unlike the General Report (Section 4.20, month-scoped, generated/archived), this is a real-time balance-sheet-style view: it reads each module's own running-balance columns directly (never a recomputed SUM), so its figures can never drift out of sync with what each module's own page already shows.
+
+##### 32.2 Data model
+
+No new tables — this is a read-only aggregation across tables that already exist (`accounts`, `side_fund_config`, `loans_received`, `loans_given`, `investments`, `mmf_accounts`, `grants`). Figures are grouped **by currency within each section** rather than summed into one grand total, since accounts/loans/investments/MMFs/grants can each be denominated in a different currency and summing across currencies would be meaningless.
+
+##### 32.3 Business rules / key logic
+
+`GET /reports/chart-of-accounts` runs seven queries in parallel (`Promise.all`, no giant single query, matching `reportService.js`'s existing multi-query aggregation style) and assembles one response:
+- **Accounts** — every active Primary/Secondary/Savings account and its `current_balance`, individually (not grouped).
+- **Side Fund** — the single `side_fund_config` row, only included if `is_active`.
+- **Loans Received** (liabilities) / **Loans Given** (assets) — grouped by currency, `SUM(outstanding_principal)`/`SUM(outstanding_interest)` across every loan with `status IN ('ACTIVE','OVERDUE','PARTIALLY_REPAID')` — the identical "outstanding = principal + interest" formula already used for a single loan's payoff amount (Section 4.14/4.15).
+- **Investments** — grouped by currency, `SUM(planned_budget)`/`SUM(actual_expenditure)`/`SUM(total_returns)` across every investment with `status IN ('ACTIVE','ON_HOLD')` (the same status filter `reportService.js`'s general report already uses for its own investments section).
+- **Money Market Funds** — grouped by currency, `SUM` of every `mmf_accounts` running total, `status = 'ACTIVE'` only.
+- **Grants** — grouped by currency, `SUM(total_amount)`/`SUM(amount_received)`/`SUM(amount_remaining)` across every grant with `status IN ('ACTIVE','PARTIALLY_RECEIVED')`.
+
+Gated on `FINANCE_VIEW_ALL` rather than `REPORT_VIEW_ALL` — a deliberate choice, since this is a live balance snapshot rather than a generated/archived report, so it's gated the same way the rest of the finance-module pages (Accounts, Transactions, Transfers, Dividends) already are in the sidebar.
+
+##### 32.4 API endpoints
+
+| Method | Endpoint | Access | Purpose |
+|---|---|---|---|
+| GET | `/reports/chart-of-accounts` | `FINANCE_VIEW_ALL` | Live snapshot of every money pool, grouped by currency |
+
+##### 32.5 Frontend
+
+- **`ChartOfAccountsPage.jsx`** (`/reports/chart-of-accounts`) — reached via a "Chart of Accounts" button on the Reports page header (not a separate sidebar entry, since it's conceptually a sub-page of Reports). Sections: an Accounts table (one row per account); a Side Fund card; side-by-side Loans Received/Given cards; side-by-side Investments/MMF cards (each linking through to `/investments` or `/mmf`); a Grants card — each non-Accounts section showing one stat row per currency present. A Refresh button re-fetches on demand; there's no auto-poll.
+
+##### 32.6 Known issues / open items
+
+- No historical/point-in-time view — this always reflects the current moment, unlike the General Report which can be regenerated for any past month. Anyone wanting "what did the Chart of Accounts look like last quarter" would need to have exported/screenshotted it at the time.
+- No consolidated single-currency total is shown or computed anywhere on this page — intentional (summing across currencies without a real conversion would misrepresent the company's position), but means a company operating in multiple currencies has to read each currency's figures separately rather than seeing one bottom-line number.
+
+---
+
 ## 5. Deployment Guide
 
 This section is the Bible's own copy of "how to put this system online," written to stand alone — but the repo root also keeps `DEPLOYMENT_GUIDE.md` as a shorter, copy-paste-friendly companion for when you just need the exact commands without the surrounding explanation. The two are kept in sync; if they ever disagree, trust whichever was edited most recently (check the file's own timestamp) and update the other to match.
@@ -2000,6 +2092,7 @@ Derived from the `cms/migration_vX.X.0.sql` files' own header comments — each 
 | 1.27.1 | **Fixed: gradient banner clipped dropdown menus in its own action buttons.** `.page-banner`'s `overflow: hidden` (added in v1.27.0 to keep the gradient clipped to its rounded corners — never actually necessary, since a CSS background already respects `border-radius` on its own) was also clipping any dropdown menu positioned absolutely inside the banner's actions area, e.g. Transactions' "Record" button — "Record Expense" fell outside the clipped box and was invisible below "Record Contribution". Removed `overflow-hidden` from `.page-banner`; fixes every page sharing that class, not just Transactions. Code-only, no schema migration. |
 | 1.27.2 | **Fixed: no way to create the Primary account through the UI (Section 4.1.6).** `accountsAPI.createPrimary` existed in the API client and `POST /accounts/primary` worked correctly server-side, but nothing in the frontend ever called it — the "New Account" modal's tab toggle only offered Secondary/Savings, and hid itself entirely (any tabs at all) once a Savings account existed, regardless of whether Primary did. `CreateAccountModal` (`AccountsPage.jsx`) now supports a third `PRIMARY` tab (EUR-fixed with no currency picker, no reference-prefix field, matching exactly what `createPrimaryAccount` accepts server-side); the tab-visibility logic now checks Primary and Savings independently instead of one flag hiding both; and a "no primary account yet" warning banner (mirroring the existing Savings one) was added, with its button opening the modal pre-selected on the right tab via a new `initialType` prop. Code-only, no schema migration. |
 | 1.27.3 | **Fixed: a brand-new Shareholder could never be selected to record their own first contribution (Section 23.6).** `GET /users/shareholders` INNER JOINed `shareholding_registry`, which only gains a row for a member *after* a contribution is recorded — so a member with zero contributions so far, no matter their role, could never appear in the "Contributing Member" dropdown used to record one. Rewritten to list everyone holding the Shareholder role (the real eligibility rule), LEFT JOINing `shareholding_registry` in just to show existing `shares_held`/`percentage` where present. Code-only, no schema migration. |
+| 1.28.0 | **Money Market Fund (MMF) sub-accounts + Chart of Accounts (Sections 4.31, 4.32).** New standalone MMF module: any Primary/Secondary account can have one or more MMF sub-accounts drawn out of it — money genuinely leaves the parent account on top-up (posted via `postTransaction`, real ledger entries) and is credited back for real on withdrawal; interest is entered manually once per calendar month (unique-indexed against double-entry); the one allowed expense (a management fee) is deducted straight from the MMF's own balance. New tables `mmf_accounts`/`mmf_transactions`, new permissions `MMF_VIEW`/`MMF_MANAGE`, `transactions.inflow_type` widened with `MMF_TOPUP_OUT`/`MMF_WITHDRAWAL_IN`. `GET /investments/performance-summary` now `UNION ALL`s MMF ROI alongside Investments ROI, so an MMF competes for "best/worst performing" on every dashboard. New dedicated page (`MmfPage.jsx`/`MmfDetailPage.jsx`, `/mmf`) with funding and interest-vs-fee charts. Also new: a **Chart of Accounts** page (`/reports/chart-of-accounts`, `FINANCE_VIEW_ALL`) — a live, currency-grouped snapshot of every money pool in the system (Accounts, Side Fund, Loans Received/Given, Investments, MMFs, Grants), reading each module's own running-balance columns directly rather than a recomputed report. Migration `migration_v1.28.0.sql`. |
 
 ---
 

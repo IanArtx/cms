@@ -32,7 +32,11 @@ const PerformanceCard = ({ performance }) => {
     if (!performance || performance.count === 0) return null;
 
     const { best, worst } = performance;
-    const showBoth = worst && worst.id !== best.id;
+    // Compare both id AND investment_type — best/worst can now come from
+    // either the investments table or the mmf_accounts table (v1.28.0
+    // MMF/Investments ROI comparison), so two different records could
+    // coincidentally share the same numeric id across those two tables.
+    const showBoth = worst && (worst.id !== best.id || worst.investment_type !== best.investment_type);
 
     const Row = ({ label, inv, tone }) => (
         <div className="flex items-center justify-between py-2">
@@ -43,6 +47,9 @@ const PerformanceCard = ({ performance }) => {
                     {label}
                 </span>
                 <p className="text-sm text-gray-900 truncate">{inv.name}</p>
+                {inv.investment_type === 'MMF' && (
+                    <span className="badge-blue text-[10px] px-1.5 py-0.5 flex-shrink-0">MMF</span>
+                )}
             </div>
             <p className={`text-sm font-bold flex-shrink-0 ml-3 ${
                 parseFloat(inv.roi_percentage) >= 0 ? 'text-green-600' : 'text-red-600'

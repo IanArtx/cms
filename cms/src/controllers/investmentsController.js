@@ -1010,20 +1010,47 @@ const getAllInvestments = asyncHandler(async (req, res) => {
 // Lightweight, company-wide summary (name + ROI% only — no budget
 // figures) so it's safe to show on every user's dashboard, not just
 // those with full INVESTMENT_VIEW access.
+//
+// v1.28.0: UNIONs in Money Market Fund sub-accounts (a standalone
+// module — see mmfController.js) so MMFs compete on ROI right
+// alongside every other investment, per the user's explicit
+// requirement that MMF performance "should be compared to
+// investments and also appear when its ROI is competitively best or
+// worst as the other investments." The MMF ROI formula mirrors the
+// investment one exactly, substituting principal-in for expenditure
+// and (interest − management fees) for returns:
+//   ROUND(((total_interest - total_management_fees)
+//          / total_principal_in * 100)::numeric, 2)
 // ============================================================
 const getPerformanceSummary = asyncHandler(async (req, res) => {
     const result = await query(`
-        SELECT
-            i.id, i.name, i.investment_type, i.status,
-            CASE
-                WHEN i.actual_expenditure > 0 THEN
-                    ROUND(((i.total_returns - i.actual_expenditure)
-                    / i.actual_expenditure * 100)::numeric, 2)
-                ELSE 0
-            END AS roi_percentage
-        FROM investments i
-        WHERE i.status IN ('ACTIVE', 'COMPLETED')
-        AND   i.actual_expenditure > 0
+        SELECT id, name, investment_type, status, roi_percentage FROM (
+            SELECT
+                i.id, i.name, i.investment_type, i.status,
+                CASE
+                    WHEN i.actual_expenditure > 0 THEN
+                        ROUND(((i.total_returns - i.actual_expenditure)
+                        / i.actual_expenditure * 100)::numeric, 2)
+                    ELSE 0
+                END AS roi_percentage
+            FROM investments i
+            WHERE i.status IN ('ACTIVE', 'COMPLETED')
+            AND   i.actual_expenditure > 0
+
+            UNION ALL
+
+            SELECT
+                m.id, m.name, 'MMF' AS investment_type, m.status,
+                CASE
+                    WHEN m.total_principal_in > 0 THEN
+                        ROUND(((m.total_interest - m.total_management_fees)
+                        / m.total_principal_in * 100)::numeric, 2)
+                    ELSE 0
+                END AS roi_percentage
+            FROM mmf_accounts m
+            WHERE m.status IN ('ACTIVE', 'CLOSED')
+            AND   m.total_principal_in > 0
+        ) combined
         ORDER BY roi_percentage DESC
     `);
 

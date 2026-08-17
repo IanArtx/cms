@@ -152,6 +152,13 @@ const ACTIONS = {
     INVESTMENT_RETURN:      'INVESTMENT_RETURN',
     PROJECT_CREATED:        'PROJECT_CREATED',
     MILESTONE_UPDATED:      'MILESTONE_UPDATED',
+    // Money Market Fund sub-accounts (v1.28.0)
+    MMF_ACCOUNT_CREATED:    'MMF_ACCOUNT_CREATED',
+    MMF_ACCOUNT_CLOSED:     'MMF_ACCOUNT_CLOSED',
+    MMF_TOPUP:              'MMF_TOPUP',
+    MMF_WITHDRAWAL:         'MMF_WITHDRAWAL',
+    MMF_INTEREST_RECORDED:  'MMF_INTEREST_RECORDED',
+    MMF_FEE_RECORDED:       'MMF_FEE_RECORDED',
     // Events
     EVENT_CREATED:          'EVENT_CREATED',
     EVENT_UPDATED:          'EVENT_UPDATED',
@@ -271,6 +278,7 @@ const MODULES = {
     REPORTS:     'REPORTS',
     SYSTEM:      'SYSTEM',
     STAFF:       'STAFF',
+    MMF:         'MMF',
 };
 
 module.exports = { logAction, extractRequestContext, ACTIONS, MODULES };

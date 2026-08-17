@@ -41,6 +41,133 @@ const attachFiscalQuarter = async (report, year, month) => {
 };
 
 // ============================================================
+// GET CHART OF ACCOUNTS
+// GET /api/reports/chart-of-accounts
+// v1.28.0, Section 4.32.
+//
+// A live, as-of-right-now snapshot of every money pool in the
+// system — deliberately NOT month-scoped like the general report
+// above (which is a historical monthly statement). This just reads
+// each pool's own running-balance columns directly, exactly the way
+// each module's own page already displays them, so the numbers here
+// can never drift out of sync with what a user sees on the Accounts,
+// Side Fund, Loans, Investments or MMF pages.
+//
+// Figures are grouped by currency within each section (never summed
+// across currencies) since accounts, loans, investments, MMFs and
+// grants can each be denominated in a different currency.
+// ============================================================
+const getChartOfAccounts = asyncHandler(async (req, res) => {
+    const [
+        accountsResult,
+        sideFundResult,
+        loansReceivedResult,
+        loansGivenResult,
+        investmentsResult,
+        mmfResult,
+        grantsResult,
+    ] = await Promise.all([
+        // Accounts — every active Primary/Secondary/Savings account
+        query(`
+            SELECT a.id, a.name, a.account_type, a.current_balance,
+                   c.code AS currency_code, c.symbol AS currency_symbol
+            FROM   accounts a
+            JOIN   currencies c ON c.id = a.currency_id
+            WHERE  a.is_active = TRUE
+            ORDER  BY a.account_type DESC, a.name ASC
+        `),
+
+        // Side Fund — single-row running balance
+        query(`
+            SELECT sfc.is_active, sfc.monthly_amount, sfc.current_balance,
+                   a.name AS parent_account_name,
+                   c.code AS currency_code, c.symbol AS currency_symbol
+            FROM   side_fund_config sfc
+            LEFT JOIN accounts a    ON a.id = sfc.parent_account_id
+            LEFT JOIN currencies c  ON c.id = sfc.currency_id
+            WHERE  sfc.id = 1
+        `),
+
+        // Loans Received — money the company owes, still outstanding
+        query(`
+            SELECT c.code AS currency_code, c.symbol AS currency_symbol,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(lr.outstanding_principal), 0) AS outstanding_principal,
+                   COALESCE(SUM(lr.outstanding_interest), 0)  AS outstanding_interest
+            FROM   loans_received lr
+            JOIN   currencies c ON c.id = lr.currency_id
+            WHERE  lr.status IN ('ACTIVE', 'OVERDUE', 'PARTIALLY_REPAID')
+            GROUP  BY c.code, c.symbol
+        `),
+
+        // Loans Given — money owed TO the company, still outstanding
+        query(`
+            SELECT c.code AS currency_code, c.symbol AS currency_symbol,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(lg.outstanding_principal), 0) AS outstanding_principal,
+                   COALESCE(SUM(lg.outstanding_interest), 0)  AS outstanding_interest
+            FROM   loans_given lg
+            JOIN   currencies c ON c.id = lg.currency_id
+            WHERE  lg.status IN ('ACTIVE', 'OVERDUE', 'PARTIALLY_REPAID')
+            GROUP  BY c.code, c.symbol
+        `),
+
+        // Investments — active/on-hold capital deployed and returns earned
+        query(`
+            SELECT c.code AS currency_code, c.symbol AS currency_symbol,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(i.planned_budget), 0)      AS planned_budget,
+                   COALESCE(SUM(i.actual_expenditure), 0)  AS actual_expenditure,
+                   COALESCE(SUM(i.total_returns), 0)       AS total_returns
+            FROM   investments i
+            JOIN   currencies c ON c.id = i.currency_id
+            WHERE  i.status IN ('ACTIVE', 'ON_HOLD')
+            GROUP  BY c.code, c.symbol
+        `),
+
+        // Money Market Funds — active sub-accounts (v1.28.0)
+        query(`
+            SELECT c.code AS currency_code, c.symbol AS currency_symbol,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(m.current_balance), 0)       AS current_balance,
+                   COALESCE(SUM(m.total_principal_in), 0)    AS total_principal_in,
+                   COALESCE(SUM(m.total_interest), 0)        AS total_interest,
+                   COALESCE(SUM(m.total_management_fees), 0) AS total_management_fees
+            FROM   mmf_accounts m
+            JOIN   currencies c ON c.id = m.currency_id
+            WHERE  m.status = 'ACTIVE'
+            GROUP  BY c.code, c.symbol
+        `),
+
+        // Grants — active/partially-received, amount still expected
+        query(`
+            SELECT c.code AS currency_code, c.symbol AS currency_symbol,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(g.total_amount), 0)     AS total_amount,
+                   COALESCE(SUM(g.amount_received), 0)  AS amount_received,
+                   COALESCE(SUM(g.amount_remaining), 0) AS amount_remaining
+            FROM   grants g
+            JOIN   currencies c ON c.id = g.currency_id
+            WHERE  g.status IN ('ACTIVE', 'PARTIALLY_RECEIVED')
+            GROUP  BY c.code, c.symbol
+        `),
+    ]);
+
+    const sideFund = sideFundResult.rows[0] || null;
+
+    sendSuccess(res, {
+        generated_at:     new Date().toISOString(),
+        accounts:         accountsResult.rows,
+        side_fund:        (sideFund && sideFund.is_active) ? sideFund : null,
+        loans_received:   loansReceivedResult.rows,
+        loans_given:      loansGivenResult.rows,
+        investments:      investmentsResult.rows,
+        mmf:              mmfResult.rows,
+        grants:           grantsResult.rows,
+    });
+});
+
+// ============================================================
 // GET GENERAL COMPANY REPORT (on demand)
 // GET /api/reports/general?year=2026&month=6
 // Returns the full report data as JSON.
@@ -339,6 +466,7 @@ const getAuditLog = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    getChartOfAccounts,
     getGeneralReport,
     getIndividualReport,
     getMyReport,

@@ -5,6 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { reportsAPI, certificatesAPI } from '../../api/endpoints';
 import { formatCurrency, formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -21,6 +22,7 @@ import {
     CheckIcon,
     ChevronDownIcon,
     ChevronUpIcon,
+    TableCellsIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -464,6 +466,14 @@ const ReportsPage = () => {
             <PageHeader
                 title="Reports"
                 subtitle="Financial reports — general company and personal"
+                actions={
+                    hasPermission('FINANCE_VIEW_ALL') && (
+                        <Link to="/reports/chart-of-accounts" className="btn-secondary flex items-center gap-2">
+                            <TableCellsIcon className="h-4 w-4" />
+                            Chart of Accounts
+                        </Link>
+                    )
+                }
             />
 
             {error && (

@@ -158,6 +158,22 @@ export const investmentsAPI = {
 };
 
 // ============================================================
+// MONEY MARKET FUNDS (MMF) — v1.28.0, Section 4.31
+// Standalone sub-accounts drawn out of a Primary/Secondary account.
+// ============================================================
+export const mmfAPI = {
+    getAll:                (params)   => api.get('/mmf', { params }),
+    getById:               (id)       => api.get(`/mmf/${id}`),
+    create:                (data)     => api.post('/mmf', data),
+    topUp:                 (id, data) => api.post(`/mmf/${id}/topup`, data),
+    withdraw:              (id, data) => api.post(`/mmf/${id}/withdraw`, data),
+    recordInterest:        (id, data) => api.post(`/mmf/${id}/interest`, data),
+    recordFee:             (id, data) => api.post(`/mmf/${id}/fee`, data),
+    close:                 (id)       => api.post(`/mmf/${id}/close`),
+    getPerformanceSummary: ()         => api.get('/mmf/performance-summary'),
+};
+
+// ============================================================
 // EVENTS
 // ============================================================
 export const eventsAPI = {
@@ -285,6 +301,7 @@ export const settingsAPI = {
 // REPORTS
 // ============================================================
 export const reportsAPI = {
+    getChartOfAccounts: () => api.get('/reports/chart-of-accounts'),
     getGeneral:        (params) => api.get('/reports/general', { params }),
     getIndividual:     (userId, params) =>
         api.get(`/reports/individual/${userId}`, { params }),

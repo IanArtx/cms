@@ -26,6 +26,9 @@ import LoansPage from './pages/loans/LoansPage';
 import LoanDetailPage from './pages/loans/LoanDetailPage';
 import InvestmentsPage from './pages/investments/InvestmentsPage';
 import InvestmentDetailPage from './pages/investments/InvestmentDetailPage';
+import MmfPage from './pages/mmf/MmfPage';
+import MmfDetailPage from './pages/mmf/MmfDetailPage';
+import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
 import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
 import ReportsPage from './pages/reports/ReportsPage';
@@ -121,10 +124,13 @@ function App() {
                             <Route path="loans/given/:id" element={<LoanDetailPage loanType="given" />} />
                             <Route path="investments" element={<InvestmentsPage />} />
                             <Route path="investments/:id" element={<InvestmentDetailPage />} />
+                            <Route path="mmf" element={<MmfPage />} />
+                            <Route path="mmf/:id" element={<MmfDetailPage />} />
                             <Route path="events" element={<EventsPage />} />
                             <Route path="documents/generate" element={<GenerateDocumentPage />} />
                             <Route path="documents" element={<DocumentsPage />} />
                             <Route path="reports" element={<ReportsPage />} />
+                            <Route path="reports/chart-of-accounts" element={<ChartOfAccountsPage />} />
                             <Route path="users" element={<UsersPage />} />
                             <Route path="profile" element={<ProfilePage />} />
                             <Route path="settings" element={<SettingsPage />} />

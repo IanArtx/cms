@@ -158,6 +158,7 @@ const MODULE_CODES = {
     TRANSFER:          'TRF',
     REPORT:            'RPT',
     SHARE_CERTIFICATE: 'SHC',
+    MMF:               'MMF',
 };
 
 // ============================================================

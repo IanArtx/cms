@@ -2555,5 +2555,114 @@ BEGIN
 END $$;
 
 -- ============================================================
--- END OF SCHEMA — v1.26.0
+-- GROUP 24: MONEY MARKET FUND (MMF) SUB-ACCOUNTS (v1.28.0,
+-- Section 4.31) — a company can place part of an existing account's
+-- balance into one or more Money Market Fund sub-accounts (a common
+-- Ugandan SACCO/investment-club practice: daily interest, usually
+-- reported/credited monthly). Money moved into an MMF stops counting
+-- toward its parent account's real/spendable current_balance (it's
+-- genuinely gone from that account, sitting with the MMF provider)
+-- but is tracked here as its own running balance — principal in,
+-- minus withdrawals, plus manually-recorded monthly interest, minus
+-- the MMF's one allowed expense type (a management fee, paid at
+-- withdrawal or on whatever interval the provider actually charges
+-- it). A withdrawal credits the money back to the parent account for
+-- real. Multiple MMF sub-accounts are allowed at once, each tied to
+-- exactly one parent account and inheriting that account's currency.
+-- ============================================================
+
+CREATE TABLE mmf_accounts (
+    id                     SERIAL PRIMARY KEY,
+    reference_id           INTEGER       NOT NULL REFERENCES references_registry(id),
+    parent_account_id      INTEGER       NOT NULL REFERENCES accounts(id),
+    name                   VARCHAR(200)  NOT NULL,
+    provider               VARCHAR(200),           -- fund manager / MMF provider name
+    description            TEXT,
+    -- Always the parent account's currency — enforced in application
+    -- code at creation time, not re-derivable later if the parent's
+    -- currency were ever changed (it can't be, per accounts.currency_id
+    -- being immutable once transactions exist).
+    currency_id            INTEGER       NOT NULL REFERENCES currencies(id),
+    -- Running balance, maintained transactionally the same way
+    -- accounts.current_balance is (recomputed on every posting, not a
+    -- live SUM query) = total_principal_in - total_withdrawn +
+    -- total_interest - total_management_fees.
+    current_balance        NUMERIC(20,4) NOT NULL DEFAULT 0,
+    total_principal_in     NUMERIC(20,4) NOT NULL DEFAULT 0,
+    total_withdrawn        NUMERIC(20,4) NOT NULL DEFAULT 0,
+    total_interest         NUMERIC(20,4) NOT NULL DEFAULT 0,
+    total_management_fees  NUMERIC(20,4) NOT NULL DEFAULT 0,
+    status                 VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE'
+                           CHECK (status IN ('ACTIVE', 'CLOSED')),
+    opened_date            DATE          NOT NULL DEFAULT CURRENT_DATE,
+    closed_date            DATE,
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    created_by             INTEGER       NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE mmf_transactions (
+    id               SERIAL PRIMARY KEY,
+    reference_id     INTEGER       NOT NULL REFERENCES references_registry(id),
+    mmf_account_id   INTEGER       NOT NULL REFERENCES mmf_accounts(id),
+    -- TOPUP/WITHDRAWAL post a genuine transaction against the parent
+    -- account (transaction_id set, via the same postTransaction()
+    -- choke point everything else in the system uses) — INTEREST and
+    -- MANAGEMENT_FEE only move the MMF's own balance and never touch
+    -- the parent account or the main ledger at all.
+    transaction_id   INTEGER REFERENCES transactions(id),
+    entry_type       VARCHAR(20)   NOT NULL
+                     CHECK (entry_type IN ('TOPUP', 'WITHDRAWAL', 'INTEREST', 'MANAGEMENT_FEE')),
+    amount           NUMERIC(20,4) NOT NULL,
+    -- Which calendar month this interest covers (first-of-month) —
+    -- only set for INTEREST rows. The unique index below stops the
+    -- same month's interest being posted twice by accident.
+    interest_period  DATE,
+    description      TEXT,
+    entry_date       DATE          NOT NULL,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    created_by       INTEGER       NOT NULL REFERENCES users(id),
+    CONSTRAINT positive_mmf_txn_amount CHECK (amount > 0)
+);
+
+CREATE UNIQUE INDEX idx_mmf_interest_period_unique
+    ON mmf_transactions (mmf_account_id, interest_period)
+    WHERE entry_type = 'INTEREST';
+
+CREATE INDEX idx_mmf_transactions_account ON mmf_transactions (mmf_account_id);
+CREATE INDEX idx_mmf_accounts_parent      ON mmf_accounts (parent_account_id);
+
+-- Widen transactions.inflow_type so an MMF top-up/withdrawal posts as
+-- its own traceable type instead of being lumped into generic EXPENSE/
+-- OTHER_INCOME (same widening pattern as every other module here).
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN'
+        ));
+END $$;
+
+INSERT INTO permissions (code, module, description) VALUES
+    ('MMF_VIEW',   'INVESTMENTS', 'View Money Market Fund sub-accounts and their performance'),
+    ('MMF_MANAGE', 'INVESTMENTS', 'Create/close MMF sub-accounts and record top-ups, withdrawals, interest and management fees')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.28.0
 -- ============================================================

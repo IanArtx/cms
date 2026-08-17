@@ -2017,6 +2017,30 @@ WHERE NOT EXISTS (
     SELECT 1 FROM document_templates WHERE template_type = 'RESOLUTION'
 );
 
+-- v1.28.1 fix: Meeting Agenda and Meeting Minutes were always fully
+-- supported end-to-end (both are hardcoded in GenerateDocumentPage.jsx's
+-- TEMPLATE_FIELDS and rendered client-side by meetingAgendaTemplate()/
+-- meetingMinutesTemplate() in exportUtils.js, exactly like Receipt and
+-- Resolution above) but, unlike Receipt/Resolution, never had a seed
+-- row here — so "Generate Document" only ever offered 2 of the 4
+-- intended document types on a fresh database. Same idempotent
+-- NOT EXISTS pattern as above.
+INSERT INTO document_templates (name, template_type, description, template_body)
+SELECT 'Meeting Agenda', 'MEETING_AGENDA',
+       'A structured agenda for an upcoming meeting, with numbered items and expected duration.',
+       'Rendered client-side — see meetingAgendaTemplate() in exportUtils.js.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM document_templates WHERE template_type = 'MEETING_AGENDA'
+);
+
+INSERT INTO document_templates (name, template_type, description, template_body)
+SELECT 'Meeting Minutes', 'MEETING_MINUTES',
+       'A record of what was discussed and decided at a meeting, including attendance and closure notes.',
+       'Rendered client-side — see meetingMinutesTemplate() in exportUtils.js.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM document_templates WHERE template_type = 'MEETING_MINUTES'
+);
+
 -- ============================================================
 -- GROUP 16: NOTIFICATIONS
 -- The in-app "bell" activity feed — one row per user per event

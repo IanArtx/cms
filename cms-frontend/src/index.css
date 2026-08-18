@@ -23,6 +23,22 @@
   --cms-text-muted:       #9ca3af;
 }
 
+/* ============================================================
+   SCROLLBAR-HIDDEN (v1.28.2) — hides the visible scrollbar track/
+   thumb on a scroll container while leaving it fully scrollable
+   (mouse wheel, trackpad, touch, and keyboard all still work).
+   Applied to the sidebar's nav list and the main content area so
+   the app reads as a single clean surface instead of showing two
+   separate scrollbar tracks side by side.
+   ============================================================ */
+.scrollbar-hidden {
+  scrollbar-width: none;     /* Firefox */
+  -ms-overflow-style: none;  /* legacy Edge/IE */
+}
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;              /* Chrome, Safari, Edge (Chromium) */
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --cms-surface:          #1f2937;
@@ -229,9 +245,14 @@
   .bg-gray-100  { background-color: #1f2937; } /* gray-800 */
   .bg-gray-200  { background-color: #374151; } /* gray-700 */
 
-  .hover\:bg-gray-50:hover  { background-color: #1f2937; }
-  .hover\:bg-gray-100:hover { background-color: #374151; }
-  .hover\:bg-gray-200:hover { background-color: #4b5563; }
+  /* !important here (unlike the plain-state overrides above) because
+     these are the ones a user actually reported reading as low-contrast
+     in practice — a hovered element's background/text pairing has to
+     win unconditionally, since there's no legitimate case where some
+     other rule should be allowed to leave hovered text unreadable. */
+  .hover\:bg-gray-50:hover  { background-color: #1f2937 !important; }
+  .hover\:bg-gray-100:hover { background-color: #374151 !important; }
+  .hover\:bg-gray-200:hover { background-color: #4b5563 !important; }
 
   /* Neutral text */
   .text-gray-900 { color: #f9fafb; }
@@ -241,8 +262,8 @@
   .text-gray-500 { color: #9ca3af; }
   .text-gray-400 { color: #6b7280; }
 
-  .hover\:text-gray-700:hover { color: #f3f4f6; }
-  .hover\:text-gray-900:hover { color: #f9fafb; }
+  .hover\:text-gray-700:hover { color: #f3f4f6 !important; }
+  .hover\:text-gray-900:hover { color: #f9fafb !important; }
 
   /* Neutral borders / dividers */
   .border-gray-100 { border-color: #374151; }

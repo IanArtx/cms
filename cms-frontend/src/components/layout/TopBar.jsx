@@ -58,8 +58,8 @@ const PAGE_TITLES = {
     '/dividends':   'Dividends',
 };
 
-const TopBar = ({ onMenuClick }) => {
-    const { user, logout, hasPermission, hasRole } = useAuth();
+const TopBar = ({ onMenuClick, onLogoutClick }) => {
+    const { user, hasPermission, hasRole } = useAuth();
     // The Auditor role is external and non-member — the account
     // balances and the computed "upcoming events / pending approvals"
     // notifications below are company-wide, not scoped to any one
@@ -294,8 +294,11 @@ const TopBar = ({ onMenuClick }) => {
         } catch {}
     };
 
-    const handleLogout = async () => {
-        await logout();
+    // Opens the shared confirmation modal (rendered once in AppLayout,
+    // alongside the sidebar's own Logout button) rather than logging
+    // out immediately — v1.28.2.
+    const handleLogout = () => {
+        onLogoutClick?.();
     };
 
     return (

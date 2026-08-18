@@ -3,16 +3,38 @@
 // The main layout wrapper for all authenticated pages.
 // ============================================================
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import useIdleLogout from '../../hooks/useIdleLogout';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import ConfirmModal from '../common/ConfirmModal';
+
+// Auto-logout after this many minutes of no mouse/keyboard/touch/
+// scroll activity anywhere in the app — see hooks/useIdleLogout.js.
+const IDLE_LOGOUT_MINUTES = 20;
 
 const AppLayout = () => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const { user, hasRole } = useAuth();
+    const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+    const [loggingOut, setLoggingOut] = useState(false);
+    const { user, hasRole, logout } = useAuth();
     const location = useLocation();
+
+    // Idle timeout logs out directly (no confirmation prompt — the
+    // whole point is that nobody's there to answer one); a manual
+    // click on either Logout button always confirms first, below.
+    useIdleLogout(IDLE_LOGOUT_MINUTES * 60 * 1000, () => {
+        logout();
+    });
+
+    const confirmLogout = useCallback(async () => {
+        setLoggingOut(true);
+        await logout();
+        // logout() redirects the whole page to /login, so there's no
+        // need to reset loggingOut/showLogoutConfirm afterwards.
+    }, [logout]);
 
     // A verified account with ZERO assigned roles has not been approved
     // by an Admin yet — enforced centrally here, the same way the
@@ -57,19 +79,38 @@ const AppLayout = () => {
             <Sidebar
                 isOpen={sidebarOpen}
                 onClose={() => setSidebarOpen(false)}
+                onLogoutClick={() => setShowLogoutConfirm(true)}
             />
 
             {/* Main content area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column',
                 overflow: 'hidden', minWidth: 0 }}>
                 {/* Top bar */}
-                <TopBar onMenuClick={() => setSidebarOpen(true)} />
+                <TopBar
+                    onMenuClick={() => setSidebarOpen(true)}
+                    onLogoutClick={() => setShowLogoutConfirm(true)}
+                />
 
                 {/* Page content */}
-                <main className="p-4 md:p-6" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+                <main className="p-4 md:p-6 scrollbar-hidden" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                     <Outlet />
                 </main>
             </div>
+
+            {/* Shared Logout confirmation — reached from either the
+                sidebar's own Logout button or the TopBar user menu's
+                Sign Out item (v1.28.2). Idle-timeout logout (above)
+                deliberately bypasses this and logs out directly. */}
+            <ConfirmModal
+                isOpen={showLogoutConfirm}
+                title="Log out?"
+                message="You'll need to sign in again to continue."
+                confirmLabel="Log Out"
+                danger
+                loading={loggingOut}
+                onConfirm={confirmLogout}
+                onCancel={() => setShowLogoutConfirm(false)}
+            />
         </div>
     );
 };

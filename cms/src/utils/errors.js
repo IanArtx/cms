@@ -54,6 +54,21 @@ const asyncHandler = (fn) => (req, res, next) => {
 const globalErrorHandler = (err, req, res, next) => {
     const logger = require('../config/logger');
 
+    // JWT errors thrown directly by the `jsonwebtoken` library (an
+    // expired or malformed token — see middleware/auth.js's
+    // authenticate()) aren't AppError instances, so they arrive here
+    // with no isOperational flag even though an expired session is a
+    // completely routine, expected condition, not a bug. Without this,
+    // every expired token logged as a scary "Unexpected error" with a
+    // full stack trace at error level, and the logged statusCode read
+    // 500 even though the JSON response further below already
+    // correctly sends 401 — normalising both here fixes the log, not
+    // just the (already-correct) response.
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+        err.statusCode = 401;
+        err.isOperational = true;
+    }
+
     // Default to 500 if no status code was set
     err.statusCode = err.statusCode || 500;
 

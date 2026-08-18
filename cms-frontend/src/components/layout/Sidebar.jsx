@@ -33,9 +33,10 @@ import {
     WalletIcon,
     XMarkIcon,
     ShieldCheckIcon,
+    ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline';
 
-const Sidebar = ({ isOpen, onClose }) => {
+const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
     const { user, hasPermission, hasRole } = useAuth();
     const { branding } = useBranding();
     const initials = (branding.company_name || 'CMS')
@@ -106,7 +107,7 @@ const Sidebar = ({ isOpen, onClose }) => {
 
             <aside
                 className={`fixed md:static inset-y-0 left-0 z-40 w-64 min-w-[256px]
-                    h-screen flex flex-col overflow-y-auto flex-shrink-0
+                    h-screen flex flex-col overflow-y-auto scrollbar-hidden flex-shrink-0
                     transition-transform duration-200 ease-in-out
                     ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
                 style={{ backgroundColor: branding.primary_color, color: 'white' }}
@@ -199,7 +200,7 @@ const Sidebar = ({ isOpen, onClose }) => {
                 </div>
 
                 {/* Navigation */}
-                <nav style={{ flex: 1, padding: '12px', overflowY: 'auto' }}>
+                <nav className="scrollbar-hidden" style={{ flex: 1, padding: '12px', overflowY: 'auto' }}>
                     <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                         {visibleItems.map((item) => (
                             <li key={item.href} style={{ marginBottom: '2px' }}>
@@ -232,9 +233,28 @@ const Sidebar = ({ isOpen, onClose }) => {
                     </ul>
                 </nav>
 
+                {/* Logout */}
+                <div style={{ padding: '12px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                    <button
+                        onClick={onLogoutClick}
+                        style={{
+                            width: '100%', display: 'flex', alignItems: 'center',
+                            gap: '12px', padding: '10px 12px', borderRadius: '8px',
+                            border: 'none', background: 'none', cursor: 'pointer',
+                            fontSize: '14px', fontWeight: '500', color: '#fca5a5',
+                            transition: 'background-color 0.15s',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'rgba(220,38,38,0.15)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+                    >
+                        <ArrowRightOnRectangleIcon style={{ width: '18px', height: '18px', flexShrink: 0 }} />
+                        Log Out
+                    </button>
+                </div>
+
                 {/* Version */}
                 <div style={{
-                    padding: '16px 24px',
+                    padding: '12px 24px 16px',
                     borderTop: '1px solid rgba(255,255,255,0.1)',
                 }}>
                     <p style={{ fontSize: '11px', color: '#60a5fa' }}>

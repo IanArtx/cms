@@ -1,72 +1,51 @@
 // ============================================================
 // CONFIRM MODAL
-// Reusable confirmation dialog for destructive actions.
-// Used for approvals, rejections, cancellations, etc.
+// Generic "are you sure?" dialog — same overlay/panel shell used
+// by every other modal in the app, just without a form inside.
+// Reused for the sidebar/top-bar Logout confirmation (v1.28.2).
 // ============================================================
 
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 
 const ConfirmModal = ({
     isOpen,
-    onClose,
-    onConfirm,
     title,
     message,
     confirmLabel = 'Confirm',
-    cancelLabel  = 'Cancel',
-    type         = 'danger',
-    loading      = false,
+    cancelLabel = 'Cancel',
+    danger = false,
+    loading = false,
+    onConfirm,
+    onCancel,
 }) => {
     if (!isOpen) return null;
 
-    const buttonStyles = {
-        danger:  'btn-danger',
-        primary: 'btn-primary',
-        warning: 'bg-yellow-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-yellow-700 transition-colors',
-    };
-
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
-            {/* Backdrop */}
-            <div
-                className="fixed inset-0 bg-black bg-opacity-40 transition-opacity"
-                onClick={onClose}
-            />
-
-            {/* Modal */}
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onCancel} />
             <div className="flex min-h-full items-center justify-center p-4">
-                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-                    {/* Icon */}
-                    <div className="flex items-center gap-4 mb-4">
-                        <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-100
-                            flex items-center justify-center">
-                            <ExclamationTriangleIcon className="h-6 w-6 text-red-600" />
+                <div className="relative bg-white rounded-xl shadow-xl max-w-sm w-full p-6">
+                    <div className="flex items-start gap-3 mb-2">
+                        <div className={`p-2 rounded-lg flex-shrink-0 ${
+                            danger ? 'bg-red-50 text-red-600' : 'bg-primary-50 text-primary-700'
+                        }`}>
+                            <ExclamationTriangleIcon className="h-5 w-5" />
                         </div>
-                        <h3 className="text-lg font-semibold text-gray-900">
-                            {title}
-                        </h3>
+                        <div>
+                            <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+                            {message && (
+                                <p className="text-sm text-gray-500 mt-1">{message}</p>
+                            )}
+                        </div>
                     </div>
-
-                    {/* Message */}
-                    <p className="text-sm text-gray-500 mb-6">
-                        {message}
-                    </p>
-
-                    {/* Actions */}
-                    <div className="flex justify-end gap-3">
-                        <button
-                            onClick={onClose}
-                            disabled={loading}
-                            className="btn-secondary"
-                        >
+                    <div className="flex justify-end gap-3 mt-5">
+                        <button type="button" onClick={onCancel} disabled={loading}
+                            className="btn-secondary">
                             {cancelLabel}
                         </button>
-                        <button
-                            onClick={onConfirm}
-                            disabled={loading}
-                            className={buttonStyles[type] || buttonStyles.danger}
-                        >
-                            {loading ? 'Processing...' : confirmLabel}
+                        <button type="button" onClick={onConfirm} disabled={loading}
+                            className={danger ? 'btn-danger' : 'btn-primary'}>
+                            {loading ? 'Please wait...' : confirmLabel}
                         </button>
                     </div>
                 </div>

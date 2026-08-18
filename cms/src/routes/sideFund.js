@@ -79,6 +79,20 @@ router.patch('/dues/bulk-pay',
     sideFundController.bulkPayDues
 );
 
+// Generate this month's (or a given period's) dues on demand — same
+// pipeline the monthly cron job runs. For when the fund was
+// activated, or the backend deployed, after the 1st already passed
+// for the current month, so the automatic run never happened.
+// SIDE_FUND_MANAGE, same audience as the fund's other settings.
+router.post('/dues/generate',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    [
+        body('period').optional().matches(/^\d{4}-\d{2}$/).withMessage('period must be in YYYY-MM format'),
+    ],
+    validateRequest,
+    sideFundController.generateDues
+);
+
 // Overdue summary (v1.26.0) — own, then Treasurer/Admin's view of
 // every member currently overdue.
 router.get('/overdue/me', sideFundController.getMyOverdueSummary);

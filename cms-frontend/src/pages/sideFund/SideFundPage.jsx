@@ -280,6 +280,8 @@ const currentPeriod = () => {
 };
 
 const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
+    const { hasPermission } = useAuth();
+    const canManage = hasPermission('SIDE_FUND_MANAGE');
     const [period, setPeriod] = useState(currentPeriod());
     const [candidates, setCandidates] = useState([]);
     const [selected, setSelected] = useState({});   // user_id -> bool
@@ -290,6 +292,12 @@ const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [result, setResult] = useState(null);
+    // v1.28.3 — dues only exist as rows once generated (automatically
+    // by the 1st-of-month cron job, or manually below). A brand new
+    // deployment/activation after the 1st, or a member who joined
+    // mid-month, can otherwise leave this list looking empty even
+    // though dues are genuinely owed.
+    const [generating, setGenerating] = useState(false);
 
     const loadCandidates = useCallback(async () => {
         setLoadingList(true);
@@ -318,6 +326,25 @@ const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
             loadCandidates();
         }
     }, [isOpen, loadCandidates]);
+
+    const handleGenerate = async () => {
+        setGenerating(true);
+        setError(null);
+        try {
+            const res = await sideFundAPI.generateDues({ period });
+            const { created, total } = res.data.data;
+            if (created === 0 && total === 0) {
+                setError('No active shareholders found — nothing to generate.');
+            } else if (created === 0) {
+                setError('Dues for this period already exist for every active shareholder.');
+            }
+            await loadCandidates();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setGenerating(false);
+        }
+    };
 
     if (!isOpen) return null;
 
@@ -450,9 +477,24 @@ const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
                                         {loadingList ? (
                                             <p className="text-sm text-gray-400 text-center py-6">Loading...</p>
                                         ) : candidates.length === 0 ? (
-                                            <p className="text-sm text-gray-400 text-center py-6">
-                                                No outstanding dues for {period}
-                                            </p>
+                                            <div className="text-center py-6 px-4">
+                                                <p className="text-sm text-gray-400">
+                                                    No outstanding dues for {period}
+                                                </p>
+                                                {canManage && (
+                                                    <>
+                                                        <p className="text-xs text-gray-400 mt-1">
+                                                            If members genuinely owe this month's due, it may just
+                                                            not have been generated yet.
+                                                        </p>
+                                                        <button type="button" onClick={handleGenerate}
+                                                            disabled={generating}
+                                                            className="btn-secondary mt-3 text-sm">
+                                                            {generating ? 'Generating...' : `Generate dues for ${period}`}
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
                                         ) : candidates.map(row => (
                                             <div key={row.user_id} className="flex items-center gap-3 px-3 py-2">
                                                 <input type="checkbox" checked={!!selected[row.user_id]}

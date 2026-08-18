@@ -13,6 +13,7 @@ import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import Avatar, { AVATAR_OPTIONS, IllustratedAvatar } from '../../components/common/Avatar';
+import PhotoCropModal from '../../components/common/PhotoCropModal';
 import SignaturePad from '../../components/common/SignaturePad';
 import { useAuth } from '../../contexts/AuthContext';
 import {
@@ -479,6 +480,7 @@ const ProfilePage = () => {
     const [editing,        setEditing]          = useState(false);
     const [photoUploading, setPhotoUploading]   = useState(false);
     const [photoError,     setPhotoError]       = useState(null);
+    const [cropFile,       setCropFile]         = useState(null);
     const [editSuccess,    setEditSuccess]      = useState(false);
     const [certLoading,    setCertLoading]      = useState(null); // 'MONTHLY' | 'ANNUAL' | null
     const [certError,      setCertError]        = useState(null);
@@ -524,8 +526,13 @@ const ProfilePage = () => {
         }
     };
 
-    const handlePhotoUpload = async (e) => {
+    // v1.28.3 — picking a file no longer uploads it straight away. It
+    // opens PhotoCropModal first (drag/zoom inside a circular frame,
+    // matching how the avatar actually displays everywhere), and only
+    // the cropped result gets uploaded — see handleCropSave below.
+    const handlePhotoSelect = (e) => {
         const file = e.target.files[0];
+        e.target.value = ''; // allow re-selecting the same file later
         if (!file) return;
         if (!['image/jpeg', 'image/png'].includes(file.type)) {
             setPhotoError('Only JPEG and PNG images are allowed');
@@ -535,20 +542,25 @@ const ProfilePage = () => {
             setPhotoError('Image must be smaller than 5MB');
             return;
         }
+        setPhotoError(null);
+        setCropFile(file);
+    };
+
+    const handleCropSave = async (blob) => {
         setPhotoUploading(true);
         setPhotoError(null);
         try {
             const formData = new FormData();
-            formData.append('photo', file);
+            formData.append('photo', blob, 'avatar.png');
             await api.patch('/users/me/photo', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
+            setCropFile(null);
             reloadProfile();
         } catch (err) {
             setPhotoError(getErrorMessage(err));
         } finally {
             setPhotoUploading(false);
-            e.target.value = '';
         }
     };
 
@@ -646,7 +658,7 @@ const ProfilePage = () => {
                         <input id="photo-upload" type="file"
                             accept="image/jpeg,image/png"
                             style={{ display: 'none' }}
-                            onChange={handlePhotoUpload}
+                            onChange={handlePhotoSelect}
                             disabled={photoUploading} />
                     </div>
 
@@ -1034,6 +1046,14 @@ const ProfilePage = () => {
                     </>
                 )}
             </div>
+
+            <PhotoCropModal
+                isOpen={!!cropFile}
+                file={cropFile}
+                onCancel={() => setCropFile(null)}
+                onSave={handleCropSave}
+                saving={photoUploading}
+            />
         </div>
     );
 };

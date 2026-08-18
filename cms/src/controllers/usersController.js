@@ -176,7 +176,20 @@ const updateMyProfile = asyncHandler(async (req, res) => {
 const updateProfilePhoto = asyncHandler(async (req, res) => {
     if (!req.file) throw createError.badRequest('No photo file uploaded');
 
-    const photoPath = req.file.path;
+    // v1.28.3 fix — this used to store req.file.path directly, which is
+    // multer's raw on-disk path (OS path-separator-dependent, and not
+    // anchored with a leading "/"). That's not the URL the frontend
+    // needs: getPhotoUrl() builds "<api origin>/<photo_path>", and the
+    // static file server only answers under the "/uploads" prefix (see
+    // server.js), so a bare "uploads/profiles/xxx.jpg" happened to
+    // still resolve by coincidence on a relative, forward-slash
+    // UPLOAD_DIR, but broke outright with a Windows-style path or an
+    // absolute UPLOAD_DIR — which is exactly why the uploaded photo
+    // never actually appeared. Build a clean "/uploads/..." URL path
+    // instead, same convention as updateSignature just below and
+    // settingsController's logo_url.
+    const filename = require('path').basename(req.file.filename);
+    const photoPath = `/uploads/profiles/${filename}`;
     await query(
         'UPDATE users SET photo_path = $1, updated_at = NOW() WHERE id = $2',
         [photoPath, req.user.id]

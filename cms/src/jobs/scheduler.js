@@ -28,6 +28,7 @@ const { getSignatureStatus, notifyPendingSignatories } = require('../services/si
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
+const { generateDuesForPeriod } = require('../services/sideFundService');
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -384,72 +385,20 @@ const scheduleSideFundDueGeneration = () => {
     cron.schedule('15 0 1 * *', async () => {
         logger.info('Starting monthly side fund due generation job...');
         try {
-            const configResult = await query('SELECT * FROM side_fund_config WHERE id = 1');
-            const config = configResult.rows[0];
-            if (!config || !config.is_active) {
-                logger.info('Side fund is not active — skipping due generation');
-                return;
-            }
-
             const now = new Date();
             const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-            const shareholders = await query(`
-                SELECT sr.user_id, smo.monthly_amount AS override_amount
-                FROM   shareholding_registry sr
-                JOIN   users u ON u.id = sr.user_id
-                LEFT JOIN side_fund_member_overrides smo ON smo.user_id = sr.user_id
-                WHERE  sr.effective_to IS NULL
-                AND    u.is_active = TRUE
-            `);
-
-            let created = 0;
-            let creditApplied = 0;
-            for (const s of shareholders.rows) {
-                const dueAmount = s.override_amount != null ? s.override_amount : config.monthly_amount;
-                // due_date (v1.26.0) is always the last day of this due's
-                // own period month — the fund is a flat monthly amount, so
-                // "overdue" is simply "past that date and still unpaid".
-                const result = await query(`
-                    INSERT INTO side_fund_dues (user_id, period, amount_due, status, due_date)
-                    VALUES ($1, $2, $3, 'PENDING',
-                        ($2 || '-01')::date + INTERVAL '1 month' - INTERVAL '1 day')
-                    ON CONFLICT (user_id, period) DO NOTHING
-                    RETURNING id
-                `, [s.user_id, period, dueAmount]);
-                if (result.rows.length === 0) continue;
-                created++;
-                const newDueId = result.rows[0].id;
-
-                // Draw down any banked credit against this brand-new due.
-                const creditResult = await query(
-                    'SELECT credit_balance FROM side_fund_member_credit WHERE user_id = $1',
-                    [s.user_id]
-                );
-                const creditBalance = parseFloat(creditResult.rows[0]?.credit_balance || 0);
-                if (creditBalance > 0) {
-                    const applied = Math.min(creditBalance, parseFloat(dueAmount));
-                    const newStatus = applied >= parseFloat(dueAmount) ? 'PAID' : 'PARTIAL';
-                    await query(`
-                        UPDATE side_fund_dues
-                        SET    amount_paid = $1, status = $2, paid_from_credit = TRUE,
-                               paid_date = CURRENT_DATE, updated_at = NOW()
-                        WHERE  id = $3
-                    `, [applied, newStatus, newDueId]);
-                    await query(`
-                        UPDATE side_fund_member_credit
-                        SET    credit_balance = credit_balance - $1, updated_at = NOW()
-                        WHERE  user_id = $2
-                    `, [applied, s.user_id]);
-                    await query(`
-                        INSERT INTO side_fund_credit_ledger (user_id, delta, reason, related_due_id)
-                        VALUES ($1, $2, $3, $4)
-                    `, [s.user_id, -applied, `Applied automatically to ${period} due`, newDueId]);
-                    creditApplied++;
-                }
+            // v1.28.3 — the actual generation logic now lives in
+            // services/sideFundService.js, shared with the manual
+            // "Generate Dues Now" trigger (sideFundController.generateDues)
+            // so both behave identically.
+            const result = await generateDuesForPeriod(period);
+            if (result.skipped) {
+                logger.info(`Side fund due generation skipped for ${period} — ${result.reason}`);
+                return;
             }
 
-            logger.info(`Side fund due generation completed — ${created} dues created for ${period}, credit auto-applied to ${creditApplied}`);
+            logger.info(`Side fund due generation completed — ${result.created}/${result.total} dues created for ${period}, credit auto-applied to ${result.creditApplied}`);
         } catch (err) {
             logger.error('Side fund due generation job failed', { error: err.message });
         }

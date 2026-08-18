@@ -29,7 +29,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { notify } = require('../services/notificationService');
-const { applySideFundPayment } = require('../services/sideFundService');
+const { applySideFundPayment, generateDuesForPeriod } = require('../services/sideFundService');
 
 // ============================================================
 // INTERNAL HELPER — lock and fetch the singleton config row
@@ -188,6 +188,48 @@ const getAllDues = asyncHandler(async (req, res) => {
     `, params);
 
     sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
+// GENERATE DUES NOW — Treasurer/Admin (SIDE_FUND_MANAGE) (v1.28.3)
+// POST /api/side-fund/dues/generate
+// Runs the exact same pipeline the monthly cron job runs (jobs/
+// scheduler.js's scheduleSideFundDueGeneration, 00:15 on the 1st) —
+// creates one PENDING due per active shareholder for the given
+// period, defaulting to the current month. Exists for the gap that
+// pure-cron generation leaves open: if the fund was only just
+// activated, or the backend was freshly deployed, after the 1st of
+// the month had already passed, no automatic run ever happens for
+// that month, and Bulk Pay Dues has nothing to show ("No outstanding
+// dues") even though members genuinely owe one. Also useful when a
+// shareholder joins partway through a month. Safe to run more than
+// once for the same period — existing due rows are never touched or
+// duplicated (see generateDuesForPeriod's ON CONFLICT DO NOTHING).
+// ============================================================
+const generateDues = asyncHandler(async (req, res) => {
+    const now = new Date();
+    const defaultPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const period = req.body.period || defaultPeriod;
+
+    const result = await generateDuesForPeriod(period);
+
+    if (result.skipped) {
+        throw createError.badRequest(result.reason);
+    }
+
+    await logAction(req.user.id, ACTIONS.SIDE_FUND_DUES_GENERATED, MODULES.FINANCE, {
+        ipAddress:   req.ip,
+        recordType:  'side_fund_dues',
+        newValues:   { period, ...result },
+        description: `Side fund dues generated for ${period}: ${result.created}/${result.total} member(s)` +
+            (result.total > result.created ? ` (${result.total - result.created} already existed)` : ''),
+    });
+
+    sendSuccess(res, { period, ...result },
+        result.total === 0
+            ? `No active shareholders found to generate dues for ${period}`
+            : `Generated ${result.created} due(s) for ${period}` +
+              (result.total > result.created ? ` — ${result.total - result.created} already existed` : ''));
 });
 
 // ============================================================
@@ -713,6 +755,7 @@ module.exports = {
     updateSideFundConfig,
     getMyDues,
     getAllDues,
+    generateDues,
     recordDuePayment,
     bulkPayDues,
     getMyOverdueSummary,

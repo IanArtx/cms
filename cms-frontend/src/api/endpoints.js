@@ -185,6 +185,9 @@ export const eventsAPI = {
     update:      (id, data) => api.patch(`/events/${id}`, data),
     approve:     (id)     => api.post(`/events/${id}/approve`),
     cancel:      (id, data) => api.post(`/events/${id}/cancel`, data),
+    // v1.28.3 — schedule change (dates can only move later) and manual completion
+    extend:      (id, data) => api.patch(`/events/${id}/extend`, data),
+    complete:    (id)     => api.post(`/events/${id}/complete`),
 };
 
 // ============================================================
@@ -389,6 +392,9 @@ export const sideFundAPI = {
     bulkPayDues:      (data) => api.patch('/side-fund/dues/bulk-pay', data),
     getMyOverdue:     ()     => api.get('/side-fund/overdue/me'),
     getAllOverdue:    ()     => api.get('/side-fund/overdue'),
+    // v1.28.3 — on-demand due generation (fills the gap left by pure
+    // cron generation when the fund/backend went live after the 1st)
+    generateDues:     (data) => api.post('/side-fund/dues/generate', data),
 };
 
 // ============================================================

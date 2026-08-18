@@ -502,6 +502,154 @@ const cancelEvent = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// EXTEND EVENT
+// PATCH /api/events/:id/extend
+// A schedule change to an already-approved event — pushes event_date
+// and/or end_date further out (extends it, doesn't reschedule it —
+// dates can only move later, never earlier; use PATCH /events/:id
+// while still DRAFT for a genuine reschedule before approval).
+// Status stays APPROVED. Bell-notifies everyone who was on the
+// original notification list so nobody shows up expecting the old
+// time — reuses the same event_notifications recipients approveEvent
+// emailed, but as an in-app notification only (no re-send of the
+// original approval email).
+// ============================================================
+const extendEvent = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { event_date, end_date, reason } = req.body;
+
+    if (!event_date && !end_date) {
+        throw createError.badRequest('Provide a new event_date and/or end_date to extend to');
+    }
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(`
+            SELECT e.*, r.reference_code
+            FROM   events e
+            JOIN   references_registry r ON r.id = e.reference_id
+            WHERE  e.id = $1
+            FOR UPDATE
+        `, [id]);
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Event not found');
+        }
+        const event = existing.rows[0];
+
+        if (event.status !== 'APPROVED') {
+            throw createError.badRequest(
+                `Only an approved event can be extended. Current status: ${event.status}`
+            );
+        }
+
+        const oldEventDate = new Date(event.event_date);
+        const oldEndDate = event.end_date ? new Date(event.end_date) : null;
+        const newEventDate = event_date ? new Date(event_date) : oldEventDate;
+        const newEndDate = end_date ? new Date(end_date) : oldEndDate;
+
+        if (newEventDate < oldEventDate) {
+            throw createError.badRequest(
+                'event_date can only be moved later, not earlier — this extends the event, it does not reschedule it'
+            );
+        }
+        if (oldEndDate && newEndDate && newEndDate < oldEndDate) {
+            throw createError.badRequest('end_date can only be moved later, not earlier');
+        }
+        if (newEndDate && newEndDate < newEventDate) {
+            throw createError.badRequest('end_date cannot be before event_date');
+        }
+
+        const updated = await client.query(`
+            UPDATE events
+            SET    event_date = $1, end_date = $2
+            WHERE  id = $3
+            RETURNING *
+        `, [newEventDate, newEndDate, id]);
+
+        await logAction(req.user.id, ACTIONS.EVENT_EXTENDED, MODULES.EVENTS, {
+            ipAddress:   req.ip,
+            recordType:  'events',
+            recordId:    parseInt(id),
+            oldValues:   { event_date: event.event_date, end_date: event.end_date },
+            newValues:   { event_date: updated.rows[0].event_date, end_date: updated.rows[0].end_date },
+            description: `Event extended: ${event.reference_code}${reason ? ` — ${reason}` : ''}`,
+            client,
+        });
+
+        // Bell-notify the same people who were on the original
+        // notification list (individual + role-based, same as
+        // approveEvent's recipient gathering) — nobody needs a fresh
+        // email for a date change, but they should see it in-app.
+        const notifResult = await client.query(`
+            SELECT DISTINCT u.id
+            FROM   event_notifications en
+            LEFT JOIN users u ON u.id = en.user_id
+            WHERE  en.event_id = $1 AND en.user_id IS NOT NULL AND u.is_active = TRUE
+            UNION
+            SELECT DISTINCT u.id
+            FROM   event_notifications en
+            JOIN   user_roles ur ON ur.role_id = en.role_id AND ur.revoked_at IS NULL
+            JOIN   users u       ON u.id = ur.user_id AND u.is_active = TRUE
+            WHERE  en.event_id = $1 AND en.role_id IS NOT NULL
+        `, [id]);
+
+        const newEventDateStr = new Date(updated.rows[0].event_date).toLocaleString('en-GB', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+        });
+        for (const row of notifResult.rows) {
+            notify({
+                userId:     row.id,
+                type:       'EVENT_EXTENDED',
+                title:      `Event rescheduled: ${event.title}`,
+                body:       `This event now runs ${newEventDateStr}` +
+                    (updated.rows[0].end_date ? ` until ${new Date(updated.rows[0].end_date).toLocaleString('en-GB', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}` : '') +
+                    (reason ? ` — ${reason}` : ''),
+                link:       `/events`,
+                module:     'EVENTS',
+                recordType: 'events',
+                recordId:   parseInt(id),
+            });
+        }
+
+        sendSuccess(res, updated.rows[0], 'Event extended');
+    });
+});
+
+// ============================================================
+// MARK EVENT AS COMPLETED
+// POST /api/events/:id/complete
+// Purely manual — there's no automatic "the calendar date has
+// passed" job, since a multi-day or extended event can genuinely
+// still be running after its originally planned date. A Secretary/
+// Director marks it done once it's actually wrapped up.
+// ============================================================
+const completeEvent = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const result = await query(`
+        UPDATE events
+        SET    status = 'COMPLETED'
+        WHERE  id = $1
+        AND    status = 'APPROVED'
+        RETURNING id, title, status
+    `, [id]);
+
+    if (result.rows.length === 0) {
+        throw createError.badRequest(
+            'Only an approved event can be marked completed, or event not found'
+        );
+    }
+
+    await logAction(req.user.id, ACTIONS.EVENT_COMPLETED, MODULES.EVENTS, {
+        ipAddress:   req.ip,
+        recordType:  'events',
+        recordId:    parseInt(id),
+        description: `Event marked completed: ID ${id} — ${result.rows[0].title}`,
+    });
+
+    sendSuccess(res, null, 'Event marked as completed');
+});
+
+// ============================================================
 // GET ALL EVENTS
 // GET /api/events?status=APPROVED&from_date=2026-01-01
 // ============================================================
@@ -681,6 +829,8 @@ module.exports = {
     editEvent,
     approveEvent,
     cancelEvent,
+    extendEvent,
+    completeEvent,
     getAllEvents,
     getEventById,
     getUpcomingEvents,

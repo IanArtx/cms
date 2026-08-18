@@ -11,7 +11,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, ClockIcon, FlagIcon } from '@heroicons/react/24/outline';
 import { eventTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 
@@ -183,6 +183,101 @@ const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, 
 };
 
 // ============================================================
+// EXTEND EVENT MODAL (v1.28.3)
+// Pushes an already-approved event's date(s) further out. Dates can
+// only move later than what's already set — this extends the event,
+// it doesn't reschedule it.
+// ============================================================
+const ExtendEventModal = ({ isOpen, onClose, onSuccess, event }) => {
+    const [eventDate, setEventDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && event) {
+            setEventDate(event.event_date ? event.event_date.slice(0, 16) : '');
+            setEndDate(event.end_date ? event.end_date.slice(0, 16) : '');
+            setReason('');
+            setError(null);
+        }
+    }, [isOpen, event]);
+
+    if (!isOpen || !event) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await eventsAPI.extend(event.id, {
+                event_date: eventDate ? new Date(eventDate).toISOString() : undefined,
+                end_date: endDate ? new Date(endDate).toISOString() : undefined,
+                reason: reason || undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Extend Event</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Push "{event.title}" further out. New dates can only be later than
+                        what's currently set — everyone originally notified will be told
+                        about the change.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="label">New Event Date</label>
+                                <input type="datetime-local" className="input"
+                                    min={event.event_date ? event.event_date.slice(0, 16) : undefined}
+                                    value={eventDate}
+                                    onChange={e => setEventDate(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="label">New End Date</label>
+                                <input type="datetime-local" className="input"
+                                    min={(event.end_date || event.event_date || '').slice(0, 16)}
+                                    value={endDate}
+                                    onChange={e => setEndDate(e.target.value)} />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="label">Reason (optional)</label>
+                            <input type="text" className="input" value={reason}
+                                placeholder="e.g. venue became unavailable"
+                                onChange={e => setReason(e.target.value)} />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Extending...' : 'Extend Event'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN EVENTS PAGE
 // ============================================================
 const EventsPage = () => {
@@ -198,6 +293,7 @@ const EventsPage = () => {
     const [editingRecord, setEditingRecord] = useState(null);
     const [actionLoading, setActionLoading] = useState(null);
     const [preview, setPreview] = useState(null);
+    const [extendingRecord, setExtendingRecord] = useState(null);
 
     const canEdit = (row) =>
         row.status === 'DRAFT' &&
@@ -255,6 +351,19 @@ const EventsPage = () => {
         setActionLoading(id);
         try {
             await eventsAPI.cancel(id, { reason });
+            loadEvents();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const handleComplete = async (id) => {
+        if (!window.confirm('Mark this event as completed?')) return;
+        setActionLoading(id);
+        try {
+            await eventsAPI.complete(id);
             loadEvents();
         } catch (err) {
             setError(getErrorMessage(err));
@@ -369,6 +478,28 @@ const EventsPage = () => {
                             <CheckIcon className="h-4 w-4" />
                         </button>
                     )}
+                    {row.status === 'APPROVED' && hasPermission('EVENT_MANAGE') && (
+                        <button
+                            onClick={() => setExtendingRecord(row)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-yellow-50 text-yellow-600
+                                hover:bg-yellow-100 transition-colors"
+                            title="Extend Event"
+                        >
+                            <ClockIcon className="h-4 w-4" />
+                        </button>
+                    )}
+                    {row.status === 'APPROVED' && hasPermission('EVENT_MANAGE') && (
+                        <button
+                            onClick={() => handleComplete(row.id)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-purple-50 text-purple-600
+                                hover:bg-purple-100 transition-colors"
+                            title="Mark as Completed"
+                        >
+                            <FlagIcon className="h-4 w-4" />
+                        </button>
+                    )}
                     {!['CANCELLED','COMPLETED'].includes(row.status) &&
                      hasPermission('EVENT_MANAGE') && (
                         <button
@@ -455,6 +586,13 @@ const EventsPage = () => {
                 categories={categories}
                 eventTypes={eventTypes}
                 editingRecord={editingRecord}
+            />
+
+            <ExtendEventModal
+                isOpen={!!extendingRecord}
+                onClose={() => setExtendingRecord(null)}
+                onSuccess={loadEvents}
+                event={extendingRecord}
             />
 
             <DocumentPreviewModal preview={preview} onClose={() => setPreview(null)} />

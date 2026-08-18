@@ -153,4 +153,33 @@ router.post('/:id/cancel',
     eventsController.cancelEvent
 );
 
+// ============================================================
+// EXTEND EVENT (v1.28.3)
+// PATCH /api/events/:id/extend
+// Pushes event_date and/or end_date of an already-approved event
+// further out — dates can only move later, never earlier.
+// ============================================================
+router.patch('/:id/extend',
+    requirePermissions(['EVENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('event_date').optional().isISO8601().withMessage('Invalid event date'),
+        body('end_date').optional().isISO8601().withMessage('Invalid end date'),
+        body('reason').optional().trim(),
+    ],
+    validateRequest,
+    eventsController.extendEvent
+);
+
+// ============================================================
+// MARK EVENT AS COMPLETED (v1.28.3)
+// POST /api/events/:id/complete
+// ============================================================
+router.post('/:id/complete',
+    requirePermissions(['EVENT_MANAGE']),
+    validators.idParam('id'),
+    validateRequest,
+    eventsController.completeEvent
+);
+
 module.exports = router;

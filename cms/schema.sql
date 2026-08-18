@@ -2688,5 +2688,50 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.28.0
+-- GROUP 25: CAPITAL GOALS (v1.29.0, Section 4.33) — a Treasurer/
+-- Director sets a target amount of shareholder capital to raise over
+-- a date range (e.g. EUR 100,000 from Jan 2026 to Dec 2026). Nothing
+-- is posted anywhere — a goal doesn't move money or touch any
+-- account balance. It's purely a target to measure actual capital
+-- contributions against: "goal amount doesn't have to be the exact
+-- amount of the account balance, but the total income of what is
+-- collected from members as capital" (the requesting brief's own
+-- words) — i.e. it tracks shareholder_contributions (gross capital
+-- raised), not accounts.current_balance (which nets in withdrawals/
+-- expenses that have nothing to do with fundraising progress).
+-- The expected monthly distribution (target_amount split evenly
+-- across the months in range) and the actual-vs-expected comparison
+-- are both computed live by getCapitalGoalProgress — nothing about
+-- the monthly breakdown is stored, so editing a goal's target/dates
+-- automatically recomputes everything downstream with no migration
+-- or backfill ever required.
+-- ============================================================
+
+CREATE TABLE capital_goals (
+    id             SERIAL PRIMARY KEY,
+    reference_id   INTEGER       NOT NULL REFERENCES references_registry(id),
+    title          VARCHAR(255)  NOT NULL,
+    description    TEXT,
+    target_amount  NUMERIC(20,4) NOT NULL,
+    currency_id    INTEGER       NOT NULL REFERENCES currencies(id),
+    start_date     DATE          NOT NULL,
+    end_date       DATE          NOT NULL,
+    status         VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE'
+                   CHECK (status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')),
+    created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    created_by     INTEGER       NOT NULL REFERENCES users(id),
+    updated_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_goal_target CHECK (target_amount > 0),
+    CONSTRAINT valid_goal_range CHECK (end_date >= start_date)
+);
+
+CREATE INDEX idx_capital_goals_status ON capital_goals (status);
+
+INSERT INTO permissions (code, module, description) VALUES
+    ('CAPITAL_GOAL_VIEW',   'FINANCE', 'View capital fundraising goals and their progress'),
+    ('CAPITAL_GOAL_MANAGE', 'FINANCE', 'Create, edit, and cancel capital fundraising goals')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.29.0
 -- ============================================================

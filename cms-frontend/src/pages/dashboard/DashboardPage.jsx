@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI } from '../../api/endpoints';
+import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI, capitalGoalsAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/common/StatusBadge';
@@ -21,6 +21,7 @@ import {
     ArrowUpIcon,
     ArrowDownIcon,
     TrophyIcon,
+    FlagIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -70,6 +71,44 @@ const PerformanceCard = ({ performance }) => {
                 {showBoth && <Row label="Worst" inv={worst} tone="bad" />}
             </div>
         </div>
+    );
+};
+
+// ============================================================
+// NEAREST ACTIVE CAPITAL GOAL CARD (v1.29.0)
+// Shown to anyone who can view goals — the soonest-ending ACTIVE
+// goal, with a progress bar and on-track/behind read, linking
+// through to the full goal (and its expected-vs-actual chart).
+// ============================================================
+const CapitalGoalCard = ({ goal }) => {
+    if (!goal) return null;
+
+    const behind = goal.progress_status === 'BEHIND';
+
+    return (
+        <Link to={`/capital-goals/${goal.id}`} className="card mt-4 block hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-2 mb-2">
+                <FlagIcon className="h-4 w-4 text-primary-600" />
+                <h2 className="section-title mb-0">Capital Goal — {goal.title}</h2>
+                <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    behind ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'
+                }`}>
+                    {goal.progress_status?.replace('_', ' ')}
+                </span>
+            </div>
+            <div className="flex items-baseline justify-between mb-1">
+                <p className="text-sm text-gray-500">
+                    {goal.currency_code} {parseFloat(goal.total_collected).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                    {' '}of{' '}
+                    {goal.currency_code} {parseFloat(goal.target_amount).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                </p>
+                <p className="text-sm font-bold text-gray-900">{goal.percent_of_target}%</p>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${behind ? 'bg-red-500' : 'bg-green-500'}`}
+                    style={{ width: `${Math.min(100, goal.percent_of_target)}%` }} />
+            </div>
+        </Link>
     );
 };
 
@@ -130,6 +169,7 @@ const DashboardPage = () => {
     const [transactions, setTransactions] = useState([]);
     const [investments,  setInvestments]  = useState([]);
     const [performance,  setPerformance]  = useState(null);
+    const [capitalGoal,  setCapitalGoal]  = useState(null);
     const [loading,      setLoading]      = useState(true);
 
     // Determine if user is shareholder-only
@@ -178,6 +218,19 @@ const DashboardPage = () => {
         };
 
         loadDashboard();
+    }, [hasPermission]);
+
+    // Separate, independent fetch (not part of the Promise.allSettled
+    // batch above, whose results are read by fixed array index) — the
+    // soonest-ending ACTIVE capital goal, if the viewer can see goals
+    // at all. Failing silently (no goals yet, or no permission) just
+    // means the card doesn't render, same as every other optional
+    // dashboard widget here.
+    useEffect(() => {
+        if (!hasPermission('CAPITAL_GOAL_VIEW')) return;
+        capitalGoalsAPI.getAll({ status: 'ACTIVE', limit: 1 })
+            .then(res => setCapitalGoal((res.data.data || [])[0] || null))
+            .catch(() => {});
     }, [hasPermission]);
 
     if (loading) {
@@ -414,6 +467,9 @@ const DashboardPage = () => {
 
                     {/* Best/Worst Performing Investment — visible to everyone */}
                     <PerformanceCard performance={performance} />
+
+                    {/* Nearest active capital goal, if any (v1.29.0) */}
+                    <CapitalGoalCard goal={capitalGoal} />
 
                     {/* Active Investments Summary */}
                     {hasPermission('INVESTMENT_VIEW') && investments.length > 0 && (

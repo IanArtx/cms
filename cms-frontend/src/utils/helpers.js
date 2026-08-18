@@ -81,6 +81,8 @@ export const getStatusBadgeClass = (status) => {
         SENT:             'badge-green',
         SUCCESS:          'badge-green',
         PAID:             'badge-green',
+        ON_TRACK:         'badge-green',
+        TARGET_REACHED:   'badge-green',
 
         // Yellow — in progress/pending
         PENDING:              'badge-yellow',
@@ -100,6 +102,7 @@ export const getStatusBadgeClass = (status) => {
         FAILED:      'badge-red',
         MISSED:      'badge-red',
         REVERSED:    'badge-red',
+        BEHIND:      'badge-red',
 
         // Blue — informational
         SUPERSEDED:  'badge-blue',

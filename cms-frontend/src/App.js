@@ -28,6 +28,8 @@ import InvestmentsPage from './pages/investments/InvestmentsPage';
 import InvestmentDetailPage from './pages/investments/InvestmentDetailPage';
 import MmfPage from './pages/mmf/MmfPage';
 import MmfDetailPage from './pages/mmf/MmfDetailPage';
+import CapitalGoalsPage from './pages/capitalGoals/CapitalGoalsPage';
+import CapitalGoalDetailPage from './pages/capitalGoals/CapitalGoalDetailPage';
 import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
 import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
@@ -126,6 +128,8 @@ function App() {
                             <Route path="investments/:id" element={<InvestmentDetailPage />} />
                             <Route path="mmf" element={<MmfPage />} />
                             <Route path="mmf/:id" element={<MmfDetailPage />} />
+                            <Route path="capital-goals" element={<CapitalGoalsPage />} />
+                            <Route path="capital-goals/:id" element={<CapitalGoalDetailPage />} />
                             <Route path="events" element={<EventsPage />} />
                             <Route path="documents/generate" element={<GenerateDocumentPage />} />
                             <Route path="documents" element={<DocumentsPage />} />

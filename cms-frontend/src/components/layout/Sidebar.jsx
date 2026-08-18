@@ -34,6 +34,7 @@ import {
     XMarkIcon,
     ShieldCheckIcon,
     ArrowRightOnRectangleIcon,
+    FlagIcon,
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
@@ -74,6 +75,7 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
         { label: 'Loans',        href: '/loans',        icon: CreditCardIcon,      show: hasPermission('LOAN_VIEW') && !isAdminOfficer },
         { label: 'Investments',  href: '/investments',  icon: ChartBarIcon,        show: hasPermission('INVESTMENT_VIEW') && !isAdminOfficer },
         { label: 'Money Market Funds', href: '/mmf',     icon: CircleStackIcon,     show: hasPermission('MMF_VIEW') && !isAdminOfficer },
+        { label: 'Capital Goals', href: '/capital-goals', icon: FlagIcon,           show: hasPermission('CAPITAL_GOAL_VIEW') && !isAdminOfficer },
         { label: 'Dividends',    href:  '/dividends',   icon:  BanknotesIcon,      show:  hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer,},
         { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  !isAdminOfficer,},
         { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  !isAdminOfficer,},

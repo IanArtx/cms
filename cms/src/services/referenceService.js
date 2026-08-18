@@ -159,6 +159,7 @@ const MODULE_CODES = {
     REPORT:            'RPT',
     SHARE_CERTIFICATE: 'SHC',
     MMF:               'MMF',
+    CAPITAL_GOAL:      'CGL',
 };
 
 // ============================================================

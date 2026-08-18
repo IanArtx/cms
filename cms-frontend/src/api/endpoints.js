@@ -174,6 +174,18 @@ export const mmfAPI = {
 };
 
 // ============================================================
+// CAPITAL GOALS (v1.29.0)
+// ============================================================
+export const capitalGoalsAPI = {
+    getAll:    (params)   => api.get('/capital-goals', { params }),
+    getById:   (id)       => api.get(`/capital-goals/${id}`),
+    create:    (data)     => api.post('/capital-goals', data),
+    update:    (id, data) => api.patch(`/capital-goals/${id}`, data),
+    cancel:    (id, data) => api.post(`/capital-goals/${id}/cancel`, data),
+    complete:  (id)       => api.post(`/capital-goals/${id}/complete`),
+};
+
+// ============================================================
 // EVENTS
 // ============================================================
 export const eventsAPI = {

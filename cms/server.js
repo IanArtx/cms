@@ -112,6 +112,7 @@ app.use('/api/grants',       require('./src/routes/grants'));
 app.use('/api/loans',        require('./src/routes/loans'));
 app.use('/api/investments',  require('./src/routes/investments'));
 app.use('/api/mmf',          require('./src/routes/mmf'));
+app.use('/api/capital-goals', require('./src/routes/capitalGoals'));
 app.use('/api/events',       require('./src/routes/events'));
 app.use('/api/documents',    require('./src/routes/documents'));
 app.use('/api/reports',      require('./src/routes/reports'));

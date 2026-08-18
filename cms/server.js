@@ -17,6 +17,7 @@ const logger             = require('./src/config/logger');
 const { checkConnection } = require('./src/config/database');
 const { verifyEmailConnection } = require('./src/config/email');
 const { globalErrorHandler, createError } = require('./src/utils/errors');
+const { streamInline, isS3Configured } = require('./src/services/storageService');
 
 // ============================================================
 // INITIALISE EXPRESS
@@ -75,13 +76,30 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ============================================================
-// STATIC FILE SERVING
-// Uploaded documents are served from /uploads/*
-// In production, consider serving via nginx instead
+// UPLOADED FILE SERVING (v1.29.1, Section 4.34)
+// Was a plain express.static('/uploads', ...) mount — now proxies
+// through storageService instead, so it reads from Cloudflare R2 in
+// production (where the disk is ephemeral) and transparently falls
+// back to local disk when S3_* env vars aren't set (local dev).
+// Every existing /uploads/<key> URL already stored in the database
+// (photo_path, signature_path, logo_url, stamp/document/audit-report/
+// receipt file_path columns) keeps resolving exactly as before — only
+// how the bytes get fetched has changed, not the URL format.
 // ============================================================
-const uploadDir = process.env.UPLOAD_DIR || './uploads';
-fs.mkdirSync(uploadDir, { recursive: true });
-app.use('/uploads', express.static(path.resolve(uploadDir)));
+if (!isS3Configured) {
+    // Local dev fallback only — makes sure the folder exists so
+    // storageService's local-disk branch has somewhere to write.
+    const uploadDir = process.env.UPLOAD_DIR || './uploads';
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+// Express 5 (this project's version) requires a named wildcard —
+// bare '*' throws "Missing parameter name" at startup under its
+// path-to-regexp v6+ router. req.params.splat is an array of the
+// matched segments, joined back into the full key.
+app.get('/uploads/*splat', async (req, res) => {
+    const key = Array.isArray(req.params.splat) ? req.params.splat.join('/') : req.params.splat;
+    await streamInline(key, res);
+});
 
 // ============================================================
 // HEALTH CHECK ENDPOINT

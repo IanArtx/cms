@@ -14,6 +14,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { invalidateBrandingCache } = require('../services/emailTemplates');
+const { uploadBuffer, generateKey } = require('../services/storageService');
 
 // ============================================================
 // GET COMPANY SETTINGS
@@ -139,7 +140,9 @@ const uploadCompanyLogo = asyncHandler(async (req, res) => {
         throw createError.badRequest('No logo file was uploaded');
     }
 
-    const logoUrl = `/uploads/branding/${req.file.filename}`;
+    const logoKey = generateKey('branding', req.file.originalname);
+    await uploadBuffer(req.file.buffer, logoKey, req.file.mimetype);
+    const logoUrl = `/uploads/${logoKey}`;
 
     const result = await query(`
         UPDATE company_settings
@@ -303,7 +306,9 @@ const uploadStamp = asyncHandler(async (req, res) => {
         throw createError.badRequest('A name is required (e.g. "Treasury", "Secretariat")');
     }
 
-    const filePath = `/uploads/stamps/${req.file.filename}`;
+    const stampKey = generateKey('stamps', req.file.originalname);
+    await uploadBuffer(req.file.buffer, stampKey, req.file.mimetype);
+    const filePath = `/uploads/${stampKey}`;
 
     const result = await query(`
         INSERT INTO company_stamps (name, file_path, mime_type, created_by)

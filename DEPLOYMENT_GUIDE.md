@@ -115,6 +115,76 @@ blank on purpose (marked `sync: false` in the file). Set these now:
 
 ---
 
+## Step 3b — File storage (Cloudflare R2)
+
+**Why this step exists:** Render's disk is wiped every time the backend
+redeploys or restarts. Without this step, every uploaded file — profile
+photos, signatures, Documents, Audit report files, expense receipts,
+the company logo, stamps — would silently vanish the next time you push
+a code change. `storageService.js` (v1.29.1) sends every upload to an
+external, persistent bucket instead, so files survive redeploys forever.
+This guide uses **Cloudflare R2** because it has a generous free tier
+(10 GB storage, no charge for the bandwidth this app uses) and no
+surprise egress bill — but the code works identically with AWS S3,
+Backblaze B2, or DigitalOcean Spaces if you'd rather use one of those;
+only the env var values below would change, not the app.
+
+1. **Create a Cloudflare account** (free) at
+   [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) if
+   you don't already have one.
+2. In the Cloudflare dashboard, find **R2 Object Storage** in the left
+   sidebar (under "Storage" — Cloudflare sometimes calls it just "R2").
+   The first time you open it, Cloudflare asks you to "activate" R2 —
+   this requires adding a card, but the free tier below normal usage
+   costs nothing.
+3. Click **Create bucket**. Give it a name like `cms-uploads` (Company
+   B, if you're running a second company, should get its own separate
+   bucket — e.g. `cms-b-uploads` — so the two companies' files never
+   mix). Leave the default region/location setting as-is. Click
+   **Create bucket**.
+4. Now generate API credentials so the backend can write to that
+   bucket:
+   - Still inside R2, click **Manage R2 API Tokens** (or **API** in the
+     sidebar, depending on Cloudflare's current layout).
+   - Click **Create API token**.
+   - Give it **Object Read & Write** permission, and scope it to the
+     one bucket you just created (not "all buckets") — that way, even
+     if this token ever leaked, it couldn't touch anything else in your
+     Cloudflare account.
+   - Click **Create API Token**. Cloudflare shows you an **Access Key
+     ID** and a **Secret Access Key** exactly once — copy both
+     somewhere safe immediately (a password manager, not a plain text
+     file). If you lose them, you'll just delete the token and make a
+     new one; there's no way to view the secret again later.
+   - Cloudflare also shows a **jurisdiction-specific endpoint URL** on
+     this same screen, something like
+     `https://<a long account id>.r2.cloudflarestorage.com`. Copy that
+     too — it's the value the app calls `S3_ENDPOINT`.
+5. Back in the Render dashboard, open the **cms-backend** service
+   (or **cms-b-backend** for Company B) → **Environment** tab, and fill
+   in the four blank values `render.yaml` already left waiting for you:
+   - `S3_ENDPOINT` — the endpoint URL from step 4
+   - `S3_BUCKET` — the bucket name from step 3 (e.g. `cms-uploads`)
+   - `S3_ACCESS_KEY_ID` — the Access Key ID from step 4
+   - `S3_SECRET_ACCESS_KEY` — the Secret Access Key from step 4
+   - (`S3_REGION` is already set to `auto` for you — R2 always uses
+     that exact value, so there's nothing to change here.)
+6. Click **Save Changes** — Render redeploys the backend automatically
+   with the new values. From this point on, every new upload goes to
+   R2 instead of the backend's local disk.
+
+**A note on files uploaded before this step:** anything uploaded while
+the app was still using local disk only survives until the next
+redeploy/restart — this step only makes *future* uploads persistent. If
+you already have real photos/signatures/documents in production that
+predate setting this up, they may already be gone by the time you read
+this (that's the exact problem this step fixes going forward). There is
+no automatic migration of old local-disk files into R2, since Render's
+disk being wiped on redeploy means those old files are typically already
+unrecoverable by the time you're reading this section.
+
+---
+
 ## Step 4 — Load the database schema (one-time)
 
 The database exists now, but it's empty — no tables yet. This is a
@@ -219,14 +289,12 @@ changes just below for the one thing that does need doing twice.
   `FRONTEND_URL` handling if you want the backend's CORS check to
   trust the custom domain too (currently it trusts whatever
   `cms-frontend`'s Render URL resolves to automatically).
-- **Uploaded files warning**: the backend currently stores uploaded
-  documents on local disk (`UPLOAD_DIR`). Render's Starter plan disk
-  is **not persistent** across deploys — files uploaded between
-  deploys can disappear on the next one. For a production system that
-  keeps real documents long-term, add a
-  [Render Persistent Disk](https://render.com/docs/disks) to
-  `cms-backend` (a small monthly add-on), or move uploads to an
-  external store like S3 — flag this to me if you want it built out.
+- **Uploaded files**: as of v1.29.1, this is resolved — file uploads
+  go to Cloudflare R2 (Step 3b above) instead of the backend's local
+  disk, so they survive every future redeploy. If `S3_ENDPOINT` etc.
+  are ever left blank, the app quietly falls back to local disk (fine
+  for local development, **not** safe for production — go back and
+  complete Step 3b).
 
 ---
 
@@ -237,7 +305,8 @@ flowchart TD
     A[Step 1: Push code to GitHub] --> B[Step 2: Connect Render Blueprint]
     B --> C[Render builds cms-db, cms-backend, cms-frontend]
     C --> D[Step 3: Enter secrets in Render dashboard]
-    D --> E[Step 4: Run schema.sql once against cms-db]
+    D --> D2[Step 3b: Set up Cloudflare R2 for file storage]
+    D2 --> E[Step 4: Run schema.sql once against cms-db]
     E --> F[Step 5: Check /health and log in]
     F --> G{Working?}
     G -- Yes --> H[Live. Future pushes to main auto-redeploy]

@@ -1,13 +1,20 @@
 // ============================================================
 // FILE UPLOAD MIDDLEWARE
 // Uses Multer to handle multipart/form-data file uploads.
-// Files are stored on disk in organised subdirectories.
+//
+// v1.29.1 — switched from multer.diskStorage to memoryStorage. Files
+// no longer touch local disk here at all: req.file.buffer holds the
+// raw bytes, and the controller handling each route passes that
+// buffer to services/storageService.js's uploadBuffer(), which sends
+// it to R2 (or falls back to local disk only if R2 isn't configured —
+// see storageService.js). req.uploadCategory (set below) is still
+// used by controllers to build the file's storage key via
+// storageService.generateKey(category, originalname).
+//
 // Only specific file types are accepted.
 // ============================================================
 
 const multer  = require('multer');
-const path    = require('path');
-const fs      = require('fs');
 const { createError } = require('../utils/errors');
 
 // Allowed MIME types
@@ -30,30 +37,12 @@ const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB) || 20) * 1024 * 1024;
 
 // ============================================================
 // STORAGE ENGINE
-// Files are stored in subdirectories by category.
-// Original filename is sanitised and a timestamp prepended
-// to prevent naming conflicts.
+// In-memory only — see the v1.29.1 note above. Whatever key each
+// file ends up stored under (its category subdirectory + a
+// timestamped, sanitised filename) is decided by the controller via
+// storageService.generateKey(), not here.
 // ============================================================
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        // Subdirectory based on the upload category
-        const category = req.uploadCategory || 'general';
-        const dir = path.join(process.env.UPLOAD_DIR || './uploads', category);
-
-        // Create the directory if it does not exist
-        fs.mkdirSync(dir, { recursive: true });
-        cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-        // Sanitise original filename — remove special characters
-        const sanitised = file.originalname
-            .replace(/[^a-zA-Z0-9.\-_]/g, '_')
-            .toLowerCase();
-        // Prepend timestamp to guarantee uniqueness
-        const unique = `${Date.now()}-${sanitised}`;
-        cb(null, unique);
-    },
-});
+const storage = multer.memoryStorage();
 
 // ============================================================
 // FILE FILTER

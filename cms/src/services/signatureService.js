@@ -13,11 +13,10 @@
 // both rather than duplicating the same logic twice.
 // ============================================================
 
-const fs = require('fs');
-const path = require('path');
 const { query } = require('../config/database');
 const { createError } = require('../utils/errors');
 const { notifyMany } = require('./notificationService');
+const { copyObject, generateKey, toKey } = require('./storageService');
 
 const SIGNABLE_DOCUMENT_TYPES = ['RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'];
 
@@ -107,20 +106,23 @@ const signSlot = async (client, { targetType, targetId, userId }) => {
     }
     const slot = slotResult.rows[0];
 
-    // Snapshot the signature file at this moment
-    const uploadDir = process.env.UPLOAD_DIR || './uploads';
-    const sourceDiskPath = path.join(uploadDir, user.signature_path.replace(/^\/uploads\//, ''));
-    const snapshotDir = path.join(uploadDir, 'signature-snapshots');
-    fs.mkdirSync(snapshotDir, { recursive: true });
-    const snapshotFilename = `${targetType.toLowerCase()}-${targetId}-${slot.id}-${Date.now()}.png`;
+    // Snapshot the signature file at this moment — a real copy (not
+    // just re-pointing at the live signature_path), via storageService
+    // so it works the same way whether files live on R2 or (dev
+    // fallback) local disk.
+    const sourceKey = toKey(user.signature_path);
+    const snapshotKey = generateKey(
+        'signature-snapshots',
+        `${targetType.toLowerCase()}-${targetId}-${slot.id}.png`
+    );
     let snapshotUrlPath = user.signature_path; // fallback if the source file is somehow missing
     try {
-        fs.copyFileSync(sourceDiskPath, path.join(snapshotDir, snapshotFilename));
-        snapshotUrlPath = `/uploads/signature-snapshots/${snapshotFilename}`;
+        await copyObject(sourceKey, snapshotKey);
+        snapshotUrlPath = `/uploads/${snapshotKey}`;
     } catch (err) {
-        // Source file missing on disk (e.g. moved manually) — fall back
-        // to referencing the live signature_path rather than failing
-        // the whole signing action outright.
+        // Source file missing (e.g. moved/deleted outside the app) —
+        // fall back to referencing the live signature_path rather than
+        // failing the whole signing action outright.
     }
 
     await client.query(`

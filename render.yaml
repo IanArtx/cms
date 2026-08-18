@@ -106,8 +106,27 @@ services:
         sync: false
       - key: UPLOAD_DIR
         value: ./uploads
+        # Only used as a local-disk FALLBACK now (v1.29.1) — if the
+        # four S3_* vars below are all filled in, storageService.js
+        # sends every upload to Cloudflare R2 instead, so files
+        # survive redeploys. See DEPLOYMENT_GUIDE.md for the R2
+        # signup walkthrough.
       - key: MAX_FILE_SIZE_MB
         value: "10"
+      # --- Cloudflare R2 (or any S3-compatible store) — v1.29.1 ---
+      # Fill these in by hand in the Render dashboard; see
+      # DEPLOYMENT_GUIDE.md's "File storage (Cloudflare R2)" section
+      # for exactly where each value comes from in the R2 dashboard.
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
       - key: MONTHLY_REPORT_CRON
         value: "0 8 1 * *"
       - key: COMPANY_NAME
@@ -156,7 +175,7 @@ services:
       # Bump this with every migration so the sidebar's version label
       # stays accurate — it's a plain display string, nothing reads it.
       - key: REACT_APP_VERSION
-        value: "1.29.0"
+        value: "1.29.1"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

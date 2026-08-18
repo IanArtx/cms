@@ -22,8 +22,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord } = require('../services/referenceService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
-const path = require('path');
-const fs   = require('fs');
+const { uploadBuffer, generateKey, sendFileDownload, deleteObject, toKey } = require('../services/storageService');
 
 // ============================================================
 // INTERNAL HELPER — build a per-auditor reference-code prefix
@@ -581,10 +580,7 @@ const previewEngagementDocument = asyncHandler(async (req, res) => {
     });
 
     if (doc.source === 'UPLOADED') {
-        if (!doc.file_path || !fs.existsSync(doc.file_path)) {
-            throw createError.notFound('The uploaded file could not be found on the server.');
-        }
-        return res.download(path.resolve(doc.file_path), doc.file_name || `document-${doc.id}`);
+        return sendFileDownload(res, toKey(doc.file_path), doc.file_name || `document-${doc.id}`);
     }
 
     if (!doc.template_data) {
@@ -847,8 +843,11 @@ const getReportFiles = asyncHandler(async (req, res) => {
 });
 
 // POST /api/audit/engagements/:id/report-files
-// Uses uploadSingle('report', 'audit-reports') — the file is already on
-// disk (req.file) by the time this runs; this just records it.
+// Uses uploadSingle('report', 'audit-reports') — the file arrives as an
+// in-memory buffer (req.file.buffer); it's only sent to storageService
+// once every validation below has passed (v1.29.1 — this also means the
+// old "upload then delete on failure" fs.unlink cleanup calls are no
+// longer needed, since nothing is persisted until validation succeeds).
 const uploadReportFile = asyncHandler(async (req, res) => {
     const { id } = req.params;
     if (!req.file) throw createError.badRequest('No file uploaded');
@@ -857,7 +856,6 @@ const uploadReportFile = asyncHandler(async (req, res) => {
 
     const profile = await fetchAuditorProfile(req.user.id);
     if (!isAuditorProfileComplete(profile)) {
-        fs.unlink(req.file.path, () => {});
         throw createError.badRequest(
             'Please complete your company name, company initials, and contact phone on your profile before uploading files.'
         );
@@ -867,18 +865,20 @@ const uploadReportFile = asyncHandler(async (req, res) => {
         `SELECT 1 FROM audit_submissions WHERE engagement_id = $1 AND status = 'SUBMITTED'`, [id]
     );
     if (pending.rows.length > 0) {
-        fs.unlink(req.file.path, () => {});
         throw createError.badRequest(
             'A submission for this engagement is already awaiting review. New files can be uploaded once it is approved or rejected.'
         );
     }
+
+    const reportKey = generateKey('audit-reports', req.file.originalname);
+    await uploadBuffer(req.file.buffer, reportKey, req.file.mimetype);
 
     const result = await query(`
         INSERT INTO audit_submission_files
             (engagement_id, file_path, file_name, file_size_bytes, mime_type, uploaded_by)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, file_name, file_size_bytes, mime_type, uploaded_at
-    `, [id, req.file.path, req.file.originalname, req.file.size, req.file.mimetype, req.user.id]);
+    `, [id, reportKey, req.file.originalname, req.file.size, req.file.mimetype, req.user.id]);
 
     await logAction(req.user.id, ACTIONS.AUDIT_FILE_UPLOADED, MODULES.SYSTEM, {
         ipAddress:   req.ip,
@@ -911,7 +911,7 @@ const deleteReportFile = asyncHandler(async (req, res) => {
         );
     }
 
-    fs.unlink(result.rows[0].file_path, () => {});
+    deleteObject(toKey(result.rows[0].file_path));
 
     await logAction(req.user.id, ACTIONS.AUDIT_FILE_REMOVED, MODULES.SYSTEM, {
         ipAddress:   req.ip,
@@ -1137,8 +1137,7 @@ const previewSubmissionFile = asyncHandler(async (req, res) => {
     );
     if (result.rows.length === 0) throw createError.notFound('File not found on this submission');
     const file = result.rows[0];
-    if (!fs.existsSync(file.file_path)) throw createError.notFound('The file could not be found on the server');
-    res.download(path.resolve(file.file_path), file.file_name);
+    return sendFileDownload(res, toKey(file.file_path), file.file_name);
 });
 
 // POST /api/audit/submissions/:id/approve

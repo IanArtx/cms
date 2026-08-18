@@ -27,8 +27,7 @@ const { query } = require('../config/database');
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
-const path = require('path');
-const fs   = require('fs');
+const { sendFileDownload, toKey } = require('../services/storageService');
 
 // ============================================================
 // ADMIN — GRANT A DOCUMENT TO A USER
@@ -198,10 +197,7 @@ const previewGrantedDocument = asyncHandler(async (req, res) => {
     const doc = result.rows[0];
 
     if (doc.source === 'UPLOADED') {
-        if (!doc.file_path || !fs.existsSync(doc.file_path)) {
-            throw createError.notFound('The uploaded file could not be found on the server.');
-        }
-        return res.download(path.resolve(doc.file_path), doc.file_name || `document-${doc.id}`);
+        return sendFileDownload(res, toKey(doc.file_path), doc.file_name || `document-${doc.id}`);
     }
 
     if (!doc.template_data) {

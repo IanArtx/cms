@@ -8,6 +8,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { sendRoleAssignedEmail } = require('../services/authService');
+const { uploadBuffer, generateKey, deleteObject, toKey } = require('../services/storageService');
 
 // ============================================================
 // GET OWN PROFILE
@@ -176,24 +177,29 @@ const updateMyProfile = asyncHandler(async (req, res) => {
 const updateProfilePhoto = asyncHandler(async (req, res) => {
     if (!req.file) throw createError.badRequest('No photo file uploaded');
 
-    // v1.28.3 fix — this used to store req.file.path directly, which is
-    // multer's raw on-disk path (OS path-separator-dependent, and not
-    // anchored with a leading "/"). That's not the URL the frontend
-    // needs: getPhotoUrl() builds "<api origin>/<photo_path>", and the
-    // static file server only answers under the "/uploads" prefix (see
-    // server.js), so a bare "uploads/profiles/xxx.jpg" happened to
-    // still resolve by coincidence on a relative, forward-slash
-    // UPLOAD_DIR, but broke outright with a Windows-style path or an
-    // absolute UPLOAD_DIR — which is exactly why the uploaded photo
-    // never actually appeared. Build a clean "/uploads/..." URL path
-    // instead, same convention as updateSignature just below and
-    // settingsController's logo_url.
-    const filename = require('path').basename(req.file.filename);
-    const photoPath = `/uploads/profiles/${filename}`;
+    // v1.29.1 — file bytes now go to storageService (R2 in production,
+    // local disk only as a dev fallback — see storageService.js) instead
+    // of straight to Render's own ephemeral disk, which is what made
+    // v1.28.3's fix incomplete: a correctly-formatted URL still pointed
+    // at a file that vanished on the next redeploy. The stored value is
+    // still a "/uploads/<key>" path either way, so nothing downstream
+    // (getPhotoUrl(), Avatar.jsx) needed to change.
+    const key = generateKey('profiles', req.file.originalname);
+    await uploadBuffer(req.file.buffer, key, req.file.mimetype);
+    const photoPath = `/uploads/${key}`;
+
+    const existing = await query('SELECT photo_path FROM users WHERE id = $1', [req.user.id]);
     await query(
         'UPDATE users SET photo_path = $1, updated_at = NOW() WHERE id = $2',
         [photoPath, req.user.id]
     );
+
+    // Best-effort cleanup of the photo being replaced — unlike free
+    // ephemeral local disk, storage on R2 actually costs money, so an
+    // orphaned old photo is worth tidying up (fire-and-forget; a failed
+    // delete here should never block the response).
+    const oldKey = toKey(existing.rows[0]?.photo_path);
+    if (oldKey && oldKey !== key) deleteObject(oldKey);
 
     sendSuccess(res, { photo_path: photoPath }, 'Profile photo updated');
 });
@@ -203,14 +209,14 @@ const updateProfilePhoto = asyncHandler(async (req, res) => {
 // PATCH /api/users/me/signature
 // Body: { signature_data_url } — a "data:image/png;base64,...."
 // string from the SignaturePad component (drawn, not uploaded — see
-// Section 4.29 for why draw-only was chosen). Saved to disk the same
-// way photo_path is (UPLOAD_DIR/signatures/...), not stored inline
-// in the database, so it can be served as a normal static file and
-// stays consistent with every other image this system stores.
+// Section 4.29 for why draw-only was chosen). Saved via storageService
+// (R2 in production, v1.29.1) the same way photo_path is, not stored
+// inline in the database, so it can be served as a normal image and
+// stays consistent with every other file this system stores.
 // Re-drawing later (e.g. after a mistake) simply overwrites
 // signature_path with a new file — it does not retroactively change
 // documents already signed, since those keep their own
-// signature_snapshot_path copy taken at signing time.
+// signature_snapshot_path copy taken at signing time (signatureService.js).
 // ============================================================
 const updateSignature = asyncHandler(async (req, res) => {
     const { signature_data_url } = req.body;
@@ -226,25 +232,27 @@ const updateSignature = asyncHandler(async (req, res) => {
         throw createError.badRequest('Signature image is too large (max 2MB)');
     }
 
-    const fs = require('fs');
-    const path = require('path');
-    const dir = path.join(process.env.UPLOAD_DIR || './uploads', 'signatures');
-    fs.mkdirSync(dir, { recursive: true });
-
-    const filename = `${req.user.id}-${Date.now()}.png`;
-    fs.writeFileSync(path.join(dir, filename), buffer);
+    const key = generateKey('signatures', `${req.user.id}.png`);
+    await uploadBuffer(buffer, key, 'image/png');
 
     // Stored as a "/uploads/..." URL path (same convention as
     // settingsController's logo_url), not a raw disk path — so it can
     // be served directly and resolved to an absolute URL the same way
     // certificateService.resolveAbsoluteAssetUrl already does for the
     // company logo.
-    const signaturePath = `/uploads/signatures/${filename}`;
+    const signaturePath = `/uploads/${key}`;
 
+    const existing = await query('SELECT signature_path FROM users WHERE id = $1', [req.user.id]);
     await query(
         'UPDATE users SET signature_path = $1, signature_updated_at = NOW() WHERE id = $2',
         [signaturePath, req.user.id]
     );
+
+    // Best-effort cleanup of the old live signature file — the
+    // per-signing snapshots (signatureService.js's signSlot) are
+    // separate copies and are never touched by this.
+    const oldKey = toKey(existing.rows[0]?.signature_path);
+    if (oldKey && oldKey !== key) deleteObject(oldKey);
 
     await logAction(req.user.id, ACTIONS.SIGNATURE_UPDATED, MODULES.USERS, {
         ipAddress:   req.ip,

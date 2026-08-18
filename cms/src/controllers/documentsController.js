@@ -18,8 +18,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
 const { ensureSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories, SIGNABLE_DOCUMENT_TYPES } = require('../services/signatureService');
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
-const path = require('path');
-const fs   = require('fs');
+const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 
 // ============================================================
 // FINANCE DOCUMENT GATE (v1.21.0)
@@ -77,6 +76,12 @@ const uploadDocument = asyncHandler(async (req, res) => {
         notes,
     } = req.body;
 
+    // v1.29.1 — file bytes go to storageService (R2 in production)
+    // before the DB row is created, same as every other upload in this
+    // system now. The key (not a raw disk path) is what's stored.
+    const key = generateKey('documents', req.file.originalname);
+    await uploadBuffer(req.file.buffer, key, req.file.mimetype);
+
     await withTransaction(async (client) => {
         // Generate document reference: DOC-MIN-YYYYMM-00001
         const { referenceId, referenceCode } = await generateReference(
@@ -115,7 +120,7 @@ const uploadDocument = asyncHandler(async (req, res) => {
             category_id,
             title.trim(),
             document_type,
-            req.file.path,
+            key,
             req.file.originalname,
             req.file.size,
             req.file.mimetype,
@@ -421,6 +426,10 @@ const createNewVersion = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { notes } = req.body;
 
+    // v1.29.1 — same storageService pattern as the initial upload
+    const newVersionKey = generateKey('documents', req.file.originalname);
+    await uploadBuffer(req.file.buffer, newVersionKey, req.file.mimetype);
+
     await withTransaction(async (client) => {
         // Get the original document
         const original = await client.query(
@@ -479,7 +488,7 @@ const createNewVersion = asyncHandler(async (req, res) => {
             orig.category_id,
             orig.title,
             orig.document_type,
-            req.file.path,
+            newVersionKey,
             req.file.originalname,
             req.file.size,
             req.file.mimetype,
@@ -710,12 +719,11 @@ const downloadDocument = asyncHandler(async (req, res) => {
     await assertDocumentVisible(req, id, doc.category_full_abbreviation);
 
     if (doc.source === 'UPLOADED') {
-        if (!doc.file_path || !fs.existsSync(doc.file_path)) {
-            throw createError.notFound(
-                'The uploaded file could not be found on the server. It may have been moved or deleted outside the app.'
-            );
-        }
-        return res.download(path.resolve(doc.file_path), doc.file_name || `document-${doc.id}`);
+        // v1.29.1 — bytes come from storageService (R2 in production,
+        // local-disk fallback in dev) instead of a raw fs/path read.
+        // sendFileDownload() throws createError.notFound() itself if
+        // the file is missing, same message as before.
+        return sendFileDownload(res, toKey(doc.file_path), doc.file_name || `document-${doc.id}`);
     }
 
     // SYSTEM_GENERATED

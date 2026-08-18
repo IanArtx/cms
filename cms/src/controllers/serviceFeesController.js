@@ -31,7 +31,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
-const fs = require('fs');
+const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
 
@@ -341,6 +341,14 @@ const getMyAgreement = asyncHandler(async (req, res) => {
 const requestReimbursement = asyncHandler(async (req, res) => {
     const { amount, currency_id, category_id, description, expense_date } = req.body;
 
+    // v1.29.1 — receipt is optional; only touch storageService if one
+    // was actually attached.
+    let receiptKey = null;
+    if (req.file) {
+        receiptKey = generateKey('service-fees', req.file.originalname);
+        await uploadBuffer(req.file.buffer, receiptKey, req.file.mimetype);
+    }
+
     await withTransaction(async (client) => {
         const { referenceId, referenceCode } = await generateReference(
             client, MODULE_CODES.SERVICE_FEE, 'REIMB', 'SERVICE_REIMBURSEMENT', req.user.id
@@ -354,7 +362,7 @@ const requestReimbursement = asyncHandler(async (req, res) => {
             RETURNING id
         `, [
             referenceId, req.user.id, amount, currency_id, category_id, description.trim(), expense_date,
-            req.file ? req.file.path : null, req.file ? req.file.originalname : null,
+            receiptKey, req.file ? req.file.originalname : null,
         ]);
 
         const reqId = result.rows[0].id;
@@ -452,10 +460,9 @@ const previewReceipt = asyncHandler(async (req, res) => {
     if (!isOwner && !canReview) {
         throw createError.forbidden('You do not have access to this receipt');
     }
-    if (!fs.existsSync(rr.receipt_file_path)) {
-        throw createError.notFound('The receipt file could not be found on the server');
-    }
-    res.download(require('path').resolve(rr.receipt_file_path), rr.receipt_file_name || `receipt-${id}`);
+    // v1.29.1 — same permission check as before, only the byte-fetch
+    // mechanism changed (storageService, not a raw fs read).
+    return sendFileDownload(res, toKey(rr.receipt_file_path), rr.receipt_file_name || `receipt-${id}`);
 });
 
 // POST /api/service-fees/reimbursements/:id/approve

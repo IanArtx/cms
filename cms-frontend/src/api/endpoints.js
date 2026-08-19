@@ -186,6 +186,19 @@ export const capitalGoalsAPI = {
 };
 
 // ============================================================
+// PAYMENT ACKNOWLEDGEMENTS (v1.30.0)
+// ============================================================
+export const paymentAcknowledgementsAPI = {
+    getMine:      ()         => api.get('/payment-acknowledgements/my'),
+    getAll:       (params)   => api.get('/payment-acknowledgements', { params }),
+    getById:      (id)       => api.get(`/payment-acknowledgements/${id}`),
+    acknowledge:  (id, data) => api.post(`/payment-acknowledgements/${id}/acknowledge`, data),
+    dispute:      (id, data) => api.post(`/payment-acknowledgements/${id}/dispute`, data),
+    reopen:       (id)       => api.post(`/payment-acknowledgements/${id}/reopen`),
+    finalApprove: (id)       => api.post(`/payment-acknowledgements/${id}/final-approve`),
+};
+
+// ============================================================
 // EVENTS
 // ============================================================
 export const eventsAPI = {

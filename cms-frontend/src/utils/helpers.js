@@ -83,6 +83,7 @@ export const getStatusBadgeClass = (status) => {
         PAID:             'badge-green',
         ON_TRACK:         'badge-green',
         TARGET_REACHED:   'badge-green',
+        FINAL_APPROVED:   'badge-green',
 
         // Yellow — in progress/pending
         PENDING:              'badge-yellow',
@@ -93,6 +94,7 @@ export const getStatusBadgeClass = (status) => {
         IN_PROGRESS:          'badge-yellow',
         DRAFT:                'badge-yellow',
         ON_HOLD:              'badge-yellow',
+        PENDING_ACK:          'badge-yellow',
 
         // Red — negative/failed
         OVERDUE:     'badge-red',
@@ -103,11 +105,13 @@ export const getStatusBadgeClass = (status) => {
         MISSED:      'badge-red',
         REVERSED:    'badge-red',
         BEHIND:      'badge-red',
+        DISPUTED:    'badge-red',
 
         // Blue — informational
-        SUPERSEDED:  'badge-blue',
-        ARCHIVED:    'badge-blue',
-        CLOSED:      'badge-blue',
+        SUPERSEDED:   'badge-blue',
+        ARCHIVED:     'badge-blue',
+        CLOSED:       'badge-blue',
+        ACKNOWLEDGED: 'badge-blue',
     };
 
     return statusMap[status.toUpperCase()] || 'badge-gray';

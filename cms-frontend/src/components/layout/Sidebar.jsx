@@ -35,6 +35,7 @@ import {
     ShieldCheckIcon,
     ArrowRightOnRectangleIcon,
     FlagIcon,
+    CheckBadgeIcon,
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
@@ -80,6 +81,7 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
         { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  !isAdminOfficer,},
         { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  !isAdminOfficer,},
         { label: 'Service Fees', href: '/service-fees', icon: WalletIcon,          show: true },
+        { label: 'Payment Acknowledgements', href: '/payment-acknowledgements', icon: CheckBadgeIcon, show: true },
         { label: 'Events',       href: '/events',       icon: CalendarDaysIcon,    show: hasPermission('EVENT_VIEW') },
         { label: 'Documents',    href: '/documents',    icon: DocumentTextIcon,    show: hasPermission('DOCUMENT_VIEW') },
         { label: 'Reports',      href: '/reports',      icon: ChartPieIcon,        show: !isAdminOfficer },

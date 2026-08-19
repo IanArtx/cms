@@ -1572,6 +1572,95 @@ export const receiptTemplate = (data) => `<!DOCTYPE html>
 </html>`;
 
 // ============================================================
+// PAYMENT ACKNOWLEDGEMENT TEMPLATE (v1.30.0, Section 4.35)
+// A two-party printable record for money paid OUT to an individual
+// (dividends, service fee payments, expense reimbursements) — the
+// mirror image of receiptTemplate above (which is money coming IN to
+// the company). Both the payer (Treasury/Director) and the recipient
+// are named, and the document trail shows all three steps: disbursed,
+// acknowledged by the recipient, and finally approved.
+//
+// `data` shape (matches paymentAcknowledgementsController's
+// getAcknowledgementById response):
+//   { reference, public_id, source_label, amount, currency_code,
+//     purpose, status, payer_name, recipient_name, created_at,
+//     acknowledged_at, acknowledgement_note, final_approver_name,
+//     final_approved_at }
+// ============================================================
+export const paymentAcknowledgementTemplate = (data) => `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Payment Acknowledgement</title>
+    <style>${getBaseStyles()}</style>
+</head>
+<body>
+<div class="page">
+    ${letterhead('Payment Acknowledgement', data.reference || '', new Date())}
+    <div class="doc-title">PAYMENT ACKNOWLEDGEMENT</div>
+    <div class="doc-subtitle">${data.source_label || ''}</div>
+
+    <div class="meta-box cols-3">
+        <div class="meta-item">
+            <div class="meta-label">Paid By</div>
+            <div class="meta-value">${data.payer_name || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Amount</div>
+            <div class="meta-value large green">
+                ${data.currency_code || ''} ${fmt.amount(data.amount)}
+            </div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Received By</div>
+            <div class="meta-value">${data.recipient_name || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Payment Date</div>
+            <div class="meta-value">${fmt.date(data.created_at)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Status</div>
+            <div class="meta-value">${(data.status || '').replace(/_/g, ' ')}</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Purpose</div>
+        <p style="font-size:12px;line-height:1.7;">${data.purpose || '—'}</p>
+    </div>
+
+    ${data.acknowledgement_note ? `
+    <div class="section">
+        <div class="section-title">Recipient's Note</div>
+        <p style="font-size:11px;color:#6b7280;line-height:1.7;">${data.acknowledgement_note}</p>
+    </div>` : ''}
+
+    ${documentTrail([
+        { role: 'Disbursed By',       name: data.payer_name,           date: data.created_at },
+        { role: 'Acknowledged By',    name: data.recipient_name,       date: data.acknowledged_at },
+        { role: 'Final Approved By',  name: data.final_approver_name,  date: data.final_approved_at },
+    ])}
+
+    <div class="signature-section">
+        <div class="signature-block">
+            Paid By: ${data.payer_name || '_______________'}<br>
+            Signature: _______________<br>
+            Date: _______________
+        </div>
+        <div class="signature-block">
+            Received By: ${data.recipient_name || '_______________'}<br>
+            Signature: _______________<br>
+            Date: _______________
+        </div>
+    </div>
+
+    ${footer()}
+</div>
+</body>
+</html>`;
+
+// ============================================================
 // BOARD RESOLUTION TEMPLATE
 // A formal resolution passed at a Board/Directors/AGM meeting —
 // structured similarly to meetingMinutesTemplate (numbered items,

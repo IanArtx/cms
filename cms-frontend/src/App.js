@@ -30,6 +30,7 @@ import MmfPage from './pages/mmf/MmfPage';
 import MmfDetailPage from './pages/mmf/MmfDetailPage';
 import CapitalGoalsPage from './pages/capitalGoals/CapitalGoalsPage';
 import CapitalGoalDetailPage from './pages/capitalGoals/CapitalGoalDetailPage';
+import PaymentAcknowledgementsPage from './pages/paymentAcknowledgements/PaymentAcknowledgementsPage';
 import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
 import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
@@ -144,6 +145,7 @@ function App() {
                             <Route path="about" element={<AboutPage />} />
                             <Route path="requisitions" element={<RequisitionsPage />} />
                             <Route path="service-fees" element={<ServiceFeesPage />} />
+                            <Route path="payment-acknowledgements" element={<PaymentAcknowledgementsPage />} />
                             <Route path="audit" element={
                                 <ProtectedRoute requiredRole="Auditor">
                                     <AuditorPortalPage />

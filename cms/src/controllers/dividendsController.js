@@ -20,6 +20,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { getSavingsAccount, getOrCreateSavingsBalance } = require('./savingsController');
 const { notify, notifyMany } = require('../services/notificationService');
+const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 
 // Add module codes for dividends and authority payments
 MODULE_CODES.DIVIDEND          = 'DIV';
@@ -318,6 +319,22 @@ const approveDividend = asyncHandler(async (req, res) => {
                        paid_at         = NOW()
                 WHERE  id = $4
             `, [creditPosting.transactionId, creditedAmount, effectiveRate, dist.id]);
+
+            // v1.30.0 (Section 4.35) — one payment acknowledgement per
+            // shareholder distribution, so each person confirms their
+            // own share individually rather than one record covering
+            // the whole dividend.
+            await createPaymentAcknowledgement(client, {
+                sourceType:    'DIVIDEND',
+                sourceId:      dist.id,
+                transactionId: creditPosting.transactionId,
+                payerId:       req.user.id,
+                recipientId:   dist.user_id,
+                amount:        creditedAmount,
+                currencyId:    savingsAccount.currency_id,
+                purpose:       `Dividend payment — ${dividend.reference_code}` +
+                               `${dividend.period_label ? ` (${dividend.period_label})` : ''}`,
+            });
 
             // notifyMany() below treats `id` as the recipient's user id —
             // dist.id is the dividend_distributions row's own PK, not the

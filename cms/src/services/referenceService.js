@@ -160,6 +160,7 @@ const MODULE_CODES = {
     SHARE_CERTIFICATE: 'SHC',
     MMF:               'MMF',
     CAPITAL_GOAL:      'CGL',
+    PAYMENT_ACK:       'PACK',
 };
 
 // ============================================================

@@ -32,6 +32,7 @@ const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
+const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
 
@@ -262,6 +263,19 @@ const recordPayment = asyncHandler(async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
         `, [id, payAmount, payment_date || new Date().toISOString().split('T')[0], transactionId, notes || null, req.user.id]);
+
+        // v1.30.0 (Section 4.35) — recipient acknowledges each monthly
+        // service fee payment individually.
+        await createPaymentAcknowledgement(client, {
+            sourceType:    'SERVICE_FEE_PAYMENT',
+            sourceId:      paymentResult.rows[0].id,
+            transactionId,
+            payerId:       req.user.id,
+            recipientId:   agreement.user_id,
+            amount:        payAmount,
+            currencyId:    agreement.currency_id,
+            purpose:       `Monthly service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+        });
 
         await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_RECORDED, MODULES.STAFF, {
             ipAddress:   req.ip,
@@ -516,6 +530,19 @@ const approveReimbursement = asyncHandler(async (req, res) => {
                    reviewed_by = $3, reviewed_at = NOW(), review_notes = $4
             WHERE  id = $5
         `, [account_id, transactionId, req.user.id, review_notes || null, id]);
+
+        // v1.30.0 (Section 4.35) — recipient acknowledges the paid-out
+        // reimbursement, separate from their original request.
+        await createPaymentAcknowledgement(client, {
+            sourceType:    'REIMBURSEMENT',
+            sourceId:      parseInt(id),
+            transactionId,
+            payerId:       req.user.id,
+            recipientId:   rr.user_id,
+            amount:        parseFloat(rr.amount),
+            currencyId:    account.rows[0].currency_id,
+            purpose:       `Expense reimbursement — ${rr.reference_code}: ${rr.description}`,
+        });
 
         await logAction(req.user.id, ACTIONS.SERVICE_REIMBURSEMENT_APPROVED, MODULES.STAFF, {
             ipAddress:   req.ip,

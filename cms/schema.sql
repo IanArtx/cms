@@ -2733,5 +2733,65 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.29.0
+-- GROUP 26: PAYMENT ACKNOWLEDGEMENTS (v1.30.0, Section 4.35) —
+-- a two-way, two-step record for money paid OUT to an individual
+-- (dividends, service fee payments, expense reimbursements —
+-- "e.t.c." per the requesting brief, so `source_type` is a CHECK
+-- list deliberately easy to extend with more payout types later,
+-- not a polymorphic free-for-all).
+--
+-- Flow: the system auto-creates one row (PENDING_ACK) the moment a
+-- payment is actually disbursed — never created by hand. The
+-- RECIPIENT then reviews the amount/purpose and either acknowledges
+-- (ACKNOWLEDGED) or disputes it (DISPUTED, with a reason, no money
+-- movement happens automatically either way — this is a paper-trail
+-- confirmation step, not a re-approval of the underlying payment).
+-- Once ACKNOWLEDGED, whoever holds PAYMENT_ACK_MANAGE (Treasurer/
+-- Director, granted like any other new permission — starts ungranted
+-- for every role, Admin included) gives the final sign-off
+-- (FINAL_APPROVED), at which point a two-party printable document
+-- (payer + recipient, Section 4.35) is available.
+--
+-- purpose/amount/currency are captured as a point-in-time snapshot
+-- on this row (not read live off the source record at print time) —
+-- so the acknowledgement always reflects exactly what the recipient
+-- actually reviewed and signed off on, even if the underlying
+-- dividend/agreement/request is edited or its category renamed later.
+-- ============================================================
+
+CREATE TABLE payment_acknowledgements (
+    id                   SERIAL PRIMARY KEY,
+    reference_id         INTEGER       NOT NULL REFERENCES references_registry(id),
+    source_type          VARCHAR(30)   NOT NULL
+                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT')),
+    source_id            INTEGER       NOT NULL,
+    transaction_id       INTEGER       REFERENCES transactions(id),
+    payer_id             INTEGER       NOT NULL REFERENCES users(id),
+    recipient_id         INTEGER       NOT NULL REFERENCES users(id),
+    amount               NUMERIC(20,4) NOT NULL,
+    currency_id          INTEGER       NOT NULL REFERENCES currencies(id),
+    purpose              TEXT          NOT NULL,
+    status               VARCHAR(20)   NOT NULL DEFAULT 'PENDING_ACK'
+                         CHECK (status IN ('PENDING_ACK', 'ACKNOWLEDGED', 'DISPUTED', 'FINAL_APPROVED')),
+    acknowledged_at      TIMESTAMPTZ,
+    acknowledgement_note TEXT,
+    dispute_reason       TEXT,
+    disputed_at          TIMESTAMPTZ,
+    final_approved_by    INTEGER       REFERENCES users(id),
+    final_approved_at    TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_ack_amount CHECK (amount > 0)
+);
+
+CREATE INDEX idx_payment_ack_recipient ON payment_acknowledgements (recipient_id);
+CREATE INDEX idx_payment_ack_status    ON payment_acknowledgements (status);
+CREATE INDEX idx_payment_ack_source    ON payment_acknowledgements (source_type, source_id);
+
+INSERT INTO permissions (code, module, description) VALUES
+    ('PAYMENT_ACK_VIEW',   'FINANCE', 'View all payment acknowledgements (Treasury oversight, not just your own)'),
+    ('PAYMENT_ACK_MANAGE', 'FINANCE', 'Give final sign-off on a payment acknowledgement once the recipient has confirmed it')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.30.0
 -- ============================================================

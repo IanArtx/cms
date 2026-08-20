@@ -33,6 +33,7 @@ const SOURCE_LABELS = {
     DIVIDEND:            'Dividend Payment',
     SERVICE_FEE_PAYMENT: 'Service Fee Payment',
     REIMBURSEMENT:       'Expense Reimbursement',
+    SAVINGS_HANDOUT:     'Savings Handout',
 };
 
 const amountStr = (amount, currencyCode) =>

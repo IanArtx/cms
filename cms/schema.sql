@@ -2733,12 +2733,13 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- GROUP 26: PAYMENT ACKNOWLEDGEMENTS (v1.30.0, Section 4.35) —
--- a two-way, two-step record for money paid OUT to an individual
--- (dividends, service fee payments, expense reimbursements —
--- "e.t.c." per the requesting brief, so `source_type` is a CHECK
--- list deliberately easy to extend with more payout types later,
--- not a polymorphic free-for-all).
+-- GROUP 26: PAYMENT ACKNOWLEDGEMENTS (v1.30.0, extended v1.30.2,
+-- Section 4.35) — a two-way, two-step record for money paid OUT to
+-- an individual (dividends, service fee payments, expense
+-- reimbursements, savings handouts — "e.t.c." per the requesting
+-- brief, so `source_type` is a CHECK list deliberately easy to
+-- extend with more payout types later, not a polymorphic
+-- free-for-all).
 --
 -- Flow: the system auto-creates one row (PENDING_ACK) the moment a
 -- payment is actually disbursed — never created by hand. The
@@ -2763,7 +2764,7 @@ CREATE TABLE payment_acknowledgements (
     id                   SERIAL PRIMARY KEY,
     reference_id         INTEGER       NOT NULL REFERENCES references_registry(id),
     source_type          VARCHAR(30)   NOT NULL
-                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT')),
+                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT')),
     source_id            INTEGER       NOT NULL,
     transaction_id       INTEGER       REFERENCES transactions(id),
     payer_id             INTEGER       NOT NULL REFERENCES users(id),
@@ -2793,5 +2794,5 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.30.0
+-- END OF SCHEMA — v1.30.2
 -- ============================================================

@@ -39,6 +39,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 
 MODULE_CODES.SAVINGS = 'SAV';
 MODULE_CODES.SAVINGS_HANDOUT = 'SAVOUT';
@@ -521,6 +522,23 @@ const confirmSavingsHandout = asyncHandler(async (req, res) => {
                    updated_at = NOW()
             WHERE  user_id = $3
         `, [handout.principal_amount, handout.interest_amount, handout.user_id]);
+
+        // v1.30.2 (Section 4.35) — same Payment Acknowledgement flow as
+        // dividends/service fees/reimbursements, now covering savings
+        // handouts too. Note req.user.id here is the RECIPIENT (only
+        // they can call this endpoint) — the payer is whoever entered
+        // the handout (handout.entered_by), not the caller.
+        await createPaymentAcknowledgement(client, {
+            sourceType:    'SAVINGS_HANDOUT',
+            sourceId:      parseInt(id),
+            transactionId,
+            payerId:       handout.entered_by,
+            recipientId:   handout.user_id,
+            amount:        handout.total_amount,
+            currencyId:    handout.currency_id,
+            purpose:       `Savings handout — ${handout.reference_code}` +
+                           `${handout.notes ? `: ${handout.notes}` : ''}`,
+        });
 
         await logAction(req.user.id, ACTIONS.SAVINGS_HANDOUT_CONFIRMED, MODULES.FINANCE, {
             ipAddress:   req.ip,

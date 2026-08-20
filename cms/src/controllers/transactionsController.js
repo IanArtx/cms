@@ -161,6 +161,88 @@ const postTransaction = async (client, {
 };
 
 // ============================================================
+// RECALCULATE SHAREHOLDING (v1.30.1 — extracted from
+// creditShareholderContribution so reverseTransaction can call it
+// too; behaviour is unchanged, this is a pure refactor plus one
+// correctness fix noted below).
+//
+// Shares_held/percentage are always DERIVED, never directly edited —
+// this is the one place that ever writes shareholding_registry.
+// shares_held = a member's own SUM of APPROVED shareholder_contributions
+// (raw money contributed — NOT divided by share_price_history, which
+// is a display-only valuation multiplier elsewhere and never feeds
+// into this calculation). percentage = that member's total divided by
+// everyone's combined total. Runs as a full recompute across every
+// shareholder on every call — O(number of shareholders), fine at this
+// club's current scale (see CMS_BIBLE Section 14.6).
+//
+// v1.30.1 fix: previously, a member whose LAST remaining APPROVED
+// contribution stopped being APPROVED (e.g. reversed) would simply
+// drop out of the SUM/GROUP BY below entirely — since the old code
+// only ever updated whichever users appeared in that result set, their
+// shares_held/percentage were left stale at their old (now wrong)
+// values instead of being reset to 0. The second UPDATE below closes
+// that gap.
+// ============================================================
+const recalculateShareholding = async (client, { recordedByUserId }) => {
+    // Get total approved contributions per shareholder
+    const totalsResult = await client.query(`
+        SELECT
+            sc.user_id,
+            SUM(sc.amount) AS total_contributed
+        FROM shareholder_contributions sc
+        WHERE sc.status = 'APPROVED'
+        GROUP BY sc.user_id
+    `);
+
+    // Calculate grand total
+    const grandTotal = totalsResult.rows.reduce(
+        (sum, r) => sum + parseFloat(r.total_contributed), 0
+    );
+
+    // Update each shareholder's percentage and shares
+    for (const row of totalsResult.rows) {
+        const percentage = grandTotal > 0
+            ? ((parseFloat(row.total_contributed) / grandTotal) * 100).toFixed(4)
+            : '0.0000';
+
+        await client.query(`
+            UPDATE shareholding_registry
+            SET
+                shares_held    = $1,
+                percentage     = $2,
+                updated_by     = $3,
+                notes          = 'Auto-calculated from contributions'
+            WHERE user_id = $4
+            AND   effective_to IS NULL
+        `, [
+            row.total_contributed,
+            percentage,
+            recordedByUserId,
+            row.user_id,
+        ]);
+    }
+
+    // Zero out anyone who currently has a shareholding_registry row but
+    // no longer has ANY approved contribution (e.g. their only
+    // contribution was just reversed) — otherwise they'd keep showing
+    // their old, now-incorrect shares/percentage forever, since the
+    // loop above only ever touches users who still appear in totalsResult.
+    await client.query(`
+        UPDATE shareholding_registry
+        SET    shares_held = 0,
+               percentage  = 0,
+               updated_by  = $1,
+               notes       = 'Auto-calculated from contributions'
+        WHERE  effective_to IS NULL
+        AND    user_id NOT IN (
+            SELECT DISTINCT user_id FROM shareholder_contributions WHERE status = 'APPROVED'
+        )
+        AND    (shares_held <> 0 OR percentage <> 0 OR percentage IS NULL)
+    `, [recordedByUserId]);
+};
+
+// ============================================================
 // CREDIT SHAREHOLDER CONTRIBUTION (shared core logic)
 // Money coming INTO the primary account from a shareholder.
 // Used by two entry points:
@@ -280,48 +362,10 @@ const creditShareholderContribution = async (client, {
     // Link reference to the transaction
     await linkReferenceToRecord(client, referenceId, transactionId);
 
-    // --------------------------------------------------------
-    // AUTO-RECALCULATE SHAREHOLDING PERCENTAGES
-    // Based on total contributions per member
-    // --------------------------------------------------------
-
-    // Get total contributions per shareholder
-    const totalsResult = await client.query(`
-        SELECT
-            sc.user_id,
-            SUM(sc.amount) AS total_contributed
-        FROM shareholder_contributions sc
-        WHERE sc.status = 'APPROVED'
-        GROUP BY sc.user_id
-    `);
-
-    // Calculate grand total
-    const grandTotal = totalsResult.rows.reduce(
-        (sum, r) => sum + parseFloat(r.total_contributed), 0
-    );
-
-    // Update each shareholder's percentage and shares
-    for (const row of totalsResult.rows) {
-        const percentage = grandTotal > 0
-            ? ((parseFloat(row.total_contributed) / grandTotal) * 100).toFixed(4)
-            : '0.0000';
-
-        await client.query(`
-            UPDATE shareholding_registry
-            SET
-                shares_held    = $1,
-                percentage     = $2,
-                updated_by     = $3,
-                notes          = 'Auto-calculated from contributions'
-            WHERE user_id = $4
-            AND   effective_to IS NULL
-        `, [
-            row.total_contributed,
-            percentage,
-            recordedByUserId,
-            row.user_id,
-        ]);
-    }
+    // Auto-recalculate every shareholder's shares_held/percentage from
+    // the current shareholder_contributions ledger — see
+    // recalculateShareholding() below for the full explanation.
+    await recalculateShareholding(client, { recordedByUserId });
 
     // --------------------------------------------------------
     // NOTIFY THE CONTRIBUTOR
@@ -781,13 +825,34 @@ const reverseTransaction = asyncHandler(async (req, res) => {
             WHERE  id = $1
         `, [tx.id]);
 
+        // v1.30.1 — if the transaction being reversed was a shareholder
+        // capital contribution (tx.contribution_id is only ever
+        // populated for inflow_type = 'CONTRIBUTION' transactions — see
+        // creditShareholderContribution), flip that contribution's own
+        // status to REVERSED and re-run the shareholding recompute so
+        // it stops counting toward that member's shares_held/percentage.
+        // Gated specifically on contribution_id (not just inflow_type)
+        // since this route reverses ANY transaction in the ledger, not
+        // just contributions — everything else must be left untouched.
+        let contributionReversed = false;
+        if (tx.contribution_id) {
+            await client.query(`
+                UPDATE shareholder_contributions
+                SET    status = 'REVERSED'
+                WHERE  id = $1 AND status = 'APPROVED'
+            `, [tx.contribution_id]);
+            await recalculateShareholding(client, { recordedByUserId: req.user.id });
+            contributionReversed = true;
+        }
+
         await logAction(req.user.id, ACTIONS.TRANSACTION_REVERSED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'transactions',
             recordId:    transactionId,
             oldValues:   { original_transaction_id: tx.id },
-            newValues:   { referenceCode, reason, balanceBefore, balanceAfter },
-            description: `Transaction reversed: ${referenceCode} — Reason: ${reason}`,
+            newValues:   { referenceCode, reason, balanceBefore, balanceAfter, contributionReversed },
+            description: `Transaction reversed: ${referenceCode} — Reason: ${reason}` +
+                         `${contributionReversed ? ' (linked shareholder contribution marked REVERSED and shareholding recalculated)' : ''}`,
             client,
         });
 
@@ -920,6 +985,7 @@ const getTransactionById = asyncHandler(async (req, res) => {
 module.exports = {
     recordContribution,
     creditShareholderContribution,
+    recalculateShareholding,
     creditSideFundContribution,
     recordExpense,
     recordInflow,

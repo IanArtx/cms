@@ -18,7 +18,9 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, CheckIcon, XMarkIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, CheckIcon, XMarkIcon, Cog6ToothIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
+import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 
 // ============================================================
 // RECORD DEPOSIT MODAL (Treasurer/Assistant Treasurer)
@@ -459,6 +461,7 @@ const SavingsPage = () => {
     const [showPoolInflow, setShowPoolInflow] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [actionLoading, setActionLoading] = useState(null);
+    const [preview, setPreview] = useState(null);
 
     const canCreate   = hasPermission('SAVINGS_CREATE');
     const canApprove  = hasPermission('SAVINGS_APPROVE');
@@ -517,7 +520,7 @@ const SavingsPage = () => {
         loadApprovals();
         loadManage();
         if (canCreate || canHandout) {
-            usersAPI.getAllUsers({ limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
+            usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
             categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         }
     }, [loadMine, loadApprovals, loadManage, canCreate, canHandout]);
@@ -616,6 +619,30 @@ const SavingsPage = () => {
         }
     };
 
+    // Shared "Transaction" column (v1.32.0) — preview/download the
+    // linked transaction as a proper statement, reused on both My
+    // Savings (deposits) and My Handouts below. Hidden (—) on rows
+    // with no linked transaction yet (a still-pending deposit/handout).
+    const transactionColumn = {
+        header: 'Transaction',
+        render: row => {
+            const tx = txFromRow(row);
+            if (!tx) return <span className="text-xs text-gray-300">—</span>;
+            return (
+                <div className="flex items-center gap-2">
+                    <button onClick={() => setPreview({ html: transactionTemplate(tx), title: tx.reference_code })}
+                        className="font-mono text-xs font-medium text-primary-700 hover:underline" title="Preview">
+                        {tx.reference_code}
+                    </button>
+                    <button onClick={() => printDocument(transactionTemplate(tx), tx.reference_code)}
+                        className="text-gray-400 hover:text-gray-600" title="Download">
+                        <ArrowDownTrayIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            );
+        },
+    };
+
     // Columns — My Savings
     const mySavingsColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
@@ -635,6 +662,7 @@ const SavingsPage = () => {
             </div>
         ) : <span className="text-xs text-gray-300">—</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        transactionColumn,
         { header: 'Actions', render: row => (
             row.entry_type === 'FIXED_TERM' && row.is_matured && row.status === 'ACTIVE' && hasPermission('FINANCE_TRANSACTION_CREATE') ? (
                 <button onClick={() => handleWithdrawFixedTerm(row.id)} disabled={actionLoading === row.id}
@@ -653,6 +681,7 @@ const SavingsPage = () => {
         { header: 'Total', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {formatNumber(row.total_amount)}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.handout_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        transactionColumn,
         { header: 'Actions', render: row => (
             row.status === 'PENDING_CONFIRMATION' ? (
                 <div className="flex gap-2">
@@ -918,6 +947,7 @@ const SavingsPage = () => {
                 onClose={() => setShowSettings(false)}
                 onSuccess={refreshAll}
             />
+            <DocumentPreviewModal preview={preview} onClose={() => setPreview(null)} />
         </div>
     );
 };

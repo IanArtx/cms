@@ -663,7 +663,7 @@ const GrantAccessModal = ({ isOpen, document, onClose }) => {
     useEffect(() => {
         if (!isOpen || !document) return;
         loadGrants();
-        usersAPI.getAllUsers().then(r => setUsers(r.data.data || [])).catch(() => {});
+        usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setUsers(r.data.data || [])).catch(() => {});
     }, [isOpen, document, loadGrants]);
 
     if (!isOpen || !document) return null;

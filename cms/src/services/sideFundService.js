@@ -98,23 +98,32 @@ const applySideFundPayment = async (client, {
 };
 
 // ============================================================
-// GENERATE DUES FOR A PERIOD (v1.28.3)
-// Creates one PENDING side_fund_dues row per active shareholder for
-// the given period ('YYYY-MM'), using that member's per-member
-// override amount if one is set (side_fund_member_overrides),
-// otherwise the fund's company-wide monthly_amount. Immediately
-// draws down any banked overpayment credit (side_fund_member_credit)
+// GENERATE DUES FOR A PERIOD (v1.28.3; membership-checklist-scoped
+// since v1.32.0)
+// Creates one PENDING side_fund_dues row per member currently checked
+// "in" on the side fund membership checklist (side_fund_members,
+// Section 4.10) for the given period ('YYYY-MM') — but only for
+// members whose own start_period has already arrived by then
+// (sm.start_period <= period), so a member added partway through
+// never gets a due for a month before they joined. Uses that member's
+// per-member override amount if one is set (side_fund_member_overrides),
+// otherwise the fund's company-wide monthly_amount. Immediately draws
+// down any banked overpayment credit (side_fund_member_credit)
 // against each brand-new row, same as a normal payment would.
 //
-// Shared by two callers so both behave identically:
+// Before v1.32.0 this sourced membership from shareholding_registry —
+// EVERY active shareholder automatically owed a due, with no way to
+// opt out. That blanket rule is gone; a member only owes dues while
+// side_fund_members.is_in = TRUE.
+//
+// Shared by three callers so all behave identically:
 //   - jobs/scheduler.js's scheduleSideFundDueGeneration — runs
 //     automatically at 00:15 on the 1st of every month
 //   - sideFundController.generateDues — a manual "Generate Dues Now"
 //     trigger (SIDE_FUND_MANAGE) for when that automatic run hasn't
-//     happened yet for the current period (e.g. the fund was only
-//     just activated, or the backend was redeployed, after the 1st
-//     already passed) or a shareholder joined partway through the
-//     month
+//     happened yet for the current period
+//   - backfillDuesFromPeriod (below) — calls this once per month when
+//     a member is added with a start_period in the past
 //
 // Idempotent: ON CONFLICT (user_id, period) DO NOTHING means running
 // this twice for the same period only fills in members who don't
@@ -128,18 +137,19 @@ const generateDuesForPeriod = async (period) => {
         return { created: 0, creditApplied: 0, total: 0, skipped: true, reason: 'The side fund is not currently active' };
     }
 
-    const shareholders = await query(`
-        SELECT sr.user_id, smo.monthly_amount AS override_amount
-        FROM   shareholding_registry sr
-        JOIN   users u ON u.id = sr.user_id
-        LEFT JOIN side_fund_member_overrides smo ON smo.user_id = sr.user_id
-        WHERE  sr.effective_to IS NULL
+    const members = await query(`
+        SELECT sm.user_id, smo.monthly_amount AS override_amount
+        FROM   side_fund_members sm
+        JOIN   users u ON u.id = sm.user_id
+        LEFT JOIN side_fund_member_overrides smo ON smo.user_id = sm.user_id
+        WHERE  sm.is_in = TRUE
+        AND    sm.start_period <= $1
         AND    u.is_active = TRUE
-    `);
+    `, [period]);
 
     let created = 0;
     let creditApplied = 0;
-    for (const s of shareholders.rows) {
+    for (const s of members.rows) {
         const dueAmount = s.override_amount != null ? s.override_amount : config.monthly_amount;
         // due_date is always the last day of this due's own period
         // month — the fund is a flat monthly amount, so "overdue" is
@@ -182,7 +192,59 @@ const generateDuesForPeriod = async (period) => {
         }
     }
 
-    return { created, creditApplied, total: shareholders.rows.length, skipped: false };
+    return { created, creditApplied, total: members.rows.length, skipped: false };
 };
 
-module.exports = { applySideFundPayment, generateDuesForPeriod };
+// ============================================================
+// PERIOD ARITHMETIC HELPER — 'YYYY-MM' string in, 'YYYY-MM' string
+// (n months later) out. No date library needed for whole-month steps.
+// ============================================================
+const addMonthsToPeriod = (period, n) => {
+    const [y, m] = period.split('-').map(Number);
+    const total = (y * 12 + (m - 1)) + n;
+    const newY = Math.floor(total / 12);
+    const newM = (total % 12) + 1;
+    return `${newY}-${String(newM).padStart(2, '0')}`;
+};
+
+const currentPeriod = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+// ============================================================
+// BACKFILL DUES FROM A PAST PERIOD (v1.32.0)
+// Called when a member is added to the side fund checklist with a
+// start_period in the past (e.g. joining today, backdated to
+// '2025-01') — loops generateDuesForPeriod month-by-month from
+// fromPeriod through the current period inclusive, so their overdue
+// balance immediately reflects every month they were meant to be
+// contributing, not just whichever month the next cron run happens to
+// land on. Safe to call for a fromPeriod that's the current month or
+// even in the future (the loop simply won't execute, or will run
+// once) — and safe to re-run, since generateDuesForPeriod itself is
+// idempotent per period.
+//
+// Deliberately generates dues for EVERY currently-checked-in member
+// for each historical period touched, not just the one member being
+// backfilled — harmless (ON CONFLICT DO NOTHING skips anyone who
+// already has that period's due) and correctly self-heals any other
+// gaps left by, e.g., a missed cron run, at the same time.
+// ============================================================
+const backfillDuesFromPeriod = async (fromPeriod) => {
+    const toPeriod = currentPeriod();
+    const results = [];
+    let period = fromPeriod;
+    // Bounded loop guard — over a century of months is never a
+    // legitimate backfill request, just a safety net against a bad
+    // input looping forever.
+    let guard = 0;
+    while (period <= toPeriod && guard < 1200) {
+        results.push({ period, ...(await generateDuesForPeriod(period)) });
+        period = addMonthsToPeriod(period, 1);
+        guard++;
+    }
+    return results;
+};
+
+module.exports = { applySideFundPayment, generateDuesForPeriod, backfillDuesFromPeriod };

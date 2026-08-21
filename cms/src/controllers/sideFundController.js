@@ -29,7 +29,9 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { notify } = require('../services/notificationService');
-const { applySideFundPayment, generateDuesForPeriod } = require('../services/sideFundService');
+const { applySideFundPayment, generateDuesForPeriod, backfillDuesFromPeriod } = require('../services/sideFundService');
+const { getSavingsAccount, getOrCreateSavingsBalance } = require('../services/savingsService');
+const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 
 // ============================================================
 // INTERNAL HELPER — lock and fetch the singleton config row
@@ -141,10 +143,33 @@ const updateSideFundConfig = asyncHandler(async (req, res) => {
 // GET /api/side-fund/dues/me
 // ============================================================
 const getMyDues = asyncHandler(async (req, res) => {
+    // v1.32.0 — the tx_* columns carry the linked transaction's own
+    // details (reference, account, balances) so the frontend can
+    // preview/print each paid due as a proper transaction statement
+    // (transactionTemplate) without a separate round-trip to
+    // GET /transactions/:id, which this member may not have
+    // FINANCE_VIEW_ALL to call. NULL on any due that hasn't been
+    // paid yet (no transaction_id) — the frontend simply omits the
+    // preview button for those rows.
     const result = await query(`
-        SELECT sfd.*, r.first_name || ' ' || r.last_name AS recorded_by_name
+        SELECT sfd.*, r.first_name || ' ' || r.last_name AS recorded_by_name,
+               rr.reference_code   AS tx_reference_code,
+               t.description       AS tx_description,
+               t.value_date        AS tx_value_date,
+               t.transaction_type  AS tx_transaction_type,
+               t.amount            AS tx_amount,
+               cur.code            AS tx_currency_code,
+               acc.name            AS tx_account_name,
+               cat.name            AS tx_category_name,
+               t.balance_before    AS tx_balance_before,
+               t.balance_after     AS tx_balance_after
         FROM   side_fund_dues sfd
         LEFT JOIN users r ON r.id = sfd.recorded_by
+        LEFT JOIN transactions t         ON t.id = sfd.transaction_id
+        LEFT JOIN references_registry rr ON rr.id = t.reference_id
+        LEFT JOIN accounts acc           ON acc.id = t.account_id
+        LEFT JOIN currencies cur         ON cur.id = t.currency_id
+        LEFT JOIN categories cat         ON cat.id = t.category_id
         WHERE  sfd.user_id = $1
         ORDER BY sfd.period DESC
     `, [req.user.id]);
@@ -565,7 +590,7 @@ const setMemberOverride = asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { monthly_amount } = req.body;
 
-    const userResult = await query('SELECT id, first_name, last_name FROM users WHERE id = $1', [userId]);
+    const userResult = await query('SELECT id, first_name, last_name FROM users WHERE id = $1 AND is_active = TRUE', [userId]);
     if (userResult.rows.length === 0) {
         throw createError.notFound('Member not found');
     }
@@ -750,6 +775,425 @@ const recordSideFundExpense = asyncHandler(async (req, res) => {
     });
 });
 
+// ============================================================
+// SIDE FUND MEMBERSHIP CHECKLIST (v1.32.0, Section 4.10)
+// Not every member subscribes to the side fund — this checklist is
+// the actual eligibility gate generateDuesForPeriod reads from. Being
+// "in" means: (a) monthly dues are generated for you from your own
+// start_period onward, and (b) you're eligible for a settlement
+// payout if/when you're later taken back "out". Eligible candidates
+// are everyone holding the Shareholder role (same eligibility rule
+// GET /users/shareholders uses, v1.27.3) — a member doesn't need any
+// contribution history to be added.
+// ============================================================
+
+// ============================================================
+// GET THE CHECKLIST — Treasurer/Admin (SIDE_FUND_VIEW)
+// GET /api/side-fund/members
+// Every active Shareholder, whether or not they've ever been added,
+// alongside their current in/out status and (if in) how much they
+// currently owe, so the treasurer can see coverage/overdue standing
+// right here without switching to the dues history.
+// ============================================================
+const getMembershipChecklist = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT
+            u.id AS user_id,
+            u.first_name || ' ' || u.last_name AS member_name,
+            u.email,
+            COALESCE(sm.is_in, FALSE) AS is_in,
+            sm.start_period,
+            sm.added_at,
+            sm.removed_at,
+            adder.first_name || ' ' || adder.last_name AS added_by_name,
+            COALESCE(od.overdue_count, 0)  AS overdue_count,
+            COALESCE(od.overdue_amount, 0) AS overdue_amount
+        FROM   users u
+        JOIN   user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+        JOIN   roles r       ON r.id = ur.role_id AND r.name = 'Shareholder' AND r.is_active = TRUE
+        LEFT JOIN side_fund_members sm ON sm.user_id = u.id
+        LEFT JOIN users adder ON adder.id = sm.added_by
+        LEFT JOIN (
+            SELECT user_id,
+                   COUNT(*) AS overdue_count,
+                   SUM(amount_due - amount_paid) AS overdue_amount
+            FROM   side_fund_dues
+            WHERE  status = 'DEFAULTED' OR (status IN ('PENDING', 'PARTIAL') AND due_date < CURRENT_DATE)
+            GROUP  BY user_id
+        ) od ON od.user_id = u.id
+        WHERE  u.is_active = TRUE
+        ORDER  BY u.first_name, u.last_name
+    `);
+    sendSuccess(res, result.rows.map(r => ({
+        ...r,
+        overdue_count:  parseInt(r.overdue_count),
+        overdue_amount: parseFloat(r.overdue_amount),
+    })));
+});
+
+// ============================================================
+// ADD (OR RE-ADD) A MEMBER — Treasurer/Admin (SIDE_FUND_MANAGE)
+// POST /api/side-fund/members/:userId
+// Body: { start_period } — 'YYYY-MM', can be in the past. If it is,
+// PENDING dues are immediately backfilled for every month from then
+// to the current one, so overdue reflects the true historical
+// obligation from day one instead of only whatever accrues from the
+// next cron run. Re-adding a member who previously left starts a
+// brand-new cycle — their prior side_fund_dues history stays exactly
+// as it was (already settled by that earlier exit payout, if any),
+// and the new start_period becomes the floor the NEXT time they leave.
+// ============================================================
+const addMember = asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { start_period } = req.body;
+
+    if (!start_period || !/^\d{4}-\d{2}$/.test(start_period)) {
+        throw createError.badRequest('start_period is required and must be in YYYY-MM format');
+    }
+
+    const userResult = await query(
+        'SELECT id, first_name, last_name FROM users WHERE id = $1 AND is_active = TRUE',
+        [userId]
+    );
+    if (userResult.rows.length === 0) {
+        throw createError.notFound('Member not found');
+    }
+    const member = userResult.rows[0];
+
+    const result = await query(`
+        INSERT INTO side_fund_members (user_id, is_in, start_period, added_by, added_at, removed_by, removed_at, updated_at)
+        VALUES ($1, TRUE, $2, $3, NOW(), NULL, NULL, NOW())
+        ON CONFLICT (user_id) DO UPDATE
+        SET is_in = TRUE, start_period = $2, added_by = $3, added_at = NOW(),
+            removed_by = NULL, removed_at = NULL, updated_at = NOW()
+        RETURNING *
+    `, [userId, start_period, req.user.id]);
+
+    await query(`
+        INSERT INTO side_fund_membership_events (user_id, event_type, start_period, performed_by)
+        VALUES ($1, 'JOINED', $2, $3)
+    `, [userId, start_period, req.user.id]);
+
+    await logAction(req.user.id, ACTIONS.SIDE_FUND_MEMBER_ADDED, MODULES.FINANCE, {
+        ipAddress:   req.ip,
+        recordType:  'side_fund_members',
+        recordId:    parseInt(userId),
+        newValues:   result.rows[0],
+        description: `${member.first_name} ${member.last_name} added to the side fund, starting ${start_period}`,
+    });
+
+    notify({
+        userId:     parseInt(userId),
+        type:       'SIDE_FUND_MEMBER_ADDED',
+        title:      'Added to the side fund',
+        body:       `You've been added to the side fund, starting ${start_period}.`,
+        link:       '/side-fund',
+        module:     'FINANCE',
+        recordType: 'side_fund_members',
+        recordId:   parseInt(userId),
+    });
+
+    // Runs AFTER the checklist row is committed, so generateDuesForPeriod
+    // (which reads side_fund_members fresh on every call) already sees
+    // this member as eligible for every period it processes.
+    const backfill = await backfillDuesFromPeriod(start_period);
+    const duesCreated = backfill.reduce((sum, r) => sum + (r.created || 0), 0);
+
+    sendSuccess(res, { ...result.rows[0], dues_backfilled: duesCreated },
+        `${member.first_name} ${member.last_name} added to the side fund, starting ${start_period}` +
+        (duesCreated > 0 ? ` — ${duesCreated} month(s) of dues generated` : ''));
+});
+
+// ============================================================
+// INTERNAL HELPER — compute a member's exit-payout breakdown.
+// `runner` is either `query` (top-level, read-only preview) or
+// `client.query.bind(client)` (inside the real removal transaction,
+// after the relevant rows are locked FOR UPDATE) — same formula
+// either way, so the preview a Treasurer sees before confirming can
+// never drift from what actually gets paid out.
+//
+// payout = (this member's own side_fund_dues.amount_paid, summed over
+//           every period >= their CURRENT start_period — i.e. this
+//           membership cycle only, so a past cycle already settled by
+//           an earlier exit payout is never counted twice)
+//        + (any side_fund_member_credit still banked)
+//        - (all-time side_fund_expenses, split evenly across every
+//           member currently marked is_in = TRUE, INCLUDING the one
+//           leaving)
+// floored at zero — a member is never asked to pay money back through
+// this mechanism; they simply receive nothing if their expense share
+// exceeds what they've paid in.
+// ============================================================
+const computeExitPayout = async (runner, userId) => {
+    const memberResult = await runner('SELECT * FROM side_fund_members WHERE user_id = $1', [userId]);
+    const member = memberResult.rows[0];
+    if (!member || !member.is_in) {
+        throw createError.badRequest('This member is not currently in the side fund');
+    }
+
+    const duesResult = await runner(`
+        SELECT COALESCE(SUM(amount_paid), 0) AS total
+        FROM   side_fund_dues
+        WHERE  user_id = $1 AND period >= $2
+    `, [userId, member.start_period]);
+    const duesPaid = parseFloat(duesResult.rows[0].total);
+
+    const creditResult = await runner(
+        'SELECT credit_balance FROM side_fund_member_credit WHERE user_id = $1', [userId]
+    );
+    const bankedCredit = parseFloat(creditResult.rows[0]?.credit_balance || 0);
+
+    const countResult = await runner('SELECT COUNT(*) AS c FROM side_fund_members WHERE is_in = TRUE');
+    const memberCount = parseInt(countResult.rows[0].c);
+
+    const expenseResult = await runner('SELECT COALESCE(SUM(amount), 0) AS total FROM side_fund_expenses');
+    const totalExpenses = parseFloat(expenseResult.rows[0].total);
+
+    const expenseShare = memberCount > 0 ? parseFloat((totalExpenses / memberCount).toFixed(4)) : 0;
+    const rawPayout = duesPaid + bankedCredit - expenseShare;
+    const payoutAmount = Math.max(0, parseFloat(rawPayout.toFixed(4)));
+
+    return { member, duesPaid, bankedCredit, memberCount, totalExpenses, expenseShare, payoutAmount };
+};
+
+// ============================================================
+// EXIT PAYOUT PREVIEW — Treasurer/Admin (SIDE_FUND_MANAGE)
+// GET /api/side-fund/members/:userId/payout-preview
+// Read-only — shows exactly what removing this member right now would
+// pay out, before it's confirmed. Uses the identical computeExitPayout()
+// the real removal below calls, so the preview can never disagree with
+// the actual result.
+// ============================================================
+const getExitPayoutPreview = asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const breakdown = await computeExitPayout(query, userId);
+    const userResult = await query('SELECT first_name, last_name FROM users WHERE id = $1', [userId]);
+    sendSuccess(res, {
+        user_id:        parseInt(userId),
+        member_name:    userResult.rows[0] ? `${userResult.rows[0].first_name} ${userResult.rows[0].last_name}` : null,
+        start_period:   breakdown.member.start_period,
+        dues_paid:      breakdown.duesPaid,
+        banked_credit:  breakdown.bankedCredit,
+        member_count:   breakdown.memberCount,
+        total_expenses: breakdown.totalExpenses,
+        expense_share:  breakdown.expenseShare,
+        payout_amount:  breakdown.payoutAmount,
+    });
+});
+
+// ============================================================
+// REMOVE A MEMBER — settles and pays out — Treasurer/Admin (SIDE_FUND_MANAGE)
+// PATCH /api/side-fund/members/:userId/remove
+// Computes the exit payout (computeExitPayout above) and, if positive,
+// transfers it straight into the member's own Savings balance: a
+// normal two-leg posting (DEBIT the side fund's parent account with
+// inflow_type SIDE_FUND_PAYOUT_OUT, CREDIT the Savings account) —
+// exactly the same shape as a Dividend approval. A Payment
+// Acknowledgement (source_type SIDE_FUND_PAYOUT) is then created for
+// the two-party sign-off, the same paper-trail pattern as every other
+// money-paid-OUT-to-an-individual flow in this system. If the payout
+// is zero, no transaction or acknowledgement is created — the member
+// is simply taken off the checklist. Body: { category_id,
+// exchange_rate } — exchange_rate only required if the side fund's
+// parent account and the Savings account are in different currencies
+// (same "display-only conversion is never used for real money" rule
+// as Dividends/Transfers).
+// ============================================================
+const removeMember = asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { category_id, exchange_rate } = req.body;
+
+    await withTransaction(async (client) => {
+        const config = await getConfigForUpdate(client);
+        if (!config.is_active) {
+            throw createError.badRequest('The side fund is not currently active');
+        }
+        if (!config.parent_account_id) {
+            throw createError.badRequest('The side fund has no parent account configured');
+        }
+
+        await client.query('SELECT * FROM side_fund_members WHERE user_id = $1 FOR UPDATE', [userId]);
+        await client.query(
+            'SELECT credit_balance FROM side_fund_member_credit WHERE user_id = $1 FOR UPDATE', [userId]
+        );
+
+        const breakdown = await computeExitPayout(client.query.bind(client), userId);
+        const { duesPaid, bankedCredit, memberCount, totalExpenses, expenseShare, payoutAmount } = breakdown;
+
+        const userResult = await client.query(
+            'SELECT first_name, last_name FROM users WHERE id = $1', [userId]
+        );
+        const memberUser = userResult.rows[0];
+
+        // The REMOVED event row is created up front — its breakdown
+        // fields are already fully known — so a Payment Acknowledgement
+        // created below (if any) has a real event id to point its
+        // source_id at, no placeholder/backfill needed.
+        const eventResult = await client.query(`
+            INSERT INTO side_fund_membership_events (
+                user_id, event_type, dues_paid, credit_applied, member_count,
+                total_expenses, expense_share, payout_amount, performed_by
+            ) VALUES ($1, 'REMOVED', $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id
+        `, [userId, duesPaid, bankedCredit, memberCount, totalExpenses, expenseShare, payoutAmount, req.user.id]);
+        const eventId = eventResult.rows[0].id;
+
+        let paymentAckId = null;
+        let creditRefCode = null;
+        let savingsTotal = 0;
+
+        if (payoutAmount > 0) {
+            const parentAccountResult = await client.query(
+                'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
+                [config.parent_account_id]
+            );
+            const parentAccount = parentAccountResult.rows[0];
+
+            const savingsAccount = await getSavingsAccount(client);
+
+            const sameCurrency = parentAccount.currency_id === savingsAccount.currency_id;
+            let effectiveRate = 1;
+            if (!sameCurrency) {
+                if (!exchange_rate) {
+                    throw createError.badRequest(
+                        'The side fund and Savings accounts are in different currencies — an exchange rate is required.'
+                    );
+                }
+                effectiveRate = parseFloat(exchange_rate);
+            }
+
+            const today = new Date().toISOString().split('T')[0];
+
+            // ---- Leg 1: debit the side fund's parent account ----
+            const { referenceId: debitRefId, referenceCode: debitRefCode } = await generateReference(
+                client, resolveModuleCode(parentAccount), 'SF-OUT', 'TRANSACTION', req.user.id
+            );
+            const debitPosting = await postTransaction(client, {
+                accountId:       config.parent_account_id,
+                transactionType: 'DEBIT',
+                inflowType:      'SIDE_FUND_PAYOUT_OUT',
+                amount:          payoutAmount,
+                currencyId:      parentAccount.currency_id,
+                categoryId:      category_id,
+                description:     `Side fund exit payout — ${memberUser.first_name} ${memberUser.last_name}`,
+                valueDate:       today,
+                createdBy:       req.user.id,
+                referenceId:     debitRefId,
+            });
+            await linkReferenceToRecord(client, debitRefId, debitPosting.transactionId);
+
+            await client.query(`
+                UPDATE side_fund_config
+                SET    current_balance = current_balance - $1, updated_at = NOW()
+                WHERE  id = 1
+            `, [payoutAmount]);
+
+            // ---- Leg 2: credit the member's Savings balance ----
+            savingsTotal = parseFloat((payoutAmount * effectiveRate).toFixed(4));
+
+            const { referenceId: creditRefId, referenceCode: creditRefCodeGenerated } = await generateReference(
+                client, resolveModuleCode(savingsAccount), 'SFSAV', 'TRANSACTION', req.user.id
+            );
+            creditRefCode = creditRefCodeGenerated;
+            const creditPosting = await postTransaction(client, {
+                accountId:       savingsAccount.id,
+                transactionType: 'CREDIT',
+                inflowType:      'SAVINGS_DEPOSIT_IN',
+                amount:          savingsTotal,
+                currencyId:      savingsAccount.currency_id,
+                categoryId:      category_id,
+                description:     `Side fund exit payout credited to savings — ${memberUser.first_name} ${memberUser.last_name}`,
+                valueDate:       today,
+                createdBy:       req.user.id,
+                referenceId:     creditRefId,
+            });
+            await linkReferenceToRecord(client, creditRefId, creditPosting.transactionId);
+
+            await getOrCreateSavingsBalance(client, userId, savingsAccount.currency_id);
+            await client.query(`
+                UPDATE savings_balances
+                SET    principal_balance = principal_balance + $1,
+                       currency_id = COALESCE(currency_id, $2),
+                       updated_at = NOW()
+                WHERE  user_id = $3
+            `, [savingsTotal, savingsAccount.currency_id, userId]);
+
+            const ack = await createPaymentAcknowledgement(client, {
+                sourceType:    'SIDE_FUND_PAYOUT',
+                sourceId:      eventId,
+                transactionId: creditPosting.transactionId,
+                payerId:       req.user.id,
+                recipientId:   parseInt(userId),
+                amount:        savingsTotal,
+                currencyId:    savingsAccount.currency_id,
+                purpose:       `Side fund exit payout — ${debitRefCode}`,
+            });
+            paymentAckId = ack.id;
+
+            await client.query(
+                'UPDATE side_fund_membership_events SET payment_ack_id = $1 WHERE id = $2',
+                [paymentAckId, eventId]
+            );
+        }
+
+        // Zero out any remaining banked credit — it's already folded
+        // into payoutAmount above, so it can't be left sitting there to
+        // be drawn down against a due that will now never exist.
+        if (bankedCredit > 0) {
+            await client.query(`
+                UPDATE side_fund_member_credit
+                SET    credit_balance = 0, updated_at = NOW()
+                WHERE  user_id = $1
+            `, [userId]);
+            await client.query(`
+                INSERT INTO side_fund_credit_ledger (user_id, delta, reason)
+                VALUES ($1, $2, $3)
+            `, [userId, -bankedCredit, 'Rolled into exit payout — member removed from the side fund']);
+        }
+
+        await client.query(`
+            UPDATE side_fund_members
+            SET    is_in = FALSE, removed_by = $1, removed_at = NOW(), updated_at = NOW()
+            WHERE  user_id = $2
+        `, [req.user.id, userId]);
+
+        await logAction(req.user.id, ACTIONS.SIDE_FUND_MEMBER_REMOVED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'side_fund_members',
+            recordId:    parseInt(userId),
+            newValues:   { duesPaid, bankedCredit, memberCount, totalExpenses, expenseShare, payoutAmount, creditRefCode },
+            description: `${memberUser.first_name} ${memberUser.last_name} removed from the side fund` +
+                (payoutAmount > 0 ? ` — ${payoutAmount} paid out to savings (${creditRefCode})` : ' — no payout was due'),
+            client,
+        });
+
+        notify({
+            userId:     parseInt(userId),
+            type:       'SIDE_FUND_MEMBER_REMOVED',
+            title:      'Removed from the side fund',
+            body:       payoutAmount > 0
+                ? `You've been taken off the side fund. ${savingsTotal} was credited to your savings — please review and acknowledge it.`
+                : `You've been taken off the side fund. No settlement amount was due.`,
+            link:       '/side-fund',
+            module:     'FINANCE',
+            recordType: 'side_fund_members',
+            recordId:   parseInt(userId),
+        });
+
+        sendSuccess(res, {
+            user_id:        parseInt(userId),
+            dues_paid:      duesPaid,
+            banked_credit:  bankedCredit,
+            member_count:   memberCount,
+            total_expenses: totalExpenses,
+            expense_share:  expenseShare,
+            payout_amount:  payoutAmount,
+            payment_ack_id: paymentAckId,
+        }, `${memberUser.first_name} ${memberUser.last_name} removed from the side fund` +
+            (payoutAmount > 0 ? ` — ${payoutAmount} paid out to savings, pending acknowledgement` : ' — no payout was due'));
+    });
+});
+
 module.exports = {
     getSideFundConfig,
     updateSideFundConfig,
@@ -767,4 +1211,8 @@ module.exports = {
     clearMemberOverride,
     getMyCredit,
     getAllCredit,
+    getMembershipChecklist,
+    addMember,
+    getExitPayoutPreview,
+    removeMember,
 };

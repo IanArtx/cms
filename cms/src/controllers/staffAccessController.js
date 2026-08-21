@@ -39,7 +39,7 @@ const grantDocument = asyncHandler(async (req, res) => {
     const docResult = await query('SELECT id, title FROM documents WHERE id = $1', [document_id]);
     if (docResult.rows.length === 0) throw createError.notFound('Document not found');
 
-    const userResult = await query('SELECT id, first_name, last_name FROM users WHERE id = $1', [user_id]);
+    const userResult = await query('SELECT id, first_name, last_name FROM users WHERE id = $1 AND is_active = TRUE', [user_id]);
     if (userResult.rows.length === 0) throw createError.notFound('User not found');
 
     const existing = await query(

@@ -2678,7 +2678,8 @@ BEGIN
             'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
             'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
             'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
-            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN'
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT'
         ));
 END $$;
 
@@ -2764,7 +2765,7 @@ CREATE TABLE payment_acknowledgements (
     id                   SERIAL PRIMARY KEY,
     reference_id         INTEGER       NOT NULL REFERENCES references_registry(id),
     source_type          VARCHAR(30)   NOT NULL
-                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT')),
+                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT', 'SIDE_FUND_PAYOUT')),
     source_id            INTEGER       NOT NULL,
     transaction_id       INTEGER       REFERENCES transactions(id),
     payer_id             INTEGER       NOT NULL REFERENCES users(id),
@@ -2794,5 +2795,81 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.30.2
+-- GROUP 27: SIDE FUND MEMBERSHIP CHECKLIST & EXIT PAYOUTS (v1.32.0,
+-- Section 4.10)
+--
+-- Before this, EVERY active shareholder automatically owed a monthly
+-- side fund due (generateDuesForPeriod sourced straight from
+-- shareholding_registry) — there was no way to opt a member out. This
+-- checklist replaces that blanket rule: dues are now only generated
+-- for a member while side_fund_members.is_in = TRUE, and only from
+-- their own start_period onward (which can be set in the past —
+-- adding a member with e.g. start_period = '2025-01' immediately
+-- backfills a PENDING due for every month from then to the current
+-- one, so their overdue balance reflects the true historical
+-- obligation, not just what accrued after today).
+--
+-- Removing a member (is_in -> FALSE) settles their standing:
+--   payout = (their own side_fund_dues.amount_paid, summed over every
+--             period >= their current start_period, i.e. this
+--             membership cycle only)
+--          + (any side_fund_member_credit balance still banked)
+--          - (total side_fund_expenses, split evenly across every
+--             member currently marked is_in = TRUE, INCLUDING the one
+--             leaving)
+-- floored at zero. If positive, it's transferred straight into the
+-- leaving member's own Savings balance (a normal two-leg posting —
+-- DEBIT the side fund's parent account with inflow_type
+-- SIDE_FUND_PAYOUT_OUT, CREDIT the Savings account — exactly the same
+-- shape as a Dividend approval) and a payment_acknowledgements row
+-- (source_type SIDE_FUND_PAYOUT) is created for the two-party
+-- sign-off, same as every other money-paid-OUT-to-an-individual flow
+-- in this system. A member who rejoins later gets a fresh start_period
+-- and a fresh JOINED event — their side_fund_dues history from the
+-- previous membership cycle is untouched and simply excluded from the
+-- next payout's "amount_paid" sum by the period >= start_period bound.
+-- ============================================================
+
+-- The checklist itself — one row per member who has ever been added,
+-- current state only (is_in is the live in/out flag). No row at all
+-- means "never added, not in the fund".
+CREATE TABLE side_fund_members (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id),
+    is_in        BOOLEAN NOT NULL DEFAULT FALSE,
+    start_period CHAR(7),  -- 'YYYY-MM' — required once is_in = TRUE; the first month this member owes a due
+    added_by     INTEGER REFERENCES users(id),
+    added_at     TIMESTAMPTZ,
+    removed_by   INTEGER REFERENCES users(id),
+    removed_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT side_fund_member_start_period_format
+        CHECK (start_period IS NULL OR start_period ~ '^\d{4}-\d{2}$'),
+    CONSTRAINT side_fund_member_in_needs_start_period
+        CHECK (is_in = FALSE OR start_period IS NOT NULL)
+);
+
+-- Audit trail of every join/leave — JOINED events record the
+-- start_period chosen; REMOVED events record the full exit-payout
+-- breakdown so it stays reviewable even after side_fund_members has
+-- moved on to a later cycle.
+CREATE TABLE side_fund_membership_events (
+    id             SERIAL PRIMARY KEY,
+    user_id        INTEGER     NOT NULL REFERENCES users(id),
+    event_type     VARCHAR(10) NOT NULL CHECK (event_type IN ('JOINED', 'REMOVED')),
+    start_period   CHAR(7),                  -- JOINED only
+    dues_paid      NUMERIC(20,4),            -- REMOVED only — this cycle's amount_paid sum
+    credit_applied NUMERIC(20,4),            -- REMOVED only — banked credit rolled into the payout
+    member_count   INTEGER,                  -- REMOVED only — divisor used for the expense split
+    total_expenses NUMERIC(20,4),            -- REMOVED only — all-time side_fund_expenses total at the time
+    expense_share  NUMERIC(20,4),            -- REMOVED only — total_expenses / member_count
+    payout_amount  NUMERIC(20,4),            -- REMOVED only — the amount actually transferred (0 if none)
+    payment_ack_id INTEGER REFERENCES payment_acknowledgements(id),
+    performed_by   INTEGER NOT NULL REFERENCES users(id),
+    performed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    notes          TEXT
+);
+CREATE INDEX idx_side_fund_membership_events_user ON side_fund_membership_events (user_id, performed_at DESC);
+
+-- ============================================================
+-- END OF SCHEMA — v1.32.0
 -- ============================================================

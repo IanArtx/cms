@@ -431,6 +431,34 @@ const documentTrail = (entries = []) => {
 };
 
 // ============================================================
+// MAP A "tx_*"-PREFIXED ROW INTO transactionTemplate()'S SHAPE (v1.32.0)
+// Self-service list endpoints that aren't themselves the Transactions
+// ledger (side-fund/dues/me, savings/me, savings/handouts/me) return
+// their linked transaction's own details as tx_-prefixed columns,
+// specifically so a member without FINANCE_VIEW_ALL can still
+// preview/print each one as a proper transaction statement — without
+// a separate call to GET /transactions/:id, which they may not have
+// permission for. Returns null when there's no linked transaction yet
+// (e.g. an unpaid due, or a deposit still pending approval), so
+// callers know to hide the preview button for that row.
+// ============================================================
+export const txFromRow = (row) => {
+    if (!row || !row.tx_reference_code) return null;
+    return {
+        reference_code:   row.tx_reference_code,
+        description:      row.tx_description,
+        value_date:       row.tx_value_date,
+        transaction_type: row.tx_transaction_type,
+        amount:           row.tx_amount,
+        currency_code:    row.tx_currency_code,
+        account_name:     row.tx_account_name,
+        category_name:    row.tx_category_name,
+        balance_before:   row.tx_balance_before,
+        balance_after:    row.tx_balance_after,
+    };
+};
+
+// ============================================================
 // TEMPLATE 1: TRANSACTION STATEMENT
 // Single transaction or list of transactions
 // ============================================================

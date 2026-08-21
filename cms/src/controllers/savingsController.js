@@ -873,6 +873,12 @@ const getSavingsBalanceByUser = asyncHandler(async (req, res) => {
 // GET /api/savings/me
 // ============================================================
 const getMySavings = asyncHandler(async (req, res) => {
+    // v1.32.0 — tx_* columns carry the linked deposit transaction's own
+    // details (reference, account, balances) so the frontend can
+    // preview/print each deposit as a proper transaction statement
+    // without a separate GET /transactions/:id round-trip (which this
+    // member may not have FINANCE_VIEW_ALL to call). NULL until the
+    // deposit is actually approved (no transaction_id yet).
     const result = await query(`
         SELECT
             ms.id, ms.entry_type, ms.status, ms.principal_amount,
@@ -891,11 +897,26 @@ const getMySavings = asyncHandler(async (req, res) => {
                 WHEN ms.maturity_date IS NOT NULL
                 THEN GREATEST(0, ms.maturity_date - CURRENT_DATE)
                 ELSE NULL
-            END AS days_to_maturity
+            END AS days_to_maturity,
+            txr.reference_code AS tx_reference_code,
+            tx.description      AS tx_description,
+            tx.value_date       AS tx_value_date,
+            tx.transaction_type AS tx_transaction_type,
+            tx.amount           AS tx_amount,
+            txc.code            AS tx_currency_code,
+            txa.name            AS tx_account_name,
+            txcat.name          AS tx_category_name,
+            tx.balance_before   AS tx_balance_before,
+            tx.balance_after    AS tx_balance_after
         FROM  member_savings ms
         JOIN  references_registry r ON r.id  = ms.reference_id
         JOIN  currencies c          ON c.id  = ms.currency_id
         JOIN  categories cat        ON cat.id = ms.category_id
+        LEFT JOIN transactions tx         ON tx.id = ms.transaction_id
+        LEFT JOIN references_registry txr ON txr.id = tx.reference_id
+        LEFT JOIN accounts txa             ON txa.id = tx.account_id
+        LEFT JOIN currencies txc           ON txc.id = tx.currency_id
+        LEFT JOIN categories txcat         ON txcat.id = tx.category_id
         WHERE ms.user_id = $1
         ORDER BY ms.created_at DESC
     `, [req.user.id]);
@@ -908,11 +929,29 @@ const getMySavings = asyncHandler(async (req, res) => {
 // GET /api/savings/handouts/me
 // ============================================================
 const getMySavingsHandouts = asyncHandler(async (req, res) => {
+    // v1.32.0 — tx_* columns, same purpose/reasoning as getMySavings
+    // above: preview/print each handout as a transaction statement
+    // without needing FINANCE_VIEW_ALL.
     const result = await query(`
-        SELECT sh.*, r.reference_code, c.code AS currency_code
+        SELECT sh.*, r.reference_code, c.code AS currency_code,
+               txr.reference_code AS tx_reference_code,
+               tx.description      AS tx_description,
+               tx.value_date       AS tx_value_date,
+               tx.transaction_type AS tx_transaction_type,
+               tx.amount           AS tx_amount,
+               txc.code            AS tx_currency_code,
+               txa.name            AS tx_account_name,
+               txcat.name          AS tx_category_name,
+               tx.balance_before   AS tx_balance_before,
+               tx.balance_after    AS tx_balance_after
         FROM   savings_handouts sh
         JOIN   references_registry r ON r.id = sh.reference_id
         JOIN   currencies c ON c.id = sh.currency_id
+        LEFT JOIN transactions tx         ON tx.id = sh.transaction_id
+        LEFT JOIN references_registry txr ON txr.id = tx.reference_id
+        LEFT JOIN accounts txa             ON txa.id = tx.account_id
+        LEFT JOIN currencies txc           ON txc.id = tx.currency_id
+        LEFT JOIN categories txcat         ON txcat.id = tx.category_id
         WHERE  sh.user_id = $1
         ORDER BY sh.created_at DESC
     `, [req.user.id]);

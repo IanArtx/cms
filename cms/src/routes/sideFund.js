@@ -137,6 +137,44 @@ router.get('/credit',
 );
 
 // ------------------------------------------------------------
+// MEMBERSHIP CHECKLIST (v1.32.0) — SIDE_FUND_MANAGE for anything that
+// changes membership or previews/executes a payout; SIDE_FUND_VIEW
+// for the read-only checklist itself.
+// ------------------------------------------------------------
+router.get('/members',
+    requirePermissions(['SIDE_FUND_VIEW']),
+    sideFundController.getMembershipChecklist
+);
+
+router.post('/members/:userId',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    validators.idParam('userId'),
+    [
+        body('start_period').matches(/^\d{4}-\d{2}$/).withMessage('start_period is required, in YYYY-MM format'),
+    ],
+    validateRequest,
+    sideFundController.addMember
+);
+
+router.get('/members/:userId/payout-preview',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    validators.idParam('userId'),
+    validateRequest,
+    sideFundController.getExitPayoutPreview
+);
+
+router.patch('/members/:userId/remove',
+    requirePermissions(['SIDE_FUND_MANAGE']),
+    validators.idParam('userId'),
+    [
+        body('category_id').optional().isInt({ min: 1 }),
+        body('exchange_rate').optional().isFloat({ min: 0.000001 }),
+    ],
+    validateRequest,
+    sideFundController.removeMember
+);
+
+// ------------------------------------------------------------
 // /:id ROUTES — must come after all the static routes above
 // ------------------------------------------------------------
 

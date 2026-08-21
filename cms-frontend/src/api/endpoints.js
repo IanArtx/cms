@@ -420,6 +420,11 @@ export const sideFundAPI = {
     // v1.28.3 — on-demand due generation (fills the gap left by pure
     // cron generation when the fund/backend went live after the 1st)
     generateDues:     (data) => api.post('/side-fund/dues/generate', data),
+    // v1.32.0 — membership checklist (who's in/out) + exit payouts
+    getMembers:        ()             => api.get('/side-fund/members'),
+    addMember:         (userId, data) => api.post(`/side-fund/members/${userId}`, data),
+    getPayoutPreview:  (userId)       => api.get(`/side-fund/members/${userId}/payout-preview`),
+    removeMember:      (userId, data) => api.patch(`/side-fund/members/${userId}/remove`, data),
 };
 
 // ============================================================

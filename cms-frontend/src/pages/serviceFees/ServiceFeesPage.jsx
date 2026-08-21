@@ -616,7 +616,7 @@ const ServiceFeesPage = () => {
         accountsAPI.getCurrencies().then(r => setCurrencies(r.data.data || [])).catch(() => {});
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         if (canManageAgreements) {
-            usersAPI.getAllUsers().then(r => setUsers(r.data.data || [])).catch(() => {});
+            usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setUsers(r.data.data || [])).catch(() => {});
         }
     }, [loadMine, loadAgreements, loadReimbursements, canManageAgreements]);
 

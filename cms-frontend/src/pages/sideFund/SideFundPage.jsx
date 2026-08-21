@@ -14,7 +14,9 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, Cog6ToothIcon, BanknotesIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, Cog6ToothIcon, BanknotesIcon, CheckCircleIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
+import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 
 // ============================================================
 // SETTINGS / ACTIVATION MODAL — Admin/Treasurer
@@ -759,6 +761,269 @@ const OverridesPanel = ({ config }) => {
 };
 
 // ============================================================
+// EXIT PAYOUT PREVIEW + CONFIRM MODAL (v1.32.0)
+// Fetches the same computeExitPayout() breakdown the backend actually
+// uses before executing the removal, so what's shown here can never
+// disagree with what gets paid out.
+// ============================================================
+const RemoveMemberModal = ({ isOpen, onClose, onSuccess, member, categories }) => {
+    const [preview, setPreview] = useState(null);
+    const [loadingPreview, setLoadingPreview] = useState(true);
+    const [categoryId, setCategoryId] = useState('');
+    const [exchangeRate, setExchangeRate] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (!isOpen || !member) return;
+        setPreview(null);
+        setCategoryId('');
+        setExchangeRate('');
+        setError(null);
+        setLoadingPreview(true);
+        sideFundAPI.getPayoutPreview(member.user_id)
+            .then(res => setPreview(res.data.data))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setLoadingPreview(false));
+    }, [isOpen, member]);
+
+    if (!isOpen || !member) return null;
+
+    const financeCategories = categories.filter(c => c.module === 'FINANCE');
+    const payoutDue = preview && parseFloat(preview.payout_amount) > 0;
+
+    const handleConfirm = async () => {
+        setSubmitting(true);
+        setError(null);
+        try {
+            await sideFundAPI.removeMember(member.user_id, {
+                category_id:   categoryId || undefined,
+                exchange_rate: exchangeRate || undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Remove {member.member_name} from the Side Fund
+                    </h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Settles their standing and pays out anything owed straight to their Savings balance.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    {loadingPreview ? (
+                        <p className="text-sm text-gray-400 mb-4">Calculating settlement...</p>
+                    ) : preview && (
+                        <div className="bg-gray-50 rounded-lg p-4 mb-4 space-y-1.5">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-500">Dues paid this cycle (since {preview.start_period})</span>
+                                <span className="text-gray-900 font-medium">{formatNumber(preview.dues_paid)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-500">Banked credit</span>
+                                <span className="text-gray-900 font-medium">{formatNumber(preview.banked_credit)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-500">
+                                    Expense share ({formatNumber(preview.total_expenses)} ÷ {preview.member_count} members)
+                                </span>
+                                <span className="text-red-600 font-medium">-{formatNumber(preview.expense_share)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm pt-1.5 border-t border-gray-200">
+                                <span className="text-gray-700 font-medium">Payout to savings</span>
+                                <span className="text-primary-700 font-bold">{formatNumber(preview.payout_amount)}</span>
+                            </div>
+                        </div>
+                    )}
+                    {payoutDue && (
+                        <div className="space-y-3 mb-4">
+                            <div>
+                                <label className="label">Category</label>
+                                <select className="input" value={categoryId} onChange={e => setCategoryId(e.target.value)}>
+                                    <option value="">Select category...</option>
+                                    {financeCategories.map(c => (
+                                        <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="label">Exchange Rate</label>
+                                <input type="number" className="input" value={exchangeRate}
+                                    onChange={e => setExchangeRate(e.target.value)}
+                                    min="0.000001" step="any" placeholder="Only if side fund and savings use different currencies" />
+                            </div>
+                        </div>
+                    )}
+                    <div className="flex justify-end gap-3 pt-2">
+                        <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                        <button type="button" onClick={handleConfirm} disabled={submitting || loadingPreview}
+                            className="btn-primary">
+                            {submitting ? 'Removing...' : 'Confirm Removal'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// MEMBERSHIP CHECKLIST PANEL — Treasurer/Admin (v1.32.0)
+// Not every shareholder has to be part of the side fund — only
+// members checked "in" here owe monthly dues (Section 4.10.3, this
+// replaces the old "every active shareholder automatically owes"
+// rule). Adding a member with a past start month immediately
+// backfills every missed month's due; removing one settles their
+// standing via RemoveMemberModal above.
+// ============================================================
+const MembershipPanel = () => {
+    const [rows, setRows] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+    const [addingUserId, setAddingUserId] = useState(null);
+    const [startPeriod, setStartPeriod] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [removingMember, setRemovingMember] = useState(null);
+    const [categories, setCategories] = useState([]);
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await sideFundAPI.getMembers();
+            setRows(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        load();
+        categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
+    }, [load]);
+
+    const startAdd = (row) => {
+        setAddingUserId(row.user_id);
+        setStartPeriod('');
+        setSuccess(null);
+        setError(null);
+    };
+
+    const cancelAdd = () => {
+        setAddingUserId(null);
+        setStartPeriod('');
+    };
+
+    const handleAdd = async (userId) => {
+        if (!startPeriod) {
+            setError('Choose a start month');
+            return;
+        }
+        setSaving(true);
+        setError(null);
+        try {
+            const res = await sideFundAPI.addMember(userId, { start_period: startPeriod });
+            const backfilled = res.data.data?.dues_backfilled || 0;
+            setSuccess(`Added to the side fund, starting ${startPeriod}` +
+                (backfilled > 0 ? ` — ${backfilled} month(s) of dues generated.` : '.'));
+            setAddingUserId(null);
+            setStartPeriod('');
+            await load();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div className="card">
+            <p className="text-sm text-gray-400 mb-4">
+                Not every shareholder has to be part of the side fund — only members checked "in" below owe monthly
+                dues. Adding a member with a past start month immediately backfills every missed month's due.
+                Removing a member settles their standing and pays out anything owed straight to their Savings balance.
+            </p>
+            {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+            {success && (
+                <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                    {success}
+                </div>
+            )}
+            {loading ? (
+                <p className="text-sm text-gray-400">Loading...</p>
+            ) : (
+                <div className="divide-y divide-gray-100">
+                    {rows.map(row => {
+                        const isAdding = addingUserId === row.user_id;
+                        return (
+                            <div key={row.user_id} className="flex items-center justify-between py-3 gap-4">
+                                <div className="min-w-0">
+                                    <p className="text-sm font-medium text-gray-900">{row.member_name}</p>
+                                    <p className="text-xs text-gray-400">
+                                        {row.is_in ? `In since ${row.start_period}` : 'Not in the side fund'}
+                                        {row.is_in && row.overdue_amount > 0
+                                            ? ` — ${formatNumber(row.overdue_amount)} overdue (${row.overdue_count} month${row.overdue_count > 1 ? 's' : ''})`
+                                            : ''}
+                                    </p>
+                                </div>
+                                {isAdding ? (
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <input type="month" className="input w-40" value={startPeriod}
+                                            onChange={e => setStartPeriod(e.target.value)}
+                                            max={currentPeriod()} autoFocus />
+                                        <button onClick={() => handleAdd(row.user_id)} disabled={saving}
+                                            className="text-xs text-primary-700 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50">
+                                            {saving ? 'Adding...' : 'Confirm'}
+                                        </button>
+                                        <button onClick={cancelAdd} className="text-xs text-gray-500 px-2 py-1">Cancel</button>
+                                    </div>
+                                ) : (
+                                    <div className="flex-shrink-0">
+                                        {row.is_in ? (
+                                            <button onClick={() => setRemovingMember(row)}
+                                                className="text-xs text-red-600 hover:text-red-700 font-medium px-2 py-1 rounded border border-red-200 hover:bg-red-50 transition-colors">
+                                                Remove
+                                            </button>
+                                        ) : (
+                                            <button onClick={() => startAdd(row)}
+                                                className="text-xs text-primary-700 hover:text-primary-800 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50 transition-colors">
+                                                Add to Side Fund
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                    {rows.length === 0 && (
+                        <p className="text-sm text-gray-400 py-4 text-center">No active shareholders found</p>
+                    )}
+                </div>
+            )}
+            <RemoveMemberModal
+                isOpen={!!removingMember}
+                onClose={() => setRemovingMember(null)}
+                onSuccess={() => { setSuccess(`${removingMember?.member_name} removed from the side fund.`); load(); }}
+                member={removingMember}
+                categories={categories}
+            />
+        </div>
+    );
+};
+
+// ============================================================
 // MEMBER CREDIT PANEL — Treasurer/Admin (v1.25.0)
 // Members currently sitting on banked credit — money paid ahead of
 // what was owed, held back to auto-cover future months' dues as
@@ -828,6 +1093,7 @@ const SideFundPage = () => {
     const [showExpense, setShowExpense] = useState(false);
     const [showBulkPay, setShowBulkPay] = useState(false);
     const [payingDue, setPayingDue] = useState(null);
+    const [preview, setPreview] = useState(null);
 
     const canManage      = hasPermission('SIDE_FUND_MANAGE');
     const canView         = hasPermission('SIDE_FUND_VIEW');
@@ -897,6 +1163,25 @@ const SideFundPage = () => {
         { header: 'Amount Paid', render: row => <span className="text-sm text-green-600">{formatNumber(row.amount_paid)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
         { header: 'Paid Date', render: row => <span className="text-sm text-gray-500">{row.paid_date ? formatDate(row.paid_date) : '—'}</span> },
+        {
+            header: 'Transaction',
+            render: row => {
+                const tx = txFromRow(row);
+                if (!tx) return <span className="text-xs text-gray-300">—</span>;
+                return (
+                    <div className="flex items-center gap-2">
+                        <button onClick={() => setPreview({ html: transactionTemplate(tx), title: tx.reference_code })}
+                            className="font-mono text-xs font-medium text-primary-700 hover:underline" title="Preview">
+                            {tx.reference_code}
+                        </button>
+                        <button onClick={() => printDocument(transactionTemplate(tx), tx.reference_code)}
+                            className="text-gray-400 hover:text-gray-600" title="Download">
+                            <ArrowDownTrayIcon className="h-4 w-4" />
+                        </button>
+                    </div>
+                );
+            },
+        },
     ];
 
     const allDuesColumns = [
@@ -1056,6 +1341,12 @@ const SideFundPage = () => {
                         Member Overrides
                     </button>
                 )}
+                {canManage && (
+                    <button onClick={() => setActiveTab('membership')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'membership' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        Membership
+                    </button>
+                )}
             </div>
 
             {activeTab === 'mine' && (
@@ -1115,6 +1406,8 @@ const SideFundPage = () => {
 
             {activeTab === 'overrides' && canManage && <OverridesPanel config={config} />}
 
+            {activeTab === 'membership' && canManage && <MembershipPanel />}
+
             <SettingsModal
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
@@ -1142,6 +1435,7 @@ const SideFundPage = () => {
                 onSuccess={refreshAll}
                 categories={categories}
             />
+            <DocumentPreviewModal preview={preview} onClose={() => setPreview(null)} />
         </div>
     );
 };

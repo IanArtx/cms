@@ -55,7 +55,7 @@ router.get('/',
     requirePermissions(['PAYMENT_ACK_VIEW']),
     [
         query('status').optional().isIn(['PENDING_ACK', 'ACKNOWLEDGED', 'DISPUTED', 'FINAL_APPROVED']),
-        query('source_type').optional().isIn(['DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT']),
+        query('source_type').optional().isIn(['DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT', 'SIDE_FUND_PAYOUT']),
     ],
     validateRequest,
     paymentAcknowledgementsController.getAllAcknowledgements

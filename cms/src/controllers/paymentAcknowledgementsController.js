@@ -45,6 +45,7 @@ const SOURCE_LABELS = {
     SERVICE_FEE_PAYMENT:  'Service Fee Payment',
     REIMBURSEMENT:        'Expense Reimbursement',
     SAVINGS_HANDOUT:      'Savings Handout',
+    SIDE_FUND_PAYOUT:     'Side Fund Exit Payout',
 };
 
 // ============================================================

@@ -26,11 +26,17 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const { user, hasPermission } = useAuth();
     const [form, setForm] = useState({
         amount: '', contribution_date: '', category_id: '',
-        notes: '', contributed_by: '', side_fund_amount: '',
+        notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
     const [sideFundActive, setSideFundActive] = useState(false);
+    // v1.31.0 — both slice fields are now checkbox-gated: the amount
+    // input only appears once its own checkbox is explicitly checked.
+    // Unchecking a box also clears its stored amount, so a hidden,
+    // stale value can never be silently submitted.
+    const [includeSideFund, setIncludeSideFund] = useState(false);
+    const [includeSavings,  setIncludeSavings]  = useState(false);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -49,12 +55,15 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
             await transactionsAPI.recordContribution({
                 ...form,
                 contributed_by: form.contributed_by || user.id,
-                side_fund_amount: form.side_fund_amount || undefined,
+                side_fund_amount: includeSideFund ? (form.side_fund_amount || undefined) : undefined,
+                savings_amount:   includeSavings  ? (form.savings_amount  || undefined) : undefined,
             });
             onSuccess();
             onClose();
             setForm({ amount: '', contribution_date: '', category_id: '',
-                notes: '', contributed_by: '', side_fund_amount: '' });
+                notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '' });
+            setIncludeSideFund(false);
+            setIncludeSavings(false);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -64,9 +73,10 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
 
     const financeCategories = categories.filter(c => c.module === 'FINANCE');
     const canRecordForOthers = hasPermission('FINANCE_VIEW_ALL');
-    const sideFundPortion = parseFloat(form.side_fund_amount) || 0;
+    const sideFundPortion = includeSideFund ? (parseFloat(form.side_fund_amount) || 0) : 0;
+    const savingsPortion  = includeSavings  ? (parseFloat(form.savings_amount)  || 0) : 0;
     const totalAmount     = parseFloat(form.amount) || 0;
-    const contributionRemainder = Math.max(0, totalAmount - sideFundPortion);
+    const contributionRemainder = Math.max(0, totalAmount - sideFundPortion - savingsPortion);
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -115,17 +125,58 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                         </div>
                         {sideFundActive && (
                             <div>
-                                <label className="label">Side Fund Portion (optional)</label>
-                                <input type="number" className="input" value={form.side_fund_amount}
-                                    onChange={e => setForm(p => ({
-                                        ...p, side_fund_amount: e.target.value }))}
-                                    min="0" step="0.01" max={form.amount || undefined}
-                                    placeholder="0.00" />
-                                <p className="text-xs text-gray-400 mt-1">
-                                    Sliced out of the total above and credited to this member's own side fund
-                                    dues. Contribution recorded: <strong>{contributionRemainder.toFixed(2)}</strong>
-                                </p>
+                                <label className="flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" checked={includeSideFund}
+                                        onChange={e => {
+                                            const checked = e.target.checked;
+                                            setIncludeSideFund(checked);
+                                            if (!checked) setForm(p => ({ ...p, side_fund_amount: '' }));
+                                        }} />
+                                    This contribution includes a side fund portion
+                                </label>
+                                {includeSideFund && (
+                                    <div className="mt-2">
+                                        <label className="label">Side Fund Portion</label>
+                                        <input type="number" className="input" value={form.side_fund_amount}
+                                            onChange={e => setForm(p => ({
+                                                ...p, side_fund_amount: e.target.value }))}
+                                            min="0" step="0.01" max={form.amount || undefined}
+                                            placeholder="0.00" />
+                                        <p className="text-xs text-gray-400 mt-1">
+                                            Sliced out of the total above and credited to this member's own side fund dues.
+                                        </p>
+                                    </div>
+                                )}
                             </div>
+                        )}
+                        <div>
+                            <label className="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" checked={includeSavings}
+                                    onChange={e => {
+                                        const checked = e.target.checked;
+                                        setIncludeSavings(checked);
+                                        if (!checked) setForm(p => ({ ...p, savings_amount: '' }));
+                                    }} />
+                                This contribution includes a savings portion
+                            </label>
+                            {includeSavings && (
+                                <div className="mt-2">
+                                    <label className="label">Savings Portion</label>
+                                    <input type="number" className="input" value={form.savings_amount}
+                                        onChange={e => setForm(p => ({
+                                            ...p, savings_amount: e.target.value }))}
+                                        min="0" step="0.01" max={form.amount || undefined}
+                                        placeholder="0.00" />
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        Sliced out of the total above and credited directly to this member's own savings balance.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                        {(includeSideFund || includeSavings) && (
+                            <p className="text-xs text-gray-400 -mt-2">
+                                Contribution recorded: <strong>{contributionRemainder.toFixed(2)}</strong>
+                            </p>
                         )}
                         <div>
                             <label className="label">Contribution Date *</label>

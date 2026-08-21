@@ -19,6 +19,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { applySideFundPayment } = require('../services/sideFundService');
+const { getOrCreateSavingsBalance, getSavingsAccount } = require('../services/savingsService');
 
 // ============================================================
 // INTERNAL HELPER — GET CURRENT FLOOR LIMIT
@@ -498,6 +499,82 @@ const creditSideFundContribution = async (client, {
 };
 
 // ============================================================
+// CREDIT SAVINGS CONTRIBUTION (shared core logic, v1.31.0)
+// The savings slice of a Transactions contribution — mirrors
+// creditSideFundContribution exactly, but for Savings: posted as its
+// own ledger transaction into the dedicated SAVINGS account, then
+// credited straight to that member's savings_balances.principal_balance.
+// This deliberately bypasses the normal member_savings /
+// PENDING_APPROVAL / approveSavingsDeposit two-step flow — the
+// Treasurer already has authority by virtue of personally recording
+// the contribution, exactly the same reasoning already established
+// for the side fund slice (and the same pattern dividendsController's
+// approveDividend already uses to credit savings directly). Must be
+// called from inside an existing `withTransaction` block.
+// ============================================================
+const creditSavingsContribution = async (client, {
+    userId, amount, contributionDate, categoryId, recordedByUserId,
+}) => {
+    const memberResult = await client.query(
+        'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+        [userId]
+    );
+    if (memberResult.rows.length === 0) {
+        throw createError.notFound('Contributing member not found');
+    }
+    const member = memberResult.rows[0];
+
+    const savingsAccount = await getSavingsAccount(client);
+
+    const { referenceId, referenceCode } = await generateReference(
+        client, resolveModuleCode(savingsAccount), 'SAV-IN', 'TRANSACTION', recordedByUserId
+    );
+
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId:       savingsAccount.id,
+        transactionType: 'CREDIT',
+        inflowType:      'SAVINGS_DEPOSIT_IN',
+        amount,
+        currencyId:      savingsAccount.currency_id,
+        categoryId,
+        description:     `Savings portion of contribution — ${member.first_name} ${member.last_name}`,
+        valueDate:       contributionDate,
+        createdBy:       recordedByUserId,
+        referenceId,
+    });
+    await linkReferenceToRecord(client, referenceId, transactionId);
+
+    await getOrCreateSavingsBalance(client, userId, savingsAccount.currency_id);
+    await client.query(`
+        UPDATE savings_balances
+        SET    principal_balance = principal_balance + $1,
+               currency_id = COALESCE(currency_id, $2),
+               updated_at = NOW()
+        WHERE  user_id = $3
+    `, [amount, savingsAccount.currency_id, userId]);
+
+    await logAction(recordedByUserId, ACTIONS.SAVINGS_CONTRIBUTION_CREDITED, MODULES.FINANCE, {
+        recordType:  'savings_balances',
+        newValues:   { referenceCode, amount, balanceBefore, balanceAfter },
+        description: `Savings portion of contribution: ${member.first_name} ${member.last_name} — ${amount} (${referenceCode})`,
+        client,
+    });
+
+    notify({
+        userId,
+        type:       'SAVINGS_CONTRIBUTION_CREDITED',
+        title:      'Savings contribution recorded',
+        body:       `${amount} of your contribution was credited directly to your savings balance (reference ${referenceCode}).`,
+        link:       `/savings`,
+        module:     'FINANCE',
+        recordType: 'savings_balances',
+        recordId:   null,
+    });
+
+    return { transactionId, balanceBefore, balanceAfter, referenceCode, member };
+};
+
+// ============================================================
 // RECORD SHAREHOLDER CONTRIBUTION
 // POST /api/transactions/contributions
 // Treasurer/Assistant Treasurer only. contributed_by: the member
@@ -511,6 +588,15 @@ const creditSideFundContribution = async (client, {
 // as the capital contribution. This is now the only way a Side Fund
 // payment can ride along with a Transactions entry — the old
 // standalone "Add Funds Directly" side fund feature is gone.
+//
+// v1.31.0 — a second, independent optional savings_amount can ALSO
+// be sliced out of the same total, following the identical pattern:
+// that portion is credited straight to the member's own Savings
+// balance (see creditSavingsContribution above), and whatever is left
+// after BOTH slices are removed is what actually gets recorded as the
+// capital contribution. The two slices are independent of each other
+// (a contribution can include a side fund portion, a savings portion,
+// both, or neither) and together must not exceed the total amount.
 // ============================================================
 const recordContribution = asyncHandler(async (req, res) => {
     const {
@@ -520,6 +606,7 @@ const recordContribution = asyncHandler(async (req, res) => {
         notes,
         contributed_by, // user_id of the contributing member
         side_fund_amount,
+        savings_amount,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -529,20 +616,35 @@ const recordContribution = asyncHandler(async (req, res) => {
 
         const totalAmount = parseFloat(amount);
         const sideFundAmount = side_fund_amount ? parseFloat(side_fund_amount) : 0;
+        const savingsAmount = savings_amount ? parseFloat(savings_amount) : 0;
 
         if (sideFundAmount < 0) {
             throw createError.badRequest('The side fund portion cannot be negative');
         }
-        if (sideFundAmount > totalAmount) {
-            throw createError.badRequest('The side fund portion cannot exceed the total amount');
+        if (savingsAmount < 0) {
+            throw createError.badRequest('The savings portion cannot be negative');
         }
-        const contributionAmount = parseFloat((totalAmount - sideFundAmount).toFixed(4));
+        if (sideFundAmount + savingsAmount > totalAmount) {
+            throw createError.badRequest('The side fund and savings portions together cannot exceed the total amount');
+        }
+        const contributionAmount = parseFloat((totalAmount - sideFundAmount - savingsAmount).toFixed(4));
 
         let sideFund = null;
         if (sideFundAmount > 0) {
             sideFund = await creditSideFundContribution(client, {
                 userId:            contributorId,
                 amount:            sideFundAmount,
+                contributionDate:  contribution_date,
+                categoryId:        category_id,
+                recordedByUserId:  req.user.id,
+            });
+        }
+
+        let savings = null;
+        if (savingsAmount > 0) {
+            savings = await creditSavingsContribution(client, {
+                userId:            contributorId,
+                amount:            savingsAmount,
                 contributionDate:  contribution_date,
                 categoryId:        category_id,
                 recordedByUserId:  req.user.id,
@@ -561,13 +663,15 @@ const recordContribution = asyncHandler(async (req, res) => {
             });
         }
 
-        if (!contribution && !sideFund) {
+        if (!contribution && !sideFund && !savings) {
             throw createError.badRequest('Amount must be greater than zero');
         }
 
         const contributorName = contribution
             ? `${contribution.contributor.first_name} ${contribution.contributor.last_name}`
-            : `${sideFund.member.first_name} ${sideFund.member.last_name}`;
+            : sideFund
+                ? `${sideFund.member.first_name} ${sideFund.member.last_name}`
+                : `${savings.member.first_name} ${savings.member.last_name}`;
 
         if (contribution) {
             await logAction(req.user.id, ACTIONS.CONTRIBUTION_CREATED, MODULES.FINANCE, {
@@ -595,9 +699,12 @@ const recordContribution = asyncHandler(async (req, res) => {
             side_fund_reference:  sideFund ? sideFund.referenceCode : null,
             side_fund_settled:    sideFund ? sideFund.settled : [],
             side_fund_credit_banked: sideFund ? sideFund.creditBanked : 0,
+            savings_amount:       savingsAmount,
+            savings_reference:    savings ? savings.referenceCode : null,
         }, `Contribution recorded for ${contributorName}` +
             (contribution ? `. Reference: ${contribution.referenceCode}` : '') +
-            (sideFund ? ` — ${sideFundAmount} side fund portion recorded (${sideFund.referenceCode})` : ''));
+            (sideFund ? ` — ${sideFundAmount} side fund portion recorded (${sideFund.referenceCode})` : '') +
+            (savings ? ` — ${savingsAmount} savings portion recorded (${savings.referenceCode})` : ''));
     });
 });
 

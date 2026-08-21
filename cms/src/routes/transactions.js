@@ -74,6 +74,12 @@ router.post('/contributions',
         // the remainder is what gets recorded as the contribution.
         body('side_fund_amount')
             .optional().isFloat({ min: 0.01 }).withMessage('Side fund portion must be greater than zero'),
+        // v1.31.0 — optional savings portion, independent of and
+        // additional to the side fund portion above; both are sliced
+        // out of the same total (combined cross-field check happens in
+        // the controller, since it needs the total amount too).
+        body('savings_amount')
+            .optional().isFloat({ min: 0.01 }).withMessage('Savings portion must be greater than zero'),
     ],
     validateRequest,
     transactionsController.recordContribution

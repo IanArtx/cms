@@ -11,10 +11,12 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { authAPI } from '../../api/endpoints';
+import { useBranding } from '../../contexts/BrandingContext';
 import { getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../../components/common/ErrorMessage';
 
 const ForgotPasswordPage = () => {
+    const { branding } = useBranding();
     const [email, setEmail]     = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError]     = useState(null);
@@ -42,13 +44,18 @@ const ForgotPasswordPage = () => {
                 {/* Logo / Company Name */}
                 <div className="text-center mb-8">
                     <div className="inline-flex items-center justify-center w-16 h-16
-                        bg-white rounded-2xl shadow-lg mb-4">
-                        <span className="text-primary-900 font-bold text-xl">
-                            {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
-                        </span>
+                        bg-white rounded-2xl shadow-lg mb-4 overflow-hidden">
+                        {branding.logo_url ? (
+                            <img src={branding.logo_url} alt="Company Logo"
+                                className="w-full h-full object-contain" />
+                        ) : (
+                            <span className="text-primary-900 font-bold text-xl">
+                                {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
+                            </span>
+                        )}
                     </div>
                     <h1 className="text-2xl font-bold text-white">
-                        {process.env.REACT_APP_COMPANY_NAME || 'Company Management System'}
+                        {branding.company_name}
                     </h1>
                     <p className="text-primary-200 mt-1 text-sm">
                         Reset your password

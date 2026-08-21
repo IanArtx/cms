@@ -17,7 +17,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { settingsAPI } from '../api/endpoints';
 import { setBranding as setExportBranding } from '../utils/exportUtils';
-import { useAuth } from './AuthContext';
 
 const DEFAULTS = {
     company_name:    process.env.REACT_APP_COMPANY_NAME || 'Company Management System',
@@ -36,7 +35,6 @@ const applyCssVariables = (branding) => {
 };
 
 export const BrandingProvider = ({ children }) => {
-    const { isAuthenticated } = useAuth();
     const [branding, setBrandingState] = useState(DEFAULTS);
     const [loading, setLoading] = useState(true);
 
@@ -70,23 +68,27 @@ export const BrandingProvider = ({ children }) => {
                 accentColor:  data.accent_color,
             });
         } catch {
-            // Not authenticated yet, or the settings endpoint failed —
-            // fall back to defaults silently. The sidebar/topbar/
-            // documents are only ever shown once logged in anyway.
+            // GET /settings/company is public (v1.32.3) so this should
+            // basically never fail from an auth standpoint — a genuine
+            // network error or the backend being down is the realistic
+            // case now. Fall back to defaults silently either way.
             applyCssVariables(DEFAULTS);
         } finally {
             setLoading(false);
         }
     }, []);
 
+    // Runs once on mount, regardless of login state (v1.32.3) — this is
+    // what lets the pre-login Login/Register/Forgot Password/Consent
+    // pages show this deployment's real company name/logo/colors instead
+    // of whatever's baked into the frontend build at build time
+    // (REACT_APP_COMPANY_NAME / the static public/logo.png fallback),
+    // which is what let Company A's bundled logo silently show through
+    // on Company B's login page despite Company B's own logo already
+    // being uploaded and correctly stored.
     useEffect(() => {
-        if (isAuthenticated) {
-            refresh();
-        } else {
-            setLoading(false);
-            applyCssVariables(DEFAULTS);
-        }
-    }, [isAuthenticated, refresh]);
+        refresh();
+    }, [refresh]);
 
     return (
         <BrandingContext.Provider value={{ branding, loading, refresh }}>

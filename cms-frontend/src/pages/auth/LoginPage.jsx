@@ -6,11 +6,13 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useBranding } from '../../contexts/BrandingContext';
 import { getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../../components/common/ErrorMessage';
 
 const LoginPage = () => {
     const { login, verify2FA } = useAuth();
+    const { branding } = useBranding();
     const navigate  = useNavigate();
     const location  = useLocation();
     const from      = location.state?.from?.pathname || '/';
@@ -76,26 +78,25 @@ const LoginPage = () => {
                 <div className="text-center mb-8">
                     <div className="inline-flex items-center justify-center w-16 h-16
                         bg-white rounded-2xl shadow-lg mb-4 overflow-hidden">
-                        {/* Uses the bundled /logo.png static asset (not the
-                            /api/settings/company endpoint) — this page loads
-                            before any login happens, so there's no token yet
-                            to call an authenticated endpoint with. Falls back
-                            to initials only if that file is somehow missing. */}
-                        <img
-                            src="/logo.png"
-                            alt="Company Logo"
-                            className="w-full h-full object-contain"
-                            onError={(e) => {
-                                e.target.style.display = 'none';
-                                e.target.parentElement.innerHTML =
-                                    `<span class="text-primary-900 font-bold text-xl">${
-                                        process.env.REACT_APP_COMPANY_INITIALS || 'CMS'
-                                    }</span>`;
-                            }}
-                        />
+                        {/* GET /settings/company is public (v1.32.3), so this
+                            page — which loads before any login happens — can
+                            now show this deployment's actual uploaded logo
+                            instead of the bundled /logo.png static asset,
+                            which was the same file for every company sharing
+                            this codebase. Falls back to initials if no logo
+                            has been uploaded yet, same pattern as
+                            ConsentPage/PendingApprovalPage. */}
+                        {branding.logo_url ? (
+                            <img src={branding.logo_url} alt="Company Logo"
+                                className="w-full h-full object-contain" />
+                        ) : (
+                            <span className="text-primary-900 font-bold text-xl">
+                                {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
+                            </span>
+                        )}
                     </div>
                     <h1 className="text-2xl font-bold text-white">
-                        {process.env.REACT_APP_COMPANY_NAME || 'Company Management System'}
+                        {branding.company_name}
                     </h1>
                     <p className="text-primary-200 mt-1 text-sm">
                         {step === 'login'

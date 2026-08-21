@@ -6,11 +6,13 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { authAPI } from '../../api/endpoints';
+import { useBranding } from '../../contexts/BrandingContext';
 import { getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../../components/common/ErrorMessage';
 
 const RegisterPage = () => {
     const navigate = useNavigate();
+    const { branding } = useBranding();
 
     const [roles,   setRoles]   = useState([]);
     const [loading, setLoading] = useState(false);
@@ -121,20 +123,18 @@ const RegisterPage = () => {
                 <div className="text-center mb-8">
                     <div className="inline-flex items-center justify-center w-16 h-16
                         bg-white rounded-2xl shadow-lg mb-4 overflow-hidden">
-                        {/* Same bundled /logo.png fallback pattern as LoginPage —
-                            no auth token exists yet on this page. */}
-                        <img
-                            src="/logo.png"
-                            alt="Company Logo"
-                            className="w-full h-full object-contain"
-                            onError={(e) => {
-                                e.target.style.display = 'none';
-                                e.target.parentElement.innerHTML =
-                                    `<span class="text-primary-900 font-bold text-xl">${
-                                        process.env.REACT_APP_COMPANY_INITIALS || 'CMS'
-                                    }</span>`;
-                            }}
-                        />
+                        {/* GET /settings/company is public (v1.32.3) — same
+                            pattern as LoginPage, so this page shows the real
+                            uploaded logo instead of the shared bundled
+                            /logo.png fallback. */}
+                        {branding.logo_url ? (
+                            <img src={branding.logo_url} alt="Company Logo"
+                                className="w-full h-full object-contain" />
+                        ) : (
+                            <span className="text-primary-900 font-bold text-xl">
+                                {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
+                            </span>
+                        )}
                     </div>
                     <h1 className="text-2xl font-bold text-white">Create Account</h1>
                     <p className="text-primary-200 mt-1 text-sm">

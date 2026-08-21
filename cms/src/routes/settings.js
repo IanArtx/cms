@@ -11,13 +11,21 @@ const { authenticate, requireRoles } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const settingsController = require('../controllers/settingsController');
 
-router.use(authenticate);
-
-// Read — any authenticated user (sidebar/topbar/documents need this
-// on every page load, not just for admins).
+// Read — deliberately PUBLIC, no `authenticate` (v1.32.3). The
+// pre-login pages (Login/Register/Forgot Password/Consent) need the
+// real company name/logo/colors too, not just whatever's baked into
+// the frontend build at REACT_APP_COMPANY_NAME/logo.png — otherwise a
+// second company deployed from this same codebase (e.g. Company B)
+// shows Company A's bundled logo.png right up until the user logs in.
+// Nothing returned here is sensitive — company identity/branding
+// only, no financial or personal data — so this is safe to expose
+// without a session, the same way a login page for any white-labeled
+// SaaS product shows the tenant's own branding before sign-in.
 router.get('/company',
     settingsController.getCompanySettings
 );
+
+router.use(authenticate);
 
 // Write — restricted to the "Admin" role directly, not the
 // configurable permission system. Company identity is foundational

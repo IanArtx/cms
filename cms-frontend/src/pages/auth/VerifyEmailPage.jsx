@@ -7,8 +7,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { authAPI } from '../../api/endpoints';
+import { useBranding } from '../../contexts/BrandingContext';
 
 const VerifyEmailPage = () => {
+    const { branding } = useBranding();
     const [searchParams]  = useSearchParams();
     const navigate        = useNavigate();
     const token           = searchParams.get('token');
@@ -49,13 +51,18 @@ const VerifyEmailPage = () => {
                 {/* Logo */}
                 <div className="text-center mb-8">
                     <div className="inline-flex items-center justify-center
-                        w-16 h-16 bg-white rounded-2xl shadow-lg mb-4">
-                        <span className="text-primary-900 font-bold text-xl">
-                            {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
-                        </span>
+                        w-16 h-16 bg-white rounded-2xl shadow-lg mb-4 overflow-hidden">
+                        {branding.logo_url ? (
+                            <img src={branding.logo_url} alt="Company Logo"
+                                className="w-full h-full object-contain" />
+                        ) : (
+                            <span className="text-primary-900 font-bold text-xl">
+                                {process.env.REACT_APP_COMPANY_INITIALS || 'CMS'}
+                            </span>
+                        )}
                     </div>
                     <h1 className="text-2xl font-bold text-white">
-                        {process.env.REACT_APP_COMPANY_NAME}
+                        {branding.company_name}
                     </h1>
                 </div>
 

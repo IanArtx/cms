@@ -19,9 +19,11 @@ const { uploadBuffer, generateKey } = require('../services/storageService');
 // ============================================================
 // GET COMPANY SETTINGS
 // GET /api/settings/company
-// Available to any authenticated user — the frontend needs this
-// on every page load to render the sidebar/topbar/logo correctly,
-// not just for admins.
+// Public — no authentication required (v1.32.3; see routes/settings.js's
+// comment on this route for why). The frontend needs this on every page
+// load, including the pre-login Login/Register/Forgot Password/Consent
+// pages, to render the sidebar/topbar/logo/documents correctly for
+// whichever company this deployment actually is.
 // ============================================================
 const getCompanySettings = asyncHandler(async (req, res) => {
     const result = await query(`

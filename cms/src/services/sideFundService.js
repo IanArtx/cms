@@ -147,20 +147,29 @@ const generateDuesForPeriod = async (period) => {
         AND    u.is_active = TRUE
     `, [period]);
 
+    // due_date is always the last day of this period's own month — the
+    // fund is a flat monthly amount, so "overdue" is simply "past that
+    // date and still unpaid". Computed here in JS, once per period,
+    // rather than derived from $2 inside the SQL below: reusing the
+    // same placeholder both as a plain column value AND inside a
+    // computed expression (`($2 || '-01')::date`) made Postgres unable
+    // to deduce a single consistent type for it ("inconsistent types
+    // deduced for parameter $2") — a latent bug that simply had never
+    // been exercised until backfillDuesFromPeriod (v1.32.0) started
+    // calling this for real, repeatedly, in one request.
+    const [dueY, dueM] = period.split('-').map(Number);
+    const dueDate = new Date(Date.UTC(dueY, dueM, 0)).toISOString().split('T')[0];
+
     let created = 0;
     let creditApplied = 0;
     for (const s of members.rows) {
         const dueAmount = s.override_amount != null ? s.override_amount : config.monthly_amount;
-        // due_date is always the last day of this due's own period
-        // month — the fund is a flat monthly amount, so "overdue" is
-        // simply "past that date and still unpaid".
         const result = await query(`
             INSERT INTO side_fund_dues (user_id, period, amount_due, status, due_date)
-            VALUES ($1, $2, $3, 'PENDING',
-                ($2 || '-01')::date + INTERVAL '1 month' - INTERVAL '1 day')
+            VALUES ($1, $2, $3, 'PENDING', $4)
             ON CONFLICT (user_id, period) DO NOTHING
             RETURNING id
-        `, [s.user_id, period, dueAmount]);
+        `, [s.user_id, period, dueAmount, dueDate]);
         if (result.rows.length === 0) continue;
         created++;
         const newDueId = result.rows[0].id;

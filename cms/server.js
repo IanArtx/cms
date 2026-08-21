@@ -123,6 +123,20 @@ if (!isS3Configured) {
 // matched segments, joined back into the full key.
 app.get('/uploads/*splat', async (req, res) => {
     const key = Array.isArray(req.params.splat) ? req.params.splat.join('/') : req.params.splat;
+    // Helmet (above) sets Cross-Origin-Resource-Policy: same-origin on every
+    // response by default — a browser-enforced rule that blocks a DIFFERENT
+    // origin from embedding this response as an <img>/<script>/<link> etc.
+    // The frontend and backend are always separate origins on this two-service
+    // Render setup, so without this override every <img src="/uploads/...">
+    // (profile photos, signatures, company logo, stamps) silently fails to
+    // render — the request never even reaches this handler's logs as an
+    // error, since the browser blocks it client-side before painting it.
+    // These files are intentionally public-style with no access-control
+    // check of their own (see streamInline's comment in storageService.js),
+    // so it's safe to explicitly mark them loadable cross-origin — this does
+    // NOT loosen anything for the rest of the app, which still defaults to
+    // same-origin (v1.32.3).
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     await streamInline(key, res);
 });
 

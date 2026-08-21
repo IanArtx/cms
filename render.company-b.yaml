@@ -73,17 +73,19 @@ services:
     # the nightly/monthly scheduled jobs (interest accrual,
     # overdue checks, monthly reports) from ever running.
     buildCommand: npm install
-    # FRONTEND_URL is built here (not as a plain envVar) so it
-    # always has "https://" in front — the app's CORS check
-    # compares it against the browser's Origin header, which
-    # always includes the scheme.
-    # Same fix as cms-b-frontend's buildCommand — FRONTEND_HOST (fromService/
-    # property:host) is Render's INTERNAL hostname ("cms-b-frontend-xxxx"),
-    # not the public address, so the CORS check below (server.js compares
-    # the browser's real Origin header against this exact string) rejected
-    # every request from the actual live frontend until ".onrender.com"
-    # is appended here too.
-    startCommand: FRONTEND_URL="https://${FRONTEND_HOST}.onrender.com" npm start
+    # FRONTEND_URL is the site's real, public-facing address — used both
+    # by the CORS check (server.js) AND by password-reset/verify-email
+    # links (authService.js), so it should be whatever address members
+    # actually see in their browser. Since cms-b-frontend now has the
+    # custom domain cms.iamininvest.com (added below, v1.32.2), that's
+    # what's set here directly rather than built from FRONTEND_HOST.
+    #
+    # EXTRA_ORIGINS (v1.32.2) keeps the old onrender.com address working
+    # too, as a fallback CORS-allowed origin — same "append .onrender.com
+    # to Render's internal hostname" trick as before, just no longer the
+    # PRIMARY address. Handy while DNS is still propagating, or for
+    # testing directly against the onrender.com URL.
+    startCommand: FRONTEND_URL="https://cms.iamininvest.com" EXTRA_ORIGINS="https://${FRONTEND_HOST}.onrender.com" npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -126,7 +128,7 @@ services:
       - key: BCRYPT_ROUNDS
         value: "12"
       - key: TOTP_APP_NAME
-        value: "COMPANY_B_NAME_HERE CMS"
+        value: "INVESTABO GLOBAL INVESTMENTS LIMITED CMS"
       # --- Fill these in by hand in the Render dashboard after
       # the first deploy (see DEPLOYMENT_GUIDE.md) — they're
       # secrets/company details, not build config. Can be the same
@@ -159,7 +161,7 @@ services:
       - key: MONTHLY_REPORT_CRON
         value: "0 8 1 * *"
       - key: COMPANY_NAME
-        value: "COMPANY_B_NAME_HERE"
+        value: "INVESTABO GLOBAL INVESTMENTS LIMITED"
       - key: COMPANY_EMAIL
         sync: false
       - key: COMPANY_ADDRESS
@@ -172,6 +174,16 @@ services:
     runtime: static
     name: cms-b-frontend
     rootDir: cms-frontend
+    # Custom domain (v1.32.2) — this only DECLARES the association; DNS
+    # still needs a CNAME record pointed at this service's onrender.com
+    # address (see DEPLOYMENT_GUIDE.md's "Custom domain" section for the
+    # exact Squarespace DNS steps), and the domain must be verified once
+    # in the Render dashboard (Settings → Custom Domains) before it goes
+    # live with a valid certificate. Since this is a subdomain (not a
+    # root domain or a "www." address), Render does NOT auto-add any
+    # other address alongside it.
+    domains:
+      - cms.iamininvest.com
     # Same "build the URL in the shell" trick as the backend —
     # Create React App bakes REACT_APP_* values into the built
     # files at build time, so it has to be set here, not later.
@@ -204,7 +216,7 @@ services:
       # Keep this in sync with render.yaml's copy — same codebase,
       # same version, both companies.
       - key: REACT_APP_VERSION
-        value: "1.32.1"
+        value: "1.32.2"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

@@ -271,6 +271,94 @@ changes just below for the one thing that does need doing twice.
 
 ---
 
+## Step 6 — Custom domain (optional)
+
+By default your site lives at an address like
+`https://cms-b-frontend-xxxx.onrender.com` — that works, but it's not
+memorable and doesn't look professional. If you already own a domain
+(bought through Squarespace, GoDaddy, Namecheap, etc.), you can point a
+part of it at your CMS instead.
+
+**Worked example used below:** Company B (INVESTABO GLOBAL INVESTMENTS
+LIMITED) owns `iamininvest.com` through Squarespace, and wants the CMS
+reachable at `cms.iamininvest.com` — a *subdomain*, leaving the bare
+domain (`iamininvest.com`) and `www.iamininvest.com` free for a future
+separate marketing website. The same steps work for Company A
+(`render.yaml` / `cms-frontend`) with a different address later — just
+swap the domain and service name.
+
+As of v1.32.2, `render.company-b.yaml` already declares
+`cms.iamininvest.com` under the `cms-b-frontend` service's `domains:`
+list, and the backend's `FRONTEND_URL`/`EXTRA_ORIGINS` are already set up
+to trust it (see the comments in that file). That covers the *code* side
+— what's left is telling Render's Blueprint to actually apply that
+change, and telling Squarespace where to send traffic for that
+subdomain. Three steps:
+
+### 6a. Let Render pick up the domain
+
+1. Push this updated `render.company-b.yaml` to GitHub (`git add`,
+   `git commit`, `git push`) if you haven't already — Render Blueprints
+   only pick up changes from what's actually on GitHub, not from files
+   sitting on your computer.
+2. In the [Render Dashboard](https://dashboard.render.com), open your
+   Blueprint (or the `cms-b-frontend` service directly) and confirm it
+   syncs the new `render.company-b.yaml`. If your Blueprint isn't set to
+   auto-sync, open it and click **Manual Sync** → **Sync now**.
+3. Once synced, open the **cms-b-frontend** service → **Settings** →
+   scroll to **Custom Domains**. You should see `cms.iamininvest.com`
+   listed with a status saying DNS still needs to be configured — that's
+   expected, that's the next step.
+
+### 6b. Point Squarespace's DNS at Render
+
+1. Log into your Squarespace account and open **Domains** →
+   `iamininvest.com` → **DNS Settings** (Squarespace sometimes calls this
+   "Advanced DNS Settings").
+2. Add a new DNS record:
+   - **Type:** `CNAME`
+   - **Host / Name:** `cms` (just the subdomain part, not the whole
+     `cms.iamininvest.com` — Squarespace appends the rest of the domain
+     automatically)
+   - **Value / Points to:** the exact `onrender.com` address shown for
+     `cms-b-frontend` on that same Custom Domains screen in Render (something
+     like `cms-b-frontend-xxxx.onrender.com`) — copy it exactly as shown,
+     don't type it from memory.
+   - **TTL:** leave whatever Squarespace defaults to (usually fine — an
+     hour or less).
+3. **Remove any `AAAA` record** Squarespace may have set up by default
+   for `cms` if one exists — `AAAA` records are for IPv6 addresses, and
+   they can conflict with Render's setup. A plain `CNAME` is all this
+   needs.
+4. Save the DNS changes.
+
+### 6c. Verify in Render and go live
+
+1. Back in the Render dashboard's **Custom Domains** screen (from 6a),
+   click **Verify** next to `cms.iamininvest.com`.
+2. DNS changes can take anywhere from a few minutes to a few hours to
+   spread across the internet ("propagate"). If verification fails the
+   first time, wait 15–30 minutes and click **Verify** again — this is
+   normal and not a sign anything is wrong.
+3. Once verified, Render automatically issues a free SSL certificate for
+   `cms.iamininvest.com` — no extra step needed for this. Visiting
+   `https://cms.iamininvest.com` should now show your CMS login page. If
+   you briefly see a "502 Bad Gateway," wait a few more minutes — Render
+   is still updating its routing.
+4. The old `cms-b-frontend-xxxx.onrender.com` address keeps working too
+   (both as a plain fallback, and because `EXTRA_ORIGINS` in
+   `render.company-b.yaml` explicitly keeps the backend trusting it) —
+   you don't have to tell anyone the new address until you're ready.
+
+**Repeating this for Company A later:** duplicate steps 6a–6c against
+`render.yaml` / `cms-frontend` with whatever address you choose then
+(e.g. `app.zwecktukula.com`) — the same `domains:` / `FRONTEND_URL` /
+`EXTRA_ORIGINS` pattern shown in `render.company-b.yaml` applies
+unchanged, just add the equivalent lines to `render.yaml` and
+`cms-backend`'s `startCommand` first.
+
+---
+
 ## Ongoing maintenance
 
 - **Every future code change**: push to the `main` branch on GitHub —
@@ -282,13 +370,10 @@ changes just below for the one thing that does need doing twice.
   and `cms-b-db` too if a second company is set up), the same way as
   Step 4, once each, after deploying the matching code. The code only
   needs writing once; the migration needs running once per database.
-- **Custom domain**: once you're ready to point your own domain (e.g.
-  `app.zwecktukula.com`) at this instead of the onrender.com URLs,
-  Render's **Settings → Custom Domains** tab on the `cms-frontend`
-  service walks you through it — you'll also need to update
-  `FRONTEND_URL` handling if you want the backend's CORS check to
-  trust the custom domain too (currently it trusts whatever
-  `cms-frontend`'s Render URL resolves to automatically).
+- **Custom domain**: see Step 6 above — as of v1.32.2 this is a
+  code-and-DNS setup (`domains:` + `FRONTEND_URL`/`EXTRA_ORIGINS` in the
+  relevant `render.company-b.yaml`/`render.yaml`), not something you can
+  do purely from the dashboard.
 - **Uploaded files**: as of v1.29.1, this is resolved — file uploads
   go to Cloudflare R2 (Step 3b above) instead of the backend's local
   disk, so they survive every future redeploy. If `S3_ENDPOINT` etc.
@@ -312,6 +397,7 @@ flowchart TD
     G -- Yes --> H[Live. Future pushes to main auto-redeploy]
     G -- No --> I[Check Logs tab on the failing service]
     I --> D
+    H --> J[Step 6, optional: point a custom domain via DNS]
 ```
 
 (This code block renders as a diagram automatically on GitHub. If you

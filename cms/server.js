@@ -33,8 +33,33 @@ const app = express();
 app.use(helmet());
 
 // CORS — defines which frontend origins can call this API
+//
+// FRONTEND_URL is the site's "real" address — also used elsewhere (e.g.
+// authService.js's password-reset/verify-email links), so it should be
+// whatever address you want members to actually see and click.
+//
+// EXTRA_ORIGINS (optional, added v1.32.2) is a comma-separated list of
+// any OTHER addresses that should also be allowed to call this API — for
+// example, the service's own onrender.com URL, kept as a working fallback
+// once a custom domain is in place (DNS can take time to propagate, and
+// it's handy to still be able to load the onrender.com address directly
+// for testing). Leave it unset and nothing changes from before.
+const allowedOrigins = [
+    process.env.FRONTEND_URL || 'http://localhost:3000',
+    ...(process.env.EXTRA_ORIGINS
+        ? process.env.EXTRA_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+        : []),
+];
+
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+        // No Origin header at all (server-to-server calls, curl, the
+        // Render health check) — always allow, nothing to check against.
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

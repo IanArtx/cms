@@ -37,6 +37,9 @@ export const usersAPI = {
     // v1.34.0 — full Member Portfolio snapshot (Section 6.x)
     getPortfolio:    (id)       => api.get(`/users/${id}/portfolio`),
     deactivateUser:  (id)       => api.patch(`/users/${id}/deactivate`),
+    // v1.35.0 — permanent deletion, duplicate/unused registrations only
+    getDeletionCheck: (id)      => api.get(`/users/${id}/deletion-check`),
+    deleteUserPermanently: (id) => api.delete(`/users/${id}`),
     assignRole:      (id, data) => api.post(`/users/${id}/roles`, data),
     revokeRole:      (id, roleId) => api.delete(`/users/${id}/roles/${roleId}`),
     getRoleRequests: (params)   => api.get('/users/role-requests', { params }),

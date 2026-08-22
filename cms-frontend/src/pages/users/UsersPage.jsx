@@ -329,8 +329,120 @@ const RoleRequestsTab = ({ requests, onApprove, loading }) => (
 // ============================================================
 // MAIN USERS PAGE
 // ============================================================
+// ============================================================
+// DELETE PERMANENTLY MODAL (v1.35.0)
+// For duplicate/unused registrations only -- irreversible, and only
+// possible at all if the account has no activity anywhere in the
+// system. Runs the read-only deletion-check the moment it opens;
+// the confirm button only appears once that check comes back clean.
+// See userDeletionService.js for the full explanation of why this
+// can't just be a plain "delete user" button.
+// ============================================================
+const DeletePermanentlyModal = ({ isOpen, user, onClose, onSuccess }) => {
+    const [footprint, setFootprint] = useState(null);
+    const [checking,  setChecking]  = useState(false);
+    const [deleting,  setDeleting]  = useState(false);
+    const [error,     setError]     = useState(null);
+
+    useEffect(() => {
+        if (!isOpen || !user) return;
+        setFootprint(null);
+        setError(null);
+        setChecking(true);
+        usersAPI.getDeletionCheck(user.id)
+            .then(res => setFootprint(res.data.data))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setChecking(false));
+    }, [isOpen, user]);
+
+    if (!isOpen || !user) return null;
+
+    const handleDelete = async () => {
+        setDeleting(true);
+        setError(null);
+        try {
+            await usersAPI.deleteUserPermanently(user.id);
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setDeleting(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Delete Permanently
+                    </h2>
+                    <p className="text-sm text-gray-500 mb-4">
+                        {user.first_name} {user.last_name} ({user.email})
+                    </p>
+
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+
+                    {checking ? (
+                        <div className="py-8 text-center text-sm text-gray-400">
+                            Checking for account activity...
+                        </div>
+                    ) : footprint && !footprint.clean ? (
+                        <div>
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                                <p className="text-sm text-red-800 font-medium mb-1">
+                                    Cannot be deleted -- this account has real activity on record:
+                                </p>
+                                <ul className="text-xs text-red-700 list-disc list-inside space-y-0.5">
+                                    {footprint.blocking.map(b => (
+                                        <li key={`${b.table}.${b.column}`}>
+                                            {b.table}.{b.column} ({b.count} row{b.count === 1 ? '' : 's'})
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                            <p className="text-sm text-gray-500">
+                                Use <strong>Deactivate</strong> instead -- it blocks login without
+                                touching any of this member's financial or historical records.
+                            </p>
+                        </div>
+                    ) : footprint && footprint.clean ? (
+                        <div>
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                                <p className="text-sm text-amber-800">
+                                    No activity found -- this account is safe to delete. This
+                                    permanently removes the account and cannot be undone.
+                                </p>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <div className="flex justify-end gap-3 pt-2">
+                        <button type="button" onClick={onClose} className="btn-secondary">
+                            Cancel
+                        </button>
+                        {footprint?.clean && (
+                            <button type="button" onClick={handleDelete}
+                                disabled={deleting}
+                                className="btn-danger">
+                                {deleting ? 'Deleting...' : 'Delete Permanently'}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const UsersPage = () => {
-    const { hasPermission } = useAuth();
+    const { hasPermission, user } = useAuth();
     const [users,        setUsers]        = useState([]);
     const [roles,        setRoles]        = useState([]);
     const [roleRequests, setRoleRequests] = useState([]);
@@ -340,6 +452,7 @@ const UsersPage = () => {
     const [page,         setPage]         = useState(1);
     const [activeTab,    setActiveTab]    = useState('members');
     const [manageUser,   setManageUser]   = useState(null);
+    const [deletingUser, setDeletingUser] = useState(null);
     const [search,       setSearch]       = useState('');
     const [actionLoading, setActionLoading] = useState(false);
 
@@ -505,6 +618,17 @@ const UsersPage = () => {
                             Deactivate
                         </button>
                     )}
+                    {hasPermission('USER_MANAGE') && row.id !== user?.id && (
+                        <button
+                            onClick={() => setDeletingUser(row)}
+                            className="text-xs text-gray-500 hover:text-red-700
+                                font-medium px-2 py-1 rounded border border-gray-200
+                                hover:border-red-200 hover:bg-red-50 transition-colors"
+                            title="Only possible if this account has no activity on record"
+                        >
+                            Delete Permanently
+                        </button>
+                    )}
                 </div>
             ),
         },
@@ -589,6 +713,14 @@ const UsersPage = () => {
                 onClose={() => setManageUser(null)}
                 onSuccess={handleRoleChange}
                 roles={roles}
+            />
+
+            {/* Delete Permanently Modal (v1.35.0) */}
+            <DeletePermanentlyModal
+                isOpen={!!deletingUser}
+                user={deletingUser}
+                onClose={() => setDeletingUser(null)}
+                onSuccess={loadUsers}
             />
         </div>
     );

@@ -10,6 +10,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { sendRoleAssignedEmail } = require('../services/authService');
 const { uploadBuffer, generateKey, deleteObject, toKey } = require('../services/storageService');
 const { buildMemberPortfolio } = require('../services/portfolioService');
+const { getUserFootprint, hardDeleteUser } = require('../services/userDeletionService');
 
 // ============================================================
 // GET OWN PROFILE
@@ -432,6 +433,51 @@ const deactivateUser = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// DELETION CHECK — PREVIEW ONLY (v1.35.0)
+// GET /api/users/:id/deletion-check
+// Read-only — reports whether this account can be safely, permanently
+// deleted, and if not, exactly which tables have activity on record.
+// See userDeletionService.js for the full explanation of why this
+// check exists and how it works. Meant for exactly one situation:
+// a duplicate registration (someone signed up more than once, usually
+// under a different email each time) that was never actually used.
+// ============================================================
+const getDeletionCheck = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const footprint = await getUserFootprint(parseInt(id, 10));
+    sendSuccess(res, footprint);
+});
+
+// ============================================================
+// DELETE USER PERMANENTLY (v1.35.0)
+// DELETE /api/users/:id
+// Irreversible. Only succeeds if the account has no real activity
+// anywhere in the system (re-checked at commit time, not just relying
+// on whatever the preview showed a moment earlier) — otherwise use
+// Deactivate, which is safe, reversible, and appropriate for every
+// other "this member shouldn't have access" situation.
+// ============================================================
+const deleteUserPermanently = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    if (parseInt(id) === req.user.id) {
+        throw createError.badRequest('You cannot delete your own account');
+    }
+
+    const deleted = await hardDeleteUser(parseInt(id, 10));
+
+    await logAction(req.user.id, ACTIONS.USER_PERMANENTLY_DELETED, MODULES.USERS, {
+        ipAddress:   req.ip,
+        recordType:  'users',
+        recordId:    parseInt(id),
+        newValues:   deleted,
+        description: `User permanently deleted: ${deleted.name} (${deleted.email})`,
+    });
+
+    sendSuccess(res, null, `${deleted.name} (${deleted.email}) permanently deleted`);
+});
+
+// ============================================================
 // ASSIGN ROLE (Admin only)
 // POST /api/users/:id/roles
 // ============================================================
@@ -661,6 +707,7 @@ const getShareholding = asyncHandler(async (req, res) => {
 module.exports = {
     getMyProfile, updateMyProfile, updateProfilePhoto,
     getAllUsers, getUserById, getMemberPortfolio, deactivateUser,
+    getDeletionCheck, deleteUserPermanently,
     assignRole, revokeRole, getRoleRequests, getMyRoleRequest,
     getAllRoles, getShareholding,
     updateSignature, getMembershipAgreement, giveConsent,

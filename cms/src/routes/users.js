@@ -146,6 +146,26 @@ router.patch('/:id/deactivate',
     usersController.deactivateUser
 );
 
+// v1.35.0 — permanent deletion, for duplicate/unused registrations
+// only. Same USER_MANAGE gate as deactivate; getDeletionCheck is
+// read-only (safe to call freely to see whether an account qualifies),
+// the DELETE itself re-validates before doing anything irreversible.
+// See userDeletionService.js for the full explanation.
+router.get('/:id/deletion-check',
+    validators.idParam('id'),
+    validateRequest,
+    requirePermissions(['USER_MANAGE']),
+    usersController.getDeletionCheck
+);
+
+router.delete('/:id',
+    validators.idParam('id'),
+    validateRequest,
+    requireConsent,
+    requirePermissions(['USER_MANAGE']),
+    usersController.deleteUserPermanently
+);
+
 router.post('/:id/roles',
     validators.idParam('id'),
     [body('role_id').isInt({ min: 1 }).withMessage('Role ID required')],

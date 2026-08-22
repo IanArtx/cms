@@ -52,4 +52,20 @@ router.post('/price',
     sharesController.setSharePrice
 );
 
+// ============================================================
+// SHAREHOLDING RECALCULATE — PREVIEW & COMMIT (v1.33.0)
+// Admin-only. See sharesController.js for the full explanation — this
+// is the unit-price shareholding recompute, with a mandatory preview
+// step before anything real gets overwritten.
+// ============================================================
+router.get('/recalculate-preview',
+    requireRoles(['Admin']),
+    sharesController.previewRecalculate
+);
+
+router.post('/recalculate',
+    requireRoles(['Admin']),
+    sharesController.commitRecalculate
+);
+
 module.exports = router;

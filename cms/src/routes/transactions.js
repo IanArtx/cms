@@ -80,6 +80,12 @@ router.post('/contributions',
         // the controller, since it needs the total amount too).
         body('savings_amount')
             .optional().isFloat({ min: 0.01 }).withMessage('Savings portion must be greater than zero'),
+        // v1.33.0 — which account the contribution portion is actually
+        // paid into (Side Fund/Savings portions are unaffected — those
+        // always go to their own dedicated accounts regardless of this
+        // field). Defaults to Primary if omitted.
+        body('account_id')
+            .optional().isInt({ min: 1 }).withMessage('Invalid account'),
     ],
     validateRequest,
     transactionsController.recordContribution

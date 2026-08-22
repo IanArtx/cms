@@ -22,11 +22,12 @@ import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 // ============================================================
 // RECORD CONTRIBUTION MODAL
 // ============================================================
-const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholders }) => {
+const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholders, accounts }) => {
     const { user, hasPermission } = useAuth();
     const [form, setForm] = useState({
         amount: '', contribution_date: '', category_id: '',
         notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
+        account_id: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -55,13 +56,15 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
             await transactionsAPI.recordContribution({
                 ...form,
                 contributed_by: form.contributed_by || user.id,
+                account_id: form.account_id || undefined,
                 side_fund_amount: includeSideFund ? (form.side_fund_amount || undefined) : undefined,
                 savings_amount:   includeSavings  ? (form.savings_amount  || undefined) : undefined,
             });
             onSuccess();
             onClose();
             setForm({ amount: '', contribution_date: '', category_id: '',
-                notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '' });
+                notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
+                account_id: '' });
             setIncludeSideFund(false);
             setIncludeSavings(false);
         } catch (err) {
@@ -122,6 +125,25 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 onChange={e => setForm(p => ({
                                     ...p, amount: e.target.value }))}
                                 min="0.01" step="0.01" required />
+                        </div>
+                        <div>
+                            <label className="label">Account</label>
+                            <select className="input" value={form.account_id}
+                                onChange={e => setForm(p => ({
+                                    ...p, account_id: e.target.value }))}>
+                                <option value="">Primary Account (default)</option>
+                                {accounts.filter(a => a.account_type !== 'SAVINGS').map(a => (
+                                    <option key={a.id} value={a.id}>
+                                        {a.name} ({a.currency_code})
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-gray-400 mt-1">
+                                Which account this contribution is paid into. The money
+                                stays there — shares are still calculated by converting
+                                this account's currency into the share price's currency
+                                at the rate in effect on the contribution date.
+                            </p>
                         </div>
                         {sideFundActive && (
                             <div>
@@ -750,6 +772,7 @@ const TransactionsPage = () => {
                 onSuccess={loadTransactions}
                 categories={categories}
                 shareholders={shareholders}
+                accounts={accounts}
             />
             
             <ExpenseModal

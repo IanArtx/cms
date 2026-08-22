@@ -14,6 +14,7 @@ const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../u
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { computeShareUnitsPerUser, recalculateShareholding } = require('./transactionsController');
 
 // ============================================================
 // GET CURRENT SHARE PRICE
@@ -152,8 +153,111 @@ const getPriceHistory = asyncHandler(async (req, res) => {
     sendPaginated(res, result.rows, total, page, limit);
 });
 
+// ============================================================
+// SHARED HELPER — build the old-vs-proposed comparison table used by
+// both endpoints below, so the preview a Treasurer reviews and the
+// numbers actually committed can never disagree (same pattern as
+// sideFundController.computeExitPayout's shared preview/commit core).
+// ============================================================
+const buildRecalculatePreview = async (client) => {
+    const { unitsByUser, breakdownByContribution } = await computeShareUnitsPerUser(client);
+    const grandTotal = Object.values(unitsByUser).reduce((sum, u) => sum + u, 0);
+
+    // Every active user, LEFT JOINed against their current registry row —
+    // this is what lets someone who's never contributed (current = 0,
+    // proposed = 0) get filtered out below, while still catching anyone
+    // whose current shares_held is stale/wrong under the old raw-money
+    // model even if they show 0 contributions today (e.g. a fully
+    // reversed contribution).
+    const usersResult = await client.query(`
+        SELECT u.id,
+               u.first_name || ' ' || u.last_name AS name,
+               COALESCE(sr.shares_held, 0) AS current_shares_held,
+               sr.percentage AS current_percentage
+        FROM   users u
+        LEFT JOIN shareholding_registry sr
+               ON  sr.user_id = u.id AND sr.effective_to IS NULL
+        WHERE  u.is_active = TRUE
+    `);
+
+    const comparison = [];
+    for (const row of usersResult.rows) {
+        const currentSharesHeld = parseFloat(row.current_shares_held);
+        const currentPercentage = row.current_percentage !== null ? parseFloat(row.current_percentage) : 0;
+        const proposedUnits = unitsByUser[row.id] || 0;
+        const proposedPercentage = grandTotal > 0
+            ? parseFloat(((proposedUnits / grandTotal) * 100).toFixed(4))
+            : 0;
+
+        // Skip anyone with nothing to show either way — keeps the report
+        // focused on actual shareholders, current or proposed.
+        if (currentSharesHeld === 0 && proposedUnits === 0) continue;
+
+        comparison.push({
+            userId:             row.id,
+            name:               row.name,
+            currentSharesHeld,
+            currentPercentage,
+            proposedSharesHeld: parseFloat(proposedUnits.toFixed(4)),
+            proposedPercentage,
+            delta:              parseFloat((proposedUnits - currentSharesHeld).toFixed(4)),
+        });
+    }
+
+    // Largest change first — what a Treasurer actually wants to review first.
+    comparison.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+    return { comparison, breakdownByContribution, grandTotalUnits: grandTotal };
+};
+
+// ============================================================
+// PREVIEW A FULL SHAREHOLDING RECALCULATE (v1.33.0)
+// GET /api/shares/recalculate-preview
+// Admin only. Read-only — computes what a recalculate WOULD change
+// without writing anything, so the real historical figures (or any
+// future recompute) can be reviewed before they overwrite anyone's
+// real shares_held/percentage.
+// ============================================================
+const previewRecalculate = asyncHandler(async (req, res) => {
+    // withTransaction, not a plain query — computeShareUnitsPerUser runs
+    // many small queries and this keeps them all on one consistent
+    // snapshot of the data. Nothing here writes anything, so there is
+    // nothing to roll back; the transaction commits a no-op.
+    const result = await withTransaction(async (client) => buildRecalculatePreview(client));
+    sendSuccess(res, result);
+});
+
+// ============================================================
+// COMMIT A FULL SHAREHOLDING RECALCULATE (v1.33.0)
+// POST /api/shares/recalculate
+// Admin only. Actually overwrites every shareholder's shares_held/
+// percentage via recalculateShareholding() — the exact same
+// computation the preview above just showed, guaranteeing they can
+// never disagree. Returns the same before/after comparison as the
+// preview, this time reflecting what was actually written.
+// ============================================================
+const commitRecalculate = asyncHandler(async (req, res) => {
+    const result = await withTransaction(async (client) => {
+        const preview = await buildRecalculatePreview(client);
+        await recalculateShareholding(client, { recordedByUserId: req.user.id });
+
+        await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'shareholding_registry',
+            newValues:   { affectedMembers: preview.comparison.length },
+            description: `Full shareholding recalculate committed — ${preview.comparison.length} member(s) affected`,
+            client,
+        });
+
+        return preview;
+    });
+    sendSuccess(res, result, `Shareholding recalculated for ${result.comparison.length} member(s)`);
+});
+
 module.exports = {
     getCurrentPrice,
     setSharePrice,
     getPriceHistory,
+    previewRecalculate,
+    commitRecalculate,
 };

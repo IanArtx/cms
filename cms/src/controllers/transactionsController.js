@@ -20,6 +20,7 @@ const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { applySideFundPayment } = require('../services/sideFundService');
 const { getOrCreateSavingsBalance, getSavingsAccount } = require('../services/savingsService');
+const { convertToShareCurrency } = require('../services/sharePricingService');
 
 // ============================================================
 // INTERNAL HELPER — GET CURRENT FLOOR LIMIT
@@ -162,49 +163,105 @@ const postTransaction = async (client, {
 };
 
 // ============================================================
+// COMPUTE SHARE UNITS PER USER (v1.33.0)
+// Pure computation, no writes — shared by recalculateShareholding()
+// below (which commits the result) and the recalculate-preview
+// endpoint (shareholdingController.js), so a Treasurer can see exactly
+// what a recompute WOULD change before it actually overwrites anyone's
+// real shares_held. Guarantees preview and commit can never disagree,
+// the same shared-computation pattern already used for Side Fund exit
+// payouts (sideFundController.computeExitPayout).
+//
+// For each APPROVED contribution: convert its amount into whatever
+// currency the share price was denominated in AS OF that contribution's
+// own date (a no-op if it was already in that currency), then divide by
+// the price per share effective on that same date. Units accumulate
+// per user across every contribution they've ever had approved,
+// regardless of what the price/exchange rate is TODAY — a contribution
+// made in the past always buys the same number of units it bought back
+// then; only its current VALUE (units x today's price) moves with the
+// market, never the unit count itself. See sharePricingService.js for
+// the date-aware price/rate lookups this relies on.
+//
+// Replaces the pre-v1.33.0 model, where shares_held was simply the raw
+// SUM of contributed money with no unit conversion at all — see
+// migration_v1.33.0.sql and CMS_BIBLE Section 14 for the full
+// before/after explanation and the one-time historical recompute this
+// enabled.
+//
+// Price/rate lookups are memoized per (date) / (from,to,date) within a
+// single call — many contributions share the same currency and nearby
+// dates, and this is called on every future contribution besides the
+// one-time historical recompute.
+// ============================================================
+const computeShareUnitsPerUser = async (client) => {
+    const contributions = await client.query(`
+        SELECT id, user_id, amount, currency_id, contribution_date
+        FROM   shareholder_contributions
+        WHERE  status = 'APPROVED'
+        ORDER  BY contribution_date ASC, id ASC
+    `);
+
+    const conversionCache = new Map();
+    const unitsByUser = {};
+    const breakdownByContribution = [];
+
+    for (const c of contributions.rows) {
+        const cacheKey = `${c.currency_id}|${c.contribution_date}`;
+        let conversion = conversionCache.get(cacheKey);
+        if (!conversion) {
+            conversion = await convertToShareCurrency(client, 1, c.currency_id, c.contribution_date);
+            conversionCache.set(cacheKey, conversion);
+        }
+        // conversion was computed for amount=1, so scale it up rather
+        // than re-querying — same rate/price, just a different amount.
+        const convertedAmount = parseFloat(c.amount) * conversion.rateUsed;
+        const units = convertedAmount / conversion.sharePricePerUnit;
+
+        unitsByUser[c.user_id] = (unitsByUser[c.user_id] || 0) + units;
+        breakdownByContribution.push({
+            contributionId:  c.id,
+            userId:          c.user_id,
+            amount:          parseFloat(c.amount),
+            currencyId:      c.currency_id,
+            contributionDate: c.contribution_date,
+            rateUsed:        conversion.rateUsed,
+            sharePricePerUnit: conversion.sharePricePerUnit,
+            units,
+        });
+    }
+
+    return { unitsByUser, breakdownByContribution };
+};
+
+// ============================================================
 // RECALCULATE SHAREHOLDING (v1.30.1 — extracted from
-// creditShareholderContribution so reverseTransaction can call it
-// too; behaviour is unchanged, this is a pure refactor plus one
-// correctness fix noted below).
+// creditShareholderContribution so reverseTransaction can call it too;
+// v1.33.0 — rewritten to use computeShareUnitsPerUser's real per-
+// contribution unit calculation instead of a raw money SUM; see that
+// function's comment above for the full explanation).
 //
 // Shares_held/percentage are always DERIVED, never directly edited —
 // this is the one place that ever writes shareholding_registry.
-// shares_held = a member's own SUM of APPROVED shareholder_contributions
-// (raw money contributed — NOT divided by share_price_history, which
-// is a display-only valuation multiplier elsewhere and never feeds
-// into this calculation). percentage = that member's total divided by
-// everyone's combined total. Runs as a full recompute across every
-// shareholder on every call — O(number of shareholders), fine at this
-// club's current scale (see CMS_BIBLE Section 14.6).
+// percentage = that member's units divided by everyone's combined
+// units. Runs as a full recompute across every shareholder on every
+// call — O(number of contributions), fine at this club's current scale
+// (see CMS_BIBLE Section 14.6).
 //
-// v1.30.1 fix: previously, a member whose LAST remaining APPROVED
-// contribution stopped being APPROVED (e.g. reversed) would simply
-// drop out of the SUM/GROUP BY below entirely — since the old code
-// only ever updated whichever users appeared in that result set, their
-// shares_held/percentage were left stale at their old (now wrong)
-// values instead of being reset to 0. The second UPDATE below closes
-// that gap.
+// v1.30.1 fix (still true under the new calculation): previously, a
+// member whose LAST remaining APPROVED contribution stopped being
+// APPROVED (e.g. reversed) would simply drop out of the loop entirely,
+// leaving their shares_held/percentage stale at their old (now wrong)
+// values. The second UPDATE below closes that gap.
 // ============================================================
 const recalculateShareholding = async (client, { recordedByUserId }) => {
-    // Get total approved contributions per shareholder
-    const totalsResult = await client.query(`
-        SELECT
-            sc.user_id,
-            SUM(sc.amount) AS total_contributed
-        FROM shareholder_contributions sc
-        WHERE sc.status = 'APPROVED'
-        GROUP BY sc.user_id
-    `);
+    const { unitsByUser } = await computeShareUnitsPerUser(client);
 
-    // Calculate grand total
-    const grandTotal = totalsResult.rows.reduce(
-        (sum, r) => sum + parseFloat(r.total_contributed), 0
-    );
+    const grandTotal = Object.values(unitsByUser).reduce((sum, u) => sum + u, 0);
 
-    // Update each shareholder's percentage and shares
-    for (const row of totalsResult.rows) {
+    for (const [userId, units] of Object.entries(unitsByUser)) {
         const percentage = grandTotal > 0
-            ? ((parseFloat(row.total_contributed) / grandTotal) * 100).toFixed(4)
+            ? ((units / grandTotal) * 100).toFixed(4)
             : '0.0000';
 
         await client.query(`
@@ -213,14 +270,14 @@ const recalculateShareholding = async (client, { recordedByUserId }) => {
                 shares_held    = $1,
                 percentage     = $2,
                 updated_by     = $3,
-                notes          = 'Auto-calculated from contributions'
+                notes          = 'Auto-calculated from contributions (unit-price method, v1.33.0)'
             WHERE user_id = $4
             AND   effective_to IS NULL
         `, [
-            row.total_contributed,
+            units.toFixed(4),
             percentage,
             recordedByUserId,
-            row.user_id,
+            userId,
         ]);
     }
 
@@ -228,13 +285,13 @@ const recalculateShareholding = async (client, { recordedByUserId }) => {
     // no longer has ANY approved contribution (e.g. their only
     // contribution was just reversed) — otherwise they'd keep showing
     // their old, now-incorrect shares/percentage forever, since the
-    // loop above only ever touches users who still appear in totalsResult.
+    // loop above only ever touches users who still appear in unitsByUser.
     await client.query(`
         UPDATE shareholding_registry
         SET    shares_held = 0,
                percentage  = 0,
                updated_by  = $1,
-               notes       = 'Auto-calculated from contributions'
+               notes       = 'Auto-calculated from contributions (unit-price method, v1.33.0)'
         WHERE  effective_to IS NULL
         AND    user_id NOT IN (
             SELECT DISTINCT user_id FROM shareholder_contributions WHERE status = 'APPROVED'
@@ -263,6 +320,16 @@ const creditShareholderContribution = async (client, {
     categoryId,
     notes,
     recordedByUserId, // who is performing this action (Treasurer/Assistant Treasurer)
+    accountId, // v1.33.0, optional — which account the money actually goes into.
+    // Defaults to Primary (the original, only-ever behaviour before
+    // v1.33.0) if omitted, so every existing caller keeps working
+    // unchanged. When a different account is chosen, the money stays
+    // there in its own currency — there is no automatic transfer into
+    // Primary. Share units are computed separately (recalculateShareholding,
+    // via sharePricingService) by converting into whatever currency the
+    // share price itself is denominated in, as of this contribution's
+    // own date — this is what makes contributing through a
+    // different-currency account meaningful rather than a mismatch.
 }) => {
     // Get the contributor's details
     const contributorResult = await client.query(`
@@ -292,17 +359,41 @@ const creditShareholderContribution = async (client, {
         `, [contributorId, contributionDate, recordedByUserId]);
     }
 
-    // Get the primary account
-    const accountResult = await client.query(`
-        SELECT id, currency_id, account_type, reference_prefix
-        FROM   accounts
-        WHERE  account_type = 'PRIMARY'
-        AND    is_active = TRUE
-    `);
+    // Get the account this contribution is actually paid into — the
+    // Primary account by default (unchanged from before v1.33.0), or
+    // whichever active account was explicitly chosen. SAVINGS is
+    // excluded here the same way it's excluded from transfers — a
+    // capital contribution has no business landing in the dedicated
+    // savings account.
+    const accountResult = accountId
+        ? await client.query(`
+            SELECT id, currency_id, account_type, reference_prefix
+            FROM   accounts
+            WHERE  id = $1 AND is_active = TRUE AND account_type != 'SAVINGS'
+        `, [accountId])
+        : await client.query(`
+            SELECT id, currency_id, account_type, reference_prefix
+            FROM   accounts
+            WHERE  account_type = 'PRIMARY'
+            AND    is_active = TRUE
+        `);
     if (accountResult.rows.length === 0) {
-        throw createError.badRequest('Primary account has not been set up yet');
+        throw createError.badRequest(
+            accountId
+                ? 'The selected account was not found, is inactive, or is a Savings account'
+                : 'Primary account has not been set up yet'
+        );
     }
     const account = accountResult.rows[0];
+
+    // FX-coverage pre-check (v1.33.0) — fail fast with a clear error
+    // BEFORE inserting anything, rather than letting a contribution
+    // with no valid conversion path get recorded and only discovering
+    // that deep inside the next recalculateShareholding() call. See
+    // sharePricingService.getExchangeRateOn for why this throws rather
+    // than guessing when a currency pair has never had a rate entered
+    // in either direction.
+    await convertToShareCurrency(client, amount, account.currency_id, contributionDate);
 
     // Generate reference: PA-CONTRIB-YYYYMM-00001 (or the primary
     // account's own reference_prefix, if one has been set)
@@ -607,6 +698,9 @@ const recordContribution = asyncHandler(async (req, res) => {
         contributed_by, // user_id of the contributing member
         side_fund_amount,
         savings_amount,
+        account_id, // v1.33.0, optional — which account the contribution
+                    // portion is actually paid into; defaults to Primary
+                    // inside creditShareholderContribution if omitted.
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -660,6 +754,7 @@ const recordContribution = asyncHandler(async (req, res) => {
                 categoryId:       category_id,
                 notes,
                 recordedByUserId: req.user.id,
+                accountId:        account_id ? parseInt(account_id) : undefined,
             });
         }
 
@@ -1093,6 +1188,7 @@ module.exports = {
     recordContribution,
     creditShareholderContribution,
     recalculateShareholding,
+    computeShareUnitsPerUser,
     creditSideFundContribution,
     recordExpense,
     recordInflow,

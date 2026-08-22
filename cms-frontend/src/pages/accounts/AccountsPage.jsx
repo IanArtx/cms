@@ -1254,10 +1254,12 @@ const SharePriceCard = ({ sharePrice, canEdit, onEditClick }) => (
 
 // ============================================================
 // SET EXCHANGE RATE MODAL
-// Display-only conversion rate: 1 unit of base currency = rate
-// units of target currency. Does not affect contributions or
-// transactions — used only to show the share price/value in
-// other currencies.
+// Conversion rate: 1 unit of base currency = rate units of target
+// currency. As of v1.33.0 this is no longer purely cosmetic — the
+// rate in effect on a contribution's date is used to convert that
+// contribution into the share price's currency when calculating how
+// many units (shares) it bought. Keep this history accurate and
+// dated correctly; it directly affects every member's shareholding.
 // ============================================================
 const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies }) => {
     const [form, setForm] = useState({
@@ -1296,8 +1298,9 @@ const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                         Set Exchange Rate
                     </h2>
                     <p className="text-sm text-gray-500 mb-4">
-                        Used only to display the share price/value in another
-                        currency — it does not change any recorded amount.
+                        Never changes a recorded transaction amount — but it
+                        does affect how future contributions in this
+                        currency pair convert into shares.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -1380,7 +1383,8 @@ const ExchangeRatesCard = ({ rates, canEdit, onEditClick }) => (
                         Currency Exchange Rates
                     </p>
                     <p className="text-xs text-gray-400">
-                        Monthly rates — used only to show values in other currencies
+                        Used to convert contributions into shares and to show
+                        values in other currencies
                     </p>
                 </div>
             </div>
@@ -1419,6 +1423,173 @@ const ExchangeRatesCard = ({ rates, canEdit, onEditClick }) => (
 );
 
 // ============================================================
+// RECALCULATE SHAREHOLDING CARD (v1.33.0)
+// Admin only. Entry point into the preview/commit flow below —
+// just explains what it does and opens the modal.
+// ============================================================
+const RecalculateShareholdingCard = ({ onOpenClick }) => (
+    <div className="card mb-6">
+        <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+                <div className="p-3 rounded-xl bg-indigo-50 text-indigo-700">
+                    <ArrowsRightLeftIcon className="h-6 w-6" />
+                </div>
+                <div>
+                    <p className="text-sm font-medium text-gray-500">
+                        Shareholding Recalculate
+                    </p>
+                    <p className="text-xs text-gray-400 max-w-md">
+                        Recomputes every member's shares from their contribution
+                        history using the unit-price method — units bought at
+                        the price/rate in effect on each contribution's date.
+                        Always shows a full before/after preview first.
+                    </p>
+                </div>
+            </div>
+            <button onClick={onOpenClick} className="btn-secondary whitespace-nowrap">
+                Review &amp; Recalculate
+            </button>
+        </div>
+    </div>
+);
+
+// ============================================================
+// RECALCULATE SHAREHOLDING MODAL (v1.33.0)
+// Loads GET /shares/recalculate-preview on open (read-only — nothing
+// is written yet), shows an old-vs-proposed table sorted by largest
+// change, and only writes anything once the Admin explicitly confirms
+// via POST /shares/recalculate. The commit re-runs the exact same
+// computation server-side, so what's confirmed here is guaranteed to
+// match what actually gets written.
+// ============================================================
+const RecalculateShareholdingModal = ({ isOpen, onClose, onSuccess }) => {
+    const [preview, setPreview] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [committing, setCommitting] = useState(false);
+    const [error, setError] = useState(null);
+    const [done, setDone] = useState(false);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setPreview(null);
+        setError(null);
+        setDone(false);
+        setLoading(true);
+        sharesAPI.getRecalculatePreview()
+            .then(res => setPreview(res.data.data))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setLoading(false));
+    }, [isOpen]);
+
+    if (!isOpen) return null;
+
+    const handleCommit = async () => {
+        setCommitting(true);
+        setError(null);
+        try {
+            const res = await sharesAPI.recalculate();
+            setPreview(res.data.data);
+            setDone(true);
+            onSuccess();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setCommitting(false);
+        }
+    };
+
+    const comparison = preview?.comparison || [];
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-2xl w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Recalculate Shareholding
+                    </h2>
+                    <p className="text-sm text-gray-500 mb-4">
+                        {done
+                            ? 'Committed — every row below reflects what was just written.'
+                            : 'This is a preview only. Nothing has been changed yet.'}
+                    </p>
+
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+
+                    {loading ? (
+                        <div className="py-8 text-center text-sm text-gray-400">
+                            Computing proposed shareholding...
+                        </div>
+                    ) : comparison.length === 0 ? (
+                        <p className="text-sm text-gray-400 text-center py-8">
+                            No members with contributions or existing holdings found —
+                            nothing to recalculate.
+                        </p>
+                    ) : (
+                        <div className="max-h-96 overflow-y-auto border border-gray-100 rounded-lg">
+                            <table className="min-w-full text-sm">
+                                <thead className="bg-gray-50 sticky top-0">
+                                    <tr className="text-left text-xs text-gray-500">
+                                        <th className="px-3 py-2">Member</th>
+                                        <th className="px-3 py-2 text-right">Current Shares</th>
+                                        <th className="px-3 py-2 text-right">Current %</th>
+                                        <th className="px-3 py-2 text-right">Proposed Shares</th>
+                                        <th className="px-3 py-2 text-right">Proposed %</th>
+                                        <th className="px-3 py-2 text-right">Delta</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {comparison.map(row => (
+                                        <tr key={row.userId}>
+                                            <td className="px-3 py-2 text-gray-900">{row.name}</td>
+                                            <td className="px-3 py-2 text-right text-gray-500">
+                                                {row.currentSharesHeld.toLocaleString('en-US', { maximumFractionDigits: 4 })}
+                                            </td>
+                                            <td className="px-3 py-2 text-right text-gray-500">
+                                                {row.currentPercentage.toFixed(2)}%
+                                            </td>
+                                            <td className="px-3 py-2 text-right font-medium text-gray-900">
+                                                {row.proposedSharesHeld.toLocaleString('en-US', { maximumFractionDigits: 4 })}
+                                            </td>
+                                            <td className="px-3 py-2 text-right font-medium text-gray-900">
+                                                {row.proposedPercentage.toFixed(2)}%
+                                            </td>
+                                            <td className={`px-3 py-2 text-right font-semibold ${
+                                                row.delta > 0 ? 'text-green-600'
+                                                    : row.delta < 0 ? 'text-red-600' : 'text-gray-400'
+                                            }`}>
+                                                {row.delta > 0 ? '+' : ''}{row.delta.toLocaleString('en-US', { maximumFractionDigits: 4 })}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-4">
+                        <button type="button" onClick={onClose} className="btn-secondary">
+                            {done ? 'Close' : 'Cancel'}
+                        </button>
+                        {!done && (
+                            <button type="button" onClick={handleCommit}
+                                disabled={loading || committing || comparison.length === 0}
+                                className="btn-primary">
+                                {committing ? 'Committing...' : `Confirm & Recalculate (${comparison.length} member${comparison.length === 1 ? '' : 's'})`}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN ACCOUNTS PAGE
 // ============================================================
 const AccountsPage = () => {
@@ -1434,10 +1605,12 @@ const AccountsPage = () => {
     const [floorAccount,  setFloorAccount]  = useState(null);
     const [showPriceModal, setShowPriceModal] = useState(false);
     const [showRateModal,  setShowRateModal]  = useState(false);
+    const [showRecalcModal, setShowRecalcModal] = useState(false);
     const [selectedAccount, setSelectedAccount] = useState(null);
     const [editingAccount, setEditingAccount] = useState(null);
 
     const canEditRates = hasRole(['Treasurer', 'Assistant Treasurer', 'Admin']);
+    const isAdmin = hasRole(['Admin']);
 
     const loadData = async () => {
         try {
@@ -1569,6 +1742,13 @@ const AccountsPage = () => {
                 onEditClick={() => setShowRateModal(true)}
             />
 
+            {/* Shareholding Recalculate — Admin only, matches backend requireRoles(['Admin']) */}
+            {isAdmin && (
+                <RecalculateShareholdingCard
+                    onOpenClick={() => setShowRecalcModal(true)}
+                />
+            )}
+
             {/* Account Tiles */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {accounts.map(account => (
@@ -1613,6 +1793,11 @@ const AccountsPage = () => {
                 onClose={() => setShowRateModal(false)}
                 onSuccess={loadData}
                 currencies={currencies}
+            />
+            <RecalculateShareholdingModal
+                isOpen={showRecalcModal}
+                onClose={() => setShowRecalcModal(false)}
+                onSuccess={loadData}
             />
         </div>
     );

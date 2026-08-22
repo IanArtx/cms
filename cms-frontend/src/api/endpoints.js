@@ -488,6 +488,11 @@ export const sharesAPI = {
     getCurrentPrice: ()       => api.get('/shares/price'),
     setPrice:        (data)   => api.post('/shares/price', data),
     getHistory:      (params) => api.get('/shares/price/history', { params }),
+    // v1.33.0 — full shareholding recompute (unit-price method). Preview
+    // is read-only and shows old-vs-proposed for every member; recalculate
+    // actually commits it. Admin only on the backend.
+    getRecalculatePreview: () => api.get('/shares/recalculate-preview'),
+    recalculate:           () => api.post('/shares/recalculate'),
 };
 
 // ============================================================

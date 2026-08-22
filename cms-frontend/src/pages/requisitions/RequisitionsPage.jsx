@@ -851,8 +851,10 @@ const RequisitionsPage = () => {
                 </div>
             )}
 
-            {/* Tabs */}
-            <div className="flex gap-2 mb-6">
+            {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
+                by scrolling on a narrow screen instead of overflowing with
+                no way to reach it. */}
+            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
                 <button
                     onClick={() => setActiveTab('mine')}
                     className={`px-4 py-2 rounded-lg text-sm font-medium

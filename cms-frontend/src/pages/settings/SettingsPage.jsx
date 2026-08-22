@@ -1684,19 +1684,27 @@ const SettingsPage = () => {
     ];
 
     return (
-        <div className="max-w-5xl">
+        <div className="max-w-6xl mx-auto">
             <PageHeader
                 title="Settings"
                 subtitle="System configuration — currencies, roles and categories"
             />
 
-            <div className="flex gap-2 mb-6">
+            {/* overflow-x-auto + scrollbar-hidden (v1.32.5) — without this, a
+                plain flex row with 8 tabs has nowhere to go on a narrow
+                screen except overflow the container with no way to reach
+                the tabs pushed off the right edge (Membership Agreement,
+                the last tab, was the one users actually got stuck unable
+                to reach). flex-shrink-0 + whitespace-nowrap on each button
+                stop them from getting squashed/wrapped instead of scrolling. */}
+            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
                 {tabs.map(tab => (
                     <button
                         key={tab.key}
                         onClick={() => setActiveTab(tab.key)}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors ${
+                            text-sm font-medium transition-colors flex-shrink-0
+                            whitespace-nowrap ${
                             activeTab === tab.key
                                 ? 'bg-primary-700 text-white'
                                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'

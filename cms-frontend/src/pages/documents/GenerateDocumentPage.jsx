@@ -310,7 +310,7 @@ const GenerateDocumentPage = () => {
     const docCategories = categories.filter(c => c.module === 'DOCUMENT');
 
     return (
-        <div className="max-w-4xl">
+        <div className="max-w-6xl mx-auto">
             <PageHeader
                 title="Generate Document"
                 subtitle="Fill in the form to generate a professional document"

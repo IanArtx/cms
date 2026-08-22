@@ -600,7 +600,7 @@ const ProfilePage = () => {
         : [];
 
     return (
-        <div className="max-w-4xl">
+        <div className="max-w-6xl mx-auto">
             <PageHeader
                 title="My Profile"
                 subtitle="Your account summary and settings"
@@ -706,8 +706,10 @@ const ProfilePage = () => {
                 </div>
             </div>
 
-            {/* Tabs */}
-            <div className="flex gap-2 mb-6">
+            {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
+                by scrolling on a narrow screen instead of overflowing with
+                no way to reach it. */}
+            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
                 {[
                     { key: 'summary',   label: 'Summary',          icon: UserCircleIcon },
                     { key: 'personal',  label: 'Personal Info',     icon: PencilIcon },
@@ -719,7 +721,8 @@ const ProfilePage = () => {
                         key={tab.key}
                         onClick={() => { setActiveTab(tab.key); setEditing(false); }}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors ${
+                            text-sm font-medium transition-colors flex-shrink-0
+                            whitespace-nowrap ${
                             activeTab === tab.key
                                 ? 'bg-primary-700 text-white'
                                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'

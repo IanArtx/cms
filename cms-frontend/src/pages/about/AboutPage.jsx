@@ -293,7 +293,7 @@ const AboutPage = () => {
     ];
 
     return (
-        <div className="max-w-5xl">
+        <div className="max-w-6xl mx-auto">
             <PageHeader
                 title="About & Manual"
                 subtitle="Company information and system usage guide"

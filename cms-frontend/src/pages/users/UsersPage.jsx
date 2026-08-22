@@ -512,8 +512,9 @@ const UsersPage = () => {
                 </div>
             )}
 
-            {/* Tabs */}
-            <div className="flex gap-2 mb-6">
+            {/* Tabs — overflow-x-auto (v1.32.5) for consistency with every
+                other tabbed page, though only two tabs live here today. */}
+            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
                 {['members', 'requests'].map(tab => (
                     <button
                         key={tab}

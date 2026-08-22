@@ -34,6 +34,27 @@ const applyCssVariables = (branding) => {
     root.style.setProperty('--brand-accent', branding.accent_color);
 };
 
+// ============================================================
+// BROWSER TAB TITLE + FAVICON (v1.32.6)
+// public/index.html bakes in a correct-by-default title/favicon at
+// BUILD time via %REACT_APP_COMPANY_NAME%/the static favicon.ico —
+// this keeps both in sync with whatever's actually configured in
+// Settings > Company AFTERWARDS, without needing a rebuild every time
+// someone renames the company or uploads a new logo. Runs after every
+// refresh(), so it's correct even before login (this endpoint is
+// public) and stays correct if an Admin changes either value later in
+// the same session.
+// ============================================================
+const applyBrowserChrome = (branding) => {
+    if (branding.company_name) {
+        document.title = branding.company_name;
+    }
+    if (branding.logo_url) {
+        const iconLink = document.getElementById('app-favicon');
+        if (iconLink) iconLink.href = branding.logo_url;
+    }
+};
+
 export const BrandingProvider = ({ children }) => {
     const [branding, setBrandingState] = useState(DEFAULTS);
     const [loading, setLoading] = useState(true);
@@ -59,6 +80,7 @@ export const BrandingProvider = ({ children }) => {
             const data = { ...raw, logo_url: resolvedLogoUrl };
             setBrandingState(data);
             applyCssVariables(data);
+            applyBrowserChrome(data);
 
             setExportBranding({
                 name:         data.company_name,
@@ -71,8 +93,13 @@ export const BrandingProvider = ({ children }) => {
             // GET /settings/company is public (v1.32.3) so this should
             // basically never fail from an auth standpoint — a genuine
             // network error or the backend being down is the realistic
-            // case now. Fall back to defaults silently either way.
+            // case now. Fall back to defaults silently either way — the
+            // tab title/favicon just stay whatever index.html already
+            // baked in at build time (applyBrowserChrome no-ops on a null
+            // logo_url, and DEFAULTS.company_name matches the same
+            // REACT_APP_COMPANY_NAME index.html already used).
             applyCssVariables(DEFAULTS);
+            applyBrowserChrome(DEFAULTS);
         } finally {
             setLoading(false);
         }

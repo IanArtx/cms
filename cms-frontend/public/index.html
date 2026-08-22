@@ -2,12 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <!-- id="app-favicon" (v1.32.6) — BrandingContext.js swaps this href to
+         the live-uploaded company logo at runtime, so the browser tab icon
+         stays correct even if Settings > Company's logo changes after this
+         file was built. The %PUBLIC_URL%/favicon.ico below is just the
+         pre-JS-load / no-JS fallback. -->
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" id="app-favicon" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
+    <!-- %REACT_APP_COMPANY_NAME% (v1.32.6) — substituted at BUILD time from
+         render.yaml/render.company-b.yaml's own REACT_APP_COMPANY_NAME, so
+         each company's deployment gets its own correct tab title/description
+         baked in from the very first paint (before any JS runs), not just
+         the generic Create React App default every company's build
+         previously shared. BrandingContext.js separately keeps
+         document.title in sync with the live database value afterwards. -->
     <meta
       name="description"
-      content="Web site created using create-react-app"
+      content="%REACT_APP_COMPANY_NAME% — Company Management System"
     />
     <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
     <!--
@@ -24,7 +36,7 @@
       work correctly both with client-side routing and a non-root public URL.
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
-    <title>React App</title>
+    <title>%REACT_APP_COMPANY_NAME%</title>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

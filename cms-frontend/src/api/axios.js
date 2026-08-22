@@ -64,12 +64,25 @@ api.interceptors.response.use(
                     localStorage.setItem('accessToken', accessToken);
                     originalRequest.headers.Authorization = `Bearer ${accessToken}`;
                     return api(originalRequest);
-                } catch {
-                    // Refresh failed — clear everything and redirect to login
-                    localStorage.removeItem('accessToken');
-                    localStorage.removeItem('refreshToken');
-                    localStorage.removeItem('user');
-                    window.location.href = '/login';
+                } catch (refreshErr) {
+                    // Only treat this as "your refresh token is actually
+                    // invalid" when the server said so explicitly
+                    // (401/403). If the refresh call itself couldn't
+                    // even reach the backend (mid-restart, brief
+                    // connectivity blip — refreshErr.response is
+                    // undefined for a pure network error), that says
+                    // nothing about the refresh token's validity — wiping
+                    // the session and hard-redirecting to /login here
+                    // would log the user out over a transient blip
+                    // rather than a real expiry. Leave the session alone
+                    // and let the next request try again.
+                    const refreshStatus = refreshErr?.response?.status;
+                    if (refreshStatus === 401 || refreshStatus === 403) {
+                        localStorage.removeItem('accessToken');
+                        localStorage.removeItem('refreshToken');
+                        localStorage.removeItem('user');
+                        window.location.href = '/login';
+                    }
                 }
             } else {
                 localStorage.removeItem('accessToken');

@@ -22,19 +22,30 @@ export const AuthProvider = ({ children }) => {
             const savedUser = localStorage.getItem('user');
 
             if (token && savedUser) {
+                setUser(JSON.parse(savedUser));
                 try {
-                    setUser(JSON.parse(savedUser));
                     // Refresh user data from server
                     const response = await usersAPI.getMyProfile();
                     const freshUser = response.data.data;
                     setUser(freshUser);
                     localStorage.setItem('user', JSON.stringify(freshUser));
-                } catch {
-                    // Token invalid — clear everything
-                    localStorage.removeItem('accessToken');
-                    localStorage.removeItem('refreshToken');
-                    localStorage.removeItem('user');
-                    setUser(null);
+                } catch (err) {
+                    // Only clear the session on a genuine rejection from
+                    // the server (401/403 — the token really is invalid
+                    // or expired). A network error (backend unreachable —
+                    // mid-restart, brief connectivity blip, etc.) has
+                    // nothing to say about whether this token is still
+                    // good, so keep the cached session from localStorage
+                    // (already set above) and let the next real API call
+                    // decide instead of forcing a logout on every page
+                    // load that happens to land during a backend restart.
+                    const status = err?.response?.status;
+                    if (status === 401 || status === 403) {
+                        localStorage.removeItem('accessToken');
+                        localStorage.removeItem('refreshToken');
+                        localStorage.removeItem('user');
+                        setUser(null);
+                    }
                 }
             }
             setLoading(false);

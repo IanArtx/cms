@@ -139,9 +139,18 @@ CREATE TABLE user_roles (
     assigned_by INTEGER     NOT NULL REFERENCES users(id),
     revoked_at  TIMESTAMPTZ,
     revoked_by  INTEGER REFERENCES users(id),
-    notes       TEXT,
-    UNIQUE (user_id, role_id)
+    notes       TEXT
 );
+-- Partial unique index (v1.35.3), not a plain table-wide UNIQUE — a user
+-- can only hold a given role ONCE at a time (revoked_at IS NULL), but is
+-- allowed to hold, lose, and later be re-given the same role over their
+-- membership. A plain UNIQUE(user_id, role_id) would keep blocking every
+-- future re-assignment forever after the first time that pairing was ever
+-- revoked, even once, since the old revoked row never goes away. See
+-- Section 23.6, CMS_BIBLE.md.
+CREATE UNIQUE INDEX user_roles_active_role_unique
+    ON user_roles (user_id, role_id)
+    WHERE revoked_at IS NULL;
 
 CREATE TABLE permissions (
     id          SERIAL PRIMARY KEY,

@@ -6,7 +6,7 @@
 -- not just future ones.
 --
 -- WHY THIS MIGRATION EXISTS: share_price_history and
--- currency_exchange_rates have never had a seeded starting row —
+-- currency_exchange_rates have never had a seeded starting row -
 -- neither ships with schema.sql, so the very first real row in each
 -- table only exists from whenever someone first set one by hand
 -- through Settings > Shares / Settings > Exchange Rates. If that
@@ -15,19 +15,19 @@
 -- historical price/rate to divide by once the new calculation is
 -- turned on.
 --
--- ⚠️  BEFORE RUNNING — SET THE TWO COMPANY-SPECIFIC VALUES BELOW  ⚠️
+-- WARNING: BEFORE RUNNING - SET THE TWO COMPANY-SPECIFIC VALUES BELOW
 -- This migration is shared between BOTH companies' databases but each
 -- one has its OWN founding share price:
 --   - ZWECK TUKULA (Company A):        100000  (UGX)
 --   - INVESTABO GLOBAL INVESTMENTS (Company B):  50000  (UGX)
 -- Edit v_founding_price below to match whichever database you are
 -- about to run this against, THEN run it. The founding EUR->UGX rate
--- (4000) is the same for both companies, per your own figures — no
+-- (4000) is the same for both companies, per your own figures - no
 -- edit needed there.
 --
 -- WHAT IT DOES NOT DO: it does not touch shareholding_registry itself.
 -- Seeding this data is a separate, safe, read-only-in-effect step from
--- actually recomputing anyone's shares_held — that recompute runs
+-- actually recomputing anyone's shares_held - that recompute runs
 -- through the app (Settings > Shares > Recalculate, Admin only), which
 -- shows a full before/after preview for every member before anything
 -- is overwritten. Run THIS migration first, then use that screen.
@@ -35,13 +35,13 @@
 -- SAFE TO RE-RUN: both inserts are guarded by IF NOT EXISTS checks, so
 -- running this twice (or running it after an Admin has already set a
 -- real historical price/rate predating the earliest contribution) does
--- nothing the second time — it will never overwrite or duplicate real
+-- nothing the second time - it will never overwrite or duplicate real
 -- data someone already entered.
 -- ============================================================
 
 DO $$
 DECLARE
-    -- ⚠️ EDIT THIS ONE LINE per database — see the comment block above.
+    -- WARNING: EDIT THIS ONE LINE per database - see the comment block above.
     v_founding_price   NUMERIC(20,4) := 100000;   -- Company A: 100000 | Company B: 50000
     v_founding_rate    NUMERIC(20,6) := 4000;      -- 1 EUR = 4000 UGX, same for both companies
 
@@ -50,7 +50,7 @@ DECLARE
     v_eur_id           INTEGER;
     v_founding_user_id INTEGER;
 BEGIN
-    -- The earliest APPROVED contribution on file — everything before
+    -- The earliest APPROVED contribution on file  -  everything before
     -- this date is, by definition, before any real contribution
     -- existed, so it's a safe "effective from the beginning of time"
     -- anchor. Falls back to today if this database genuinely has no
@@ -67,17 +67,17 @@ BEGIN
     SELECT id INTO v_eur_id FROM currencies WHERE code = 'EUR';
 
     IF v_ugx_id IS NULL OR v_eur_id IS NULL THEN
-        RAISE EXCEPTION 'Expected currencies UGX and EUR to already exist — check the currencies table before re-running this migration.';
+        RAISE EXCEPTION 'Expected currencies UGX and EUR to already exist  -  check the currencies table before re-running this migration.';
     END IF;
 
     -- Attribute both seed rows to whichever user account was created
-    -- first in this database — in practice, the original bootstrapped
+    -- first in this database  -  in practice, the original bootstrapped
     -- Admin (see GOING_LIVE_GUIDE.md Step 4). Purely an audit-trail
     -- attribution; doesn't affect the calculation itself.
     SELECT id INTO v_founding_user_id FROM users ORDER BY created_at ASC LIMIT 1;
 
     IF v_founding_user_id IS NULL THEN
-        RAISE EXCEPTION 'No users exist in this database yet — bootstrap your first Admin (GOING_LIVE_GUIDE.md Step 4) before running this migration.';
+        RAISE EXCEPTION 'No users exist in this database yet  -  bootstrap your first Admin (GOING_LIVE_GUIDE.md Step 4) before running this migration.';
     END IF;
 
     -- Seed the founding share price, only if nothing already covers

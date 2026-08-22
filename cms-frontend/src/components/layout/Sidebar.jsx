@@ -180,14 +180,27 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
                     </button>
                 </div>
 
-                {/* User info */}
-                <div style={{
-                    padding: '16px 24px',
-                    borderBottom: '1px solid rgba(255,255,255,0.1)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                }}>
+                {/* User info — v1.34.0: now a link to the member's own
+                    Portfolio page (everything about their standing in
+                    the company). Wasn't clickable at all before this. */}
+                <NavLink
+                    to="/portfolio"
+                    onClick={onClose}
+                    style={{
+                        padding: '16px 24px',
+                        borderBottom: '1px solid rgba(255,255,255,0.1)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        textDecoration: 'none',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                        transition: 'background-color 0.15s',
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+                    title="View my portfolio"
+                >
                     <Avatar user={user} size={36} />
                     <div style={{ overflow: 'hidden' }}>
                         <p style={{ fontSize: '13px', fontWeight: '500',
@@ -201,7 +214,7 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
                             {roles}
                         </p>
                     </div>
-                </div>
+                </NavLink>
 
                 {/* Navigation */}
                 <nav className="scrollbar-hidden" style={{ flex: 1, padding: '12px', overflowY: 'auto' }}>

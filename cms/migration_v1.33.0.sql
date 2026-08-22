@@ -42,7 +42,7 @@
 DO $$
 DECLARE
     -- WARNING: EDIT THIS ONE LINE per database - see the comment block above.
-    v_founding_price   NUMERIC(20,4) := 100000;   -- Company A: 100000 | Company B: 50000
+    v_founding_price   NUMERIC(20,4) := 50000;   -- Company A: 100000 | Company B: 50000
     v_founding_rate    NUMERIC(20,6) := 4000;      -- 1 EUR = 4000 UGX, same for both companies
 
     v_earliest_date    DATE;

@@ -36,6 +36,7 @@ import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
 import ReportsPage from './pages/reports/ReportsPage';
 import UsersPage from './pages/users/UsersPage';
+import MemberPortfolioPage from './pages/users/MemberPortfolioPage';
 import ProfilePage from './pages/profile/ProfilePage';
 import GenerateDocumentPage from './pages/documents/GenerateDocumentPage';
 import SettingsPage from './pages/settings/SettingsPage';
@@ -137,6 +138,8 @@ function App() {
                             <Route path="reports" element={<ReportsPage />} />
                             <Route path="reports/chart-of-accounts" element={<ChartOfAccountsPage />} />
                             <Route path="users" element={<UsersPage />} />
+                            <Route path="users/:id/portfolio" element={<MemberPortfolioPage />} />
+                            <Route path="portfolio" element={<MemberPortfolioPage />} />
                             <Route path="profile" element={<ProfilePage />} />
                             <Route path="settings" element={<SettingsPage />} />
                             <Route path="dividends" element={<DividendsPage />} />

@@ -1784,6 +1784,215 @@ export const resolutionTemplate = (data) => `<!DOCTYPE html>
 </html>`;
 
 // ============================================================
+// MEMBER PORTFOLIO SUMMARY TEMPLATE (v1.34.0)
+// The printable/document-type render of the Member Portfolio page
+// (usersAPI.getPortfolio) — everything about one member's standing
+// in the company: shareholding, contributions, savings, dividends
+// received, side fund standing, payments received, and recent
+// transactions. `data` is the portfolio object as returned by
+// GET /users/:id/portfolio, plus the standard generated_date/
+// prepared_by fields every generated document carries.
+// ============================================================
+export const memberPortfolioTemplate = (data) => {
+    const p = data.profile || {};
+    const s = data.summary || {};
+    const sh = data.shareholding || {};
+    const sv = data.savings || {};
+    const dv = data.dividends || {};
+    const sf = data.sideFund || {};
+    const pay = data.payments || {};
+    const tx = data.transactionsInvolved || {};
+
+    const contributionRows = (sh.contributions || []).slice(0, 30).map(c => `
+        <tr>
+            <td>${fmt.date(c.contribution_date)}</td>
+            <td>${c.reference_code || '—'}</td>
+            <td>${c.account_name || '—'}</td>
+            <td>${c.category_name || '—'}</td>
+            <td style="text-align:right;">${c.currency_code} ${fmt.amount(c.amount)}</td>
+            <td>${c.status}</td>
+        </tr>`).join('');
+
+    const duesRows = (sf.dues || []).slice(0, 24).map(d => `
+        <tr>
+            <td>${d.period}</td>
+            <td style="text-align:right;">${fmt.amount(d.amount_due)}</td>
+            <td style="text-align:right;">${fmt.amount(d.amount_paid)}</td>
+            <td>${d.status}</td>
+        </tr>`).join('');
+
+    const dividendRows = (dv.distributions || []).map(d => `
+        <tr>
+            <td>${d.period_label || fmt.date(d.declaration_date)}</td>
+            <td style="text-align:right;">${d.currency_code} ${fmt.amount(d.credited_amount || d.amount)}</td>
+            <td>${d.status}</td>
+            <td>${d.paid_at ? fmt.date(d.paid_at) : '—'}</td>
+        </tr>`).join('');
+
+    const paymentRows = (pay.payments || []).slice(0, 30).map(pp => `
+        <tr>
+            <td>${pp.source_type.replace(/_/g, ' ')}</td>
+            <td style="text-align:right;">${pp.currency_code} ${fmt.amount(pp.amount)}</td>
+            <td>${pp.status.replace(/_/g, ' ')}</td>
+            <td>${fmt.date(pp.created_at)}</td>
+        </tr>`).join('');
+
+    const txRows = (tx.transactions || []).slice(0, 40).map(t => {
+        const roles = [
+            t.as_beneficiary && 'Beneficiary',
+            t.as_creator && 'Recorded By',
+            t.as_approver && 'Approved By',
+        ].filter(Boolean).join(', ');
+        return `
+        <tr>
+            <td>${fmt.date(t.value_date)}</td>
+            <td>${t.reference_code || '—'}</td>
+            <td>${(t.description || '').slice(0, 60)}</td>
+            <td style="text-align:right;">${t.currency_code} ${fmt.amount(t.amount)}</td>
+            <td>${roles}</td>
+        </tr>`;
+    }).join('');
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Member Portfolio Summary</title>
+    <style>${getBaseStyles()}</style>
+</head>
+<body>
+<div class="page">
+    ${letterhead('Member Portfolio Summary', data.reference || '', new Date())}
+    <div class="doc-title">MEMBER PORTFOLIO SUMMARY</div>
+    <div class="doc-subtitle">${p.first_name || ''} ${p.last_name || ''}</div>
+
+    <div class="meta-box cols-4">
+        <div class="meta-item">
+            <div class="meta-label">Member Since</div>
+            <div class="meta-value">${fmt.date(s.memberSince)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Roles</div>
+            <div class="meta-value">${(s.roles || []).join(', ') || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Status</div>
+            <div class="meta-value">${p.is_active ? 'Active' : 'Inactive'}${p.is_email_verified ? '' : ' — Unverified'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Email</div>
+            <div class="meta-value">${p.email || '—'}</div>
+        </div>
+    </div>
+
+    <div class="meta-box cols-4">
+        <div class="meta-item">
+            <div class="meta-label">Shares Held</div>
+            <div class="meta-value large">${fmt.num(s.sharesHeld)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Shareholding %</div>
+            <div class="meta-value large">${fmt.num(s.percentage)}%</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Current Value</div>
+            <div class="meta-value large green">
+                ${sh.currentPrice ? `${sh.currentPrice.currency_code} ${fmt.amount(s.currentValue)}` : '—'}
+            </div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Total Contributed (Approved)</div>
+            <div class="meta-value large">${fmt.amount(s.totalContributed)}</div>
+        </div>
+    </div>
+
+    <div class="meta-box cols-3">
+        <div class="meta-item">
+            <div class="meta-label">Savings Balance</div>
+            <div class="meta-value">${sv.currencyCode || ''} ${fmt.amount(s.savingsBalance)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Dividends Received (All-Time)</div>
+            <div class="meta-value">${fmt.amount(s.dividendsReceived)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Side Fund</div>
+            <div class="meta-value">
+                ${s.sideFundIn ? 'Member' : 'Not a member'}
+                ${s.sideFundOverdue > 0 ? `<span style="color:#dc2626;"> — Overdue ${fmt.amount(s.sideFundOverdue)}</span>` : ''}
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Contribution History</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th><th>Reference</th><th>Account</th>
+                    <th>Category</th><th style="text-align:right;">Amount</th><th>Status</th>
+                </tr>
+            </thead>
+            <tbody>${contributionRows || '<tr><td colspan="6" style="text-align:center;">No contributions on record</td></tr>'}</tbody>
+        </table>
+    </div>
+
+    ${(sf.dues || []).length > 0 ? `
+    <div class="section">
+        <div class="section-title">Side Fund Dues History</div>
+        <table>
+            <thead>
+                <tr><th>Period</th><th style="text-align:right;">Due</th><th style="text-align:right;">Paid</th><th>Status</th></tr>
+            </thead>
+            <tbody>${duesRows}</tbody>
+        </table>
+    </div>` : ''}
+
+    ${(dv.distributions || []).length > 0 ? `
+    <div class="section">
+        <div class="section-title">Dividends Received</div>
+        <table>
+            <thead>
+                <tr><th>Period</th><th style="text-align:right;">Amount</th><th>Status</th><th>Paid Date</th></tr>
+            </thead>
+            <tbody>${dividendRows}</tbody>
+        </table>
+    </div>` : ''}
+
+    ${(pay.payments || []).length > 0 ? `
+    <div class="section">
+        <div class="section-title">Payments Received (All Types)</div>
+        <table>
+            <thead>
+                <tr><th>Type</th><th style="text-align:right;">Amount</th><th>Status</th><th>Date</th></tr>
+            </thead>
+            <tbody>${paymentRows}</tbody>
+        </table>
+    </div>` : ''}
+
+    <div class="section">
+        <div class="section-title">
+            Transactions Involved In ${tx.totalCount ? `(${tx.totalCount} total, most recent shown)` : ''}
+        </div>
+        <table>
+            <thead>
+                <tr><th>Date</th><th>Reference</th><th>Description</th><th style="text-align:right;">Amount</th><th>Role</th></tr>
+            </thead>
+            <tbody>${txRows || '<tr><td colspan="5" style="text-align:center;">No transactions on record</td></tr>'}</tbody>
+        </table>
+    </div>
+
+    ${documentTrail([
+        { role: 'Prepared By', name: data.prepared_by, date: data.generated_date },
+    ])}
+
+    ${footer()}
+</div>
+</body>
+</html>`;
+};
+
+// ============================================================
 // CERTIFICATE OF SHARES TEMPLATE
 // Same format for both MONTHLY and ANNUAL — only the label and
 // period shown differ. `data` is the response from issuing a

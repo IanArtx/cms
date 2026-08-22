@@ -34,6 +34,8 @@ export const usersAPI = {
     updateMyProfile: (data)     => api.patch('/users/me', data),
     getAllUsers:      (params)   => api.get('/users', { params }),
     getUserById:     (id)       => api.get(`/users/${id}`),
+    // v1.34.0 — full Member Portfolio snapshot (Section 6.x)
+    getPortfolio:    (id)       => api.get(`/users/${id}/portfolio`),
     deactivateUser:  (id)       => api.patch(`/users/${id}/deactivate`),
     assignRole:      (id, data) => api.post(`/users/${id}/roles`, data),
     revokeRole:      (id, roleId) => api.delete(`/users/${id}/roles/${roleId}`),

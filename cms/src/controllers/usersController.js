@@ -9,6 +9,7 @@ const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../u
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { sendRoleAssignedEmail } = require('../services/authService');
 const { uploadBuffer, generateKey, deleteObject, toKey } = require('../services/storageService');
+const { buildMemberPortfolio } = require('../services/portfolioService');
 
 // ============================================================
 // GET OWN PROFILE
@@ -378,6 +379,28 @@ const getUserById = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// GET MEMBER PORTFOLIO (v1.34.0)
+// GET /api/users/:id/portfolio
+// The full "everything about this member" snapshot — profile,
+// roles held, shareholding + contribution history, savings,
+// dividends received, side fund standing, every payment ever paid
+// out to them, and every transaction they've been involved in
+// (see portfolioService.js for the full breakdown). Gated the same
+// way as GET /:id above (isSelfOrHasPermission('USER_VIEW_ALL')) —
+// everyone can see their own, Admins/permitted roles can see anyone's.
+// ============================================================
+const getMemberPortfolio = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const portfolio = await buildMemberPortfolio(parseInt(id, 10));
+
+    if (!portfolio) {
+        throw createError.notFound('User not found');
+    }
+
+    sendSuccess(res, portfolio);
+});
+
+// ============================================================
 // DEACTIVATE USER (Admin only — soft delete)
 // PATCH /api/users/:id/deactivate
 // ============================================================
@@ -637,7 +660,7 @@ const getShareholding = asyncHandler(async (req, res) => {
 
 module.exports = {
     getMyProfile, updateMyProfile, updateProfilePhoto,
-    getAllUsers, getUserById, deactivateUser,
+    getAllUsers, getUserById, getMemberPortfolio, deactivateUser,
     assignRole, revokeRole, getRoleRequests, getMyRoleRequest,
     getAllRoles, getShareholding,
     updateSignature, getMembershipAgreement, giveConsent,

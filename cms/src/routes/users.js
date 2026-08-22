@@ -129,6 +129,15 @@ router.get('/:id',
     usersController.getUserById
 );
 
+// v1.34.0 — full "Member Portfolio" snapshot (Section 6.x). Same
+// self-or-permitted gate as the plain profile lookup above.
+router.get('/:id/portfolio',
+    validators.idParam('id'),
+    validateRequest,
+    isSelfOrHasPermission('USER_VIEW_ALL'),
+    usersController.getMemberPortfolio
+);
+
 router.patch('/:id/deactivate',
     validators.idParam('id'),
     validateRequest,

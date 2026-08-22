@@ -5,6 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { usersAPI } from '../../api/endpoints';
 import { formatDate, formatRelativeTime, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -474,6 +475,16 @@ const UsersPage = () => {
             header: 'Actions',
             render: row => (
                 <div className="flex gap-2">
+                    {hasPermission('USER_VIEW_ALL') && (
+                        <Link
+                            to={`/users/${row.id}/portfolio`}
+                            className="text-xs text-gray-600 hover:text-gray-800
+                                font-medium px-2 py-1 rounded border border-gray-200
+                                hover:bg-gray-50 transition-colors"
+                        >
+                            View Portfolio
+                        </Link>
+                    )}
                     {hasPermission('ROLE_ASSIGN') && (
                         <button
                             onClick={() => setManageUser(row)}

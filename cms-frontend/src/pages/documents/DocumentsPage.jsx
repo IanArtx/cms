@@ -10,7 +10,7 @@ import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI } from '../../api
 import { formatDate, formatFileSize, getErrorMessage, truncate } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
-    auditorFeedbackTemplate, previewDocument, printDocument,
+    auditorFeedbackTemplate, memberPortfolioTemplate, previewDocument, printDocument,
 } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -42,6 +42,11 @@ const GENERATED_RENDERERS = {
     RECEIPT:          receiptTemplate,
     RESOLUTION:       resolutionTemplate,
     AUDITOR_FEEDBACK: auditorFeedbackTemplate,
+    // v1.34.0 — Member Portfolio Summary, generated from each member's
+    // own Portfolio page rather than through this page's own Generate
+    // flow, but still stored/reopened the exact same way as every
+    // other SYSTEM_GENERATED document.
+    FINANCIAL_REPORT_INDIVIDUAL: memberPortfolioTemplate,
 };
 
 // Uploaded file types the browser can render inline in a new tab.

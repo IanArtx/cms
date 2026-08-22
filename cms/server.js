@@ -73,12 +73,25 @@ const isDev = process.env.NODE_ENV !== 'production';
 // Global rate limiter — prevents brute-force and DDoS
 // Production: 200 requests per IP per 15 minutes across all endpoints
 // Development: 5000 — effectively won't trip during normal testing
+//
+// v1.35.2 — FIXED: this was also catching Render's own /health check
+// requests. Render pings /health repeatedly as a liveness probe; once
+// enough of those (plus whatever else shares that IP) crossed 200 in
+// a 15-minute window, /health itself started returning 429, which
+// Render's platform reads as "this instance is unresponsive" and
+// restarts it — a clean, error-free restart from the app's own
+// perspective, since nothing was actually wrong, which is exactly why
+// this was so hard to spot from the app logs alone (Section 5.9,
+// 22.6, 7.2 CMS_BIBLE.md). /health is now explicitly excluded from
+// this limiter — it's an infrastructure liveness probe, not user
+// traffic, and should never be capable of tripping a DDoS guard.
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: isDev ? 5000 : 200,
     message: { success: false, message: 'Too many requests. Please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path === '/health',
 });
 app.use(globalLimiter);
 

@@ -80,6 +80,10 @@ router.post('/agreements/:id/pay',
         body('amount').optional().isFloat({ gt: 0 }),
         body('payment_date').optional().isISO8601().custom(notFutureDate),
         body('notes').optional().trim(),
+        body('payment_method').isIn(['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY'])
+            .withMessage('payment_method must be CASH, BANK_TRANSFER, or MOBILE_MONEY'),
+        body('mobile_money_provider').optional().isIn(['MTN', 'AIRTEL', 'OTHER']),
+        body('external_reference').optional().trim().isLength({ max: 100 }),
     ],
     validateRequest,
     serviceFeesController.recordPayment

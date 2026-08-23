@@ -1,5 +1,5 @@
 // ============================================================
-// SERVICE FEES CONTROLLER (v1.21.0)
+// SERVICE FEES CONTROLLER (v1.21.0; payment flow updated v1.39.0)
 //
 // Covers the compensation side of the Administrative Officer role
 // (and any future contracted-staff role): a recurring monthly
@@ -21,6 +21,15 @@
 // postTransaction() choke point as every other module — no
 // shortcuts around floor limits or the "never negative" rule just
 // because the request originated here.
+//
+// v1.39.0 — recordPayment() no longer posts its transaction
+// immediately. It creates a pending payment_confirmations entry
+// (Cash / Bank Transfer / Mobile Money, transaction ID required for
+// the latter two) via paymentConfirmationsController.createServiceFeePaymentConfirmation;
+// the real transaction only posts once the fee recipient confirms it
+// (paymentConfirmationsController.confirmPayment). approveReimbursement
+// is unchanged — it still posts immediately, followed by the original
+// post-hoc payment_acknowledgements signoff.
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
@@ -33,6 +42,7 @@ const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
+const { createServiceFeePaymentConfirmation } = require('./paymentConfirmationsController');
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
 
@@ -215,9 +225,18 @@ const updateAgreement = asyncHandler(async (req, res) => {
 });
 
 // POST /api/service-fees/agreements/:id/pay
+//
+// v1.39.0 — this no longer posts the transaction immediately. It
+// creates a pending payment_confirmations entry instead (source_type
+// SERVICE_FEE_PAYMENT), stating how the fee was actually paid (Cash /
+// Bank Transfer / Mobile Money, with a transaction ID required for
+// the latter two) — the real transaction, and the service_fee_payments
+// row, are only created once the recipient confirms it (see
+// paymentConfirmationsController.confirmPayment). This replaced the
+// old instant-post + post-hoc payment_acknowledgements signoff flow.
 const recordPayment = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { amount, payment_date, notes } = req.body;
+    const { amount, payment_date, notes, payment_method, mobile_money_provider, external_reference } = req.body;
 
     await withTransaction(async (client) => {
         const agreementResult = await client.query(`
@@ -233,84 +252,34 @@ const recordPayment = asyncHandler(async (req, res) => {
             throw createError.badRequest('This agreement is no longer active');
         }
 
-        const account = await client.query(
-            'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
-            [agreement.account_id]
-        );
-
         const payAmount = parseFloat(amount || agreement.monthly_amount);
+        const entryDate = payment_date || new Date().toISOString().split('T')[0];
 
-        const { referenceId: txRefId, referenceCode: txRefCode } = await generateReference(
-            client, resolveModuleCode(account.rows[0]), 'SVC', 'TRANSACTION', req.user.id
-        );
-
-        const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
-            accountId:       agreement.account_id,
-            transactionType: 'DEBIT',
-            inflowType:      'SERVICE_FEE_OUT',
-            amount:          payAmount,
-            currencyId:      agreement.currency_id,
-            categoryId:      agreement.category_id,
-            description:     `Service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
-            valueDate:       payment_date || new Date().toISOString().split('T')[0],
-            createdBy:       req.user.id,
-            referenceId:     txRefId,
-        });
-        await linkReferenceToRecord(client, txRefId, transactionId);
-
-        const paymentResult = await client.query(`
-            INSERT INTO service_fee_payments (agreement_id, amount, payment_date, transaction_id, notes, paid_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id
-        `, [id, payAmount, payment_date || new Date().toISOString().split('T')[0], transactionId, notes || null, req.user.id]);
-
-        // v1.30.0 (Section 4.35) — recipient acknowledges each monthly
-        // service fee payment individually.
-        await createPaymentAcknowledgement(client, {
-            sourceType:    'SERVICE_FEE_PAYMENT',
-            sourceId:      paymentResult.rows[0].id,
-            transactionId,
-            payerId:       req.user.id,
-            recipientId:   agreement.user_id,
-            amount:        payAmount,
-            currencyId:    agreement.currency_id,
-            purpose:       `Monthly service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+        const { id: confirmationId, referenceCode } = await createServiceFeePaymentConfirmation(client, {
+            agreement,
+            amount:               payAmount,
+            entryDate,
+            paymentMethod:        payment_method,
+            mobileMoneyProvider:  mobile_money_provider,
+            externalReference:    external_reference,
+            purpose:              `Monthly service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+            payerId:              req.user.id,
         });
 
         await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_RECORDED, MODULES.STAFF, {
             ipAddress:   req.ip,
-            recordType:  'service_fee_payments',
-            recordId:    paymentResult.rows[0].id,
-            newValues:   { txRefCode, payAmount, balanceBefore, balanceAfter },
-            description: `Service fee paid: ${txRefCode} — ${agreement.first_name} ${agreement.last_name}: ${payAmount}`,
+            recordType:  'payment_confirmations',
+            recordId:    confirmationId,
+            newValues:   { referenceCode, payAmount, payment_method },
+            description: `Service fee payment entry created, awaiting confirmation: ${referenceCode} — ${agreement.first_name} ${agreement.last_name}: ${payAmount}`,
             client,
         });
 
-        notify({
-            userId:  agreement.user_id,
-            type:    'SERVICE_FEE_PAID',
-            title:   'Service fee payment recorded',
-            body:    `Your monthly service fee of ${payAmount} has been paid. Reference: ${txRefCode}.`,
-            link:    '/service-fees',
-            module:  'STAFF',
-            recordType: 'service_fee_payments',
-            recordId: paymentResult.rows[0].id,
-            email: {
-                subject: 'Your service fee payment has been recorded',
-                html: await wrapEmail(`
-                    <p>Dear ${agreement.first_name},</p>
-                    <p>Your monthly service fee payment of <strong>${payAmount}</strong> has been recorded.</p>
-                    <p style="color:#6b7280;">Reference: ${txRefCode}</p>
-                `, { preheader: 'Your service fee payment has been recorded' }),
-            },
-        }).catch(() => {});
-
         sendCreated(res, {
-            payment_id: paymentResult.rows[0].id,
-            transaction_reference: txRefCode,
-            balance_before: balanceBefore,
-            balance_after: balanceAfter,
-        }, 'Service fee payment recorded');
+            confirmation_id: confirmationId,
+            reference: referenceCode,
+            status: 'PENDING_CONFIRMATION',
+        }, `Service fee payment entry created for ${agreement.first_name} ${agreement.last_name} — awaiting their confirmation. Reference: ${referenceCode}`);
     });
 });
 

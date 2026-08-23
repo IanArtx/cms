@@ -251,10 +251,24 @@ const TerminateAgreementModal = ({ isOpen, agreement, onClose, onSuccess }) => {
 // ============================================================
 // RECORD PAYMENT MODAL (Treasurer/Admin)
 // ============================================================
+// v1.39.0 — recording a payment no longer posts it immediately. It
+// creates a pending payment confirmation entry, stating how it was
+// actually paid (Cash / Bank Transfer / Mobile Money) — the real
+// transaction only posts once the recipient confirms it from
+// Payment Acknowledgements > Payment Confirmations.
 const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
-    const [form, setForm] = useState({ amount: '', payment_date: '', notes: '' });
+    const BLANK = {
+        amount: '', payment_date: '', notes: '',
+        payment_method: 'CASH', mobile_money_provider: '', external_reference: '',
+    };
+    const [form, setForm] = useState(BLANK);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen) { setForm(BLANK); setError(null); }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
 
     if (!isOpen || !agreement) return null;
 
@@ -267,10 +281,13 @@ const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
                 amount: form.amount ? parseFloat(form.amount) : undefined,
                 payment_date: form.payment_date || undefined,
                 notes: form.notes || undefined,
+                payment_method: form.payment_method,
+                mobile_money_provider: form.payment_method === 'MOBILE_MONEY' ? form.mobile_money_provider : undefined,
+                external_reference: form.payment_method !== 'CASH' ? form.external_reference : undefined,
             });
             onSuccess();
             onClose();
-            setForm({ amount: '', payment_date: '', notes: '' });
+            setForm(BLANK);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -285,6 +302,10 @@ const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Payment</h2>
                     <p className="text-sm text-gray-400 mb-4">{agreement.user_name} — {agreement.monthly_amount} {agreement.currency_code}/month</p>
+                    <p className="text-xs text-amber-600 mb-4">
+                        This creates a pending entry — {agreement.user_name} must confirm they received it before
+                        it's posted as a real transaction.
+                    </p>
                     {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
                     <form onSubmit={handleSubmit} className="space-y-4">
                         <div>
@@ -299,6 +320,40 @@ const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
                                 max={new Date().toISOString().slice(0, 10)}
                                 onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))} />
                         </div>
+                        <div>
+                            <label className="label">How was it paid? *</label>
+                            <div className="flex gap-2">
+                                {['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY'].map(m => (
+                                    <button key={m} type="button"
+                                        onClick={() => setForm(p => ({ ...p, payment_method: m, mobile_money_provider: '', external_reference: '' }))}
+                                        className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                                            form.payment_method === m ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                                        }`}>
+                                        {m === 'CASH' ? 'Cash' : m === 'BANK_TRANSFER' ? 'Bank Transfer' : 'Mobile Money'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        {form.payment_method === 'MOBILE_MONEY' && (
+                            <div>
+                                <label className="label">Provider *</label>
+                                <select className="input" value={form.mobile_money_provider}
+                                    onChange={e => setForm(p => ({ ...p, mobile_money_provider: e.target.value }))} required>
+                                    <option value="">Select provider...</option>
+                                    <option value="MTN">MTN</option>
+                                    <option value="AIRTEL">Airtel</option>
+                                    <option value="OTHER">Other</option>
+                                </select>
+                            </div>
+                        )}
+                        {form.payment_method !== 'CASH' && (
+                            <div>
+                                <label className="label">Transaction ID *</label>
+                                <input type="text" className="input" value={form.external_reference}
+                                    onChange={e => setForm(p => ({ ...p, external_reference: e.target.value }))}
+                                    placeholder="The reference/transaction ID from the transfer or mobile money receipt" required />
+                            </div>
+                        )}
                         <div>
                             <label className="label">Notes</label>
                             <textarea className="input" rows={2} value={form.notes}

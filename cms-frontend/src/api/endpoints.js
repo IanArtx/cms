@@ -203,6 +203,19 @@ export const paymentAcknowledgementsAPI = {
     finalApprove: (id)       => api.post(`/payment-acknowledgements/${id}/final-approve`),
 };
 
+// v1.39.0 — the opposite order from paymentAcknowledgementsAPI above:
+// an entry is created FIRST (pending), and confirming it is what
+// posts the real transaction.
+export const paymentConfirmationsAPI = {
+    create:   (data)     => api.post('/payment-confirmations', data),
+    getMine:  ()          => api.get('/payment-confirmations/my'),
+    getAll:   (params)    => api.get('/payment-confirmations', { params }),
+    getById:  (id)        => api.get(`/payment-confirmations/${id}`),
+    confirm:  (id, data)  => api.post(`/payment-confirmations/${id}/confirm`, data),
+    dispute:  (id, data)  => api.post(`/payment-confirmations/${id}/dispute`, data),
+    cancel:   (id, data)  => api.post(`/payment-confirmations/${id}/cancel`, data),
+};
+
 // ============================================================
 // EVENTS
 // ============================================================

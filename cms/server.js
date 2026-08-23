@@ -184,6 +184,7 @@ app.use('/api/investments',  require('./src/routes/investments'));
 app.use('/api/mmf',          require('./src/routes/mmf'));
 app.use('/api/capital-goals', require('./src/routes/capitalGoals'));
 app.use('/api/payment-acknowledgements', require('./src/routes/paymentAcknowledgements'));
+app.use('/api/payment-confirmations', require('./src/routes/paymentConfirmations'));
 app.use('/api/events',       require('./src/routes/events'));
 app.use('/api/documents',    require('./src/routes/documents'));
 app.use('/api/reports',      require('./src/routes/reports'));

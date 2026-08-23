@@ -3106,5 +3106,113 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.38.1
+-- GROUP 30: PAYMENT CONFIRMATIONS (v1.39.0)
+-- The mirror image of GROUP 26's payment_acknowledgements — that
+-- table is always created the INSTANT a payment has ALREADY posted
+-- (a post-hoc paper trail the recipient signs off on afterward).
+-- payment_confirmations is the opposite order: Treasury posts an
+-- entry FIRST, documenting that a specific active user was paid a
+-- specific amount by Cash, Bank Transfer, or Mobile Money (MTN /
+-- Airtel / Other) — a transaction ID (`external_reference`) is
+-- required for Bank Transfer/Mobile Money, forbidden for Cash (there
+-- isn't one). Nothing is posted to the ledger yet at this point. Only
+-- once the RECIPIENT reviews it and confirms does the real
+-- transaction get posted (DEBIT out of `account_id`) — confirmation
+-- is what CREATES the transaction here, not a signoff on one that
+-- already exists. If the recipient disputes it instead (a reason is
+-- required), no transaction is ever created; Treasury cancels the
+-- entry and reissues a corrected one — there is no "reopen" step
+-- (unlike payment_acknowledgements) since nothing was ever posted to
+-- undo.
+--
+-- Two source types today: GENERAL_PAYMENT (Treasury pays anyone,
+-- ad hoc — source_id is NULL) and SERVICE_FEE_PAYMENT (replaces the
+-- old instant-post flow in serviceFeesController.recordPayment —
+-- source_id = service_fee_agreements.id, recipient/account/category
+-- all derived from that agreement). A CONFIRMED SERVICE_FEE_PAYMENT
+-- also inserts the usual service_fee_payments row at that point,
+-- exactly as recordPayment used to do immediately — now deferred
+-- until the fee recipient actually confirms they were paid.
+-- ============================================================
+
+CREATE TABLE payment_confirmations (
+    id                     SERIAL PRIMARY KEY,
+    reference_id           INTEGER       NOT NULL REFERENCES references_registry(id),
+    source_type            VARCHAR(20)   NOT NULL
+                           CHECK (source_type IN ('GENERAL_PAYMENT', 'SERVICE_FEE_PAYMENT')),
+    source_id              INTEGER,
+    account_id             INTEGER       NOT NULL REFERENCES accounts(id),
+    category_id            INTEGER       NOT NULL REFERENCES categories(id),
+    payer_id               INTEGER       NOT NULL REFERENCES users(id),
+    recipient_id           INTEGER       NOT NULL REFERENCES users(id),
+    amount                 NUMERIC(20,4) NOT NULL,
+    currency_id            INTEGER       NOT NULL REFERENCES currencies(id),
+    payment_method         VARCHAR(20)   NOT NULL
+                           CHECK (payment_method IN ('CASH', 'BANK_TRANSFER', 'MOBILE_MONEY')),
+    mobile_money_provider  VARCHAR(20)
+                           CHECK (mobile_money_provider IN ('MTN', 'AIRTEL', 'OTHER')),
+    external_reference     VARCHAR(100),
+    purpose                TEXT          NOT NULL,
+    entry_date             DATE          NOT NULL,
+    status                 VARCHAR(20)   NOT NULL DEFAULT 'PENDING_CONFIRMATION'
+                           CHECK (status IN ('PENDING_CONFIRMATION', 'CONFIRMED', 'DISPUTED', 'CANCELLED')),
+    transaction_id         INTEGER REFERENCES transactions(id),
+    confirmation_note      TEXT,
+    confirmed_at           TIMESTAMPTZ,
+    dispute_reason         TEXT,
+    disputed_at            TIMESTAMPTZ,
+    cancellation_reason    TEXT,
+    cancelled_by           INTEGER REFERENCES users(id),
+    cancelled_at           TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_payment_confirmation_amount CHECK (amount > 0),
+    CONSTRAINT valid_mobile_money_provider CHECK (
+        (payment_method = 'MOBILE_MONEY' AND mobile_money_provider IS NOT NULL) OR
+        (payment_method != 'MOBILE_MONEY' AND mobile_money_provider IS NULL)
+    ),
+    CONSTRAINT valid_payment_confirmation_reference CHECK (
+        (payment_method = 'CASH' AND external_reference IS NULL) OR
+        (payment_method IN ('BANK_TRANSFER', 'MOBILE_MONEY')
+            AND external_reference IS NOT NULL AND length(trim(external_reference)) > 0)
+    )
+);
+
+CREATE INDEX idx_payment_confirmations_recipient ON payment_confirmations (recipient_id);
+CREATE INDEX idx_payment_confirmations_status    ON payment_confirmations (status);
+CREATE INDEX idx_payment_confirmations_source    ON payment_confirmations (source_type, source_id);
+
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN',
+            'DEPOSIT_CONTRIBUTION_IN', 'DEPOSIT_REFUND_OUT',
+            'GENERAL_PAYMENT_OUT'
+        ));
+END $$;
+
+-- No new permissions here — reuses PAYMENT_ACK_VIEW/PAYMENT_ACK_MANAGE
+-- (GROUP 26 above), since this lives in the same Payment
+-- Acknowledgements page/module as a second tab.
+
+-- ============================================================
+-- END OF SCHEMA — v1.39.0
 -- ============================================================

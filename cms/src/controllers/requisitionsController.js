@@ -12,6 +12,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction, creditShareholderContribution, creditSideFundContribution } = require('./transactionsController');
 const { createPendingFlexibleDeposit } = require('./savingsController');
+const { clearFine } = require('../services/finesService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 
@@ -33,21 +34,48 @@ const createRequisition = asyncHandler(async (req, res) => {
         priority,
         requisition_type,
         contribution_date,
+        fine_id,
     } = req.body;
 
     const type = requisition_type || 'EXPENSE';
     const isAcknowledgementType = (t) =>
-        t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' || t === 'SIDE_FUND_CONTRIBUTION';
+        t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' ||
+        t === 'SIDE_FUND_CONTRIBUTION' || t === 'FINE_PAYMENT';
 
     if (isAcknowledgementType(type) && !contribution_date) {
         throw createError.badRequest(
             type === 'SAVINGS_DEPOSIT' ? 'Please provide the date you made the savings deposit' :
             type === 'SIDE_FUND_CONTRIBUTION' ? 'Please provide the date you made the side fund payment' :
+            type === 'FINE_PAYMENT' ? 'Please provide the date you made the fine payment' :
             'Please provide the date you made the contribution'
         );
     }
 
+    if (type === 'FINE_PAYMENT' && !fine_id) {
+        throw createError.badRequest('Please select which fine this payment is for');
+    }
+
     await withTransaction(async (client) => {
+        // FINE_PAYMENT — validate the fine up front so we never let a
+        // member request acknowledgement against someone else's fine, or
+        // a fine that's already been cleared.
+        let validatedFineId = null;
+        if (type === 'FINE_PAYMENT') {
+            const fineCheck = await client.query(
+                'SELECT id, status, user_id FROM fines WHERE id = $1 FOR UPDATE', [fine_id]
+            );
+            if (fineCheck.rows.length === 0) {
+                throw createError.notFound('Fine not found');
+            }
+            if (fineCheck.rows[0].user_id !== req.user.id) {
+                throw createError.forbidden('This fine does not belong to you');
+            }
+            if (fineCheck.rows[0].status !== 'OUTSTANDING') {
+                throw createError.badRequest('This fine has already been cleared');
+            }
+            validatedFineId = fineCheck.rows[0].id;
+        }
+
         // Generate requisition reference
         const { referenceId, referenceCode } = await generateReference(
             client, MODULE_CODES.REQUISITION, 'REQ',
@@ -59,8 +87,8 @@ const createRequisition = asyncHandler(async (req, res) => {
                 reference_id, requested_by, category_id,
                 title, description, amount_requested,
                 purpose, required_by_date, priority, status,
-                requisition_type, contribution_date
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10, $11)
+                requisition_type, contribution_date, fine_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10, $11, $12)
             RETURNING id
         `, [
             referenceId, req.user.id, category_id,
@@ -69,6 +97,7 @@ const createRequisition = asyncHandler(async (req, res) => {
             priority || 'NORMAL',
             type,
             isAcknowledgementType(type) ? contribution_date : null,
+            validatedFineId,
         ]);
 
         const reqId = result.rows[0].id;
@@ -385,6 +414,86 @@ const approveRequisition = asyncHandler(async (req, res) => {
         }
 
         // ----------------------------------------------------------
+        // FINE PAYMENT (v1.37.0) — member is asking us to record a fine
+        // payment they've already made externally. Unlike the three
+        // acknowledgement types above, this needs a Treasurer-chosen
+        // account at approval time, because a fine must be paid into an
+        // account in the SAME currency it was posted in — there's no
+        // single "the" account to auto-resolve the way Savings/Side Fund
+        // do. Runs the exact same crediting logic as the direct
+        // Treasurer-clears-it path (finesController.clearFineDirect),
+        // via the shared finesService.clearFine core.
+        // ----------------------------------------------------------
+        if (req_.requisition_type === 'FINE_PAYMENT') {
+            if (!account_id) {
+                throw createError.badRequest(
+                    'A receiving account (in the same currency as the fine) is required to approve this requisition'
+                );
+            }
+
+            const {
+                transactionId, balanceBefore, balanceAfter,
+                referenceCode: txRefCode,
+            } = await clearFine(client, {
+                fineId:             req_.fine_id,
+                accountId:          parseInt(account_id),
+                paidDate:           req_.contribution_date || new Date().toISOString().split('T')[0],
+                paymentDescription: review_notes || req_.purpose,
+                recordedByUserId:   req.user.id,
+            });
+
+            await client.query(`
+                UPDATE requisitions
+                SET    status          = 'APPROVED',
+                       account_id      = $1,
+                       amount_approved = $2,
+                       transaction_id  = $3,
+                       reviewed_by     = $4,
+                       reviewed_at     = NOW(),
+                       review_notes    = $5
+                WHERE  id = $6
+            `, [account_id, approvedAmount, transactionId, req.user.id, review_notes || null, id]);
+
+            await logAction(req.user.id, ACTIONS.REQUISITION_APPROVED, MODULES.FINANCE, {
+                ipAddress:   req.ip,
+                recordType:  'requisitions',
+                recordId:    parseInt(id),
+                newValues:   { txRefCode, approvedAmount, balanceBefore, balanceAfter, fineId: req_.fine_id },
+                description: `Fine payment acknowledged: ${req_.reference_code} — ` +
+                             `${req_.first_name} ${req_.last_name}: ${approvedAmount}`,
+                client,
+            });
+
+            notify({
+                userId:     req_.requested_by,
+                type:       'REQUISITION_APPROVED',
+                title:      'Fine payment approved',
+                body:       `Your requisition "${req_.title}" (${req_.reference_code}) was approved and your fine payment has been recorded.`,
+                link:       `/fines`,
+                module:     'FINANCE',
+                recordType: 'requisitions',
+                recordId:   parseInt(id),
+                email: {
+                    subject: `Requisition approved — ${req_.reference_code}`,
+                    html:    await wrapEmail(`
+                        <p>Dear ${req_.first_name},</p>
+                        <p>Your requisition <strong>${req_.title}</strong> (${req_.reference_code}) has been approved and your fine payment recorded.</p>
+                        ${review_notes ? `<p style="color:#6b7280;">Reviewer notes: ${review_notes}</p>` : ''}
+                    `, { preheader: 'Your requisition has been approved' }),
+                },
+            });
+
+            return sendSuccess(res, {
+                status:                'APPROVED',
+                requisition_type:      'FINE_PAYMENT',
+                amount_approved:       approvedAmount,
+                transaction_reference: txRefCode,
+                balance_before:        balanceBefore,
+                balance_after:         balanceAfter,
+            }, 'Fine payment acknowledged and recorded');
+        }
+
+        // ----------------------------------------------------------
         // EXPENSE (original behaviour) — money OUT of the selected
         // account to fulfil the request.
         // ----------------------------------------------------------
@@ -645,7 +754,7 @@ const editRequisition = asyncHandler(async (req, res) => {
     const {
         category_id, title, description, amount_requested,
         purpose, required_by_date, priority,
-        requisition_type, contribution_date,
+        requisition_type, contribution_date, fine_id,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -672,13 +781,38 @@ const editRequisition = asyncHandler(async (req, res) => {
 
         const newType = requisition_type || requisition.requisition_type;
         const isAcknowledgementType = (t) =>
-            t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' || t === 'SIDE_FUND_CONTRIBUTION';
+            t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' ||
+            t === 'SIDE_FUND_CONTRIBUTION' || t === 'FINE_PAYMENT';
         if (isAcknowledgementType(newType) && !(contribution_date || requisition.contribution_date)) {
             throw createError.badRequest(
                 newType === 'SAVINGS_DEPOSIT' ? 'Please provide the date the savings deposit was made' :
                 newType === 'SIDE_FUND_CONTRIBUTION' ? 'Please provide the date the side fund payment was made' :
+                newType === 'FINE_PAYMENT' ? 'Please provide the date the fine payment was made' :
                 'Please provide the date the contribution was made'
             );
+        }
+
+        let newFineId = requisition.fine_id;
+        if (newType === 'FINE_PAYMENT') {
+            const targetFineId = fine_id || requisition.fine_id;
+            if (!targetFineId) {
+                throw createError.badRequest('Please select which fine this payment is for');
+            }
+            const fineCheck = await client.query(
+                'SELECT id, status, user_id FROM fines WHERE id = $1 FOR UPDATE', [targetFineId]
+            );
+            if (fineCheck.rows.length === 0) {
+                throw createError.notFound('Fine not found');
+            }
+            if (fineCheck.rows[0].user_id !== requisition.requested_by) {
+                throw createError.forbidden('This fine does not belong to the requester');
+            }
+            if (fineCheck.rows[0].status !== 'OUTSTANDING') {
+                throw createError.badRequest('This fine has already been cleared');
+            }
+            newFineId = fineCheck.rows[0].id;
+        } else {
+            newFineId = null;
         }
 
         const updated = await client.query(`
@@ -691,8 +825,9 @@ const editRequisition = asyncHandler(async (req, res) => {
                    required_by_date  = $6,
                    priority          = COALESCE($7, priority),
                    requisition_type  = $8,
-                   contribution_date = $9
-            WHERE  id = $10
+                   contribution_date = $9,
+                   fine_id           = $10
+            WHERE  id = $11
             RETURNING *
         `, [
             category_id || null, title ? title.trim() : null,
@@ -702,6 +837,7 @@ const editRequisition = asyncHandler(async (req, res) => {
             priority || null, newType,
             isAcknowledgementType(newType)
                 ? (contribution_date || requisition.contribution_date) : null,
+            newFineId,
             id,
         ]);
 

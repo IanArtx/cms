@@ -191,6 +191,7 @@ app.use('/api/system', require('./src/routes/system'));
 app.use('/api/dividends', require('./src/routes/dividends'));
 app.use('/api/savings', require('./src/routes/savings'));
 app.use('/api/side-fund', require('./src/routes/sideFund'));
+app.use('/api/fines', require('./src/routes/fines'));
 app.use('/api/requisitions', require('./src/routes/requisitions'));
 app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/notifications', require('./src/routes/notifications'));

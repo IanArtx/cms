@@ -433,6 +433,16 @@ export const sideFundAPI = {
 };
 
 // ============================================================
+// FINES & PENALTIES (v1.37.0)
+// ============================================================
+export const finesAPI = {
+    getMine:   ()         => api.get('/fines/me'),
+    getAll:    (params)   => api.get('/fines', { params }),
+    create:    (data)     => api.post('/fines', data),
+    clear:     (id, data) => api.patch(`/fines/${id}/clear`, data),
+};
+
+// ============================================================
 // REQUISITIONS
 // ============================================================
 export const requisitionsAPI = {

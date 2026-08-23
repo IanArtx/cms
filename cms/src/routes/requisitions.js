@@ -33,7 +33,9 @@ router.get('/',
 // see savingsController.js), or 'SIDE_FUND_CONTRIBUTION' (v1.26.0 —
 // asking to record a side fund payment already made; just an amount
 // + date, the oldest-unpaid-first cascade sorts out which period(s)
-// it covers).
+// it covers), or 'FINE_PAYMENT' (v1.37.0 — asking to record a fine
+// payment already made externally; requires fine_id so the Treasurer
+// knows exactly which outstanding fine it settles).
 router.post('/',
     [
         body('category_id')
@@ -54,10 +56,12 @@ router.post('/',
             .withMessage('Invalid priority'),
         body('requisition_type')
             .optional()
-            .isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION'])
+            .isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT'])
             .withMessage('Invalid requisition type'),
         body('contribution_date')
             .optional().isISO8601().withMessage('Invalid contribution date').custom(notFutureDate),
+        body('fine_id')
+            .optional().isInt({ min: 1 }).withMessage('Invalid fine'),
     ],
     validateRequest,
     requisitionsController.createRequisition
@@ -74,17 +78,19 @@ router.patch('/:id',
         body('purpose').optional().trim().notEmpty(),
         body('required_by_date').optional().isISO8601(),
         body('priority').optional().isIn(['LOW', 'NORMAL', 'HIGH', 'URGENT']),
-        body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION']),
+        body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT']),
         body('contribution_date').optional().isISO8601().custom(notFutureDate),
+        body('fine_id').optional().isInt({ min: 1 }).withMessage('Invalid fine'),
     ],
     validateRequest,
     requisitionsController.editRequisition
 );
 
 // Approve a requisition — Treasurer and Assistant Treasurer.
-// account_id is required for EXPENSE requisitions (which account to
-// pay from) but not for CONTRIBUTION_ACKNOWLEDGEMENT — those always
-// credit the primary account, resolved automatically.
+// account_id is required for EXPENSE and FINE_PAYMENT requisitions
+// (which account to pay from / receive the fine into) but not for
+// CONTRIBUTION_ACKNOWLEDGEMENT — those always credit the primary
+// account, resolved automatically.
 router.post('/:id/approve',
     requireRoles(['Treasurer', 'Assistant Treasurer']),
     validators.idParam('id'),

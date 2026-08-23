@@ -2880,5 +2880,107 @@ CREATE TABLE side_fund_membership_events (
 CREATE INDEX idx_side_fund_membership_events_user ON side_fund_membership_events (user_id, performed_at DESC);
 
 -- ============================================================
--- END OF SCHEMA — v1.32.0
+-- GROUP 28: FINES & PENALTIES (v1.37.0)
+-- Treasury (Treasurer/Assistant Treasurer/Admin) can assign a fine to
+-- a shareholder — special income to the company, posted with its own
+-- traceable inflow_type (FINE_PAYMENT_IN) once cleared. A fine is
+-- denominated in one currency at creation and can only be paid into
+-- an account in that same currency. Three reasons: CONTRIBUTION_FAILURE
+-- (auto-calculates amount = defaulted_amount x fine_percentage/100 from
+-- the deadline/defaulted-amount/percentage entered), MEETING_VIOLATION,
+-- and GENERAL (amount entered directly for both). Cleared either by the
+-- Treasurer entering the payment directly (date + description only) or
+-- by the member submitting a Requisition (FINE_PAYMENT type,
+-- requisitions.fine_id) after paying externally — reviewed the same
+-- way CONTRIBUTION_ACKNOWLEDGEMENT/SIDE_FUND_CONTRIBUTION already are.
+-- ============================================================
+
+CREATE TABLE fines (
+    id                   SERIAL PRIMARY KEY,
+    reference_id         INTEGER       NOT NULL REFERENCES references_registry(id),
+    user_id              INTEGER       NOT NULL REFERENCES users(id),
+    reason               VARCHAR(30)   NOT NULL
+                         CHECK (reason IN ('CONTRIBUTION_FAILURE', 'MEETING_VIOLATION', 'GENERAL')),
+    description          TEXT,
+    currency_id          INTEGER       NOT NULL REFERENCES currencies(id),
+    amount               NUMERIC(20,4) NOT NULL,
+    -- Contribution-failure auto-calc inputs — NULL for the other two
+    -- reasons, required (enforced below) for this one.
+    default_deadline     DATE,
+    defaulted_amount     NUMERIC(20,4),
+    fine_percentage      NUMERIC(8,4),
+    status               VARCHAR(20)   NOT NULL DEFAULT 'OUTSTANDING'
+                         CHECK (status IN ('OUTSTANDING', 'PAID')),
+    -- Populated only once cleared/paid
+    account_id           INTEGER REFERENCES accounts(id),
+    transaction_id       INTEGER REFERENCES transactions(id),
+    paid_date            DATE,
+    payment_description  TEXT,
+    cleared_by           INTEGER REFERENCES users(id),
+    cleared_at           TIMESTAMPTZ,
+    assigned_by          INTEGER       NOT NULL REFERENCES users(id),
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_fine_amount CHECK (amount > 0),
+    CONSTRAINT contribution_failure_fields CHECK (
+        reason != 'CONTRIBUTION_FAILURE' OR
+        (default_deadline IS NOT NULL AND defaulted_amount IS NOT NULL AND fine_percentage IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_fines_user   ON fines (user_id);
+CREATE INDEX idx_fines_status ON fines (status);
+
+ALTER TABLE requisitions ADD COLUMN fine_id INTEGER REFERENCES fines(id);
+
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'requisitions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%requisition_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE requisitions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE requisitions ADD CONSTRAINT requisitions_requisition_type_check
+        CHECK (requisition_type IN (
+            'EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT',
+            'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT'
+        ));
+END $$;
+
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN'
+        ));
+END $$;
+
+INSERT INTO permissions (code, module, description) VALUES
+    ('FINE_VIEW',   'FINANCE', 'View every member''s fines (Treasury oversight, not just your own)'),
+    ('FINE_MANAGE', 'FINANCE', 'Assign fines to shareholders and clear/record fine payments')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.37.0
 -- ============================================================

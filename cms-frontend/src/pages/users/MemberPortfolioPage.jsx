@@ -155,7 +155,7 @@ const MemberPortfolioPage = () => {
     );
     if (!portfolio) return null;
 
-    const { profile, rolesCurrent, shareholding, savings, dividends, sideFund, payments, transactionsInvolved, summary } = portfolio;
+    const { profile, rolesCurrent, shareholding, savings, dividends, sideFund, fines, payments, transactionsInvolved, summary } = portfolio;
 
     return (
         <div>
@@ -219,6 +219,10 @@ const MemberPortfolioPage = () => {
                     <StatTile label="Savings Balance" value={money(summary.savingsBalance, savings.currencyCode)} />
                     <StatTile label="Side Fund Overdue" tone={summary.sideFundOverdue > 0 ? 'red' : 'default'}
                         value={summary.sideFundOverdue > 0 ? money(summary.sideFundOverdue) : 'None'} />
+                    <StatTile label="Fines Outstanding" tone={summary.finesOutstandingCount > 0 ? 'red' : 'default'}
+                        value={summary.finesOutstandingCount > 0
+                            ? Object.entries(summary.finesOutstandingByCurrency || {}).map(([code, amt]) => money(amt, code)).join(', ')
+                            : 'None'} />
                 </div>
             </div>
 
@@ -377,6 +381,42 @@ const MemberPortfolioPage = () => {
                             </table>
                         </div>
                     )}
+                </div>
+            )}
+
+            {/* Fines & penalties (v1.37.0) */}
+            {fines.fines.length > 0 && (
+                <div className="card mb-6">
+                    <h3 className="font-semibold text-gray-900 mb-3">
+                        Fines & Penalties
+                        {fines.outstandingCount > 0 && (
+                            <span className="ml-2 text-sm font-normal text-red-600">
+                                {fines.outstandingCount} outstanding
+                            </span>
+                        )}
+                    </h3>
+                    <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-xs text-gray-400">
+                                    <th className="pb-2">Reference</th><th className="pb-2">Reason</th>
+                                    <th className="pb-2 text-right">Amount</th><th className="pb-2">Status</th>
+                                    <th className="pb-2">Assigned</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {fines.fines.map(f => (
+                                    <tr key={f.id}>
+                                        <td className="py-2 font-mono text-xs">{f.reference_code}</td>
+                                        <td className="py-2">{f.reason.replace('_', ' ')}</td>
+                                        <td className="py-2 text-right">{money(f.amount, f.currency_code)}</td>
+                                        <td className="py-2"><StatusBadge status={f.status} /></td>
+                                        <td className="py-2">{formatDate(f.created_at)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             )}
 

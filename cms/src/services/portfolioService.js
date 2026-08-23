@@ -211,6 +211,41 @@ const getSideFundSection = async (userId) => {
 };
 
 // ------------------------------------------------------------
+// Section: fines & penalties (v1.37.0) — every fine ever assigned to
+// this member, outstanding balance in each currency (a member can
+// hold multiple simultaneous fines, possibly in different currencies,
+// so this is NOT a single number — see finesService.js).
+// ------------------------------------------------------------
+const getFinesSection = async (userId) => {
+    const result = await query(`
+        SELECT f.id, f.reason, f.description, f.amount, f.status,
+               f.default_deadline, f.defaulted_amount, f.fine_percentage,
+               f.paid_date, f.created_at, c.code AS currency_code, c.symbol AS currency_symbol,
+               rr.reference_code,
+               assigner.first_name || ' ' || assigner.last_name AS assigned_by_name
+        FROM   fines f
+        JOIN   currencies c ON c.id = f.currency_id
+        JOIN   references_registry rr ON rr.id = f.reference_id
+        LEFT JOIN users assigner ON assigner.id = f.assigned_by
+        WHERE  f.user_id = $1
+        ORDER  BY f.created_at DESC
+    `, [userId]);
+
+    const outstanding = result.rows.filter(f => f.status === 'OUTSTANDING');
+    const outstandingByCurrency = {};
+    for (const f of outstanding) {
+        const key = f.currency_code;
+        outstandingByCurrency[key] = (outstandingByCurrency[key] || 0) + parseFloat(f.amount);
+    }
+
+    return {
+        fines: result.rows,
+        outstandingCount: outstanding.length,
+        outstandingByCurrency,
+    };
+};
+
+// ------------------------------------------------------------
 // Section: every payment ever paid OUT to this member — dividends,
 // service fees, reimbursements, savings handouts, side fund payouts,
 // all unified through payment_acknowledgements (Section 4.35).
@@ -275,12 +310,13 @@ const buildMemberPortfolio = async (userId) => {
     const identity = await getProfileAndRoles(userId);
     if (!identity) return null;
 
-    const [shareholding, savings, dividends, sideFund, payments, transactionsInvolved] =
+    const [shareholding, savings, dividends, sideFund, fines, payments, transactionsInvolved] =
         await Promise.all([
             getShareholdingSection(userId),
             getSavingsSection(userId),
             getDividendsSection(userId),
             getSideFundSection(userId),
+            getFinesSection(userId),
             getPaymentsReceivedSection(userId),
             getTransactionsInvolvedSection(userId),
         ]);
@@ -298,6 +334,8 @@ const buildMemberPortfolio = async (userId) => {
         dividendsReceived:   dividends.totalReceived,
         sideFundIn:          sideFund.membership?.is_in || false,
         sideFundOverdue:     sideFund.overdueTotal,
+        finesOutstandingCount:      fines.outstandingCount,
+        finesOutstandingByCurrency: fines.outstandingByCurrency,
     };
 
     return {
@@ -308,6 +346,7 @@ const buildMemberPortfolio = async (userId) => {
         savings,
         dividends,
         sideFund,
+        fines,
         payments,
         transactionsInvolved,
         summary,

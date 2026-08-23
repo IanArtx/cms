@@ -303,6 +303,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
 
     const isContribution = requisition.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT';
     const isSideFund = requisition.requisition_type === 'SIDE_FUND_CONTRIBUTION';
+    const isFine = requisition.requisition_type === 'FINE_PAYMENT';
     const noAccountNeeded = isContribution || isSideFund;
 
     const handleSubmit = async (e) => {
@@ -336,7 +337,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                 <div className="relative bg-white rounded-xl shadow-xl
                     max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">
-                        {isContribution ? 'Acknowledge Contribution' : isSideFund ? 'Acknowledge Side Fund Payment' : 'Approve Requisition'}
+                        {isContribution ? 'Acknowledge Contribution' : isSideFund ? 'Acknowledge Side Fund Payment' : isFine ? 'Acknowledge Fine Payment' : 'Approve Requisition'}
                     </h2>
                     <div className="bg-gray-50 rounded-lg p-3 mb-4">
                         <p className="text-sm font-medium text-gray-900">
@@ -348,7 +349,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                             {requisition.category_trail}
                         </p>
                         <p className="text-sm font-bold text-primary-700 mt-2">
-                            {isContribution ? 'Amount Contributed: ' : isSideFund ? 'Amount Paid: ' : 'Amount Requested: '}
+                            {isContribution ? 'Amount Contributed: ' : isSideFund ? 'Amount Paid: ' : isFine ? 'Fine Amount: ' : 'Amount Requested: '}
                             {parseFloat(requisition.amount_requested).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         </p>
                         {noAccountNeeded && requisition.contribution_date && (
@@ -371,6 +372,12 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4 text-xs text-blue-700">
                             Approving this will credit the side fund and apply it to this member's
                             oldest unpaid dues first — no account selection needed.
+                        </div>
+                    )}
+                    {isFine && (
+                        <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4 text-xs text-blue-700">
+                            Choose an account in the same currency the fine was posted in — a mismatched
+                            currency will be rejected.
                         </div>
                     )}
                     {error && (
@@ -620,6 +627,9 @@ const RequisitionsPage = () => {
                         {row.requisition_type === 'SIDE_FUND_CONTRIBUTION' && (
                             <span className="badge-blue text-[10px] px-1.5 py-0.5">Side Fund</span>
                         )}
+                        {row.requisition_type === 'FINE_PAYMENT' && (
+                            <span className="badge-blue text-[10px] px-1.5 py-0.5">Fine</span>
+                        )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
                 </div>
@@ -633,14 +643,16 @@ const RequisitionsPage = () => {
                         {parseFloat(row.amount_requested).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         {row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT' ? ' contributed'
                             : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' deposited'
-                            : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' paid' : ' requested'}
+                            : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' paid'
+                            : row.requisition_type === 'FINE_PAYMENT' ? ' paid' : ' requested'}
                     </p>
                     {row.amount_approved && (
                         <p className="text-xs text-green-600 font-medium">
                             {parseFloat(row.amount_approved).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                             {row.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT' ? ' acknowledged'
                                 : row.requisition_type === 'SAVINGS_DEPOSIT' ? ' forwarded to Treasurer'
-                                : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' acknowledged' : ' approved'}
+                                : row.requisition_type === 'SIDE_FUND_CONTRIBUTION' ? ' acknowledged'
+                                : row.requisition_type === 'FINE_PAYMENT' ? ' acknowledged' : ' approved'}
                         </p>
                     )}
                 </div>
@@ -654,7 +666,7 @@ const RequisitionsPage = () => {
             header: 'Date',
             render: row => (
                 <span className="text-sm text-gray-500">
-                    {['CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION'].includes(row.requisition_type)
+                    {['CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT'].includes(row.requisition_type)
                         ? (row.contribution_date ? formatDate(row.contribution_date) : '—')
                         : (row.required_by_date ? formatDate(row.required_by_date) : '—')}
                 </span>
@@ -750,6 +762,9 @@ const RequisitionsPage = () => {
                         {row.requisition_type === 'SIDE_FUND_CONTRIBUTION' && (
                             <span className="badge-blue text-[10px] px-1.5 py-0.5">Side Fund</span>
                         )}
+                        {row.requisition_type === 'FINE_PAYMENT' && (
+                            <span className="badge-blue text-[10px] px-1.5 py-0.5">Fine</span>
+                        )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
                 </div>
@@ -799,7 +814,7 @@ const RequisitionsPage = () => {
                                 onClick={() => setApproveReq(row)}
                                 className="p-1.5 rounded-lg bg-green-50 text-green-600
                                     hover:bg-green-100 transition-colors"
-                                title={['CONTRIBUTION_ACKNOWLEDGEMENT', 'SIDE_FUND_CONTRIBUTION'].includes(row.requisition_type)
+                                title={['CONTRIBUTION_ACKNOWLEDGEMENT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT'].includes(row.requisition_type)
                                     ? 'Acknowledge' : 'Approve'}
                             >
                                 <CheckIcon className="h-4 w-4" />

@@ -27,7 +27,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const [form, setForm] = useState({
         amount: '', contribution_date: '', category_id: '',
         notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
-        account_id: '',
+        deposit_amount: '', account_id: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -35,9 +35,12 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     // v1.31.0 — both slice fields are now checkbox-gated: the amount
     // input only appears once its own checkbox is explicitly checked.
     // Unchecking a box also clears its stored amount, so a hidden,
-    // stale value can never be silently submitted.
+    // stale value can never be silently submitted. v1.38.0 adds a
+    // third, independent deposit portion following the identical
+    // pattern.
     const [includeSideFund, setIncludeSideFund] = useState(false);
     const [includeSavings,  setIncludeSavings]  = useState(false);
+    const [includeDeposit,  setIncludeDeposit]  = useState(false);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -59,14 +62,16 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                 account_id: form.account_id || undefined,
                 side_fund_amount: includeSideFund ? (form.side_fund_amount || undefined) : undefined,
                 savings_amount:   includeSavings  ? (form.savings_amount  || undefined) : undefined,
+                deposit_amount:   includeDeposit  ? (form.deposit_amount  || undefined) : undefined,
             });
             onSuccess();
             onClose();
             setForm({ amount: '', contribution_date: '', category_id: '',
                 notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
-                account_id: '' });
+                deposit_amount: '', account_id: '' });
             setIncludeSideFund(false);
             setIncludeSavings(false);
+            setIncludeDeposit(false);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -78,8 +83,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const canRecordForOthers = hasPermission('FINANCE_VIEW_ALL');
     const sideFundPortion = includeSideFund ? (parseFloat(form.side_fund_amount) || 0) : 0;
     const savingsPortion  = includeSavings  ? (parseFloat(form.savings_amount)  || 0) : 0;
+    const depositPortion  = includeDeposit  ? (parseFloat(form.deposit_amount)  || 0) : 0;
     const totalAmount     = parseFloat(form.amount) || 0;
-    const contributionRemainder = Math.max(0, totalAmount - sideFundPortion - savingsPortion);
+    const contributionRemainder = Math.max(0, totalAmount - sideFundPortion - savingsPortion - depositPortion);
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -195,7 +201,32 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 </div>
                             )}
                         </div>
-                        {(includeSideFund || includeSavings) && (
+                        <div>
+                            <label className="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" checked={includeDeposit}
+                                    onChange={e => {
+                                        const checked = e.target.checked;
+                                        setIncludeDeposit(checked);
+                                        if (!checked) setForm(p => ({ ...p, deposit_amount: '' }));
+                                    }} />
+                                This contribution includes a deposit portion
+                            </label>
+                            {includeDeposit && (
+                                <div className="mt-2">
+                                    <label className="label">Deposit Portion</label>
+                                    <input type="number" className="input" value={form.deposit_amount}
+                                        onChange={e => setForm(p => ({
+                                            ...p, deposit_amount: e.target.value }))}
+                                        min="0" step="0.01" max={form.amount || undefined}
+                                        placeholder="0.00" />
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        Sliced out of the total above and tracked as this member's deposit — stays in
+                                        the same account as the rest of the contribution, doesn't count toward shareholding.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                        {(includeSideFund || includeSavings || includeDeposit) && (
                             <p className="text-xs text-gray-400 -mt-2">
                                 Contribution recorded: <strong>{contributionRemainder.toFixed(2)}</strong>
                             </p>

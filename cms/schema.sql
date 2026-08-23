@@ -2774,7 +2774,7 @@ CREATE TABLE payment_acknowledgements (
     id                   SERIAL PRIMARY KEY,
     reference_id         INTEGER       NOT NULL REFERENCES references_registry(id),
     source_type          VARCHAR(30)   NOT NULL
-                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT', 'SIDE_FUND_PAYOUT')),
+                         CHECK (source_type IN ('DIVIDEND', 'SERVICE_FEE_PAYMENT', 'REIMBURSEMENT', 'SAVINGS_HANDOUT', 'SIDE_FUND_PAYOUT', 'DEPOSIT_REFUND')),
     source_id            INTEGER       NOT NULL,
     transaction_id       INTEGER       REFERENCES transactions(id),
     payer_id             INTEGER       NOT NULL REFERENCES users(id),
@@ -2982,5 +2982,121 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.37.0
+-- GROUP 29: MEMBER DEPOSIT TRACKING (v1.38.0)
+-- Deposits are a per-member tracking counter, NOT a separate envelope
+-- like the Side Fund: money posted for a deposit is a normal
+-- transaction into whichever real account it was recorded against —
+-- fully spendable/commingled through that account. Does not
+-- contribute to shareholding. Funded via a contribution slice
+-- (mirroring Side Fund/Savings) AND a standalone inflow entry, both
+-- normalized into deposit_config's own currency at credit time so
+-- they can be compared against the single company-wide target. On
+-- exit, refunded into Savings (same two-leg shape as the Side Fund
+-- exit payout) with a deduction — MUTUAL_AGREEMENT is a fixed 5%,
+-- FORCED is admin-entered at exit time and must be >= 50%.
+-- ============================================================
+
+CREATE TABLE deposit_config (
+    id            INTEGER       PRIMARY KEY DEFAULT 1,
+    target_amount NUMERIC(20,4) NOT NULL DEFAULT 0,
+    currency_id   INTEGER REFERENCES currencies(id),
+    updated_by    INTEGER REFERENCES users(id),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT single_deposit_config_row     CHECK (id = 1),
+    CONSTRAINT non_negative_deposit_target   CHECK (target_amount >= 0)
+);
+INSERT INTO deposit_config (id, target_amount) VALUES (1, 0);
+
+CREATE TABLE deposit_balances (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id),
+    balance    NUMERIC(20,4) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT non_negative_deposit_balance CHECK (balance >= 0)
+);
+
+-- Presence of a row = this member is excused from the "cannot be
+-- zero" expectation (monitoring/reporting only).
+CREATE TABLE deposit_excusals (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(id),
+    excused_by  INTEGER NOT NULL REFERENCES users(id),
+    excused_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason      TEXT
+);
+
+CREATE TABLE deposit_entries (
+    id                 SERIAL PRIMARY KEY,
+    user_id            INTEGER       NOT NULL REFERENCES users(id),
+    source             VARCHAR(20)   NOT NULL CHECK (source IN ('CONTRIBUTION_SLICE', 'STANDALONE')),
+    account_id         INTEGER       NOT NULL REFERENCES accounts(id),
+    transaction_id     INTEGER REFERENCES transactions(id),
+    amount             NUMERIC(20,4) NOT NULL,
+    currency_id        INTEGER       NOT NULL REFERENCES currencies(id),
+    normalized_amount  NUMERIC(20,4) NOT NULL,
+    exchange_rate_used NUMERIC(20,8) NOT NULL DEFAULT 1,
+    entry_date         DATE          NOT NULL,
+    recorded_by        INTEGER       NOT NULL REFERENCES users(id),
+    created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_deposit_entry_amount CHECK (amount > 0)
+);
+CREATE INDEX idx_deposit_entries_user ON deposit_entries (user_id, entry_date DESC);
+
+CREATE TABLE deposit_exit_events (
+    id                    SERIAL PRIMARY KEY,
+    user_id               INTEGER       NOT NULL REFERENCES users(id),
+    exit_type             VARCHAR(20)   NOT NULL CHECK (exit_type IN ('MUTUAL_AGREEMENT', 'FORCED')),
+    deduction_percentage  NUMERIC(5,2)  NOT NULL,
+    gross_balance         NUMERIC(20,4) NOT NULL,
+    deduction_amount      NUMERIC(20,4) NOT NULL,
+    net_payout            NUMERIC(20,4) NOT NULL,
+    source_account_id     INTEGER REFERENCES accounts(id),
+    transaction_id        INTEGER REFERENCES transactions(id),
+    payment_ack_id        INTEGER REFERENCES payment_acknowledgements(id),
+    processed_by          INTEGER       NOT NULL REFERENCES users(id),
+    processed_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    notes                 TEXT,
+    CONSTRAINT valid_deposit_exit_deduction CHECK (
+        (exit_type = 'MUTUAL_AGREEMENT' AND deduction_percentage = 5) OR
+        (exit_type = 'FORCED' AND deduction_percentage >= 50 AND deduction_percentage <= 100)
+    )
+);
+CREATE INDEX idx_deposit_exit_events_user ON deposit_exit_events (user_id, processed_at DESC);
+
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN',
+            'DEPOSIT_CONTRIBUTION_IN', 'DEPOSIT_REFUND_OUT'
+        ));
+END $$;
+
+-- payment_acknowledgements.source_type's CHECK is widened in place at
+-- its original CREATE TABLE definition above (DEPOSIT_REFUND), not
+-- here — existing table structure, not a new addition.
+
+INSERT INTO permissions (code, module, description) VALUES
+    ('DEPOSIT_VIEW',   'FINANCE', 'View every member''s deposit standing (Treasury oversight)'),
+    ('DEPOSIT_MANAGE', 'FINANCE', 'Update the deposit target, record standalone deposits, manage excusals, and process exit refunds')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.38.0
 -- ============================================================

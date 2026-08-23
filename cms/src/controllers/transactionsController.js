@@ -20,7 +20,7 @@ const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { applySideFundPayment } = require('../services/sideFundService');
 const { getOrCreateSavingsBalance, getSavingsAccount } = require('../services/savingsService');
-const { convertToShareCurrency } = require('../services/sharePricingService');
+const { convertToShareCurrency, getExchangeRateOn } = require('../services/sharePricingService');
 
 // ============================================================
 // INTERNAL HELPER — GET CURRENT FLOOR LIMIT
@@ -666,6 +666,118 @@ const creditSavingsContribution = async (client, {
 };
 
 // ============================================================
+// CREDIT DEPOSIT CONTRIBUTION (shared core logic, v1.38.0)
+// The deposit slice of a Transactions contribution, OR a standalone
+// deposit entry (depositsController.createStandaloneDeposit) — two
+// entry points sharing one core, the same "one core, two entry
+// points" shape as creditShareholderContribution/creditSideFundContribution
+// above. UNLIKE Side Fund/Savings, deposits are NOT siloed to a
+// dedicated account: the money is posted into whichever account is
+// passed in (the SAME account the rest of the contribution targets,
+// for the slice case — see recordContribution below) and stays fully
+// spendable there. This function only tracks a running per-member
+// total (deposit_balances), normalized into deposit_config's own
+// currency at credit time so it's comparable against the single
+// company-wide target regardless of which currency it was actually
+// posted in. Deliberately does NOT touch shareholding_registry —
+// deposits never count toward shareholding. Must be called from
+// inside an existing `withTransaction` block.
+// ============================================================
+const creditDepositContribution = async (client, {
+    userId, amount, accountId, entryDate, categoryId, source, recordedByUserId,
+}) => {
+    const memberResult = await client.query(
+        'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+        [userId]
+    );
+    if (memberResult.rows.length === 0) {
+        throw createError.notFound('Depositing member not found');
+    }
+    const member = memberResult.rows[0];
+
+    const accountResult = await client.query(
+        'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1 AND is_active = TRUE',
+        [accountId]
+    );
+    if (accountResult.rows.length === 0) {
+        throw createError.badRequest('The selected account was not found or is inactive');
+    }
+    const account = accountResult.rows[0];
+
+    const configResult = await client.query('SELECT * FROM deposit_config WHERE id = 1');
+    const config = configResult.rows[0];
+    if (!config || !config.currency_id) {
+        throw createError.badRequest(
+            'A deposit target currency has not been configured yet (Settings > Deposits) — set one before recording a deposit.'
+        );
+    }
+
+    // Never guess at money — same "hard stop, not a silent guess" rule
+    // as sharePricingService's own FX-coverage guard.
+    const rateUsed = await getExchangeRateOn(client, account.currency_id, config.currency_id, entryDate);
+    const normalizedAmount = parseFloat((parseFloat(amount) * rateUsed).toFixed(4));
+
+    const { referenceId, referenceCode } = await generateReference(
+        client, resolveModuleCode(account), 'DEP-IN', 'TRANSACTION', recordedByUserId
+    );
+
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId:       account.id,
+        transactionType: 'CREDIT',
+        inflowType:      'DEPOSIT_CONTRIBUTION_IN',
+        amount,
+        currencyId:      account.currency_id,
+        categoryId,
+        description:     `Deposit — ${member.first_name} ${member.last_name}`,
+        valueDate:       entryDate,
+        createdBy:       recordedByUserId,
+        referenceId,
+    });
+    await linkReferenceToRecord(client, referenceId, transactionId);
+
+    await client.query(
+        'INSERT INTO deposit_balances (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING',
+        [userId]
+    );
+    await client.query(`
+        UPDATE deposit_balances
+        SET    balance = balance + $1, updated_at = NOW()
+        WHERE  user_id = $2
+    `, [normalizedAmount, userId]);
+
+    await client.query(`
+        INSERT INTO deposit_entries (
+            user_id, source, account_id, transaction_id, amount, currency_id,
+            normalized_amount, exchange_rate_used, entry_date, recorded_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `, [
+        userId, source, account.id, transactionId, amount, account.currency_id,
+        normalizedAmount, rateUsed, entryDate, recordedByUserId,
+    ]);
+
+    await logAction(recordedByUserId, ACTIONS.DEPOSIT_CREDITED, MODULES.FINANCE, {
+        recordType:  'deposit_balances',
+        recordId:    userId,
+        newValues:   { referenceCode, amount, normalizedAmount, balanceBefore, balanceAfter },
+        description: `Deposit credited: ${member.first_name} ${member.last_name} — ${amount} (${referenceCode})`,
+        client,
+    });
+
+    notify({
+        userId,
+        type:       'DEPOSIT_CREDITED',
+        title:      'Deposit recorded',
+        body:       `${amount} was credited to your deposit (reference ${referenceCode}).`,
+        link:       `/deposits`,
+        module:     'FINANCE',
+        recordType: 'deposit_balances',
+        recordId:   null,
+    });
+
+    return { transactionId, balanceBefore, balanceAfter, referenceCode, member, account, normalizedAmount };
+};
+
+// ============================================================
 // RECORD SHAREHOLDER CONTRIBUTION
 // POST /api/transactions/contributions
 // Treasurer/Assistant Treasurer only. contributed_by: the member
@@ -688,6 +800,15 @@ const creditSavingsContribution = async (client, {
 // capital contribution. The two slices are independent of each other
 // (a contribution can include a side fund portion, a savings portion,
 // both, or neither) and together must not exceed the total amount.
+//
+// v1.38.0 — a third, independent optional deposit_amount can ALSO be
+// sliced out of the same total. UNLIKE the side fund/savings slices,
+// the deposit portion is NOT posted into its own dedicated account —
+// it's posted into the exact same account the capital contribution
+// portion itself lands in (deposits are not siloed, per the brief),
+// so the account is resolved once up front and passed explicitly to
+// both creditShareholderContribution and creditDepositContribution
+// whenever a deposit slice is present, guaranteeing they always agree.
 // ============================================================
 const recordContribution = asyncHandler(async (req, res) => {
     const {
@@ -698,6 +819,7 @@ const recordContribution = asyncHandler(async (req, res) => {
         contributed_by, // user_id of the contributing member
         side_fund_amount,
         savings_amount,
+        deposit_amount,
         account_id, // v1.33.0, optional — which account the contribution
                     // portion is actually paid into; defaults to Primary
                     // inside creditShareholderContribution if omitted.
@@ -711,6 +833,7 @@ const recordContribution = asyncHandler(async (req, res) => {
         const totalAmount = parseFloat(amount);
         const sideFundAmount = side_fund_amount ? parseFloat(side_fund_amount) : 0;
         const savingsAmount = savings_amount ? parseFloat(savings_amount) : 0;
+        const depositAmount = deposit_amount ? parseFloat(deposit_amount) : 0;
 
         if (sideFundAmount < 0) {
             throw createError.badRequest('The side fund portion cannot be negative');
@@ -718,10 +841,42 @@ const recordContribution = asyncHandler(async (req, res) => {
         if (savingsAmount < 0) {
             throw createError.badRequest('The savings portion cannot be negative');
         }
-        if (sideFundAmount + savingsAmount > totalAmount) {
-            throw createError.badRequest('The side fund and savings portions together cannot exceed the total amount');
+        if (depositAmount < 0) {
+            throw createError.badRequest('The deposit portion cannot be negative');
         }
-        const contributionAmount = parseFloat((totalAmount - sideFundAmount - savingsAmount).toFixed(4));
+        if (sideFundAmount + savingsAmount + depositAmount > totalAmount) {
+            throw createError.badRequest('The side fund, savings, and deposit portions together cannot exceed the total amount');
+        }
+        const contributionAmount = parseFloat((totalAmount - sideFundAmount - savingsAmount - depositAmount).toFixed(4));
+
+        // Resolved once, only when a deposit slice is present, so it
+        // always lands in EXACTLY the same account as the capital
+        // contribution slice below — mirrors creditShareholderContribution's
+        // own default-to-Primary resolution exactly, so passing this
+        // resolved id back into that function changes nothing about its
+        // behaviour when no deposit slice is involved.
+        let resolvedAccount = null;
+        if (depositAmount > 0) {
+            const accountResult = account_id
+                ? await client.query(`
+                    SELECT id, currency_id, account_type, reference_prefix
+                    FROM   accounts
+                    WHERE  id = $1 AND is_active = TRUE AND account_type != 'SAVINGS'
+                `, [account_id])
+                : await client.query(`
+                    SELECT id, currency_id, account_type, reference_prefix
+                    FROM   accounts
+                    WHERE  account_type = 'PRIMARY' AND is_active = TRUE
+                `);
+            if (accountResult.rows.length === 0) {
+                throw createError.badRequest(
+                    account_id
+                        ? 'The selected account was not found, is inactive, or is a Savings account'
+                        : 'Primary account has not been set up yet'
+                );
+            }
+            resolvedAccount = accountResult.rows[0];
+        }
 
         let sideFund = null;
         if (sideFundAmount > 0) {
@@ -745,6 +900,19 @@ const recordContribution = asyncHandler(async (req, res) => {
             });
         }
 
+        let deposit = null;
+        if (depositAmount > 0) {
+            deposit = await creditDepositContribution(client, {
+                userId:            contributorId,
+                amount:            depositAmount,
+                accountId:         resolvedAccount.id,
+                entryDate:         contribution_date,
+                categoryId:        category_id,
+                source:            'CONTRIBUTION_SLICE',
+                recordedByUserId:  req.user.id,
+            });
+        }
+
         let contribution = null;
         if (contributionAmount > 0) {
             contribution = await creditShareholderContribution(client, {
@@ -754,11 +922,13 @@ const recordContribution = asyncHandler(async (req, res) => {
                 categoryId:       category_id,
                 notes,
                 recordedByUserId: req.user.id,
-                accountId:        account_id ? parseInt(account_id) : undefined,
+                accountId:        resolvedAccount
+                    ? resolvedAccount.id
+                    : (account_id ? parseInt(account_id) : undefined),
             });
         }
 
-        if (!contribution && !sideFund && !savings) {
+        if (!contribution && !sideFund && !savings && !deposit) {
             throw createError.badRequest('Amount must be greater than zero');
         }
 
@@ -766,7 +936,9 @@ const recordContribution = asyncHandler(async (req, res) => {
             ? `${contribution.contributor.first_name} ${contribution.contributor.last_name}`
             : sideFund
                 ? `${sideFund.member.first_name} ${sideFund.member.last_name}`
-                : `${savings.member.first_name} ${savings.member.last_name}`;
+                : savings
+                    ? `${savings.member.first_name} ${savings.member.last_name}`
+                    : `${deposit.member.first_name} ${deposit.member.last_name}`;
 
         if (contribution) {
             await logAction(req.user.id, ACTIONS.CONTRIBUTION_CREATED, MODULES.FINANCE, {
@@ -796,10 +968,13 @@ const recordContribution = asyncHandler(async (req, res) => {
             side_fund_credit_banked: sideFund ? sideFund.creditBanked : 0,
             savings_amount:       savingsAmount,
             savings_reference:    savings ? savings.referenceCode : null,
+            deposit_amount:       depositAmount,
+            deposit_reference:    deposit ? deposit.referenceCode : null,
         }, `Contribution recorded for ${contributorName}` +
             (contribution ? `. Reference: ${contribution.referenceCode}` : '') +
             (sideFund ? ` — ${sideFundAmount} side fund portion recorded (${sideFund.referenceCode})` : '') +
-            (savings ? ` — ${savingsAmount} savings portion recorded (${savings.referenceCode})` : ''));
+            (savings ? ` — ${savingsAmount} savings portion recorded (${savings.referenceCode})` : '') +
+            (deposit ? ` — ${depositAmount} deposit portion recorded (${deposit.referenceCode})` : ''));
     });
 });
 
@@ -1190,6 +1365,7 @@ module.exports = {
     recalculateShareholding,
     computeShareUnitsPerUser,
     creditSideFundContribution,
+    creditDepositContribution,
     recordExpense,
     recordInflow,
     reverseTransaction,

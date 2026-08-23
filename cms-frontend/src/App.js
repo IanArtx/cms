@@ -47,6 +47,7 @@ import DividendsPage from './pages/dividends/DividendsPage';
 import SavingsPage from './pages/savings/SavingsPage';
 import SideFundPage from './pages/sideFund/SideFundPage';
 import FinesPage from './pages/fines/FinesPage';
+import DepositsPage from './pages/deposits/DepositsPage';
 import AboutPage from './pages/about/AboutPage';
 import RequisitionsPage from './pages/requisitions/RequisitionsPage';
 import ServiceFeesPage from './pages/serviceFees/ServiceFeesPage';
@@ -147,6 +148,7 @@ function App() {
                             <Route path="savings" element={<SavingsPage />} />
                             <Route path="side-fund" element={<SideFundPage />} />
                             <Route path="fines" element={<FinesPage />} />
+                            <Route path="deposits" element={<DepositsPage />} />
                             <Route path="about" element={<AboutPage />} />
                             <Route path="requisitions" element={<RequisitionsPage />} />
                             <Route path="service-fees" element={<ServiceFeesPage />} />

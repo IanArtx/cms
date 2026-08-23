@@ -155,7 +155,7 @@ const MemberPortfolioPage = () => {
     );
     if (!portfolio) return null;
 
-    const { profile, rolesCurrent, shareholding, savings, dividends, sideFund, fines, payments, transactionsInvolved, summary } = portfolio;
+    const { profile, rolesCurrent, shareholding, savings, dividends, sideFund, fines, deposits, payments, transactionsInvolved, summary } = portfolio;
 
     return (
         <div>
@@ -223,6 +223,8 @@ const MemberPortfolioPage = () => {
                         value={summary.finesOutstandingCount > 0
                             ? Object.entries(summary.finesOutstandingByCurrency || {}).map(([code, amt]) => money(amt, code)).join(', ')
                             : 'None'} />
+                    <StatTile label="Deposit Balance" tone={summary.depositBelowTarget ? 'red' : 'default'}
+                        value={money(summary.depositBalance, deposits.currencyCode)} />
                 </div>
             </div>
 
@@ -412,6 +414,41 @@ const MemberPortfolioPage = () => {
                                         <td className="py-2 text-right">{money(f.amount, f.currency_code)}</td>
                                         <td className="py-2"><StatusBadge status={f.status} /></td>
                                         <td className="py-2">{formatDate(f.created_at)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {/* Member deposit standing (v1.38.0) */}
+            {deposits.entries.length > 0 && (
+                <div className="card mb-6">
+                    <h3 className="font-semibold text-gray-900 mb-3">
+                        Deposits
+                        {deposits.belowTarget && (
+                            <span className="ml-2 text-sm font-normal text-red-600">Below company target</span>
+                        )}
+                        {deposits.isExcused && (
+                            <span className="ml-2 text-sm font-normal text-blue-600">Excused</span>
+                        )}
+                    </h3>
+                    <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-xs text-gray-400">
+                                    <th className="pb-2">Date</th><th className="pb-2">Source</th>
+                                    <th className="pb-2">Account</th><th className="pb-2 text-right">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {deposits.entries.map(d => (
+                                    <tr key={d.id}>
+                                        <td className="py-2">{formatDate(d.entry_date)}</td>
+                                        <td className="py-2">{d.source === 'CONTRIBUTION_SLICE' ? 'Contribution portion' : 'Standalone entry'}</td>
+                                        <td className="py-2">{d.account_name}</td>
+                                        <td className="py-2 text-right">{money(d.amount, d.currency_code)}</td>
                                     </tr>
                                 ))}
                             </tbody>

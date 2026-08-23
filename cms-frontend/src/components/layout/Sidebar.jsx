@@ -37,6 +37,7 @@ import {
     FlagIcon,
     CheckBadgeIcon,
     ExclamationTriangleIcon,
+    ArchiveBoxIcon,
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
@@ -87,6 +88,7 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
         { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  hasFinancialAccess('SAVINGS_VIEW') && !isAdminOfficer,},
         { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  hasFinancialAccess('SIDE_FUND_VIEW') && !isAdminOfficer,},
         { label: 'Fines',       href:  '/fines',        icon:  ExclamationTriangleIcon, show: hasFinancialAccess('FINE_VIEW') && !isAdminOfficer,},
+        { label: 'Deposits',    href:  '/deposits',     icon:  ArchiveBoxIcon,     show:  hasFinancialAccess('DEPOSIT_VIEW') && !isAdminOfficer,},
         { label: 'Service Fees', href: '/service-fees', icon: WalletIcon,          show: true },
         { label: 'Payment Acknowledgements', href: '/payment-acknowledgements', icon: CheckBadgeIcon, show: true },
         { label: 'Events',       href: '/events',       icon: CalendarDaysIcon,    show: hasPermission('EVENT_VIEW') },

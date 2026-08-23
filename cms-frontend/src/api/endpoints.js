@@ -443,6 +443,22 @@ export const finesAPI = {
 };
 
 // ============================================================
+// MEMBER DEPOSIT TRACKING (v1.38.0)
+// ============================================================
+export const depositsAPI = {
+    getSettings:      ()         => api.get('/deposits/settings'),
+    updateSettings:   (data)     => api.patch('/deposits/settings', data),
+    getMine:          ()         => api.get('/deposits/me'),
+    getAll:           ()         => api.get('/deposits'),
+    create:           (data)     => api.post('/deposits', data),
+    getExcusals:      ()         => api.get('/deposits/excusals'),
+    setExcusal:       (userId, data) => api.put(`/deposits/excusals/${userId}`, data),
+    clearExcusal:     (userId)   => api.delete(`/deposits/excusals/${userId}`),
+    getExitPreview:   (userId, params) => api.get(`/deposits/${userId}/exit-preview`, { params }),
+    processExitRefund: (userId, data)  => api.patch(`/deposits/${userId}/exit-refund`, data),
+};
+
+// ============================================================
 // REQUISITIONS
 // ============================================================
 export const requisitionsAPI = {

@@ -246,6 +246,49 @@ const getFinesSection = async (userId) => {
 };
 
 // ------------------------------------------------------------
+// Section: member deposit standing (v1.38.0) — the running balance
+// (already normalized into deposit_config's own currency at credit
+// time), the company-wide target, and full entry history. NOT an
+// envelope — this balance is just a tracking number, the money itself
+// lives fully spendable in whichever real accounts it was posted into
+// (see deposit_entries.account_id per row).
+// ------------------------------------------------------------
+const getDepositSection = async (userId) => {
+    const [balanceResult, entriesResult, configResult, excusalResult] = await Promise.all([
+        query('SELECT balance, updated_at FROM deposit_balances WHERE user_id = $1', [userId]),
+        query(`
+            SELECT de.id, de.source, de.amount, de.currency_id, c.code AS currency_code,
+                   de.normalized_amount, de.entry_date, a.name AS account_name
+            FROM   deposit_entries de
+            JOIN   currencies c ON c.id = de.currency_id
+            JOIN   accounts a   ON a.id = de.account_id
+            WHERE  de.user_id = $1
+            ORDER  BY de.entry_date DESC, de.id DESC
+        `, [userId]),
+        query(`
+            SELECT dc.target_amount, c.code AS currency_code
+            FROM   deposit_config dc
+            LEFT JOIN currencies c ON c.id = dc.currency_id
+            WHERE  dc.id = 1
+        `),
+        query('SELECT reason FROM deposit_excusals WHERE user_id = $1', [userId]),
+    ]);
+
+    const balance = parseFloat(balanceResult.rows[0]?.balance || 0);
+    const config = configResult.rows[0] || { target_amount: 0 };
+    const isExcused = excusalResult.rows.length > 0;
+
+    return {
+        balance,
+        currencyCode: config.currency_code || null,
+        targetAmount: parseFloat(config.target_amount || 0),
+        belowTarget:  !isExcused && balance < parseFloat(config.target_amount || 0),
+        isExcused,
+        entries: entriesResult.rows,
+    };
+};
+
+// ------------------------------------------------------------
 // Section: every payment ever paid OUT to this member — dividends,
 // service fees, reimbursements, savings handouts, side fund payouts,
 // all unified through payment_acknowledgements (Section 4.35).
@@ -310,13 +353,14 @@ const buildMemberPortfolio = async (userId) => {
     const identity = await getProfileAndRoles(userId);
     if (!identity) return null;
 
-    const [shareholding, savings, dividends, sideFund, fines, payments, transactionsInvolved] =
+    const [shareholding, savings, dividends, sideFund, fines, deposits, payments, transactionsInvolved] =
         await Promise.all([
             getShareholdingSection(userId),
             getSavingsSection(userId),
             getDividendsSection(userId),
             getSideFundSection(userId),
             getFinesSection(userId),
+            getDepositSection(userId),
             getPaymentsReceivedSection(userId),
             getTransactionsInvolvedSection(userId),
         ]);
@@ -336,6 +380,8 @@ const buildMemberPortfolio = async (userId) => {
         sideFundOverdue:     sideFund.overdueTotal,
         finesOutstandingCount:      fines.outstandingCount,
         finesOutstandingByCurrency: fines.outstandingByCurrency,
+        depositBalance:  deposits.balance,
+        depositBelowTarget: deposits.belowTarget,
     };
 
     return {
@@ -347,6 +393,7 @@ const buildMemberPortfolio = async (userId) => {
         dividends,
         sideFund,
         fines,
+        deposits,
         payments,
         transactionsInvolved,
         summary,

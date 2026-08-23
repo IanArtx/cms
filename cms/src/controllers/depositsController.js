@@ -1,10 +1,19 @@
 // ============================================================
-// DEPOSITS CONTROLLER (v1.38.0)
+// DEPOSITS CONTROLLER (v1.38.1)
 // Member Deposit Tracking — a per-member running total, NOT a
 // separate envelope like the Side Fund: money posted for a deposit is
-// a normal transaction into whichever real account it was recorded
-// against, fully spendable through that account. Does not contribute
-// to shareholding. See depositService.js for exit-refund logic and
+// a normal transaction into the one account this feature is
+// activated against, fully spendable through that account. Does not
+// contribute to shareholding.
+//
+// Like the Side Fund, deposits are an optional feature (off by
+// default) "parented" to one specific account chosen when activating
+// it in Settings — NOT chosen per entry. UNLIKE the Side Fund, that
+// parent account is not a separate envelope (no current_balance
+// counter tracked on deposit_config) — deposits stay ordinary,
+// commingled transactions into that one account.
+//
+// See depositService.js for exit-refund logic and
 // transactionsController.js's creditDepositContribution for the
 // shared crediting core (contribution slice + standalone entry).
 // ============================================================
@@ -21,45 +30,82 @@ const { notify } = require('../services/notificationService');
 // ============================================================
 // GET DEPOSIT SETTINGS/TARGET
 // GET /api/deposits/settings
-// Anyone can view — same "the frontend needs to know the target
-// before rendering the rest of the page" reasoning as Side Fund
-// settings.
+// Anyone can view — same "the frontend needs to know whether the
+// feature is even active before rendering the rest of the page"
+// reasoning as Side Fund settings.
 // ============================================================
 const getDepositConfig = asyncHandler(async (req, res) => {
     const result = await query(`
-        SELECT dc.*, c.code AS currency_code, c.symbol AS currency_symbol
+        SELECT
+            dc.*,
+            a.name AS parent_account_name,
+            a.account_type AS parent_account_type,
+            c.code AS currency_code,
+            c.symbol AS currency_symbol
         FROM   deposit_config dc
+        LEFT JOIN accounts a   ON a.id = dc.parent_account_id
         LEFT JOIN currencies c ON c.id = dc.currency_id
         WHERE  dc.id = 1
     `);
-    sendSuccess(res, result.rows[0] || { target_amount: 0 });
+    sendSuccess(res, result.rows[0] || { is_active: false, target_amount: 0 });
 });
 
 // ============================================================
-// UPDATE DEPOSIT TARGET — Admin/Treasurer (DEPOSIT_MANAGE)
+// UPDATE DEPOSIT SETTINGS — Admin/Treasurer (DEPOSIT_MANAGE)
 // PATCH /api/deposits/settings
-// Sets the single company-wide target amount and the currency every
-// member's own (normalized) balance is compared against. Changing the
-// currency does NOT retroactively re-normalize any past deposit_entries
-// row — only the running deposit_balances totals from this point
-// forward use the new currency as their comparison basis; a currency
-// change is expected to be rare (effectively a one-time setup choice).
+// Activates/deactivates the feature, sets its parent account (and
+// therefore currency), and/or the company-wide target amount every
+// member's own (normalized) balance is compared against. Mirrors
+// updateSideFundConfig's shape exactly, minus the "can't move the
+// parent account while a balance is held" guard — deposits have no
+// pooled envelope balance to protect, since every deposit is already
+// an ordinary, spendable transaction the moment it's posted. Changing
+// the currency does NOT retroactively re-normalize any past
+// deposit_entries row — only the running deposit_balances totals from
+// this point forward use the new currency as their comparison basis.
 // ============================================================
 const updateDepositConfig = asyncHandler(async (req, res) => {
-    const { target_amount, currency_id } = req.body;
+    const { is_active, parent_account_id, target_amount } = req.body;
 
     await withTransaction(async (client) => {
+        const configResult = await client.query('SELECT * FROM deposit_config WHERE id = 1 FOR UPDATE');
+        const config = configResult.rows[0];
+
+        let currencyId = config.currency_id;
+        let accountName = null;
+
+        if (parent_account_id !== undefined && parent_account_id !== null &&
+            parseInt(parent_account_id) !== config.parent_account_id) {
+            const accountResult = await client.query(
+                'SELECT id, name, currency_id FROM accounts WHERE id = $1 AND is_active = TRUE',
+                [parent_account_id]
+            );
+            if (accountResult.rows.length === 0) {
+                throw createError.notFound('Account not found');
+            }
+            currencyId  = accountResult.rows[0].currency_id;
+            accountName = accountResult.rows[0].name;
+        }
+
+        if (is_active === true && !parent_account_id && !config.parent_account_id) {
+            throw createError.badRequest(
+                'Choose a parent account for deposits before activating it.'
+            );
+        }
+
         const result = await client.query(`
             UPDATE deposit_config
-            SET    target_amount = COALESCE($1, target_amount),
-                   currency_id   = COALESCE($2, currency_id),
-                   updated_by    = $3,
-                   updated_at    = NOW()
+            SET    is_active         = COALESCE($1, is_active),
+                   parent_account_id = COALESCE($2, parent_account_id),
+                   currency_id       = COALESCE($3, currency_id),
+                   target_amount     = COALESCE($4, target_amount),
+                   updated_by        = $5,
+                   updated_at        = NOW()
             WHERE  id = 1
             RETURNING *
         `, [
-            target_amount !== undefined ? parseFloat(target_amount) : null,
-            currency_id ? parseInt(currency_id) : null,
+            is_active, parent_account_id ? parseInt(parent_account_id) : null,
+            currencyId, target_amount !== undefined ? parseFloat(target_amount) : null,
             req.user.id,
         ]);
 
@@ -68,11 +114,11 @@ const updateDepositConfig = asyncHandler(async (req, res) => {
             recordType:  'deposit_config',
             recordId:    1,
             newValues:   result.rows[0],
-            description: `Deposit target updated to ${result.rows[0].target_amount}`,
+            description: `Deposit settings updated${accountName ? ` — now inside ${accountName}` : ''}`,
             client,
         });
 
-        sendSuccess(res, result.rows[0], 'Deposit target updated');
+        sendSuccess(res, result.rows[0], 'Deposit settings updated');
     });
 });
 
@@ -101,13 +147,14 @@ const getMyDeposit = asyncHandler(async (req, res) => {
     ]);
 
     const balance = parseFloat(balanceResult.rows[0]?.balance || 0);
-    const config = configResult.rows[0] || { target_amount: 0 };
+    const config = configResult.rows[0] || { is_active: false, target_amount: 0 };
 
     sendSuccess(res, {
+        is_active:       !!config.is_active,
         balance,
         currency_code:   config.currency_code || null,
         target_amount:   parseFloat(config.target_amount || 0),
-        below_target:    !excusalResult.rows[0] && balance < parseFloat(config.target_amount || 0),
+        below_target:    !!config.is_active && !excusalResult.rows[0] && balance < parseFloat(config.target_amount || 0),
         is_excused:      !!excusalResult.rows[0],
         entries:         entriesResult.rows,
     });
@@ -156,13 +203,15 @@ const getAllDeposits = asyncHandler(async (req, res) => {
 // — a deposit entered on its own, not sliced out of a Transactions
 // contribution. Auto-provisions a "Member Deposits" category on first
 // use, same reasoning as Fines' auto-provisioned category — the
-// Treasurer only needs to pick a member, account, amount, and date.
+// Treasurer only needs to pick a member, amount, and date; the
+// account is always the one deposits are activated against
+// (creditDepositContribution resolves and validates it internally).
 // ============================================================
 const createStandaloneDeposit = asyncHandler(async (req, res) => {
-    const { user_id, account_id, amount, entry_date, description } = req.body;
+    const { user_id, amount, entry_date, description } = req.body;
 
-    if (!user_id || !account_id || !amount || parseFloat(amount) <= 0) {
-        throw createError.badRequest('A member, account, and a positive amount are all required');
+    if (!user_id || !amount || parseFloat(amount) <= 0) {
+        throw createError.badRequest('A member and a positive amount are both required');
     }
 
     await withTransaction(async (client) => {
@@ -174,7 +223,6 @@ const createStandaloneDeposit = asyncHandler(async (req, res) => {
         const deposit = await creditDepositContribution(client, {
             userId:            parseInt(user_id),
             amount:            parseFloat(amount),
-            accountId:         parseInt(account_id),
             entryDate:         entry_date || new Date().toISOString().split('T')[0],
             categoryId,
             source:            'STANDALONE',
@@ -283,14 +331,13 @@ const getExitRefundPreview = asyncHandler(async (req, res) => {
 // ============================================================
 const processExitRefundHandler = asyncHandler(async (req, res) => {
     const { userId } = req.params;
-    const { exit_type, deduction_percentage, source_account_id, exchange_rate, notes } = req.body;
+    const { exit_type, deduction_percentage, exchange_rate, notes } = req.body;
 
     await withTransaction(async (client) => {
         const result = await processExitRefund(client, {
             userId:              parseInt(userId),
             exitType:            exit_type,
             deductionPercentage: deduction_percentage,
-            sourceAccountId:     source_account_id ? parseInt(source_account_id) : undefined,
             exchangeRate:        exchange_rate,
             notes,
             processedByUserId:   req.user.id,

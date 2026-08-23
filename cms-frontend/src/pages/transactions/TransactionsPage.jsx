@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI } from '../../api/endpoints';
+import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage, getInflowTypeLabel } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -32,12 +32,15 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
     const [sideFundActive, setSideFundActive] = useState(false);
+    const [depositActive,  setDepositActive]  = useState(false);
     // v1.31.0 — both slice fields are now checkbox-gated: the amount
     // input only appears once its own checkbox is explicitly checked.
     // Unchecking a box also clears its stored amount, so a hidden,
     // stale value can never be silently submitted. v1.38.0 adds a
     // third, independent deposit portion following the identical
-    // pattern.
+    // pattern. v1.38.1 — like the side fund checkbox, the deposit
+    // checkbox is now gated behind whether deposits are actually
+    // active for this company, fetched the same way sideFundActive is.
     const [includeSideFund, setIncludeSideFund] = useState(false);
     const [includeSavings,  setIncludeSavings]  = useState(false);
     const [includeDeposit,  setIncludeDeposit]  = useState(false);
@@ -47,6 +50,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
         sideFundAPI.getSettings()
             .then(res => setSideFundActive(!!res.data.data?.is_active))
             .catch(() => setSideFundActive(false));
+        depositsAPI.getSettings()
+            .then(res => setDepositActive(!!res.data.data?.is_active))
+            .catch(() => setDepositActive(false));
     }, [isOpen]);
 
     if (!isOpen) return null;
@@ -201,31 +207,33 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 </div>
                             )}
                         </div>
-                        <div>
-                            <label className="flex items-center gap-2 text-sm text-gray-700">
-                                <input type="checkbox" checked={includeDeposit}
-                                    onChange={e => {
-                                        const checked = e.target.checked;
-                                        setIncludeDeposit(checked);
-                                        if (!checked) setForm(p => ({ ...p, deposit_amount: '' }));
-                                    }} />
-                                This contribution includes a deposit portion
-                            </label>
-                            {includeDeposit && (
-                                <div className="mt-2">
-                                    <label className="label">Deposit Portion</label>
-                                    <input type="number" className="input" value={form.deposit_amount}
-                                        onChange={e => setForm(p => ({
-                                            ...p, deposit_amount: e.target.value }))}
-                                        min="0" step="0.01" max={form.amount || undefined}
-                                        placeholder="0.00" />
-                                    <p className="text-xs text-gray-400 mt-1">
-                                        Sliced out of the total above and tracked as this member's deposit — stays in
-                                        the same account as the rest of the contribution, doesn't count toward shareholding.
-                                    </p>
-                                </div>
-                            )}
-                        </div>
+                        {depositActive && (
+                            <div>
+                                <label className="flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" checked={includeDeposit}
+                                        onChange={e => {
+                                            const checked = e.target.checked;
+                                            setIncludeDeposit(checked);
+                                            if (!checked) setForm(p => ({ ...p, deposit_amount: '' }));
+                                        }} />
+                                    This contribution includes a deposit portion
+                                </label>
+                                {includeDeposit && (
+                                    <div className="mt-2">
+                                        <label className="label">Deposit Portion</label>
+                                        <input type="number" className="input" value={form.deposit_amount}
+                                            onChange={e => setForm(p => ({
+                                                ...p, deposit_amount: e.target.value }))}
+                                            min="0" step="0.01" max={form.amount || undefined}
+                                            placeholder="0.00" />
+                                        <p className="text-xs text-gray-400 mt-1">
+                                            Sliced out of the total above and tracked as this member's deposit — posted
+                                            into the account deposits are activated against, doesn't count toward shareholding.
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                         {(includeSideFund || includeSavings || includeDeposit) && (
                             <p className="text-xs text-gray-400 -mt-2">
                                 Contribution recorded: <strong>{contributionRemainder.toFixed(2)}</strong>

@@ -1,5 +1,5 @@
 // ============================================================
-// DEPOSITS ROUTES (v1.38.0)
+// DEPOSITS ROUTES (v1.38.1)
 // Prefix: /api/deposits
 // PERMISSION LEVELS:
 //   - /me, /settings (GET): any authenticated, role-assigned,
@@ -29,8 +29,9 @@ router.get('/settings', depositsController.getDepositConfig);
 router.patch('/settings',
     requirePermissions(['DEPOSIT_MANAGE']),
     [
+        body('is_active').optional().isBoolean(),
+        body('parent_account_id').optional().isInt({ min: 1 }),
         body('target_amount').optional().isFloat({ min: 0 }),
-        body('currency_id').optional().isInt({ min: 1 }),
     ],
     validateRequest,
     depositsController.updateDepositConfig
@@ -53,7 +54,6 @@ router.post('/',
     requirePermissions(['DEPOSIT_MANAGE']),
     [
         body('user_id').isInt({ min: 1 }).withMessage('user_id is required'),
-        body('account_id').isInt({ min: 1 }).withMessage('account_id is required'),
         body('amount').isFloat({ gt: 0 }).withMessage('A positive amount is required'),
         body('entry_date').optional().isISO8601().withMessage('Invalid date').custom(notFutureDate),
         body('description').optional().isString(),
@@ -105,7 +105,6 @@ router.patch('/:userId/exit-refund',
         body('exit_type').isIn(['MUTUAL_AGREEMENT', 'FORCED']).withMessage('exit_type must be MUTUAL_AGREEMENT or FORCED'),
         body('deduction_percentage').optional().isFloat({ min: 50, max: 100 })
             .withMessage('deduction_percentage must be between 50 and 100'),
-        body('source_account_id').optional().isInt({ min: 1 }),
         body('exchange_rate').optional().isFloat({ min: 0.000001 }),
         body('notes').optional().isString(),
     ],

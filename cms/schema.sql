@@ -2982,26 +2982,34 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- GROUP 29: MEMBER DEPOSIT TRACKING (v1.38.0)
--- Deposits are a per-member tracking counter, NOT a separate envelope
--- like the Side Fund: money posted for a deposit is a normal
--- transaction into whichever real account it was recorded against —
--- fully spendable/commingled through that account. Does not
--- contribute to shareholding. Funded via a contribution slice
--- (mirroring Side Fund/Savings) AND a standalone inflow entry, both
--- normalized into deposit_config's own currency at credit time so
--- they can be compared against the single company-wide target. On
--- exit, refunded into Savings (same two-leg shape as the Side Fund
--- exit payout) with a deduction — MUTUAL_AGREEMENT is a fixed 5%,
--- FORCED is admin-entered at exit time and must be >= 50%.
+-- GROUP 29: MEMBER DEPOSIT TRACKING (v1.38.0, activation/parent
+-- account added v1.38.1)
+-- An optional feature, off by default (is_active) — a company that
+-- doesn't use deposits sees nothing extra. Like the Side Fund, it is
+-- "parented" to one specific account chosen when activating it. UNLIKE
+-- the Side Fund, that account is NOT a separate envelope — there is no
+-- current_balance counter layered on top of it; every deposit is a
+-- completely normal transaction into that one designated account,
+-- fully spendable/commingled from that moment on. deposit_config is
+-- only ever a tracking pointer (which account, which target), never a
+-- pooled balance itself. Does not contribute to shareholding. Funded
+-- via a contribution slice (mirroring Side Fund/Savings) AND a
+-- standalone inflow entry, both normalized into deposit_config's own
+-- currency (derived from the parent account) at credit time so they
+-- can be compared against the single company-wide target. On exit,
+-- refunded into Savings (same two-leg shape as the Side Fund exit
+-- payout) with a deduction — MUTUAL_AGREEMENT is a fixed 5%, FORCED is
+-- admin-entered at exit time and must be >= 50%.
 -- ============================================================
 
 CREATE TABLE deposit_config (
-    id            INTEGER       PRIMARY KEY DEFAULT 1,
-    target_amount NUMERIC(20,4) NOT NULL DEFAULT 0,
-    currency_id   INTEGER REFERENCES currencies(id),
-    updated_by    INTEGER REFERENCES users(id),
-    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    id                 INTEGER       PRIMARY KEY DEFAULT 1,
+    is_active          BOOLEAN       NOT NULL DEFAULT FALSE,
+    parent_account_id  INTEGER REFERENCES accounts(id),
+    target_amount      NUMERIC(20,4) NOT NULL DEFAULT 0,
+    currency_id        INTEGER REFERENCES currencies(id),
+    updated_by         INTEGER REFERENCES users(id),
+    updated_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     CONSTRAINT single_deposit_config_row     CHECK (id = 1),
     CONSTRAINT non_negative_deposit_target   CHECK (target_amount >= 0)
 );
@@ -3098,5 +3106,5 @@ INSERT INTO permissions (code, module, description) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.38.0
+-- END OF SCHEMA — v1.38.1
 -- ============================================================

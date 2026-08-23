@@ -1,5 +1,5 @@
 // ============================================================
-// DEPOSIT SERVICE (v1.38.0)
+// DEPOSIT SERVICE (v1.38.1)
 // Non-crediting deposit logic: exit refund computation/processing.
 // The crediting core itself (creditDepositContribution — used by
 // BOTH the Transactions contribution slice AND the standalone entry
@@ -7,6 +7,13 @@
 // creditSideFundContribution/creditSavingsContribution live — see
 // that file's own comment on why the "shared, called from two entry
 // points" functions sit there rather than in a service file.
+//
+// v1.38.1 — like the Side Fund, deposits are now an optional feature
+// (off by default) "parented" to one specific account chosen when
+// activating it in Settings — never chosen per entry or per exit.
+// UNLIKE the Side Fund, that parent account is not a separate
+// envelope (no current_balance counter) — every deposit stays a
+// completely normal transaction into that one account.
 // ============================================================
 
 const { createError } = require('../utils/errors');
@@ -64,19 +71,27 @@ const computeExitRefund = (grossBalance, exitType, deductionPercentageInput) => 
 // Locks the member's deposit balance, computes the refund
 // (computeExitRefund above), and — if the net payout is positive —
 // transfers it into the member's own Savings balance via the same
-// two-leg posting shape as the Side Fund exit payout (DEBIT a
-// Treasurer-chosen source account, CREDIT Savings), followed by a
+// two-leg posting shape as the Side Fund exit payout (DEBIT the
+// configured deposit parent account, CREDIT Savings), followed by a
 // Payment Acknowledgement (source_type DEPOSIT_REFUND) for two-party
-// sign-off. UNLIKE the Side Fund exit payout, there is no single
-// canonical "the" account to debit from automatically — deposits are
-// not siloed to one account — so sourceAccountId must be chosen
-// explicitly. deposit_balances.balance is always zeroed on exit,
-// even if the net payout worked out to zero. Must be called from
-// inside an existing `withTransaction` block.
+// sign-off. v1.38.1 — like the Side Fund, the account to debit is no
+// longer chosen by the Treasurer at exit time; it's always
+// deposit_config.parent_account_id, the one account deposits are
+// activated against. deposit_balances.balance is always zeroed on
+// exit, even if the net payout worked out to zero. Must be called
+// from inside an existing `withTransaction` block.
 // ============================================================
 const processExitRefund = async (client, {
-    userId, exitType, deductionPercentage, sourceAccountId, exchangeRate, notes, processedByUserId,
+    userId, exitType, deductionPercentage, exchangeRate, notes, processedByUserId,
 }) => {
+    const configResult = await client.query('SELECT * FROM deposit_config WHERE id = 1');
+    const config = configResult.rows[0];
+    if (!config || !config.is_active || !config.parent_account_id) {
+        throw createError.badRequest(
+            'Deposits are not active for this company yet — an Admin/Treasurer must activate it and choose a parent account in Settings > Deposits first.'
+        );
+    }
+
     const balanceResult = await client.query(
         'SELECT balance FROM deposit_balances WHERE user_id = $1 FOR UPDATE', [userId]
     );
@@ -114,15 +129,12 @@ const processExitRefund = async (client, {
     let debitRefCode = null;
 
     if (netPayout > 0) {
-        if (!sourceAccountId) {
-            throw createError.badRequest('An account to refund the deposit from is required');
-        }
         const sourceAccountResult = await client.query(
             'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1 AND is_active = TRUE',
-            [sourceAccountId]
+            [config.parent_account_id]
         );
         if (sourceAccountResult.rows.length === 0) {
-            throw createError.badRequest('The selected source account was not found or is inactive');
+            throw createError.badRequest('The configured deposit parent account was not found or is inactive');
         }
         const sourceAccount = sourceAccountResult.rows[0];
         const savingsAccount = await getSavingsAccount(client);
@@ -208,7 +220,7 @@ const processExitRefund = async (client, {
             UPDATE deposit_exit_events
             SET    source_account_id = $1, transaction_id = $2, payment_ack_id = $3
             WHERE  id = $4
-        `, [sourceAccountId, transactionId, paymentAckId, eventId]);
+        `, [config.parent_account_id, transactionId, paymentAckId, eventId]);
     }
 
     await client.query(`

@@ -175,7 +175,7 @@ services:
       # Bump this with every migration so the sidebar's version label
       # stays accurate — it's a plain display string, nothing reads it.
       - key: REACT_APP_VERSION
-        value: "1.38.0"
+        value: "1.38.1"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

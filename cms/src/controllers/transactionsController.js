@@ -666,25 +666,28 @@ const creditSavingsContribution = async (client, {
 };
 
 // ============================================================
-// CREDIT DEPOSIT CONTRIBUTION (shared core logic, v1.38.0)
+// CREDIT DEPOSIT CONTRIBUTION (shared core logic, v1.38.0; tied to an
+// activatable parent account v1.38.1)
 // The deposit slice of a Transactions contribution, OR a standalone
 // deposit entry (depositsController.createStandaloneDeposit) — two
 // entry points sharing one core, the same "one core, two entry
 // points" shape as creditShareholderContribution/creditSideFundContribution
-// above. UNLIKE Side Fund/Savings, deposits are NOT siloed to a
-// dedicated account: the money is posted into whichever account is
-// passed in (the SAME account the rest of the contribution targets,
-// for the slice case — see recordContribution below) and stays fully
-// spendable there. This function only tracks a running per-member
-// total (deposit_balances), normalized into deposit_config's own
-// currency at credit time so it's comparable against the single
-// company-wide target regardless of which currency it was actually
-// posted in. Deliberately does NOT touch shareholding_registry —
-// deposits never count toward shareholding. Must be called from
-// inside an existing `withTransaction` block.
+// above. Like the Side Fund, deposits are an optional feature (off by
+// default) "parented" to one specific account, chosen when activating
+// it in Settings — NOT chosen per entry. UNLIKE the Side Fund, that
+// parent account is not a separate envelope (no current_balance
+// counter) — every deposit is a completely normal transaction into
+// that one account, fully spendable/commingled from that moment on.
+// This function only tracks a running per-member total
+// (deposit_balances), normalized into deposit_config's own currency
+// (derived from the parent account) at credit time so it's comparable
+// against the single company-wide target regardless of which currency
+// it was actually posted in. Deliberately does NOT touch
+// shareholding_registry — deposits never count toward shareholding.
+// Must be called from inside an existing `withTransaction` block.
 // ============================================================
 const creditDepositContribution = async (client, {
-    userId, amount, accountId, entryDate, categoryId, source, recordedByUserId,
+    userId, amount, entryDate, categoryId, source, recordedByUserId,
 }) => {
     const memberResult = await client.query(
         'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
@@ -695,25 +698,28 @@ const creditDepositContribution = async (client, {
     }
     const member = memberResult.rows[0];
 
-    const accountResult = await client.query(
-        'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1 AND is_active = TRUE',
-        [accountId]
-    );
-    if (accountResult.rows.length === 0) {
-        throw createError.badRequest('The selected account was not found or is inactive');
-    }
-    const account = accountResult.rows[0];
-
     const configResult = await client.query('SELECT * FROM deposit_config WHERE id = 1');
     const config = configResult.rows[0];
-    if (!config || !config.currency_id) {
+    if (!config || !config.is_active || !config.parent_account_id) {
         throw createError.badRequest(
-            'A deposit target currency has not been configured yet (Settings > Deposits) — set one before recording a deposit.'
+            'Deposits are not active for this company yet — an Admin/Treasurer must activate it and choose a parent account in Settings > Deposits first.'
         );
     }
 
+    const accountResult = await client.query(
+        'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1 AND is_active = TRUE',
+        [config.parent_account_id]
+    );
+    if (accountResult.rows.length === 0) {
+        throw createError.badRequest('The configured deposit parent account was not found or is inactive');
+    }
+    const account = accountResult.rows[0];
+
     // Never guess at money — same "hard stop, not a silent guess" rule
-    // as sharePricingService's own FX-coverage guard.
+    // as sharePricingService's own FX-coverage guard. In practice this
+    // is always a same-currency conversion (rate 1) since currency_id
+    // is derived from the parent account when it's set — this only
+    // does real work if the parent account is ever changed later.
     const rateUsed = await getExchangeRateOn(client, account.currency_id, config.currency_id, entryDate);
     const normalizedAmount = parseFloat((parseFloat(amount) * rateUsed).toFixed(4));
 
@@ -802,13 +808,18 @@ const creditDepositContribution = async (client, {
 // both, or neither) and together must not exceed the total amount.
 //
 // v1.38.0 — a third, independent optional deposit_amount can ALSO be
-// sliced out of the same total. UNLIKE the side fund/savings slices,
-// the deposit portion is NOT posted into its own dedicated account —
-// it's posted into the exact same account the capital contribution
-// portion itself lands in (deposits are not siloed, per the brief),
-// so the account is resolved once up front and passed explicitly to
-// both creditShareholderContribution and creditDepositContribution
-// whenever a deposit slice is present, guaranteeing they always agree.
+// sliced out of the same total, following the identical side-fund/
+// savings pattern: that portion is credited straight into the
+// deposit feature's own account, and whatever is left after all
+// slices are removed is what actually gets recorded as the capital
+// contribution.
+//
+// v1.38.1 — like the side fund, deposits are an optional feature
+// (off by default) "parented" to one specific account chosen when
+// activating it in Settings, NOT chosen per entry. creditDepositContribution
+// resolves that account itself from deposit_config, so this handler
+// no longer needs to pre-resolve or pass an account into it — it just
+// hands off the amount, exactly like the side-fund slice already does.
 // ============================================================
 const recordContribution = asyncHandler(async (req, res) => {
     const {
@@ -849,35 +860,6 @@ const recordContribution = asyncHandler(async (req, res) => {
         }
         const contributionAmount = parseFloat((totalAmount - sideFundAmount - savingsAmount - depositAmount).toFixed(4));
 
-        // Resolved once, only when a deposit slice is present, so it
-        // always lands in EXACTLY the same account as the capital
-        // contribution slice below — mirrors creditShareholderContribution's
-        // own default-to-Primary resolution exactly, so passing this
-        // resolved id back into that function changes nothing about its
-        // behaviour when no deposit slice is involved.
-        let resolvedAccount = null;
-        if (depositAmount > 0) {
-            const accountResult = account_id
-                ? await client.query(`
-                    SELECT id, currency_id, account_type, reference_prefix
-                    FROM   accounts
-                    WHERE  id = $1 AND is_active = TRUE AND account_type != 'SAVINGS'
-                `, [account_id])
-                : await client.query(`
-                    SELECT id, currency_id, account_type, reference_prefix
-                    FROM   accounts
-                    WHERE  account_type = 'PRIMARY' AND is_active = TRUE
-                `);
-            if (accountResult.rows.length === 0) {
-                throw createError.badRequest(
-                    account_id
-                        ? 'The selected account was not found, is inactive, or is a Savings account'
-                        : 'Primary account has not been set up yet'
-                );
-            }
-            resolvedAccount = accountResult.rows[0];
-        }
-
         let sideFund = null;
         if (sideFundAmount > 0) {
             sideFund = await creditSideFundContribution(client, {
@@ -905,7 +887,6 @@ const recordContribution = asyncHandler(async (req, res) => {
             deposit = await creditDepositContribution(client, {
                 userId:            contributorId,
                 amount:            depositAmount,
-                accountId:         resolvedAccount.id,
                 entryDate:         contribution_date,
                 categoryId:        category_id,
                 source:            'CONTRIBUTION_SLICE',
@@ -922,9 +903,7 @@ const recordContribution = asyncHandler(async (req, res) => {
                 categoryId:       category_id,
                 notes,
                 recordedByUserId: req.user.id,
-                accountId:        resolvedAccount
-                    ? resolvedAccount.id
-                    : (account_id ? parseInt(account_id) : undefined),
+                accountId:        account_id ? parseInt(account_id) : undefined,
             });
         }
 

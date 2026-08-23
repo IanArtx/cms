@@ -1,12 +1,18 @@
 // ============================================================
-// DEPOSITS PAGE (v1.38.0)
+// DEPOSITS PAGE (v1.38.1)
 // Member Deposit Tracking — a per-member running total, NOT a
-// separate envelope: money posted is a normal transaction into
-// whichever real account it was recorded against, fully spendable
+// separate envelope: money posted is a normal transaction into the
+// one account this feature is activated against, fully spendable
 // through that account. Does not contribute to shareholding. Every
 // active shareholder is expected to keep a nonzero balance unless
 // excused. Funded via a Transactions contribution slice (see
 // ContributionModal) or a standalone entry here.
+//
+// Like the Side Fund, deposits are optional (off by default) and
+// "parented" to one specific account chosen when activating it in
+// Settings — never chosen per entry. UNLIKE the Side Fund, that
+// parent account is not a separate envelope — deposits stay ordinary,
+// commingled transactions into that one account.
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -19,18 +25,19 @@ import { useAuth } from '../../contexts/AuthContext';
 import { PlusIcon, Cog6ToothIcon, ExclamationTriangleIcon, BanknotesIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
-// SETTINGS MODAL — Admin/Treasurer (DEPOSIT_MANAGE)
+// SETTINGS / ACTIVATION MODAL — Admin/Treasurer (DEPOSIT_MANAGE)
 // ============================================================
-const SettingsModal = ({ isOpen, onClose, onSuccess, config, currencies }) => {
-    const [form, setForm] = useState({ target_amount: '', currency_id: '' });
+const SettingsModal = ({ isOpen, onClose, onSuccess, config, accounts }) => {
+    const [form, setForm] = useState({ is_active: false, parent_account_id: '', target_amount: '' });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
     useEffect(() => {
         if (isOpen && config) {
             setForm({
-                target_amount: config.target_amount || 0,
-                currency_id:   config.currency_id || '',
+                is_active:         !!config.is_active,
+                parent_account_id: config.parent_account_id || '',
+                target_amount:     config.target_amount || 0,
             });
         }
     }, [isOpen, config]);
@@ -43,8 +50,9 @@ const SettingsModal = ({ isOpen, onClose, onSuccess, config, currencies }) => {
         setError(null);
         try {
             await depositsAPI.updateSettings({
-                target_amount: form.target_amount !== '' ? parseFloat(form.target_amount) : undefined,
-                currency_id:   form.currency_id || undefined,
+                is_active:         form.is_active,
+                parent_account_id: form.parent_account_id ? parseInt(form.parent_account_id) : undefined,
+                target_amount:     form.target_amount !== '' ? parseFloat(form.target_amount) : undefined,
             });
             onSuccess();
             onClose();
@@ -60,11 +68,11 @@ const SettingsModal = ({ isOpen, onClose, onSuccess, config, currencies }) => {
             <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Deposit Target</h2>
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Deposit Settings</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        A single company-wide target every member's own deposit balance is compared against.
-                        Individual deposits can be posted in any currency — they're converted into this one
-                        automatically when credited.
+                        Deposits are an optional feature tied to one account chosen here — every deposit posts
+                        into that account as a normal, fully spendable transaction. The target amount is a
+                        single company-wide figure every member's own deposit balance is compared against.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -72,30 +80,47 @@ const SettingsModal = ({ isOpen, onClose, onSuccess, config, currencies }) => {
                         </div>
                     )}
                     <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2.5">
+                            <span className="text-sm font-medium text-gray-700">Deposits active</span>
+                            <button type="button"
+                                onClick={() => setForm(p => ({ ...p, is_active: !p.is_active }))}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                    form.is_active ? 'bg-primary-600' : 'bg-gray-300'
+                                }`}>
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    form.is_active ? 'translate-x-6' : 'translate-x-1'
+                                }`} />
+                            </button>
+                        </div>
+                        <div>
+                            <label className="label">Parent Account {form.is_active ? '*' : ''}</label>
+                            <select className="input" value={form.parent_account_id}
+                                onChange={e => setForm(p => ({ ...p, parent_account_id: e.target.value }))}
+                                required={form.is_active}>
+                                <option value="">Select account...</option>
+                                {accounts.map(a => (
+                                    <option key={a.id} value={a.id}>{a.name} ({a.account_type})</option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-gray-400 mt-1">
+                                Every deposit — from a Transactions contribution slice or a standalone entry — is
+                                posted straight into this account.
+                            </p>
+                        </div>
                         <div>
                             <label className="label">Target Amount *</label>
                             <input type="number" className="input" value={form.target_amount}
                                 onChange={e => setForm(p => ({ ...p, target_amount: e.target.value }))}
                                 min="0" step="0.01" required />
-                        </div>
-                        <div>
-                            <label className="label">Target Currency *</label>
-                            <select className="input" value={form.currency_id}
-                                onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))} required>
-                                <option value="">Select currency...</option>
-                                {currencies.map(c => (
-                                    <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
-                                ))}
-                            </select>
                             <p className="text-xs text-gray-400 mt-1">
-                                Changing this doesn't retroactively re-convert past deposits — only new activity
-                                compares against the new currency.
+                                Compared in the parent account's own currency — changing the account later
+                                changes what this figure is measured in.
                             </p>
                         </div>
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading} className="btn-primary">
-                                {loading ? 'Saving...' : 'Save Target'}
+                                {loading ? 'Saving...' : 'Save Settings'}
                             </button>
                         </div>
                     </form>
@@ -108,8 +133,8 @@ const SettingsModal = ({ isOpen, onClose, onSuccess, config, currencies }) => {
 // ============================================================
 // STANDALONE DEPOSIT ENTRY MODAL — Treasurer/Admin (DEPOSIT_MANAGE)
 // ============================================================
-const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, accounts }) => {
-    const BLANK = { user_id: '', account_id: '', amount: '', entry_date: '', description: '' };
+const RecordDepositModal = ({ isOpen, onClose, onSuccess, members }) => {
+    const BLANK = { user_id: '', amount: '', entry_date: '', description: '' };
     const [form, setForm] = useState(BLANK);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -146,8 +171,8 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, accounts }) =
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Deposit</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        Posted as a normal inflow into the selected account — it stays fully spendable there.
-                        This only adds to the member's tracked deposit total.
+                        Posted as a normal inflow into the configured deposit account — it stays fully
+                        spendable there. This only adds to the member's tracked deposit total.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -162,16 +187,6 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, accounts }) =
                                 <option value="">Select member...</option>
                                 {members.map(m => (
                                     <option key={m.id} value={m.id}>{m.first_name} {m.last_name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="label">Account *</label>
-                            <select className="input" value={form.account_id}
-                                onChange={e => setForm(p => ({ ...p, account_id: e.target.value }))} required>
-                                <option value="">Select account...</option>
-                                {accounts.map(a => (
-                                    <option key={a.id} value={a.id}>{a.name} ({a.currency_code})</option>
                                 ))}
                             </select>
                         </div>
@@ -213,12 +228,11 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, accounts }) =
 // uses before executing the refund, so what's shown here can never
 // disagree with what gets paid out.
 // ============================================================
-const ExitRefundModal = ({ isOpen, onClose, onSuccess, member, accounts }) => {
+const ExitRefundModal = ({ isOpen, onClose, onSuccess, member }) => {
     const [exitType, setExitType] = useState('MUTUAL_AGREEMENT');
     const [deductionPct, setDeductionPct] = useState('50');
     const [preview, setPreview] = useState(null);
     const [loadingPreview, setLoadingPreview] = useState(false);
-    const [sourceAccountId, setSourceAccountId] = useState('');
     const [exchangeRate, setExchangeRate] = useState('');
     const [notes, setNotes] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -245,7 +259,6 @@ const ExitRefundModal = ({ isOpen, onClose, onSuccess, member, accounts }) => {
         if (!isOpen || !member) return;
         setExitType('MUTUAL_AGREEMENT');
         setDeductionPct('50');
-        setSourceAccountId('');
         setExchangeRate('');
         setNotes('');
         setError(null);
@@ -266,7 +279,6 @@ const ExitRefundModal = ({ isOpen, onClose, onSuccess, member, accounts }) => {
             await depositsAPI.processExitRefund(member.user_id, {
                 exit_type:            exitType,
                 deduction_percentage: exitType === 'FORCED' ? parseFloat(deductionPct) : undefined,
-                source_account_id:    sourceAccountId || undefined,
                 exchange_rate:        exchangeRate || undefined,
                 notes:                notes || undefined,
             });
@@ -342,20 +354,10 @@ const ExitRefundModal = ({ isOpen, onClose, onSuccess, member, accounts }) => {
                     {payoutDue && (
                         <div className="space-y-3 mb-4">
                             <div>
-                                <label className="label">Refund From Account *</label>
-                                <select className="input" value={sourceAccountId}
-                                    onChange={e => setSourceAccountId(e.target.value)} required>
-                                    <option value="">Select account...</option>
-                                    {accounts.map(a => (
-                                        <option key={a.id} value={a.id}>{a.name} ({a.currency_code})</option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div>
                                 <label className="label">Exchange Rate</label>
                                 <input type="number" className="input" value={exchangeRate}
                                     onChange={e => setExchangeRate(e.target.value)}
-                                    min="0.000001" step="any" placeholder="Only if the source and Savings accounts use different currencies" />
+                                    min="0.000001" step="any" placeholder="Only if the deposit account and Savings account use different currencies" />
                             </div>
                         </div>
                     )}
@@ -367,7 +369,7 @@ const ExitRefundModal = ({ isOpen, onClose, onSuccess, member, accounts }) => {
                     <div className="flex justify-end gap-3 pt-4">
                         <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                         <button type="button" onClick={handleConfirm}
-                            disabled={submitting || loadingPreview || (payoutDue && !sourceAccountId)}
+                            disabled={submitting || loadingPreview}
                             className="btn-primary">
                             {submitting ? 'Processing...' : 'Confirm Refund'}
                         </button>
@@ -446,7 +448,6 @@ const DepositsPage = () => {
     const [allDeposits, setAllDeposits] = useState([]);
     const [members, setMembers] = useState([]);
     const [accounts, setAccounts] = useState([]);
-    const [currencies, setCurrencies] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [activeTab, setActiveTab] = useState('mine');
@@ -494,12 +495,11 @@ const DepositsPage = () => {
         })();
         if (canManage) {
             usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
-            accountsAPI.getCurrencies().then(r => setCurrencies(r.data.data || [])).catch(() => {});
-        }
-        if (canManage || canView) {
             accountsAPI.getAll().then(r => setAccounts(r.data.data || [])).catch(() => {});
         }
     }, [loadConfig, loadMine, loadAll, canManage, canView]);
+
+    const isActive = config?.is_active;
 
     const refreshAll = () => { loadConfig(); loadMine(); loadAll(); };
 
@@ -563,10 +563,10 @@ const DepositsPage = () => {
                         {canManage && (
                             <button onClick={() => setShowSettings(true)} className="btn-secondary flex items-center gap-2">
                                 <Cog6ToothIcon className="h-4 w-4" />
-                                Target
+                                Settings
                             </button>
                         )}
-                        {canManage && (
+                        {canManage && isActive && (
                             <button onClick={() => setShowRecord(true)} className="btn-primary flex items-center gap-2">
                                 <PlusIcon className="h-4 w-4" />
                                 Record Deposit
@@ -582,7 +582,21 @@ const DepositsPage = () => {
                 </div>
             )}
 
-            {myDeposit && (
+            {!loading && !isActive && (
+                <div className="card flex items-start gap-4 mb-6">
+                    <BanknotesIcon className="h-8 w-8 text-gray-300 flex-shrink-0" />
+                    <div>
+                        <p className="text-sm font-medium text-gray-700">Deposits aren't active yet</p>
+                        <p className="text-sm text-gray-400 mt-1">
+                            {canManage
+                                ? 'Choose a parent account and a target amount in Settings to activate it.'
+                                : 'Ask an Admin or Treasurer to activate it from Settings.'}
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {isActive && myDeposit && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                     <div className="card">
                         <p className="text-sm text-gray-400">My Deposit Balance</p>
@@ -608,7 +622,7 @@ const DepositsPage = () => {
                 </div>
             )}
 
-            {myDeposit && myDeposit.below_target && (
+            {isActive && myDeposit && myDeposit.below_target && (
                 <div className="card flex items-start gap-4 mb-6 bg-red-50 border-red-100">
                     <ExclamationTriangleIcon className="h-6 w-6 text-red-500 flex-shrink-0 mt-0.5" />
                     <div>
@@ -620,20 +634,22 @@ const DepositsPage = () => {
                 </div>
             )}
 
-            <div className="flex gap-2 mb-6 flex-wrap">
-                <button onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                    My Deposit
-                </button>
-                {canView && (
-                    <button onClick={() => setActiveTab('all')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                        All Members
+            {isActive && (
+                <div className="flex gap-2 mb-6 flex-wrap">
+                    <button onClick={() => setActiveTab('mine')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        My Deposit
                     </button>
-                )}
-            </div>
+                    {canView && (
+                        <button onClick={() => setActiveTab('all')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            All Members
+                        </button>
+                    )}
+                </div>
+            )}
 
-            {activeTab === 'mine' && (
+            {isActive && activeTab === 'mine' && (
                 myDeposit && myDeposit.entries && myDeposit.entries.length === 0 ? (
                     <div className="card flex items-start gap-4">
                         <BanknotesIcon className="h-8 w-8 text-gray-300 flex-shrink-0" />
@@ -650,7 +666,7 @@ const DepositsPage = () => {
                 )
             )}
 
-            {activeTab === 'all' && canView && (
+            {isActive && activeTab === 'all' && canView && (
                 <DataTable
                     columns={allDepositsColumns}
                     data={allDeposits}
@@ -666,21 +682,19 @@ const DepositsPage = () => {
                 onClose={() => setShowSettings(false)}
                 onSuccess={refreshAll}
                 config={config}
-                currencies={currencies}
+                accounts={accounts}
             />
             <RecordDepositModal
                 isOpen={showRecord}
                 onClose={() => setShowRecord(false)}
                 onSuccess={refreshAll}
                 members={members}
-                accounts={accounts}
             />
             <ExitRefundModal
                 isOpen={!!refundingMember}
                 onClose={() => setRefundingMember(null)}
                 onSuccess={refreshAll}
                 member={refundingMember}
-                accounts={accounts}
             />
             <ExcuseModal
                 isOpen={!!excusingMember}

@@ -7,7 +7,7 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles, requireFinancialAccess } = require('../middleware/auth');
 const sharesController = require('../controllers/sharesController');
 
 router.use(authenticate);
@@ -18,15 +18,18 @@ router.use(blockFinanceRestricted);
 // ============================================================
 // GET CURRENT SHARE PRICE
 // GET /api/shares/price
-// Any authenticated user
+// v1.36.0: was "any authenticated user" — narrowed to the financial-
+// role default (Treasurer/Assistant Treasurer/Shareholder/Director/
+// Admin), same as the rest of this system's financial data.
 // ============================================================
-router.get('/price', sharesController.getCurrentPrice);
+router.get('/price', requireFinancialAccess('FINANCE_VIEW_ALL'), sharesController.getCurrentPrice);
 
 // ============================================================
 // GET SHARE PRICE HISTORY
 // GET /api/shares/price/history
 // ============================================================
 router.get('/price/history',
+    requireFinancialAccess('FINANCE_VIEW_ALL'),
     [
         query('page').optional().isInt({ min: 1 }),
         query('limit').optional().isInt({ min: 1, max: 100 }),

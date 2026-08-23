@@ -39,7 +39,7 @@ import {
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
-    const { user, hasPermission, hasRole } = useAuth();
+    const { user, hasPermission, hasRole, hasFinancialAccess } = useAuth();
     const { branding } = useBranding();
     const initials = (branding.company_name || 'CMS')
         .split(' ').filter(Boolean).slice(0, 2)
@@ -78,8 +78,13 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
         { label: 'Money Market Funds', href: '/mmf',     icon: CircleStackIcon,     show: hasPermission('MMF_VIEW') && !isAdminOfficer },
         { label: 'Capital Goals', href: '/capital-goals', icon: FlagIcon,           show: hasPermission('CAPITAL_GOAL_VIEW') && !isAdminOfficer },
         { label: 'Dividends',    href:  '/dividends',   icon:  BanknotesIcon,      show:  hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer,},
-        { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  !isAdminOfficer,},
-        { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  !isAdminOfficer,},
+        /* v1.36.0: was "show: !isAdminOfficer" only — no permission
+           check at all, so Secretary/Assistant Secretary/Coordinator
+           saw these links (leading to the now-gated /settings data,
+           see savings.js/sideFund.js). Narrowed to the same
+           financial-role default. */
+        { label: 'Savings',     href:  '/savings',      icon:  BanknotesIcon,      show:  hasFinancialAccess('SAVINGS_VIEW') && !isAdminOfficer,},
+        { label: 'Side Fund',   href:  '/side-fund',    icon:  WalletIcon,         show:  hasFinancialAccess('SIDE_FUND_VIEW') && !isAdminOfficer,},
         { label: 'Service Fees', href: '/service-fees', icon: WalletIcon,          show: true },
         { label: 'Payment Acknowledgements', href: '/payment-acknowledgements', icon: CheckBadgeIcon, show: true },
         { label: 'Events',       href: '/events',       icon: CalendarDaysIcon,    show: hasPermission('EVENT_VIEW') },

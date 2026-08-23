@@ -263,7 +263,7 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
 // MAIN TRANSFERS PAGE
 // ============================================================
 const TransfersPage = () => {
-    const { hasPermission, user } = useAuth();
+    const { hasPermission, hasRole, user } = useAuth();
     const [transfers,  setTransfers]  = useState([]);
     const [accounts,   setAccounts]   = useState([]);
     const [categories, setCategories] = useState([]);
@@ -279,6 +279,20 @@ const TransfersPage = () => {
     const canEdit = (row) =>
         row.status === 'AWAITING_APPROVAL' &&
         (row.created_by === user?.id || hasPermission('FINANCE_TRANSFER_APPROVE'));
+
+    // v1.36.0 — mirrors transfersController.approveTransfer's own role
+    // check exactly: Treasurer approves Primary→Secondary, Director
+    // approves Secondary→Primary. Previously the Approve button showed
+    // for ANY FINANCE_TRANSFER_APPROVE holder regardless of which
+    // specific role that transfer actually needs, so e.g. a Director
+    // saw (and could click) Approve on a P2S transfer only to have the
+    // backend reject it — CMS_BIBLE.md Section 7.3's known issue.
+    // (Reject is intentionally NOT narrowed the same way — the backend's
+    // rejectTransfer has no type-specific role check of its own, so any
+    // FINANCE_TRANSFER_APPROVE holder can reject either direction.)
+    const canApprove = (row) =>
+        hasPermission('FINANCE_TRANSFER_APPROVE') &&
+        hasRole(row.transfer_type === 'PRIMARY_TO_SECONDARY' ? 'Treasurer' : 'Director');
 
     const openEditModal = (row) => {
         setEditingRecord(row);
@@ -452,28 +466,35 @@ const TransfersPage = () => {
                             <PencilIcon className="h-4 w-4" />
                         </button>
                     )}
+                    {/* Approve — v1.36.0: gated by canApprove(row), which
+                        matches the backend's exact rule (Treasurer for
+                        P2S, Director for S2P), not just the general
+                        FINANCE_TRANSFER_APPROVE permission. Reject stays
+                        on the general permission — the backend's own
+                        rejectTransfer has no type-specific role check,
+                        any approver can reject either direction. */}
+                    {row.status === 'AWAITING_APPROVAL' && canApprove(row) && (
+                        <button
+                            onClick={() => handleApprove(row.id)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-green-50 text-green-600
+                                hover:bg-green-100 transition-colors"
+                            title="Approve"
+                        >
+                            <CheckIcon className="h-4 w-4" />
+                        </button>
+                    )}
                     {row.status === 'AWAITING_APPROVAL' &&
                     hasPermission('FINANCE_TRANSFER_APPROVE') && (
-                        <>
-                            <button
-                                onClick={() => handleApprove(row.id)}
-                                disabled={actionLoading === row.id}
-                                className="p-1.5 rounded-lg bg-green-50 text-green-600
-                                    hover:bg-green-100 transition-colors"
-                                title="Approve"
-                            >
-                                <CheckIcon className="h-4 w-4" />
-                            </button>
-                            <button
-                                onClick={() => handleReject(row.id)}
-                                disabled={actionLoading === row.id}
-                                className="p-1.5 rounded-lg bg-red-50 text-red-600
-                                    hover:bg-red-100 transition-colors"
-                                title="Reject"
-                            >
-                                <XMarkIcon className="h-4 w-4" />
-                            </button>
-                        </>
+                        <button
+                            onClick={() => handleReject(row.id)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-red-50 text-red-600
+                                hover:bg-red-100 transition-colors"
+                            title="Reject"
+                        >
+                            <XMarkIcon className="h-4 w-4" />
+                        </button>
                     )}
                 </div>
             ),

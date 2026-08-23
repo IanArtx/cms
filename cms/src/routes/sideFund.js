@@ -6,7 +6,7 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireFinancialAccess } = require('../middleware/auth');
 const sideFundController = require('../controllers/sideFundController');
 
 router.use(authenticate);
@@ -18,10 +18,10 @@ router.use(blockFinanceRestricted);
 // STATIC ROUTES — must be declared before any /:id route below.
 // ------------------------------------------------------------
 
-// Settings/summary — anyone signed in can view whether the fund is
-// active, its balance, and its monthly due; only SIDE_FUND_MANAGE
-// holders can change it.
-router.get('/settings', sideFundController.getSideFundConfig);
+// Settings/summary. v1.36.0: was "anyone signed in can view" — narrowed
+// to the financial-role default (see requireFinancialAccess); only
+// SIDE_FUND_MANAGE holders can still change it.
+router.get('/settings', requireFinancialAccess('SIDE_FUND_VIEW'), sideFundController.getSideFundConfig);
 router.patch('/settings',
     requirePermissions(['SIDE_FUND_MANAGE']),
     [

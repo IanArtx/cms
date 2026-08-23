@@ -8,7 +8,7 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requireRoles, requireFinancialAccess } = require('../middleware/auth');
 const exchangeRatesController = require('../controllers/exchangeRatesController');
 
 router.use(authenticate);
@@ -19,15 +19,17 @@ router.use(blockFinanceRestricted);
 // ============================================================
 // GET CURRENT EXCHANGE RATES
 // GET /api/exchange-rates/current
-// Any authenticated user
+// v1.36.0: was "any authenticated user" — narrowed to the financial-
+// role default, same as the rest of this system's financial data.
 // ============================================================
-router.get('/current', exchangeRatesController.getCurrentRates);
+router.get('/current', requireFinancialAccess('FINANCE_VIEW_ALL'), exchangeRatesController.getCurrentRates);
 
 // ============================================================
 // GET EXCHANGE RATE HISTORY
 // GET /api/exchange-rates/history
 // ============================================================
 router.get('/history',
+    requireFinancialAccess('FINANCE_VIEW_ALL'),
     [
         query('page').optional().isInt({ min: 1 }),
         query('limit').optional().isInt({ min: 1, max: 100 }),

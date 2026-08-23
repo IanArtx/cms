@@ -6,7 +6,7 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireRoles, requireFinancialAccess } = require('../middleware/auth');
 const savingsController = require('../controllers/savingsController');
 
 router.use(authenticate);
@@ -34,8 +34,10 @@ router.get('/balance/:userId',
     savingsController.getSavingsBalanceByUser
 );
 
-// Company-wide interest settings — anyone can view, only Admin/Treasurer can change
-router.get('/settings', savingsController.getSavingsSettings);
+// Company-wide interest settings. v1.36.0: was "anyone can view" (any
+// authenticated user) — narrowed to the same financial-role default as
+// the rest of this module's data; only Admin/Treasurer can change.
+router.get('/settings', requireFinancialAccess('SAVINGS_VIEW'), savingsController.getSavingsSettings);
 router.patch('/settings',
     requirePermissions(['SAVINGS_SETTINGS_MANAGE']),
     [

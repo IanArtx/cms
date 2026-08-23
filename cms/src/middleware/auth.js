@@ -297,6 +297,54 @@ const blockAuditor = blockRoles(
 );
 
 // ============================================================
+// FINANCIAL ROLES + REQUIRE FINANCIAL ACCESS (v1.36.0)
+// The 5 roles that see company financial information (account
+// balances, share price, exchange rates, investment/MMF figures,
+// savings/side-fund settings) BY DEFAULT, with no extra permission
+// grant needed. Every other role — Secretary, Assistant Secretary,
+// Coordinator, Administrative Officer, and any future "performative"
+// role that adds functionality without being a shareholder/officer
+// with money authority — sees none of it unless an Admin explicitly
+// grants the matching permission via Settings > Roles & Permissions
+// (the "extra roles that allow seeing other views" case).
+//
+// This is deliberately an ALLOW-list of roles, not a deny-list like
+// blockFinanceRestricted — a handful of read-only, dashboard-style
+// endpoints (account summary, share price, exchange rates, savings/
+// side-fund settings, investment/MMF performance) were written to
+// check only `authenticate` (see accounts.js's own "used by
+// dashboard (all members)" comment on GET /summary), on the
+// assumption that "any authenticated member" was an acceptable
+// audience for them. That assumption predates the current
+// "performative vs financial role" policy: Secretary/Assistant
+// Secretary/Coordinator hold a real role and pass every other gate
+// (requireAssignedRole, requireConsent, blockFinanceRestricted) but
+// were never meant to see this. requireFinancialAccess is the fix —
+// apply it to exactly the endpoints that were previously gated by
+// nothing but authenticate.
+//
+// Usage:
+//   router.get('/summary', requireFinancialAccess('FINANCE_VIEW_ALL'), handler);
+// ============================================================
+const FINANCIAL_ROLES = ['Treasurer', 'Assistant Treasurer', 'Shareholder', 'Director', 'Admin'];
+
+const requireFinancialAccess = (permission) => (req, res, next) => {
+    if (!req.user) {
+        return next(createError.unauthorized());
+    }
+
+    const userRoles = req.user.roles || [];
+    const holdsFinancialRole = FINANCIAL_ROLES.some(role => userRoles.includes(role));
+    const holdsPermission = permission && (req.user.permissions || []).includes(permission);
+
+    if (holdsFinancialRole || holdsPermission) {
+        return next();
+    }
+
+    return next(createError.forbidden('Your role does not have access to company financial data.'));
+};
+
+// ============================================================
 // REQUIRE PERMISSIONS
 // Checks that the authenticated user has ALL of the specified
 // permissions (not just any one of them).
@@ -374,6 +422,8 @@ module.exports = {
     blockRoles,
     blockAuditor,
     blockFinanceRestricted,
+    FINANCIAL_ROLES,
+    requireFinancialAccess,
     requirePermissions,
     requireAnyPermission,
     isSelfOrHasPermission,

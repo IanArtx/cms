@@ -59,7 +59,7 @@ const PAGE_TITLES = {
 };
 
 const TopBar = ({ onMenuClick, onLogoutClick }) => {
-    const { user, hasPermission, hasRole } = useAuth();
+    const { user, hasPermission, hasRole, hasFinancialAccess } = useAuth();
     // The Auditor role is external and non-member — the account
     // balances and the computed "upcoming events / pending approvals"
     // notifications below are company-wide, not scoped to any one
@@ -75,6 +75,14 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
     // only the balance fetch and the search button are skipped.
     const isAdminOfficer = hasRole('Administrative Officer');
     const isFinanceBlockedRole = isAuditor || isAdminOfficer;
+    // v1.36.0 — the balance strip specifically now follows the same
+    // "default financial role" ALLOW-list as the rest of the app
+    // (Treasurer/Assistant Treasurer/Shareholder/Director/Admin, or an
+    // explicit FINANCE_VIEW_ALL grant), not just a deny-list of the two
+    // fully-restricted roles. isFinanceBlockedRole (above) still covers
+    // the deny-list-only cases (Search button, Auditor's early return)
+    // that aren't specifically about account balances.
+    const canSeeFinance = hasFinancialAccess('FINANCE_VIEW_ALL');
     const { branding } = useBranding();
     const navigate     = useNavigate();
     const location     = useLocation();
@@ -224,18 +232,21 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
         };
 
         loadNotifications();
-        // Account balances are finance data — skip the fetch entirely
-        // for both finance-restricted roles (Auditor never reaches this
-        // line at all thanks to the early return above; Administrative
-        // Officer does reach it, since they still get the events fetch).
-        if (isFinanceBlockedRole) {
-            setAccountSummary([]);
-        } else {
+        // Account balances are finance data — v1.36.0: only fetched for
+        // the default financial roles (or an explicit FINANCE_VIEW_ALL
+        // grant), matching the same rule now enforced on the backend's
+        // GET /accounts/summary. Previously this only skipped the two
+        // fully finance-restricted roles (Auditor, Administrative
+        // Officer) and fetched for literally everyone else, including
+        // Secretary/Assistant Secretary/Coordinator.
+        if (canSeeFinance) {
             accountsAPI.getSummary()
                 .then(res => setAccountSummary(res.data.data || []))
                 .catch(() => {});
+        } else {
+            setAccountSummary([]);
         }
-    }, [location.pathname, hasPermission, isAuditor, isFinanceBlockedRole]);
+    }, [location.pathname, hasPermission, isAuditor, canSeeFinance]);
 
     // --------------------------------------------------------
     // LOAD & POLL PERSISTED NOTIFICATIONS

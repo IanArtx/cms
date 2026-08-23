@@ -11,7 +11,7 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireFinancialAccess } = require('../middleware/auth');
 const mmfController = require('../controllers/mmfController');
 
 // All routes require login
@@ -33,11 +33,12 @@ router.get('/',
 // BEST/WORST PERFORMING MMF (comparison summary)
 // GET /api/mmf/performance-summary
 // Declared before GET /:id so Express doesn't treat
-// "performance-summary" as an :id value. No MMF_VIEW gate,
-// mirroring investments' performance-summary — safe for any
-// authenticated user's dashboard.
+// "performance-summary" as an :id value. v1.36.0: previously had no
+// MMF_VIEW gate (mirroring investments' old performance-summary) —
+// narrowed to the financial-role default along with that one.
 // ============================================================
 router.get('/performance-summary',
+    requireFinancialAccess('MMF_VIEW'),
     mmfController.getMmfPerformanceSummary
 );
 

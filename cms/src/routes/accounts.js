@@ -14,7 +14,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireFinancialAccess } = require('../middleware/auth');
 const accountsController = require('../controllers/accountsController');
 
 // All routes require login
@@ -93,8 +93,12 @@ router.patch('/currencies/:id',
 // ACCOUNT SUMMARY (Dashboard)
 // ============================================================
 
-// Get all account balances — used by dashboard (all members)
-router.get('/summary', accountsController.getAccountSummary);
+// Get all account balances — used by dashboard. v1.36.0: was open to
+// "all members" (any authenticated user), which included performative
+// roles like Secretary/Coordinator that should never see real account
+// balances by default — now gated the same as the rest of this file's
+// financial data (see requireFinancialAccess's own doc comment).
+router.get('/summary', requireFinancialAccess('FINANCE_VIEW_ALL'), accountsController.getAccountSummary);
 
 // ============================================================
 // PRIMARY ACCOUNT SETUP (one-time)

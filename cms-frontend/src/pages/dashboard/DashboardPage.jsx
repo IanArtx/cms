@@ -161,8 +161,17 @@ const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue', to = nul
 // DASHBOARD PAGE
 // ============================================================
 const DashboardPage = () => {
-    const { user, hasPermission } = useAuth();
+    const { user, hasPermission, hasFinancialAccess } = useAuth();
     const navigate = useNavigate();
+    // v1.36.0 — the "default financial role" check (Treasurer/Assistant
+    // Treasurer/Shareholder/Director/Admin, or an explicit FINANCE_VIEW_ALL
+    // grant). Everything showing a real account balance on this page is
+    // gated behind this, matching the same rule now enforced server-side
+    // on GET /accounts/summary — a Secretary/Assistant Secretary/
+    // Coordinator/Administrative Officer holding only that role sees
+    // Upcoming Events (and anything else already gated by its own specific
+    // permission) and nothing with money figures in it.
+    const canSeeFinance = hasFinancialAccess('FINANCE_VIEW_ALL');
 
     const [accounts,     setAccounts]     = useState([]);
     const [events,       setEvents]       = useState([]);
@@ -182,10 +191,17 @@ const DashboardPage = () => {
     useEffect(() => {
         const loadDashboard = async () => {
             try {
+                // v1.36.0 — accounts/summary and investments/performance-
+                // summary are now both backend-gated behind
+                // requireFinancialAccess (see server-side changelog); only
+                // fetch them at all if this user would actually get data
+                // back, so a Secretary/Coordinator/etc. doesn't spend a
+                // request just to hit a 403 for a card that won't render
+                // anyway.
                 const promises = [
-                    accountsAPI.getSummary(),
+                    canSeeFinance ? accountsAPI.getSummary() : Promise.resolve(null),
                     eventsAPI.getUpcoming(30),
-                    investmentsAPI.getPerformanceSummary(),
+                    hasFinancialAccess('INVESTMENT_VIEW') ? investmentsAPI.getPerformanceSummary() : Promise.resolve(null),
                 ];
 
                 if (hasPermission('FINANCE_VIEW_ALL')) {
@@ -195,13 +211,13 @@ const DashboardPage = () => {
 
                 const results = await Promise.allSettled(promises);
 
-                if (results[0].status === 'fulfilled') {
+                if (results[0].status === 'fulfilled' && results[0].value) {
                     setAccounts(results[0].value.data.data || []);
                 }
                 if (results[1].status === 'fulfilled') {
                     setEvents(results[1].value.data.data || []);
                 }
-                if (results[2]?.status === 'fulfilled') {
+                if (results[2]?.status === 'fulfilled' && results[2].value) {
                     setPerformance(results[2].value.data.data || null);
                 }
                 if (results[3]?.status === 'fulfilled') {
@@ -218,7 +234,7 @@ const DashboardPage = () => {
         };
 
         loadDashboard();
-    }, [hasPermission]);
+    }, [hasPermission, hasFinancialAccess, canSeeFinance]);
 
     // Separate, independent fetch (not part of the Promise.allSettled
     // batch above, whose results are read by fixed array index) — the
@@ -266,8 +282,12 @@ const DashboardPage = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                 xl:grid-cols-4 gap-4 mb-6">
 
-                {/* Primary Account */}
-                {primaryAccount && (
+                {/* Account balance cards — v1.36.0: only for the default
+                    financial roles (Treasurer/Assistant Treasurer/
+                    Shareholder/Director/Admin) or an explicit
+                    FINANCE_VIEW_ALL grant. Previously rendered
+                    unconditionally to any signed-in member. */}
+                {canSeeFinance && primaryAccount && (
                     <StatCard
                         title="Primary Account Balance"
                         value={`${primaryAccount.currency_code} ${parseFloat(
@@ -283,7 +303,7 @@ const DashboardPage = () => {
                 )}
 
                 {/* Secondary Accounts */}
-                {secondaryAccounts.map(account => (
+                {canSeeFinance && secondaryAccounts.map(account => (
                     <StatCard
                         key={account.id}
                         title={account.name}
@@ -297,7 +317,7 @@ const DashboardPage = () => {
                 ))}
 
                 {/* Savings Account */}
-                {savingsAccount && (
+                {canSeeFinance && savingsAccount && (
                     <StatCard
                         title="Savings Pool"
                         value={`${savingsAccount.currency_code} ${parseFloat(
@@ -311,7 +331,7 @@ const DashboardPage = () => {
                 )}
 
                 {/* Side Fund — shown separately from whichever account holds it */}
-                {sideFundTotal > 0 && (
+                {canSeeFinance && sideFundTotal > 0 && (
                     <StatCard
                         title="Side Fund Balance"
                         value={sideFundTotal.toLocaleString('en-US', { maximumFractionDigits: 2 })}
@@ -465,8 +485,15 @@ const DashboardPage = () => {
                         )}
                     </div>
 
-                    {/* Best/Worst Performing Investment — visible to everyone */}
-                    <PerformanceCard performance={performance} />
+                    {/* Best/Worst Performing Investment — v1.36.0: was
+                        visible to everyone (name + ROI% only, no budget/
+                        balance figures); narrowed to the same financial-
+                        role default as the rest of this page, since the
+                        backend's own /investments/performance-summary
+                        is now gated the same way. */}
+                    {hasFinancialAccess('INVESTMENT_VIEW') && (
+                        <PerformanceCard performance={performance} />
+                    )}
 
                     {/* Nearest active capital goal, if any (v1.29.0) */}
                     <CapitalGoalCard goal={capitalGoal} />

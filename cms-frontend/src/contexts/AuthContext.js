@@ -9,6 +9,18 @@ import { authAPI, usersAPI } from '../api/endpoints';
 
 const AuthContext = createContext(null);
 
+// v1.36.0 — the 5 roles that see company financial information (account
+// balances, share price, exchange rates, investment/MMF figures, savings/
+// side-fund settings) BY DEFAULT, with no extra permission grant needed.
+// Every other role (Secretary, Assistant Secretary, Coordinator,
+// Administrative Officer, and any future "performative" role) sees none
+// of it unless separately granted the matching permission by an Admin.
+// Kept in exact sync with FINANCIAL_ROLES in cms/src/middleware/auth.js —
+// this is the client-side mirror used to decide what to even render
+// (and, for the dashboard-style data below, what to bother calling the
+// API for at all); the backend list is still the real enforcement.
+export const FINANCIAL_ROLES = ['Treasurer', 'Assistant Treasurer', 'Shareholder', 'Director', 'Admin'];
+
 export const AuthProvider = ({ children }) => {
     const [user, setUser]       = useState(null);
     const [loading, setLoading] = useState(true);
@@ -153,6 +165,18 @@ export const AuthProvider = ({ children }) => {
     return permCodes.includes(permission);
     }, [user]);
 
+    // v1.36.0 — true if this user sees financial info by default (holds
+    // one of FINANCIAL_ROLES) OR has separately been granted the specific
+    // permission passed in (an Admin's "extra roles that allow seeing
+    // other views" override, via Settings > Roles & Permissions). Called
+    // with no argument, it only checks the default-role part — useful
+    // for broad UI like the Dashboard's balance cards and the TopBar
+    // strip, which aren't gated behind one single named permission.
+    const hasFinancialAccess = useCallback((permission) => {
+        if (hasRole(FINANCIAL_ROLES)) return true;
+        return permission ? hasPermission(permission) : false;
+    }, [hasRole, hasPermission]);
+
     const isAdmin = useCallback(() => hasRole('Admin'), [hasRole]);
 
     const isTreasurer = useCallback(() =>
@@ -171,6 +195,7 @@ export const AuthProvider = ({ children }) => {
             refreshUser,
             hasRole,
             hasPermission,
+            hasFinancialAccess,
             isAdmin,
             isTreasurer,
             isDirector,

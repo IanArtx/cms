@@ -15,7 +15,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireFinancialAccess } = require('../middleware/auth');
 const investmentsController = require('../controllers/investmentsController');
 
 // All routes require login
@@ -73,12 +73,16 @@ router.post('/',
 // ============================================================
 // BEST/WORST PERFORMING INVESTMENT (dashboard summary)
 // GET /api/investments/performance-summary
-// Deliberately has NO INVESTMENT_VIEW gate — just authentication —
-// so every user's dashboard can show this, not only staff with full
-// investment access. Must be declared before GET /:id so Express
+// v1.36.0: previously had NO INVESTMENT_VIEW gate at all — just
+// authentication — deliberately so every user's dashboard could show
+// this. That predates the "performative vs financial role" policy;
+// now narrowed to the same financial-role default as the rest of the
+// system (Secretary/Coordinator/etc. no longer see even the ROI%-only
+// summary by default). Must stay declared before GET /:id so Express
 // doesn't treat "performance-summary" as an :id value.
 // ============================================================
 router.get('/performance-summary',
+    requireFinancialAccess('INVESTMENT_VIEW'),
     investmentsController.getPerformanceSummary
 );
 

@@ -23,6 +23,10 @@ import {
     PrinterIcon,
     BanknotesIcon,
     ReceiptPercentIcon,
+    ExclamationTriangleIcon,
+    ClipboardDocumentCheckIcon,
+    LockClosedIcon,
+    XCircleIcon,
 } from '@heroicons/react/24/outline';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -520,8 +524,15 @@ const OperatingBudgetCard = ({ investment }) => {
 // Shows the generated payment dates, expected gross/tax/net yield,
 // and lets a Treasurer mark each coupon as paid once received.
 // ============================================================
+// Statuses in which coupon actions (mark paid / adjust / reschedule)
+// are still permitted — mirrors MUTABLE_INVESTMENT_STATUSES on the
+// backend (ACTIVE plus the termination review window).
+const COUPON_MUTABLE_STATUSES = ['ACTIVE', 'PENDING_TERMINATION'];
+
 const BondScheduleCard = ({ investment, canManage, onPaid }) => {
     const [payingId, setPayingId] = useState(null);
+    const [adjustingCoupon, setAdjustingCoupon] = useState(null);
+    const [showRescheduleModal, setShowRescheduleModal] = useState(false);
     const [error, setError] = useState(null);
     const coupons = investment.coupons || [];
     const currency = investment.currency_code;
@@ -546,15 +557,37 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
     }), { gross: 0, tax: 0, net: 0 });
 
     const nextPending = coupons.find(c => c.status === 'PENDING');
+    const anyPaid = coupons.some(c => c.status === 'PAID');
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const canManageNow = canManage && COUPON_MUTABLE_STATUSES.includes(investment.status);
+
+    // v1.40.0: settlement value — bond bought at a discount/premium to
+    // face value. Coupon math always stays on face_value; this is
+    // purely informational.
+    const hasSettlement = investment.settlement_value !== null && investment.settlement_value !== undefined;
+    const settlementPct = investment.settlement_percentage !== null && investment.settlement_percentage !== undefined
+        ? parseFloat(investment.settlement_percentage) : null;
+    const discountAmount = investment.settlement_discount_amount !== null && investment.settlement_discount_amount !== undefined
+        ? parseFloat(investment.settlement_discount_amount) : null;
 
     return (
         <div className="card mb-6">
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <h3 className="section-title">Bond Coupon Schedule</h3>
-                <span className="badge-blue text-xs">
-                    {parseFloat(investment.coupon_rate)}% p.a. •{' '}
-                    {investment.coupon_frequency?.replace(/_/g, ' ')}
-                </span>
+                <div className="flex items-center gap-2">
+                    <span className="badge-blue text-xs">
+                        {parseFloat(investment.coupon_rate)}% p.a. •{' '}
+                        {investment.coupon_frequency?.replace(/_/g, ' ')}
+                    </span>
+                    {canManageNow && !anyPaid && (
+                        <button
+                            onClick={() => setShowRescheduleModal(true)}
+                            className="text-xs text-primary-700 hover:text-primary-800 font-medium"
+                        >
+                            {investment.first_coupon_date ? 'Edit First Coupon Date' : 'Set First Coupon Date'}
+                        </button>
+                    )}
+                </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
@@ -586,6 +619,25 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                 </div>
             </div>
 
+            {hasSettlement && (
+                <div className="mb-5 p-3 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                        <p className="text-xs text-blue-900 font-medium">
+                            Settlement Value: {currency} {parseFloat(investment.settlement_value).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                            {' '}({settlementPct}% of face value)
+                        </p>
+                        <p className="text-xs text-blue-700 mt-0.5">
+                            {discountAmount > 0
+                                ? `Bought at a discount — ${currency} ${discountAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} less than face value`
+                                : discountAmount < 0
+                                ? `Bought at a premium — ${currency} ${Math.abs(discountAmount).toLocaleString('en-US', { maximumFractionDigits: 2 })} more than face value`
+                                : 'Bought at par (100% of face value)'}
+                            . Coupon payments remain calculated on the full face value.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             {nextPending && (
                 <p className="text-xs text-gray-500 mb-3">
                     Next coupon due <span className="font-medium text-gray-700">
@@ -610,50 +662,467 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                             <th className="px-2 py-2 font-medium text-right">Tax</th>
                             <th className="px-2 py-2 font-medium text-right">Net</th>
                             <th className="px-2 py-2 font-medium">Status</th>
-                            {canManage && <th className="px-2 py-2 font-medium text-right">Action</th>}
+                            {canManageNow && <th className="px-2 py-2 font-medium text-right">Action</th>}
                         </tr>
                     </thead>
                     <tbody>
-                        {coupons.map(c => (
-                            <tr key={c.id} className="border-b border-gray-50 last:border-0">
-                                <td className="px-2 py-2 text-gray-500">{c.coupon_number}</td>
-                                <td className="px-2 py-2 text-gray-700">{formatDate(c.due_date)}</td>
-                                <td className="px-2 py-2 text-right text-gray-700">
-                                    {parseFloat(c.gross_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                                </td>
-                                <td className="px-2 py-2 text-right text-red-500">
-                                    {parseFloat(c.tax_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                                </td>
-                                <td className="px-2 py-2 text-right font-medium text-gray-900">
-                                    {parseFloat(c.net_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                                </td>
-                                <td className="px-2 py-2">
-                                    {c.status === 'PAID' ? (
-                                        <span className="badge-green text-xs flex items-center gap-1 w-fit">
-                                            <CheckCircleIcon className="h-3.5 w-3.5" /> Paid
-                                        </span>
-                                    ) : (
-                                        <span className="badge-yellow text-xs">Pending</span>
-                                    )}
-                                </td>
-                                {canManage && (
-                                    <td className="px-2 py-2 text-right">
-                                        {c.status !== 'PAID' && investment.status === 'ACTIVE' && (
-                                            <button
-                                                onClick={() => handlePay(c.id)}
-                                                disabled={payingId === c.id}
-                                                className="text-xs text-primary-700 hover:text-primary-800
-                                                    font-medium disabled:opacity-50"
-                                            >
-                                                {payingId === c.id ? 'Recording...' : 'Mark Paid'}
-                                            </button>
+                        {coupons.map(c => {
+                            const isAdjusted = c.actual_gross_amount !== null && c.actual_gross_amount !== undefined;
+                            const isDue = c.due_date <= todayISO;
+                            return (
+                                <tr key={c.id} className="border-b border-gray-50 last:border-0">
+                                    <td className="px-2 py-2 text-gray-500">{c.coupon_number}</td>
+                                    <td className="px-2 py-2 text-gray-700">{formatDate(c.due_date)}</td>
+                                    <td className="px-2 py-2 text-right text-gray-700">
+                                        {parseFloat(c.gross_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className="px-2 py-2 text-right text-red-500">
+                                        {parseFloat(c.tax_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className="px-2 py-2 text-right font-medium text-gray-900">
+                                        {parseFloat(c.net_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className="px-2 py-2">
+                                        {c.status === 'PAID' ? (
+                                            <div>
+                                                <span className="badge-green text-xs flex items-center gap-1 w-fit">
+                                                    <CheckCircleIcon className="h-3.5 w-3.5" /> Paid
+                                                </span>
+                                                {isAdjusted && (
+                                                    <p className="text-xs text-amber-600 mt-1">
+                                                        Actual: {currency} {parseFloat(c.actual_gross_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} gross,{' '}
+                                                        {currency} {parseFloat(c.actual_net_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} net
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ) : c.status === 'MISSED' ? (
+                                            <span className="badge-red text-xs">Missed</span>
+                                        ) : (
+                                            <span className="badge-yellow text-xs">
+                                                {isDue ? 'Pending' : 'Not yet due'}
+                                            </span>
                                         )}
                                     </td>
-                                )}
-                            </tr>
-                        ))}
+                                    {canManageNow && (
+                                        <td className="px-2 py-2 text-right">
+                                            {c.status === 'PENDING' && (
+                                                isDue ? (
+                                                    <div className="flex items-center justify-end gap-3">
+                                                        <button
+                                                            onClick={() => handlePay(c.id)}
+                                                            disabled={payingId === c.id}
+                                                            className="text-xs text-primary-700 hover:text-primary-800
+                                                                font-medium disabled:opacity-50"
+                                                        >
+                                                            {payingId === c.id ? 'Recording...' : 'Mark Paid'}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setAdjustingCoupon(c)}
+                                                            className="text-xs text-amber-600 hover:text-amber-700 font-medium"
+                                                        >
+                                                            Record Actual Payment
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-xs text-gray-300">Not due yet</span>
+                                                )
+                                            )}
+                                        </td>
+                                    )}
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
+            </div>
+
+            <RecordActualCouponPaymentModal
+                coupon={adjustingCoupon}
+                investment={investment}
+                onClose={() => setAdjustingCoupon(null)}
+                onSuccess={onPaid}
+            />
+            <UpdateCouponScheduleModal
+                isOpen={showRescheduleModal}
+                onClose={() => setShowRescheduleModal(false)}
+                onSuccess={onPaid}
+                investment={investment}
+            />
+        </div>
+    );
+};
+
+// ============================================================
+// RECORD ACTUAL COUPON PAYMENT MODAL
+// "Adjust Payment" — the amount actually received differs from the
+// scheduled coupon amount. Tax is auto-recalculated on the entered
+// gross amount using the bond's own tax_withholding_rate; only this
+// one coupon is affected.
+// ============================================================
+const RecordActualCouponPaymentModal = ({ coupon, investment, onClose, onSuccess }) => {
+    const [amount, setAmount] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (coupon) setAmount('');
+    }, [coupon]);
+
+    if (!coupon) return null;
+
+    const taxRate = parseFloat(investment.tax_withholding_rate) || 0;
+    const previewGross = parseFloat(amount) || 0;
+    const previewTax = Math.round(previewGross * (taxRate / 100) * 100) / 100;
+    const previewNet = Math.round((previewGross - previewTax) * 100) / 100;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.payCoupon(investment.id, coupon.id, {
+                actual_gross_amount: parseFloat(amount),
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Record Actual Payment — Coupon #{coupon.coupon_number}
+                    </h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        Scheduled gross was {investment.currency_code} {parseFloat(coupon.gross_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}.
+                        Enter what was actually received — tax and net are recalculated automatically.
+                        Only this coupon is affected; the rest of the schedule is unchanged.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">
+                                Actual Gross Amount {investment.currency_code} *
+                            </label>
+                            <input type="number" className="input"
+                                value={amount}
+                                onChange={e => setAmount(e.target.value)}
+                                min="0.01" step="0.01" required autoFocus />
+                        </div>
+                        {previewGross > 0 && (
+                            <div className="rounded-lg bg-gray-50 p-3 text-xs space-y-1">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">Tax withheld ({taxRate}%)</span>
+                                    <span className="font-medium text-red-600">
+                                        {investment.currency_code} {previewTax.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">Net</span>
+                                    <span className="font-semibold text-green-600">
+                                        {investment.currency_code} {previewNet.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Recording...' : 'Record Payment'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// UPDATE COUPON SCHEDULE MODAL
+// Sets/corrects the first coupon date and regenerates the whole
+// schedule from it — only usable before any coupon has been paid.
+// ============================================================
+const UpdateCouponScheduleModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [firstCouponDate, setFirstCouponDate] = useState(investment.first_coupon_date?.slice(0, 10) || '');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.updateCouponSchedule(investment.id, {
+                first_coupon_date: firstCouponDate,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        {investment.first_coupon_date ? 'Edit' : 'Set'} First Coupon Date
+                    </h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        The rest of the coupon schedule will be recalculated automatically from this date,
+                        using the bond's existing rate and frequency.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">First Coupon Date *</label>
+                            <input type="date" className="input"
+                                value={firstCouponDate}
+                                onChange={e => setFirstCouponDate(e.target.value)}
+                                required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Saving...' : 'Save & Recalculate'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// REQUEST TERMINATION MODAL
+// Step 1 of the mid-term termination workflow — states the reason a
+// resolution was made to close this investment early.
+// ============================================================
+const RequestTerminationModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.requestTermination(investment.id, { reason });
+            onSuccess();
+            onClose();
+            setReason('');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Terminate Investment
+                    </h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        This puts "{investment.name}" up for mid-term termination by internal resolution.
+                        {investment.responsible_name
+                            ? ` ${investment.responsible_name} will be asked to confirm all records are up to date`
+                            : ' An investment approver will need to confirm all records are up to date'}
+                        , then a Treasurer/Director gives final sign-off before it's formally closed.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason / Resolution *</label>
+                            <textarea className="input" rows={3}
+                                value={reason}
+                                onChange={e => setReason(e.target.value)}
+                                required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Submitting...' : 'Request Termination'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// APPROVE TERMINATION MODAL
+// Final Treasurer/Director sign-off — closes the investment and
+// generates its closing report.
+// ============================================================
+const ApproveTerminationModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [closingNote, setClosingNote] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const netResult = parseFloat(investment.total_returns) - parseFloat(investment.actual_expenditure);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.approveTermination(investment.id, { closing_note: closingNote });
+            onSuccess();
+            onClose();
+            setClosingNote('');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Approve & Close Investment
+                    </h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        This is final — the investment will be marked TERMINATED and a closing report generated,
+                        showing a {netResult >= 0 ? 'profit' : 'loss'} of {investment.currency_code}{' '}
+                        {Math.abs(netResult).toLocaleString('en-US', { maximumFractionDigits: 2 })}.
+                        Any coupons still pending will be marked missed.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Closing Note (optional)</label>
+                            <textarea className="input" rows={2}
+                                value={closingNote}
+                                onChange={e => setClosingNote(e.target.value)} />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Closing...' : 'Approve & Close'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// REJECT TERMINATION MODAL
+// Abandons the termination request and restores the investment to
+// whatever status it had before (ACTIVE or ON_HOLD).
+// ============================================================
+const RejectTerminationModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.rejectTermination(investment.id, { reason });
+            onSuccess();
+            onClose();
+            setReason('');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Reject / Cancel Termination
+                    </h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        This abandons the termination request and restores the investment to its previous status.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason (optional)</label>
+                            <textarea className="input" rows={2}
+                                value={reason}
+                                onChange={e => setReason(e.target.value)} />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Submitting...' : 'Reject Termination'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
     );
@@ -665,7 +1134,7 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
 const InvestmentDetailPage = () => {
     const { id } = useParams();
     const navigate = useNavigate();
-    const { hasPermission } = useAuth();
+    const { hasPermission, user } = useAuth();
 
     const [investment, setInvestment] = useState(null);
     const [categories, setCategories] = useState([]);
@@ -674,6 +1143,11 @@ const InvestmentDetailPage = () => {
     const [showExpenseModal,   setShowExpenseModal]   = useState(false);
     const [showReturnModal,    setShowReturnModal]    = useState(false);
     const [showOperationModal, setShowOperationModal] = useState(false);
+    const [showTerminateModal, setShowTerminateModal] = useState(false);
+    const [showApproveTermModal, setShowApproveTermModal] = useState(false);
+    const [showRejectTermModal,  setShowRejectTermModal]  = useState(false);
+    const [termActionLoading, setTermActionLoading] = useState(false);
+    const [termActionError,   setTermActionError]   = useState(null);
 
     const loadInvestment = useCallback(async () => {
         try {
@@ -748,6 +1222,35 @@ const InvestmentDetailPage = () => {
     }));
 
     const canManage = hasPermission('INVESTMENT_MANAGE');
+    const canApprove = hasPermission('INVESTMENT_APPROVE');
+    const supplementaryBudget = parseFloat(investment.supplementary_budget) || 0;
+    const isPendingTermination = investment.status === 'PENDING_TERMINATION';
+    const isTerminated = investment.status === 'TERMINATED';
+    const isResponsiblePerson = !!investment.responsible_user_id && investment.responsible_user_id === user?.id;
+    const canConfirmRecords = isPendingTermination && !investment.records_confirmed_at &&
+        (investment.responsible_user_id ? isResponsiblePerson : canApprove);
+    const canRequestTermination = canManage && ['ACTIVE', 'ON_HOLD'].includes(investment.status);
+    const canApproveTermination = canApprove && isPendingTermination && !!investment.records_confirmed_at;
+    const canRejectTermination = (canManage || canApprove) && isPendingTermination;
+    const PERFORMANCE_LABELS = {
+        PROFITABLE: { text: 'Profitable', cls: 'text-green-300' },
+        LOSING:     { text: 'Losing',     cls: 'text-red-300' },
+        BREAK_EVEN: { text: 'Break-even', cls: 'text-white' },
+    };
+    const performance = PERFORMANCE_LABELS[investment.performance_status];
+
+    const doTerminationAction = async (fn) => {
+        setTermActionLoading(true);
+        setTermActionError(null);
+        try {
+            await fn();
+            await loadInvestment();
+        } catch (err) {
+            setTermActionError(getErrorMessage(err));
+        } finally {
+            setTermActionLoading(false);
+        }
+    };
 
     return (
         <div>
@@ -796,11 +1299,16 @@ const InvestmentDetailPage = () => {
                         }`}>
                             {investment.roi_percentage}%
                         </p>
+                        {performance && (
+                            <p className={`text-xs font-medium mt-0.5 ${performance.cls}`}>
+                                {performance.text}
+                            </p>
+                        )}
                     </div>
                 </div>
 
                 {/* Stats Row */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mt-6">
                     <div className="bg-white bg-opacity-10 rounded-lg p-3">
                         <p className="text-xs opacity-70">Planned Budget</p>
                         <p className="text-lg font-bold mt-1">
@@ -829,35 +1337,140 @@ const InvestmentDetailPage = () => {
                             {currency} {gained.toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         </p>
                     </div>
+                    <div className="bg-white bg-opacity-10 rounded-lg p-3">
+                        <p className="text-xs opacity-70">Supplementary Budget</p>
+                        <p className={`text-lg font-bold mt-1 ${supplementaryBudget > 0 ? 'text-amber-300' : 'text-white'}`}>
+                            {currency} {supplementaryBudget.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        </p>
+                    </div>
                 </div>
             </div>
 
-            {/* Actions */}
-            {canManage && investment.status === 'ACTIVE' && (
-                <div className="flex items-center gap-3 mb-6">
-                    <button
-                        onClick={() => setShowExpenseModal(true)}
-                        className="btn-secondary flex items-center gap-2"
-                    >
-                        <MinusCircleIcon className="h-4 w-4" />
-                        Record Expense
-                    </button>
-                    <button
-                        onClick={() => setShowReturnModal(true)}
-                        className="btn-primary flex items-center gap-2"
-                    >
-                        <PlusCircleIcon className="h-4 w-4" />
-                        Record Return
-                    </button>
-                    <button
-                        onClick={() => setShowOperationModal(true)}
-                        className="btn-secondary flex items-center gap-2"
-                    >
-                        <ReceiptPercentIcon className="h-4 w-4" />
-                        Record Operational Transaction
-                    </button>
+            {/* Termination status */}
+            {isPendingTermination && (
+                <div className="card mb-6 border-l-4 border-amber-400">
+                    <div className="flex items-start gap-3">
+                        <ExclamationTriangleIcon className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <h3 className="text-sm font-semibold text-gray-900">
+                                Termination under review
+                            </h3>
+                            <p className="text-sm text-gray-600 mt-1">
+                                Requested by {investment.termination_requested_by_name || '—'} on{' '}
+                                {formatDate(investment.termination_requested_at)}: "{investment.termination_reason}"
+                            </p>
+                            <p className="text-sm text-gray-600 mt-1">
+                                {investment.records_confirmed_at ? (
+                                    <>Records confirmed up to date by {investment.records_confirmed_by_name} on{' '}
+                                    {formatDate(investment.records_confirmed_at)}. Awaiting final approval to close.</>
+                                ) : (
+                                    <>Awaiting records confirmation from{' '}
+                                    {investment.responsible_name
+                                        ? `${investment.responsible_name} (the responsible person)`
+                                        : 'an investment approver (no responsible person on file)'}.</>
+                                )}
+                            </p>
+                            {termActionError && (
+                                <div className="mt-3">
+                                    <ErrorMessage message={termActionError} onDismiss={() => setTermActionError(null)} />
+                                </div>
+                            )}
+                            <div className="flex items-center gap-3 mt-3">
+                                {canConfirmRecords && (
+                                    <button
+                                        disabled={termActionLoading}
+                                        onClick={() => doTerminationAction(
+                                            () => investmentsAPI.confirmTerminationRecords(investment.id)
+                                        )}
+                                        className="btn-secondary text-xs flex items-center gap-1.5 disabled:opacity-50"
+                                    >
+                                        <ClipboardDocumentCheckIcon className="h-4 w-4" />
+                                        Confirm Records Up To Date
+                                    </button>
+                                )}
+                                {canApproveTermination && (
+                                    <button
+                                        disabled={termActionLoading}
+                                        onClick={() => setShowApproveTermModal(true)}
+                                        className="btn-primary text-xs flex items-center gap-1.5 disabled:opacity-50"
+                                    >
+                                        <LockClosedIcon className="h-4 w-4" />
+                                        Approve & Close Investment
+                                    </button>
+                                )}
+                                {canRejectTermination && (
+                                    <button
+                                        disabled={termActionLoading}
+                                        onClick={() => setShowRejectTermModal(true)}
+                                        className="text-xs text-gray-500 hover:text-red-600 flex items-center gap-1.5 disabled:opacity-50"
+                                    >
+                                        <XCircleIcon className="h-4 w-4" />
+                                        Reject / Cancel Termination
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
+
+            {isTerminated && investment.termination_report && (
+                <div className="card mb-6 border-l-4 border-gray-400">
+                    <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                        <LockClosedIcon className="h-4 w-4 text-gray-400" />
+                        Termination Report
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-1">
+                        Closed by {investment.termination_approved_by_name || '—'} on{' '}
+                        {formatDate(investment.termination_approved_at)}
+                    </p>
+                    <pre className="text-sm text-gray-700 mt-3 whitespace-pre-wrap font-sans">
+                        {investment.termination_report}
+                    </pre>
+                </div>
+            )}
+
+            {/* Actions */}
+            {(canManage && (investment.status === 'ACTIVE' || isPendingTermination)) || canRequestTermination ? (
+                <div className="flex items-center gap-3 mb-6 flex-wrap">
+                    {canManage && investment.status === 'ACTIVE' && (
+                        <button
+                            onClick={() => setShowExpenseModal(true)}
+                            className="btn-secondary flex items-center gap-2"
+                        >
+                            <MinusCircleIcon className="h-4 w-4" />
+                            Record Expense
+                        </button>
+                    )}
+                    {canManage && (investment.status === 'ACTIVE' || isPendingTermination) && (
+                        <>
+                            <button
+                                onClick={() => setShowReturnModal(true)}
+                                className="btn-primary flex items-center gap-2"
+                            >
+                                <PlusCircleIcon className="h-4 w-4" />
+                                Record Return
+                            </button>
+                            <button
+                                onClick={() => setShowOperationModal(true)}
+                                className="btn-secondary flex items-center gap-2"
+                            >
+                                <ReceiptPercentIcon className="h-4 w-4" />
+                                Record Operational Transaction
+                            </button>
+                        </>
+                    )}
+                    {canRequestTermination && (
+                        <button
+                            onClick={() => setShowTerminateModal(true)}
+                            className="text-sm text-gray-500 hover:text-red-600 flex items-center gap-2 ml-auto"
+                        >
+                            <ExclamationTriangleIcon className="h-4 w-4" />
+                            Terminate Investment
+                        </button>
+                    )}
+                </div>
+            ) : null}
 
             {/* Operating Budget — dedicated expenses/inflows/tax for THIS
                 investment, and the resulting running balance unspent */}
@@ -1122,6 +1735,24 @@ const InvestmentDetailPage = () => {
                 onSuccess={loadInvestment}
                 investment={investment}
                 categories={categories}
+            />
+            <RequestTerminationModal
+                isOpen={showTerminateModal}
+                onClose={() => setShowTerminateModal(false)}
+                onSuccess={loadInvestment}
+                investment={investment}
+            />
+            <ApproveTerminationModal
+                isOpen={showApproveTermModal}
+                onClose={() => setShowApproveTermModal(false)}
+                onSuccess={loadInvestment}
+                investment={investment}
+            />
+            <RejectTerminationModal
+                isOpen={showRejectTermModal}
+                onClose={() => setShowRejectTermModal(false)}
+                onSuccess={loadInvestment}
+                investment={investment}
             />
         </div>
     );

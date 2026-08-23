@@ -95,6 +95,7 @@ export const getStatusBadgeClass = (status) => {
         DRAFT:                'badge-yellow',
         ON_HOLD:              'badge-yellow',
         PENDING_ACK:          'badge-yellow',
+        PENDING_TERMINATION:  'badge-yellow',
 
         // Red — negative/failed
         OVERDUE:     'badge-red',
@@ -112,6 +113,7 @@ export const getStatusBadgeClass = (status) => {
         ARCHIVED:     'badge-blue',
         CLOSED:       'badge-blue',
         ACKNOWLEDGED: 'badge-blue',
+        TERMINATED:   'badge-blue',
     };
 
     return statusMap[status.toUpperCase()] || 'badge-gray';

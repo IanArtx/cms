@@ -980,7 +980,8 @@ CREATE TABLE investments (
     total_returns       NUMERIC(20,4) NOT NULL DEFAULT 0,   -- cumulative returns received
     status              VARCHAR(30)   NOT NULL DEFAULT 'PENDING'
                         CHECK (status IN (
-                            'PENDING','ACTIVE','ON_HOLD','COMPLETED','CANCELLED'
+                            'PENDING','ACTIVE','ON_HOLD','COMPLETED','CANCELLED',
+                            'PENDING_TERMINATION','TERMINATED'
                         )),
     start_date          DATE,
     expected_end_date   DATE,
@@ -1008,8 +1009,35 @@ CREATE TABLE investments (
     -- schedule instead of assuming payments start `frequency` after
     -- start_date (which only holds true for a bond bought at issuance).
     first_coupon_date       DATE,
+    -- v1.40.0: actual price paid for a BOND when it differs from
+    -- face_value (bought at a discount or premium). Purely
+    -- informational — coupon math always stays on face_value. NULL
+    -- means bought at par (100% of face value).
+    settlement_value        NUMERIC(20,4),
+    -- v1.40.0: auto-tracked running total of spend that pushed
+    -- actual_expenditure past planned_budget. Updated automatically
+    -- by fundInvestment / recordInvestmentTransaction — never set
+    -- directly by the user.
+    supplementary_budget    NUMERIC(20,4) NOT NULL DEFAULT 0,
+    -- v1.40.0: mid-term termination workflow. status_before_termination
+    -- snapshots status at request time so a rejected termination can
+    -- restore it exactly. records_confirmed_* is the investment's
+    -- responsible person attesting all returns/expenses/transactions
+    -- are up to date; termination_approved_* is the Treasurer/Director
+    -- final sign-off that locks in termination_report (states whether
+    -- the investment profited or lost money, and by how much).
+    status_before_termination VARCHAR(30),
+    termination_requested_by  INTEGER REFERENCES users(id),
+    termination_requested_at  TIMESTAMPTZ,
+    termination_reason        TEXT,
+    records_confirmed_by      INTEGER REFERENCES users(id),
+    records_confirmed_at      TIMESTAMPTZ,
+    termination_approved_by   INTEGER REFERENCES users(id),
+    termination_approved_at   TIMESTAMPTZ,
+    termination_report        TEXT,
     CONSTRAINT positive_inv_budget CHECK (planned_budget > 0),
     CONSTRAINT returns_to_source CHECK (returns_account_id = funding_account_id),
+    CONSTRAINT positive_settlement_value CHECK (settlement_value IS NULL OR settlement_value > 0),
     CONSTRAINT bond_fields_required CHECK (
         investment_type != 'BOND' OR (
             face_value        IS NOT NULL AND face_value > 0 AND
@@ -1107,7 +1135,20 @@ CREATE TABLE bond_coupons (
     investment_return_id INTEGER REFERENCES investment_returns(id),
     paid_at              TIMESTAMPTZ,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- v1.40.0: set only when the amount actually received differs from
+    -- the scheduled gross_amount above (the "Record Actual Payment"
+    -- action). Tax/net here are recalculated from actual_gross_amount
+    -- using the bond's tax_withholding_rate — gross_amount/tax_amount/
+    -- net_amount above are always left as the original forecast, so
+    -- the schedule still shows what was expected vs what really
+    -- happened. NULL means paid exactly as scheduled.
+    actual_gross_amount  NUMERIC(20,4),
+    actual_tax_amount    NUMERIC(20,4),
+    actual_net_amount    NUMERIC(20,4),
+    adjusted_by          INTEGER REFERENCES users(id),
+    adjusted_at          TIMESTAMPTZ,
     CONSTRAINT positive_coupon_gross CHECK (gross_amount > 0),
+    CONSTRAINT positive_actual_coupon_gross CHECK (actual_gross_amount IS NULL OR actual_gross_amount > 0),
     CONSTRAINT unique_investment_coupon UNIQUE (investment_id, coupon_number)
 );
 

@@ -160,6 +160,12 @@ export const investmentsAPI = {
         api.patch(`/investments/${id}/coupons/${couponId}/pay`, data),
     recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
+    // v1.40.0
+    updateCouponSchedule:     (id, data) => api.patch(`/investments/${id}/coupon-schedule`, data),
+    requestTermination:       (id, data) => api.post(`/investments/${id}/terminate/request`, data),
+    confirmTerminationRecords:(id)       => api.post(`/investments/${id}/terminate/confirm-records`),
+    approveTermination:       (id, data) => api.post(`/investments/${id}/terminate/approve`, data),
+    rejectTermination:        (id, data) => api.post(`/investments/${id}/terminate/reject`, data),
 };
 
 // ============================================================

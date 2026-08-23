@@ -22,6 +22,40 @@ const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 
 // ============================================================
+// v1.40.0 SHARED HELPERS
+// ============================================================
+
+// Statuses in which returns/expenses can still be recorded against an
+// investment — normal operation (ACTIVE) plus the termination review
+// window (PENDING_TERMINATION), so the responsible person can catch up
+// any missing entries before confirming records are up to date.
+const MUTABLE_INVESTMENT_STATUSES = ['ACTIVE', 'PENDING_TERMINATION'];
+
+// Every time actual_expenditure grows (capital funding, or an
+// operational EXPENSE/TAX entry), figure out how much of THIS increase
+// falls beyond planned_budget and should be logged as supplementary
+// budget. Handles partial overage correctly (e.g. spend that's half
+// within budget, half beyond it) and works whether the investment was
+// already over budget or not. Returns the new expenditure total and
+// the supplementary delta to add — callers do the actual UPDATE
+// themselves (they usually already hold a FOR UPDATE lock on the row).
+function computeSupplementaryOverage(plannedBudget, currentExpenditure, amount) {
+    const planned    = parseFloat(plannedBudget);
+    const before      = parseFloat(currentExpenditure);
+    const newExpenditure = before + parseFloat(amount);
+    const overageBefore  = Math.max(0, before - planned);
+    const overageAfter   = Math.max(0, newExpenditure - planned);
+    return {
+        newExpenditure,
+        supplementaryDelta: overageAfter - overageBefore,
+    };
+}
+
+function round2(n) {
+    return Math.round((parseFloat(n) + Number.EPSILON) * 100) / 100;
+}
+
+// ============================================================
 // CREATE INVESTMENT
 // POST /api/investments
 // ============================================================
@@ -41,6 +75,7 @@ const createInvestment = asyncHandler(async (req, res) => {
         coupon_frequency,
         tax_withholding_rate,
         first_coupon_date,
+        settlement_value,
     } = req.body;
 
     const isBond = investment_type === 'BOND';
@@ -112,10 +147,11 @@ const createInvestment = asyncHandler(async (req, res) => {
                 coupon_rate,
                 coupon_frequency,
                 tax_withholding_rate,
-                first_coupon_date
+                first_coupon_date,
+                settlement_value
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, 0, $5, 0,
-                'PENDING', $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                'PENDING', $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
             )
             RETURNING id
         `, [
@@ -136,6 +172,7 @@ const createInvestment = asyncHandler(async (req, res) => {
             isBond ? coupon_frequency : null,
             isBond ? (tax_withholding_rate || 0) : 0,
             isBond ? (first_coupon_date || null) : null,
+            isBond ? (settlement_value || null) : null,
         ]);
 
         const investmentId = result.rows[0].id;
@@ -216,6 +253,7 @@ const editInvestment = asyncHandler(async (req, res) => {
         name, description, category_id, funding_account_id,
         planned_budget, start_date, expected_end_date, responsible_user_id,
         face_value, coupon_rate, coupon_frequency, tax_withholding_rate, first_coupon_date,
+        settlement_value,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -267,6 +305,7 @@ const editInvestment = asyncHandler(async (req, res) => {
         const newStartDate    = start_date        || investment.start_date;
         const newEndDate      = expected_end_date || investment.expected_end_date;
         const newFirstCoupon  = first_coupon_date !== undefined ? first_coupon_date : investment.first_coupon_date;
+        const newSettlement   = isBond ? (settlement_value !== undefined ? settlement_value : investment.settlement_value) : null;
 
         const bondScheduleFieldsChanged = isBond && (
             face_value          !== undefined ||
@@ -294,15 +333,16 @@ const editInvestment = asyncHandler(async (req, res) => {
                    coupon_rate          = $11,
                    coupon_frequency     = $12,
                    tax_withholding_rate = $13,
-                   first_coupon_date    = $14
-            WHERE  id = $15
+                   first_coupon_date    = $14,
+                   settlement_value     = $15
+            WHERE  id = $16
             RETURNING *
         `, [
             name ? name.trim() : null, description !== undefined ? description : investment.description,
             category_id || null, newFundingAccountId, currencyId,
             planned_budget || null, newStartDate, newEndDate,
             responsible_user_id !== undefined ? responsible_user_id : investment.responsible_user_id,
-            newFaceValue, newCouponRate, newFrequency, newTaxRate, newFirstCoupon,
+            newFaceValue, newCouponRate, newFrequency, newTaxRate, newFirstCoupon, newSettlement,
             id,
         ]);
 
@@ -461,12 +501,18 @@ const fundInvestment = asyncHandler(async (req, res) => {
             ) VALUES ($1, $2, $3, $4, $5)
         `, [id, project_id || null, transactionId, amount, req.user.id]);
 
-        // Update actual expenditure on investment
+        // Update actual expenditure on investment — and auto-log any
+        // portion of this funding that pushes total spend past
+        // planned_budget as supplementary budget (v1.40.0).
+        const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
+            investment.planned_budget, investment.actual_expenditure, amount
+        );
         await client.query(`
             UPDATE investments
-            SET    actual_expenditure = actual_expenditure + $1
-            WHERE  id = $2
-        `, [amount, id]);
+            SET    actual_expenditure   = $1,
+                   supplementary_budget = supplementary_budget + $2
+            WHERE  id = $3
+        `, [newExpenditure, supplementaryDelta, id]);
 
         // If linked to a project, update project expenditure too
         if (project_id) {
@@ -649,9 +695,10 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
         }
         const investment = investResult.rows[0];
 
-        if (investment.status !== 'ACTIVE') {
+        if (!MUTABLE_INVESTMENT_STATUSES.includes(investment.status)) {
             throw createError.badRequest(
-                'Operational transactions can only be recorded against an active investment'
+                'Operational transactions can only be recorded against an active investment, ' +
+                'or one currently under termination review'
             );
         }
 
@@ -713,6 +760,27 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
         ]);
 
         await linkReferenceToRecord(client, opRefId, opResult.rows[0].id);
+
+        // v1.40.0 fix: EXPENSE and TAX entries are real money spent on
+        // this investment's behalf and must count toward "Spent"
+        // (actual_expenditure), same as capital funding already does —
+        // previously this money left the funding account but was never
+        // reflected in the investment's own spend figure. INFLOW is
+        // income, not spend, so it's left out of actual_expenditure
+        // (it's already visible via total_income in the operating
+        // budget summary). Any portion that pushes total spend past
+        // planned_budget is auto-logged as supplementary budget.
+        if (!isInflow) {
+            const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
+                investment.planned_budget, investment.actual_expenditure, amount
+            );
+            await client.query(`
+                UPDATE investments
+                SET    actual_expenditure   = $1,
+                       supplementary_budget = supplementary_budget + $2
+                WHERE  id = $3
+            `, [newExpenditure, supplementaryDelta, id]);
+        }
 
         await logAction(req.user.id, ACTIONS.INVESTMENT_RETURN, MODULES.INVESTMENTS, {
             ipAddress:   req.ip,
@@ -912,6 +980,19 @@ const updateInvestmentStatus = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { status, actual_end_date } = req.body;
 
+    // v1.40.0: PENDING_TERMINATION and TERMINATED are only reachable via
+    // the dedicated /terminate/* endpoints below (which enforce the
+    // responsible-person-then-Treasurer sign-off workflow) — this
+    // generic endpoint must never be used to bypass it. Its own route
+    // validator already excludes these two values from the allowed
+    // list; this is a second, defense-in-depth check directly in the
+    // controller in case that list is ever loosened.
+    if (['PENDING_TERMINATION', 'TERMINATED'].includes(status)) {
+        throw createError.badRequest(
+            'Use the termination workflow (POST /:id/terminate/request, etc.) to close an investment'
+        );
+    }
+
     const result = await query(`
         UPDATE investments
         SET    status          = $1,
@@ -969,6 +1050,7 @@ const getAllInvestments = asyncHandler(async (req, res) => {
             i.created_at,
             i.created_by,
             i.investment_type,
+            i.supplementary_budget,
             r.reference_code,
             r.public_id,
             a.name       AS funding_account,
@@ -984,6 +1066,14 @@ const getAllInvestments = asyncHandler(async (req, res) => {
                     / i.actual_expenditure * 100)::numeric, 2)
                 ELSE 0
             END AS roi_percentage,
+            -- v1.40.0: profit/loss flag (see getInvestmentById for the
+            -- identical derivation)
+            CASE
+                WHEN i.actual_expenditure = 0 THEN 'NOT_YET_FUNDED'
+                WHEN i.total_returns > i.actual_expenditure THEN 'PROFITABLE'
+                WHEN i.total_returns < i.actual_expenditure THEN 'LOSING'
+                ELSE 'BREAK_EVEN'
+            END AS performance_status,
             -- Project count
             (
                 SELECT COUNT(*) FROM projects p
@@ -1083,6 +1173,9 @@ const getInvestmentById = asyncHandler(async (req, res) => {
             creator.first_name  || ' ' || creator.last_name  AS created_by_name,
             approver.first_name || ' ' || approver.last_name AS approved_by_name,
             responsible.first_name || ' ' || responsible.last_name AS responsible_name,
+            term_req.first_name  || ' ' || term_req.last_name  AS termination_requested_by_name,
+            term_conf.first_name || ' ' || term_conf.last_name AS records_confirmed_by_name,
+            term_appr.first_name || ' ' || term_appr.last_name AS termination_approved_by_name,
             -- ROI
             CASE
                 WHEN i.actual_expenditure > 0 THEN
@@ -1090,6 +1183,27 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                     / i.actual_expenditure * 100)::numeric, 2)
                 ELSE 0
             END AS roi_percentage,
+            -- v1.40.0: profit/loss flag — derived from the same figures
+            -- as roi_percentage, no separate stored field.
+            CASE
+                WHEN i.actual_expenditure = 0 THEN 'NOT_YET_FUNDED'
+                WHEN i.total_returns > i.actual_expenditure THEN 'PROFITABLE'
+                WHEN i.total_returns < i.actual_expenditure THEN 'LOSING'
+                ELSE 'BREAK_EVEN'
+            END AS performance_status,
+            -- v1.40.0: bond settlement discount/premium — % of face value
+            -- actually paid, and the amount saved (discount, positive)
+            -- or paid extra (premium, negative). NULL when no
+            -- settlement_value is set (bond bought at par).
+            CASE
+                WHEN i.settlement_value IS NOT NULL AND i.face_value > 0 THEN
+                    ROUND((i.settlement_value / i.face_value * 100)::numeric, 4)
+                ELSE NULL
+            END AS settlement_percentage,
+            CASE
+                WHEN i.settlement_value IS NOT NULL THEN i.face_value - i.settlement_value
+                ELSE NULL
+            END AS settlement_discount_amount,
             -- Projects
             (
                 SELECT json_agg(p_data ORDER BY p_data.created_at ASC)
@@ -1132,8 +1246,12 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                     SELECT
                         bc.id, bc.coupon_number, bc.due_date,
                         bc.gross_amount, bc.tax_amount, bc.net_amount,
-                        bc.status, bc.paid_at
+                        bc.status, bc.paid_at,
+                        bc.actual_gross_amount, bc.actual_tax_amount, bc.actual_net_amount,
+                        bc.adjusted_at,
+                        adjuster.first_name || ' ' || adjuster.last_name AS adjusted_by_name
                     FROM bond_coupons bc
+                    LEFT JOIN users adjuster ON adjuster.id = bc.adjusted_by
                     WHERE bc.investment_id = i.id
                 ) bc_data
             ) AS coupons,
@@ -1178,6 +1296,9 @@ const getInvestmentById = asyncHandler(async (req, res) => {
         JOIN  users creator            ON creator.id = i.created_by
         LEFT JOIN users approver       ON approver.id = i.approved_by
         LEFT JOIN users responsible    ON responsible.id = i.responsible_user_id
+        LEFT JOIN users term_req       ON term_req.id  = i.termination_requested_by
+        LEFT JOIN users term_conf      ON term_conf.id = i.records_confirmed_by
+        LEFT JOIN users term_appr      ON term_appr.id = i.termination_approved_by
         WHERE i.id = $1
     `, [id]);
 
@@ -1226,7 +1347,7 @@ const getInvestmentById = asyncHandler(async (req, res) => {
 // ============================================================
 const payBondCoupon = asyncHandler(async (req, res) => {
     const { id, couponId } = req.params;
-    const { paid_date, notes } = req.body;
+    const { paid_date, notes, actual_gross_amount } = req.body;
 
     await withTransaction(async (client) => {
         const investResult = await client.query(`
@@ -1247,6 +1368,12 @@ const payBondCoupon = asyncHandler(async (req, res) => {
             throw createError.badRequest('This investment does not have a bond coupon schedule');
         }
 
+        if (!MUTABLE_INVESTMENT_STATUSES.includes(investment.status)) {
+            throw createError.badRequest(
+                'Coupons can only be paid on an active investment, or one currently under termination review'
+            );
+        }
+
         const couponResult = await client.query(`
             SELECT * FROM bond_coupons
             WHERE  id = $1 AND investment_id = $2
@@ -1262,10 +1389,30 @@ const payBondCoupon = asyncHandler(async (req, res) => {
             throw createError.badRequest('This coupon has already been marked paid');
         }
 
+        // v1.40.0: a coupon can only be paid on or after its due date —
+        // this button (and the "Record Actual Payment" variant below)
+        // must never be usable to approve a future payment.
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const dueDate = new Date(coupon.due_date); dueDate.setHours(0, 0, 0, 0);
+        if (dueDate > today) {
+            throw createError.badRequest(
+                `This coupon is not due until ${coupon.due_date} — it cannot be marked paid before then`
+            );
+        }
+
         const paymentDate = paid_date || coupon.due_date;
-        const grossAmount = parseFloat(coupon.gross_amount);
-        const taxAmount   = parseFloat(coupon.tax_amount) || 0;
-        const netAmount   = parseFloat(coupon.net_amount);
+
+        // v1.40.0: "Record Actual Payment" — the amount actually
+        // received differs from what was scheduled (a bond can pay out
+        // differently from the coupon math for reasons determined
+        // outside the system). Tax is auto-recalculated on the new
+        // gross amount using the bond's own tax_withholding_rate; the
+        // rest of the coupon schedule (other coupons) is untouched.
+        const isAdjusted = actual_gross_amount !== undefined && actual_gross_amount !== null;
+        const grossAmount = isAdjusted ? parseFloat(actual_gross_amount) : parseFloat(coupon.gross_amount);
+        const taxRate     = parseFloat(investment.tax_withholding_rate) || 0;
+        const taxAmount   = isAdjusted ? round2(grossAmount * (taxRate / 100)) : (parseFloat(coupon.tax_amount) || 0);
+        const netAmount   = isAdjusted ? round2(grossAmount - taxAmount) : parseFloat(coupon.net_amount);
 
         // --- 1. Gross interest — the true income earned on the bond ---
         const { referenceId: retRefId, referenceCode: retRefCode } =
@@ -1303,8 +1450,11 @@ const payBondCoupon = asyncHandler(async (req, res) => {
         await linkReferenceToRecord(client, txRefId, transactionId);
 
         const returnNotes = notes ||
-            `Coupon #${coupon.coupon_number}: gross ${grossAmount}, ` +
-            `tax withheld ${taxAmount}, net ${netAmount}`;
+            (isAdjusted
+                ? `Coupon #${coupon.coupon_number} (ACTUAL, scheduled was ${parseFloat(coupon.gross_amount)}): ` +
+                  `gross ${grossAmount}, tax withheld ${taxAmount}, net ${netAmount}`
+                : `Coupon #${coupon.coupon_number}: gross ${grossAmount}, ` +
+                  `tax withheld ${taxAmount}, net ${netAmount}`);
 
         const returnResult = await client.query(`
             INSERT INTO investment_returns (
@@ -1378,22 +1528,56 @@ const payBondCoupon = asyncHandler(async (req, res) => {
             ]);
 
             await linkReferenceToRecord(client, taxOpRefId, taxOpResult.rows[0].id);
+
+            // v1.40.0 fix: withholding tax is real money spent on this
+            // investment's behalf — count it toward "Spent", same as
+            // any other operational TAX entry (see
+            // recordInvestmentTransaction for the identical fix).
+            const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
+                investment.planned_budget, investment.actual_expenditure, taxAmount
+            );
+            await client.query(`
+                UPDATE investments
+                SET    actual_expenditure   = $1,
+                       supplementary_budget = supplementary_budget + $2
+                WHERE  id = $3
+            `, [newExpenditure, supplementaryDelta, id]);
         }
 
         await client.query(`
             UPDATE bond_coupons
             SET    status = 'PAID',
                    investment_return_id = $1,
-                   paid_at = NOW()
-            WHERE  id = $2
-        `, [returnResult.rows[0].id, couponId]);
+                   paid_at = NOW(),
+                   actual_gross_amount = $2,
+                   actual_tax_amount   = $3,
+                   actual_net_amount   = $4,
+                   adjusted_by         = $5,
+                   adjusted_at         = $6
+            WHERE  id = $7
+        `, [
+            returnResult.rows[0].id,
+            isAdjusted ? grossAmount : null,
+            isAdjusted ? taxAmount   : null,
+            isAdjusted ? netAmount   : null,
+            isAdjusted ? req.user.id : null,
+            isAdjusted ? new Date()  : null,
+            couponId,
+        ]);
 
-        await logAction(req.user.id, ACTIONS.INVESTMENT_RETURN, MODULES.INVESTMENTS, {
+        await logAction(req.user.id, isAdjusted ? ACTIONS.INVESTMENT_COUPON_ADJUSTED : ACTIONS.INVESTMENT_RETURN, MODULES.INVESTMENTS, {
             ipAddress:   req.ip,
             recordType:  'bond_coupons',
             recordId:    coupon.id,
-            newValues:   { retRefCode, coupon_number: coupon.coupon_number, gross_amount: grossAmount, tax_amount: taxAmount, net_amount: netAmount, balanceBefore, balanceAfter: finalBalanceAfter },
-            description: `Bond coupon #${coupon.coupon_number} paid: ${retRefCode} — gross ${grossAmount}, tax ${taxAmount}, net ${netAmount}`,
+            newValues:   {
+                retRefCode, coupon_number: coupon.coupon_number,
+                scheduled_gross_amount: parseFloat(coupon.gross_amount),
+                gross_amount: grossAmount, tax_amount: taxAmount, net_amount: netAmount,
+                is_adjusted: isAdjusted, balanceBefore, balanceAfter: finalBalanceAfter,
+            },
+            description: isAdjusted
+                ? `Bond coupon #${coupon.coupon_number} paid with ACTUAL amount: ${retRefCode} — gross ${grossAmount} (scheduled ${parseFloat(coupon.gross_amount)}), tax ${taxAmount}, net ${netAmount}`
+                : `Bond coupon #${coupon.coupon_number} paid: ${retRefCode} — gross ${grossAmount}, tax ${taxAmount}, net ${netAmount}`,
             client,
         });
 
@@ -1404,9 +1588,364 @@ const payBondCoupon = asyncHandler(async (req, res) => {
             gross_amount:     grossAmount,
             tax_amount:       taxAmount,
             net_amount:       netAmount,
+            is_adjusted:      isAdjusted,
             balance_before:   balanceBefore,
             balance_after:    finalBalanceAfter,
         }, `Coupon #${coupon.coupon_number} marked paid. Reference: ${retRefCode}`);
+    });
+});
+
+// ============================================================
+// UPDATE FIRST COUPON DATE / RESCHEDULE COUPON SCHEDULE
+// PATCH /api/investments/:id/coupon-schedule
+// A bond's first coupon date is sometimes not known at the time of
+// purchase/settlement. This lets it be filled in or corrected later —
+// the WHOLE schedule is regenerated from the new anchor date so every
+// later coupon date auto-recalculates too (same math as at creation
+// time). Only allowed while no coupon has actually been paid yet —
+// once real money has moved against coupon #1, the schedule is locked
+// (use editInvestment's normal PENDING-only path is not an option
+// post-approval, and this endpoint deliberately doesn't touch amounts
+// already paid).
+// ============================================================
+const updateCouponSchedule = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { first_coupon_date } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (investment.investment_type !== 'BOND') {
+            throw createError.badRequest('This investment does not have a bond coupon schedule');
+        }
+
+        const paidCount = await client.query(`
+            SELECT COUNT(*) AS n FROM bond_coupons
+            WHERE  investment_id = $1 AND status = 'PAID'
+        `, [id]);
+        if (parseInt(paidCount.rows[0].n) > 0) {
+            throw createError.badRequest(
+                'The coupon schedule cannot be rescheduled once a coupon has already been paid'
+            );
+        }
+
+        const schedule = generateBondCouponSchedule({
+            faceValue:          parseFloat(investment.face_value),
+            couponRate:         parseFloat(investment.coupon_rate),
+            frequency:          investment.coupon_frequency,
+            taxWithholdingRate: parseFloat(investment.tax_withholding_rate) || 0,
+            issueDate:          investment.start_date,
+            maturityDate:       investment.expected_end_date,
+            firstCouponDate:    first_coupon_date,
+        });
+
+        await client.query('DELETE FROM bond_coupons WHERE investment_id = $1', [id]);
+        for (const coupon of schedule) {
+            await client.query(`
+                INSERT INTO bond_coupons (
+                    investment_id, coupon_number, due_date,
+                    gross_amount, tax_amount, net_amount
+                ) VALUES ($1, $2, $3, $4, $5, $6)
+            `, [
+                id, coupon.coupon_number, coupon.due_date,
+                coupon.gross_amount, coupon.tax_amount, coupon.net_amount,
+            ]);
+        }
+
+        await client.query(
+            'UPDATE investments SET first_coupon_date = $1 WHERE id = $2',
+            [first_coupon_date, id]
+        );
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_COUPON_SCHEDULE_UPDATED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    id,
+            oldValues:   { first_coupon_date: investment.first_coupon_date },
+            newValues:   { first_coupon_date },
+            description: `Bond coupon schedule rescheduled from first coupon date ${first_coupon_date}: investment ID ${id}`,
+            client,
+        });
+
+        sendSuccess(res, { coupons: schedule }, 'Coupon schedule updated');
+    });
+});
+
+// ============================================================
+// MID-TERM TERMINATION WORKFLOW
+//
+// Step 1 — REQUEST (INVESTMENT_MANAGE): status -> PENDING_TERMINATION.
+// Step 2 — CONFIRM RECORDS (the investment's own responsible person,
+//          or an approver if none is set): attests every return,
+//          expense and transaction against this investment is up to
+//          date. Returns/expenses can still be recorded while
+//          PENDING_TERMINATION (see MUTABLE_INVESTMENT_STATUSES) so
+//          anything missing can be caught up first.
+// Step 3 — APPROVE (INVESTMENT_APPROVE, same permission as initial
+//          investment approval): final Treasurer/Director sign-off.
+//          Locks in status -> TERMINATED, actual_end_date -> today,
+//          and a termination_report stating whether the investment
+//          profited or lost money, and by how much. Any coupons still
+//          PENDING are marked MISSED since they'll never be paid now.
+//
+// REJECT (either step's approver) can be used at any point while
+// PENDING_TERMINATION to abandon the request and restore the
+// investment to exactly the status it was in before (status_before_
+// termination), clearing all termination_* fields.
+// ============================================================
+
+const requestTermination = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (!['ACTIVE', 'ON_HOLD'].includes(investment.status)) {
+            throw createError.badRequest(
+                `Only an active (or on-hold) investment can be put up for termination. Status: ${investment.status}`
+            );
+        }
+
+        await client.query(`
+            UPDATE investments
+            SET    status                     = 'PENDING_TERMINATION',
+                   status_before_termination   = $1,
+                   termination_requested_by    = $2,
+                   termination_requested_at    = NOW(),
+                   termination_reason          = $3,
+                   records_confirmed_by        = NULL,
+                   records_confirmed_at        = NULL,
+                   termination_approved_by     = NULL,
+                   termination_approved_at     = NULL,
+                   termination_report          = NULL
+            WHERE  id = $4
+        `, [investment.status, req.user.id, reason.trim(), id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_TERMINATION_REQUESTED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    id,
+            newValues:   { reason },
+            description: `Termination requested for investment ID ${id}: ${reason}`,
+            client,
+        });
+
+        if (investment.responsible_user_id) {
+            notify({
+                userId:     investment.responsible_user_id,
+                type:       'INVESTMENT_TERMINATION_REQUESTED',
+                title:      'Investment termination requested — please confirm records',
+                body:       `${investment.name} has been put up for termination. Please confirm all returns, expenses and transactions against it are up to date.`,
+                link:       `/investments/${id}`,
+                module:     'INVESTMENTS',
+                recordType: 'investments',
+                recordId:   id,
+                email: {
+                    subject: `Please confirm records — ${investment.name} is being terminated`,
+                    html:    await wrapEmail(`
+                        <p>An investment you're responsible for has been put up for mid-term termination:</p>
+                        <table style="width:100%; border-collapse:collapse; margin:12px 0;">
+                            <tr><td style="padding:4px 0; color:#6b7280;">Investment</td><td style="padding:4px 0; text-align:right;">${investment.name}</td></tr>
+                            <tr><td style="padding:4px 0; color:#6b7280;">Reason</td><td style="padding:4px 0; text-align:right;">${reason}</td></tr>
+                        </table>
+                        <p>Please review its records and confirm they are up to date before it can be formally closed.</p>
+                    `, { preheader: 'Please confirm investment records before termination' }),
+                },
+            });
+        }
+
+        sendSuccess(res, null, 'Termination requested — awaiting records confirmation');
+    });
+});
+
+const confirmTerminationRecords = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (investment.status !== 'PENDING_TERMINATION') {
+            throw createError.badRequest('This investment is not currently under termination review');
+        }
+
+        const canApprove = (req.user.permissions || []).includes('INVESTMENT_APPROVE');
+        if (investment.responsible_user_id) {
+            if (investment.responsible_user_id !== req.user.id) {
+                throw createError.forbidden(
+                    'Only this investment\'s responsible person can confirm its records are up to date'
+                );
+            }
+        } else if (!canApprove) {
+            // No responsible person on file — fall back to whoever can
+            // approve investments, rather than blocking the workflow.
+            throw createError.forbidden(
+                'This investment has no responsible person on file — an investment approver must confirm records instead'
+            );
+        }
+
+        await client.query(`
+            UPDATE investments
+            SET    records_confirmed_by = $1,
+                   records_confirmed_at = NOW()
+            WHERE  id = $2
+        `, [req.user.id, id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_RECORDS_CONFIRMED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    id,
+            description: `Records confirmed up to date for investment ID ${id}, ahead of termination`,
+            client,
+        });
+
+        sendSuccess(res, null, 'Records confirmed — awaiting final approval to close');
+    });
+});
+
+const approveTermination = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { closing_note } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (investment.status !== 'PENDING_TERMINATION') {
+            throw createError.badRequest('This investment is not currently under termination review');
+        }
+        if (!investment.records_confirmed_at) {
+            throw createError.badRequest(
+                'Records must be confirmed up to date by the responsible person before final approval'
+            );
+        }
+
+        const totalReturns     = parseFloat(investment.total_returns);
+        const totalExpenditure = parseFloat(investment.actual_expenditure);
+        const netResult        = totalReturns - totalExpenditure;
+        const outcome = netResult > 0 ? 'a profit' : netResult < 0 ? 'a loss' : 'break-even';
+
+        const report =
+            `Investment "${investment.name}" (${investment.investment_type}) terminated mid-term.\n` +
+            `Reason: ${investment.termination_reason || 'Not stated'}\n` +
+            `Planned budget: ${investment.planned_budget}\n` +
+            `Total spent: ${totalExpenditure}${parseFloat(investment.supplementary_budget) > 0 ? ` (of which ${investment.supplementary_budget} was supplementary, beyond the planned budget)` : ''}\n` +
+            `Total returns received: ${totalReturns}\n` +
+            `Result: ${outcome} of ${Math.abs(netResult).toFixed(2)}\n` +
+            (closing_note ? `Closing note: ${closing_note}` : '');
+
+        await client.query(`
+            UPDATE investments
+            SET    status                   = 'TERMINATED',
+                   actual_end_date           = CURRENT_DATE,
+                   termination_approved_by   = $1,
+                   termination_approved_at   = NOW(),
+                   termination_report        = $2
+            WHERE  id = $3
+        `, [req.user.id, report, id]);
+
+        // Coupons still pending will never be paid now — mark them
+        // MISSED so the schedule reads accurately rather than showing
+        // stale "Pending" rows on a closed bond.
+        await client.query(`
+            UPDATE bond_coupons
+            SET    status = 'MISSED'
+            WHERE  investment_id = $1 AND status = 'PENDING'
+        `, [id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_TERMINATED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    id,
+            newValues:   { totalReturns, totalExpenditure, netResult, report },
+            description: `Investment ID ${id} terminated — ${outcome} of ${Math.abs(netResult).toFixed(2)}`,
+            client,
+        });
+
+        if (investment.responsible_user_id) {
+            notify({
+                userId:     investment.responsible_user_id,
+                type:       'INVESTMENT_TERMINATED',
+                title:      'Investment terminated',
+                body:       `${investment.name} has been formally closed — ${outcome} of ${Math.abs(netResult).toFixed(2)}.`,
+                link:       `/investments/${id}`,
+                module:     'INVESTMENTS',
+                recordType: 'investments',
+                recordId:   id,
+            });
+        }
+
+        sendSuccess(res, { report, net_result: netResult }, 'Investment terminated');
+    });
+});
+
+const rejectTermination = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (investment.status !== 'PENDING_TERMINATION') {
+            throw createError.badRequest('This investment is not currently under termination review');
+        }
+
+        const restoredStatus = investment.status_before_termination || 'ACTIVE';
+
+        await client.query(`
+            UPDATE investments
+            SET    status                     = $1,
+                   status_before_termination   = NULL,
+                   termination_requested_by    = NULL,
+                   termination_requested_at    = NULL,
+                   termination_reason          = NULL,
+                   records_confirmed_by        = NULL,
+                   records_confirmed_at        = NULL,
+                   termination_approved_by     = NULL,
+                   termination_approved_at     = NULL,
+                   termination_report          = NULL
+            WHERE  id = $2
+        `, [restoredStatus, id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_TERMINATION_REJECTED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    id,
+            newValues:   { reason },
+            description: `Termination request rejected for investment ID ${id}, restored to ${restoredStatus}: ${reason || 'No reason given'}`,
+            client,
+        });
+
+        sendSuccess(res, null, `Termination request rejected — investment restored to ${restoredStatus}`);
     });
 });
 
@@ -1474,6 +2013,11 @@ module.exports = {
     recordReturn,
     recordInvestmentTransaction,
     payBondCoupon,
+    updateCouponSchedule,
+    requestTermination,
+    confirmTerminationRecords,
+    approveTermination,
+    rejectTermination,
     createProject,
     addMilestone,
     updateMilestone,

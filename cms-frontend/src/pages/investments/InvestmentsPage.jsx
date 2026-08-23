@@ -23,7 +23,7 @@ const BLANK_FORM = {
     start_date: '', expected_end_date: '',
     investment_type: 'STANDARD',
     face_value: '', coupon_rate: '', coupon_frequency: 'ANNUALLY',
-    tax_withholding_rate: '', first_coupon_date: '',
+    tax_withholding_rate: '', first_coupon_date: '', settlement_value: '',
 };
 
 const CreateInvestmentModal = ({ isOpen, onClose, onSuccess, accounts, categories, editingRecord }) => {
@@ -48,6 +48,7 @@ const CreateInvestmentModal = ({ isOpen, onClose, onSuccess, accounts, categorie
                 coupon_frequency: editingRecord.coupon_frequency || 'ANNUALLY',
                 tax_withholding_rate: editingRecord.tax_withholding_rate || '',
                 first_coupon_date: editingRecord.first_coupon_date ? editingRecord.first_coupon_date.slice(0, 10) : '',
+                settlement_value: editingRecord.settlement_value || '',
             });
         } else {
             setForm(BLANK_FORM);
@@ -73,12 +74,15 @@ const CreateInvestmentModal = ({ isOpen, onClose, onSuccess, accounts, categorie
                 payload.tax_withholding_rate = form.tax_withholding_rate
                     ? parseFloat(form.tax_withholding_rate) : 0;
                 payload.first_coupon_date = form.first_coupon_date || null;
+                payload.settlement_value = form.settlement_value
+                    ? parseFloat(form.settlement_value) : null;
             } else {
                 delete payload.face_value;
                 delete payload.coupon_rate;
                 delete payload.coupon_frequency;
                 delete payload.tax_withholding_rate;
                 delete payload.first_coupon_date;
+                delete payload.settlement_value;
             }
             if (isEdit) {
                 delete payload.investment_type;
@@ -263,7 +267,23 @@ const CreateInvestmentModal = ({ isOpen, onClose, onSuccess, accounts, categorie
                                         Only needed if this bond was already running when the
                                         company bought it — set this to the next coupon date the
                                         issuer already has scheduled, so the payment schedule lines
-                                        up correctly. Leave blank for a bond bought at issuance.
+                                        up correctly. Leave blank for a bond bought at issuance. Can
+                                        also be set or corrected later from the investment's own page.
+                                    </p>
+                                </div>
+                                <div>
+                                    <label className="label">Settlement Value (optional)</label>
+                                    <input type="number" className="input"
+                                        value={form.settlement_value}
+                                        onChange={e => setForm(p => ({
+                                            ...p, settlement_value: e.target.value }))}
+                                        min="0.01" step="0.01"
+                                        placeholder={`Leave blank if bought at par (100% of face value)`} />
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        The actual price paid for this bond, if different from its face value
+                                        (bought at a discount or premium). Coupon payments always stay
+                                        calculated on the full face value — this is shown as a % on the
+                                        investment's page purely for reference.
                                     </p>
                                 </div>
                                 <p className="text-xs text-gray-500">

@@ -65,6 +65,8 @@ router.post('/',
             .withMessage('Invalid coupon frequency'),
         body('tax_withholding_rate')
             .optional().isFloat({ min: 0, max: 100 }).withMessage('Tax withholding rate must be between 0 and 100'),
+        body('settlement_value')
+            .optional().isFloat({ min: 0.01 }).withMessage('Settlement value must be greater than zero'),
     ],
     validateRequest,
     investmentsController.createInvestment
@@ -115,6 +117,7 @@ router.patch('/:id',
         body('coupon_frequency').optional().isIn(['MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', 'AT_MATURITY']),
         body('tax_withholding_rate').optional().isFloat({ min: 0, max: 100 }),
         body('first_coupon_date').optional().isISO8601(),
+        body('settlement_value').optional().isFloat({ min: 0.01 }),
     ],
     validateRequest,
     investmentsController.editInvestment
@@ -206,7 +209,12 @@ router.post('/:id/transactions',
 // BOND COUPONS
 // ============================================================
 
-// Mark a scheduled bond coupon as paid — records the return + transaction
+// Mark a scheduled bond coupon as paid — records the return + transaction.
+// actual_gross_amount (v1.40.0) is the "Record Actual Payment" variant —
+// when supplied, tax is auto-recalculated on it instead of using the
+// scheduled gross/tax amounts. Both this and the plain "Mark Paid" path
+// are date-gated server-side (see payBondCoupon) to the coupon's own
+// due date, so a future payment can never be approved early.
 router.patch('/:id/coupons/:couponId/pay',
     requirePermissions(['INVESTMENT_MANAGE']),
     validators.idParam('id'),
@@ -216,9 +224,69 @@ router.patch('/:id/coupons/:couponId/pay',
             .optional().isISO8601().withMessage('Invalid payment date').custom(notFutureDate),
         body('notes')
             .optional().trim(),
+        body('actual_gross_amount')
+            .optional().isFloat({ min: 0.01 }).withMessage('Actual gross amount must be greater than zero'),
     ],
     validateRequest,
     investmentsController.payBondCoupon
+);
+
+// Reschedule the coupon schedule from a new/corrected first coupon
+// date — only while no coupon has been paid yet.
+router.patch('/:id/coupon-schedule',
+    requirePermissions(['INVESTMENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('first_coupon_date')
+            .isISO8601().withMessage('A valid first coupon date is required'),
+    ],
+    validateRequest,
+    investmentsController.updateCouponSchedule
+);
+
+// ============================================================
+// MID-TERM TERMINATION WORKFLOW
+// ============================================================
+
+router.post('/:id/terminate/request',
+    requirePermissions(['INVESTMENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('reason')
+            .trim().notEmpty().withMessage('A reason for termination is required'),
+    ],
+    validateRequest,
+    investmentsController.requestTermination
+);
+
+// Any authenticated investment viewer can attempt this — the controller
+// itself enforces that only the investment's responsible person (or,
+// if none is set, an investment approver) can actually confirm.
+router.post('/:id/terminate/confirm-records',
+    requirePermissions(['INVESTMENT_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    investmentsController.confirmTerminationRecords
+);
+
+router.post('/:id/terminate/approve',
+    requirePermissions(['INVESTMENT_APPROVE']),
+    validators.idParam('id'),
+    [
+        body('closing_note').optional().trim(),
+    ],
+    validateRequest,
+    investmentsController.approveTermination
+);
+
+router.post('/:id/terminate/reject',
+    requireAnyPermission(['INVESTMENT_MANAGE', 'INVESTMENT_APPROVE']),
+    validators.idParam('id'),
+    [
+        body('reason').optional().trim(),
+    ],
+    validateRequest,
+    investmentsController.rejectTermination
 );
 
 // ============================================================

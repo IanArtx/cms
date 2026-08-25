@@ -510,7 +510,14 @@ const DepositsPage = () => {
         ) },
         { header: 'Account', render: row => <span className="text-sm text-gray-900">{row.account_name}</span> },
         { header: 'Amount', render: row => (
-            <span className="text-sm font-bold text-green-600">{formatNumber(row.amount)} {row.currency_code}</span>
+            <span className={`text-sm font-bold ${row.is_reversed ? 'text-gray-400 line-through' : 'text-green-600'}`}>
+                {formatNumber(row.amount)} {row.currency_code}
+            </span>
+        ) },
+        { header: 'Status', render: row => (
+            row.is_reversed
+                ? <span className="badge-red text-xs" title={row.reversed_at ? `Reversed ${formatDate(row.reversed_at)}` : 'Reversed'}>Reversed</span>
+                : <span className="badge-green text-xs">Active</span>
         ) },
     ];
 

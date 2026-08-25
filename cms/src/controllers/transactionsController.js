@@ -1201,14 +1201,79 @@ const reverseTransaction = asyncHandler(async (req, res) => {
             contributionReversed = true;
         }
 
+        // v1.40.1 — fixed: reversing a deposit's transaction previously
+        // left deposit_balances/deposit_entries completely untouched
+        // ("the deposit amount remains unchanged even when a reversal
+        // is initiated"). Deposits have no dedicated linking column on
+        // `transactions` (unlike contribution_id above) — they're only
+        // identifiable via inflow_type — so this is matched the same
+        // way creditDepositContribution always sets it.
+        let depositReversed = false;
+        if (tx.inflow_type === 'DEPOSIT_CONTRIBUTION_IN') {
+            const entryResult = await client.query(`
+                SELECT * FROM deposit_entries
+                WHERE  transaction_id = $1 AND is_reversed = FALSE
+                FOR UPDATE
+            `, [tx.id]);
+
+            if (entryResult.rows.length > 0) {
+                const entry = entryResult.rows[0];
+
+                const balanceResult = await client.query(
+                    'SELECT balance FROM deposit_balances WHERE user_id = $1 FOR UPDATE',
+                    [entry.user_id]
+                );
+                const currentBalance = parseFloat(balanceResult.rows[0]?.balance || 0);
+                const entryAmount = parseFloat(entry.normalized_amount);
+
+                // Guard against the non_negative_deposit_balance CHECK —
+                // this only fires if some of this member's balance was
+                // already paid out via an exit refund in the meantime,
+                // which a plain decrement would violate.
+                if (currentBalance < entryAmount) {
+                    throw createError.badRequest(
+                        `Cannot reverse this deposit — the member's current deposit balance ` +
+                        `(${currentBalance}) is lower than this entry's amount (${entryAmount}), ` +
+                        `most likely because some or all of it has already been paid out via an exit refund.`
+                    );
+                }
+
+                await client.query(`
+                    UPDATE deposit_balances
+                    SET    balance = balance - $1, updated_at = NOW()
+                    WHERE  user_id = $2
+                `, [entryAmount, entry.user_id]);
+
+                await client.query(`
+                    UPDATE deposit_entries
+                    SET    is_reversed = TRUE, reversed_at = NOW(), reversed_by = $1
+                    WHERE  id = $2
+                `, [req.user.id, entry.id]);
+
+                await logAction(req.user.id, ACTIONS.DEPOSIT_ENTRY_REVERSED, MODULES.FINANCE, {
+                    ipAddress:   req.ip,
+                    recordType:  'deposit_entries',
+                    recordId:    entry.id,
+                    oldValues:   { balance_before: currentBalance },
+                    newValues:   { balance_after: currentBalance - entryAmount, reversed_amount: entryAmount },
+                    description: `Deposit entry reversed alongside transaction ${referenceCode}: ` +
+                                 `user #${entry.user_id}, ${entryAmount} removed from their deposit balance`,
+                    client,
+                });
+
+                depositReversed = true;
+            }
+        }
+
         await logAction(req.user.id, ACTIONS.TRANSACTION_REVERSED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'transactions',
             recordId:    transactionId,
             oldValues:   { original_transaction_id: tx.id },
-            newValues:   { referenceCode, reason, balanceBefore, balanceAfter, contributionReversed },
+            newValues:   { referenceCode, reason, balanceBefore, balanceAfter, contributionReversed, depositReversed },
             description: `Transaction reversed: ${referenceCode} — Reason: ${reason}` +
-                         `${contributionReversed ? ' (linked shareholder contribution marked REVERSED and shareholding recalculated)' : ''}`,
+                         `${contributionReversed ? ' (linked shareholder contribution marked REVERSED and shareholding recalculated)' : ''}` +
+                         `${depositReversed ? ' (linked deposit entry reversed and deposit balance decremented)' : ''}`,
             client,
         });
 

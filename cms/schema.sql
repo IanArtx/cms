@@ -3085,6 +3085,14 @@ CREATE TABLE deposit_entries (
     entry_date         DATE          NOT NULL,
     recorded_by        INTEGER       NOT NULL REFERENCES users(id),
     created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- v1.40.1: set when the linked transaction is reversed
+    -- (transactionsController.reverseTransaction) — by that point
+    -- normalized_amount has already been decremented back out of
+    -- deposit_balances.balance for this entry's user. The row itself
+    -- is kept, never deleted, so deposit history stays complete.
+    is_reversed        BOOLEAN       NOT NULL DEFAULT FALSE,
+    reversed_at        TIMESTAMPTZ,
+    reversed_by        INTEGER REFERENCES users(id),
     CONSTRAINT positive_deposit_entry_amount CHECK (amount > 0)
 );
 CREATE INDEX idx_deposit_entries_user ON deposit_entries (user_id, entry_date DESC);

@@ -64,6 +64,21 @@ const applySideFundPayment = async (client, {
         `, [newPaid, newStatus, transactionId, paidDate, recordedBy, due.id]);
         settled.push({ due_id: due.id, period: due.period, amount_applied: applied, new_status: newStatus });
         remaining = parseFloat((remaining - applied).toFixed(4));
+
+        // v1.41.0 — persist exactly what this ONE transaction applied to
+        // this ONE due, as its own append-only row. `side_fund_dues.
+        // transaction_id` above is last-write-wins (a due paid off across
+        // several separate payments only remembers the most recent one),
+        // so it can't by itself answer "what did transaction X actually
+        // do?" for a reversal. This table can, and it also naturally
+        // handles bulkPayDues (one transaction, many members/dues) since
+        // reversal just queries every row for that transaction_id,
+        // regardless of how many members it touched.
+        await client.query(`
+            INSERT INTO side_fund_payment_applications (
+                transaction_id, user_id, due_id, application_type, amount
+            ) VALUES ($1, $2, $3, 'DUE_PAYMENT', $4)
+        `, [transactionId, userId, due.id, applied]);
     }
 
     // Anything left over (every existing outstanding due is now
@@ -92,6 +107,14 @@ const applySideFundPayment = async (client, {
             description: `${creditBanked} banked as side fund credit for future months (reference ${referenceCode})`,
             client,
         });
+
+        // v1.41.0 — same append-only record for the banked-credit portion
+        // (due_id NULL — this amount didn't go to any specific due).
+        await client.query(`
+            INSERT INTO side_fund_payment_applications (
+                transaction_id, user_id, due_id, application_type, amount
+            ) VALUES ($1, $2, NULL, 'CREDIT_BANKED', $3)
+        `, [transactionId, userId, creditBanked]);
     }
 
     return { settled, creditBanked };

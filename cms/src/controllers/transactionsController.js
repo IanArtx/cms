@@ -471,7 +471,10 @@ const creditShareholderContribution = async (client, {
         type:       'CONTRIBUTION_RECORDED',
         title:      'Contribution recorded',
         body:       `Your contribution of ${amount} on ${contributionDate} was recorded. Reference: ${referenceCode}.`,
-        link:       `/transactions/${transactionId}`,
+        // v1.41.0 fix: there is no /transactions/:id detail route —
+        // TransactionsPage.jsx is list-only — so this used to silently
+        // bounce to the dashboard.
+        link:       `/transactions`,
         module:     'FINANCE',
         recordType: 'transactions',
         recordId:   transactionId,
@@ -643,6 +646,32 @@ const creditSavingsContribution = async (client, {
                updated_at = NOW()
         WHERE  user_id = $3
     `, [amount, savingsAccount.currency_id, userId]);
+
+    // v1.41.0 — also write a member_savings row (already ACTIVE, no
+    // approval step needed since the Treasurer already has authority by
+    // virtue of personally recording the contribution — same reasoning
+    // as the direct-credit design itself). Previously this path updated
+    // ONLY the aggregate savings_balances with no per-entry record at
+    // all, which meant a reversal had no way to know which member's
+    // balance to undo, or by how much. Mirrors approveSavingsDeposit's
+    // own member_savings shape exactly, just pre-approved.
+    const { referenceId: savingsRefId } = await generateReference(
+        client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAV', 'SAVINGS', recordedByUserId
+    );
+    const savingsEntryResult = await client.query(`
+        INSERT INTO member_savings (
+            reference_id, user_id, account_id, currency_id, category_id,
+            principal_amount, deposit_date, entry_type, source,
+            recorded_by, status, transaction_id, secretary_approved_by,
+            secretary_approved_at, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'FLEXIBLE', 'TREASURY_DIRECT',
+            $8, 'ACTIVE', $9, $8, NOW(), $8)
+        RETURNING id
+    `, [
+        savingsRefId, userId, savingsAccount.id, savingsAccount.currency_id,
+        categoryId, amount, contributionDate, recordedByUserId, transactionId,
+    ]);
+    await linkReferenceToRecord(client, savingsRefId, savingsEntryResult.rows[0].id);
 
     await logAction(recordedByUserId, ACTIONS.SAVINGS_CONTRIBUTION_CREDITED, MODULES.FINANCE, {
         recordType:  'savings_balances',
@@ -1265,15 +1294,233 @@ const reverseTransaction = asyncHandler(async (req, res) => {
             }
         }
 
+        // v1.41.0 — Side Fund contributions cascade oldest-unpaid-due-
+        // first and can bank any leftover as running credit (see
+        // applySideFundPayment) — side_fund_payment_applications is the
+        // append-only record of exactly what THIS transaction did,
+        // written since v1.41.0, which lets a reversal undo it precisely
+        // regardless of how many dues/members were touched (this also
+        // correctly covers bulkPayDues — one transaction, many members).
+        // side_fund_config.current_balance is a clean 1:1 mirror of the
+        // ledger for this feature, so it's always decremented here
+        // regardless of whether the due/credit detail can be recovered.
+        let sideFundReversed = false;
+        let sideFundWarning = null;
+        if (tx.inflow_type === 'SIDE_FUND_CONTRIBUTION_IN') {
+            const configResult = await client.query(
+                'SELECT current_balance FROM side_fund_config WHERE id = 1 FOR UPDATE'
+            );
+            const currentEnvelope = parseFloat(configResult.rows[0]?.current_balance || 0);
+            const txAmount = parseFloat(tx.amount);
+
+            if (currentEnvelope < txAmount) {
+                throw createError.badRequest(
+                    `Cannot reverse — the side fund's envelope balance (${currentEnvelope}) is lower than ` +
+                    `this transaction's amount (${txAmount}), most likely because it has already been spent ` +
+                    `via a side fund expense.`
+                );
+            }
+
+            await client.query(`
+                UPDATE side_fund_config
+                SET    current_balance = current_balance - $1, updated_at = NOW()
+                WHERE  id = 1
+            `, [txAmount]);
+
+            const applications = await client.query(`
+                SELECT * FROM side_fund_payment_applications
+                WHERE  transaction_id = $1 AND is_reversed = FALSE
+                FOR UPDATE
+            `, [tx.id]);
+
+            if (applications.rows.length > 0) {
+                for (const app of applications.rows) {
+                    const appAmount = parseFloat(app.amount);
+
+                    if (app.application_type === 'DUE_PAYMENT') {
+                        const dueResult = await client.query(
+                            'SELECT * FROM side_fund_dues WHERE id = $1 FOR UPDATE',
+                            [app.due_id]
+                        );
+                        const due = dueResult.rows[0];
+                        if (due) {
+                            const newPaid = Math.max(0, parseFloat(due.amount_paid) - appAmount);
+                            const newStatus = newPaid <= 0 ? 'PENDING'
+                                : newPaid < parseFloat(due.amount_due) ? 'PARTIAL' : 'PAID';
+                            await client.query(`
+                                UPDATE side_fund_dues
+                                SET    amount_paid = $1, status = $2, updated_at = NOW(),
+                                       transaction_id = CASE WHEN transaction_id = $3 THEN NULL ELSE transaction_id END
+                                WHERE  id = $4
+                            `, [newPaid, newStatus, tx.id, due.id]);
+                        }
+                    } else if (app.application_type === 'CREDIT_BANKED') {
+                        const creditResult = await client.query(
+                            'SELECT credit_balance FROM side_fund_member_credit WHERE user_id = $1 FOR UPDATE',
+                            [app.user_id]
+                        );
+                        const currentCredit = parseFloat(creditResult.rows[0]?.credit_balance || 0);
+
+                        if (currentCredit < appAmount) {
+                            throw createError.badRequest(
+                                `Cannot reverse — user #${app.user_id}'s banked side fund credit (${currentCredit}) ` +
+                                `is lower than the ${appAmount} this transaction banked, most likely because it has ` +
+                                `already been drawn down against a later month's due.`
+                            );
+                        }
+
+                        await client.query(`
+                            UPDATE side_fund_member_credit
+                            SET    credit_balance = credit_balance - $1, updated_at = NOW()
+                            WHERE  user_id = $2
+                        `, [appAmount, app.user_id]);
+
+                        await client.query(`
+                            INSERT INTO side_fund_credit_ledger (user_id, delta, reason, related_due_id)
+                            VALUES ($1, $2, $3, NULL)
+                        `, [app.user_id, -appAmount, `Reversed — transaction ${referenceCode} was reversed`]);
+                    }
+
+                    await client.query(`
+                        UPDATE side_fund_payment_applications
+                        SET    is_reversed = TRUE, reversed_at = NOW(), reversed_by = $1
+                        WHERE  id = $2
+                    `, [req.user.id, app.id]);
+                }
+
+                await logAction(req.user.id, ACTIONS.SIDE_FUND_PAYMENT_REVERSED, MODULES.FINANCE, {
+                    ipAddress:   req.ip,
+                    recordType:  'side_fund_payment_applications',
+                    recordId:    tx.id,
+                    newValues:   { applications_reversed: applications.rows.length },
+                    description: `Side fund payment reversed alongside transaction ${referenceCode}: ` +
+                                 `${applications.rows.length} application(s) undone`,
+                    client,
+                });
+
+                sideFundReversed = true;
+            } else {
+                // Predates side_fund_payment_applications (added v1.41.0) —
+                // the envelope balance above was still corrected, but there's
+                // no reliable record of which due(s)/credit this specific
+                // transaction affected, so that part can't be safely undone.
+                sideFundWarning =
+                    'This transaction predates side fund reversal tracking — the envelope balance was ' +
+                    'corrected, but no linked dues/credit record was found to roll back automatically. ' +
+                    'Please review side_fund_dues for this member manually if needed.';
+            }
+        }
+
+        // v1.41.0 — Savings. member_savings (written by approveSavingsDeposit,
+        // createFixedTermSavings, and — as of v1.41.0 — creditSavingsContribution
+        // too) is the per-entry link; a FLEXIBLE entry credited savings_balances
+        // and needs it decremented back, a FIXED_TERM entry never touched
+        // savings_balances at all so only its own status flips. The two rare
+        // "exit payout" legs (Side Fund/Deposit exit refunds crediting Savings)
+        // write no entry row and have no user-identifying column on
+        // `transactions` itself, so they're intentionally out of scope here —
+        // same reasoning as leaving Side Fund's own removeMember exit flow
+        // out of scope for the Side Fund branch above.
+        let savingsReversed = false;
+        if (tx.inflow_type === 'SAVINGS_DEPOSIT_IN') {
+            const entryResult = await client.query(`
+                SELECT * FROM member_savings WHERE transaction_id = $1 FOR UPDATE
+            `, [tx.id]);
+
+            if (entryResult.rows.length > 0 && entryResult.rows[0].status !== 'REVERSED') {
+                const entry = entryResult.rows[0];
+
+                if (entry.entry_type === 'FLEXIBLE') {
+                    const balanceResult = await client.query(
+                        'SELECT principal_balance FROM savings_balances WHERE user_id = $1 FOR UPDATE',
+                        [entry.user_id]
+                    );
+                    const currentPrincipal = parseFloat(balanceResult.rows[0]?.principal_balance || 0);
+                    const entryAmount = parseFloat(entry.principal_amount);
+
+                    if (currentPrincipal < entryAmount) {
+                        throw createError.badRequest(
+                            `Cannot reverse this savings deposit — the member's current savings principal ` +
+                            `(${currentPrincipal}) is lower than this deposit's amount (${entryAmount}), most ` +
+                            `likely because some of it has already been paid out via a handout.`
+                        );
+                    }
+
+                    await client.query(`
+                        UPDATE savings_balances
+                        SET    principal_balance = principal_balance - $1, updated_at = NOW()
+                        WHERE  user_id = $2
+                    `, [entryAmount, entry.user_id]);
+                }
+                // FIXED_TERM: never credited savings_balances, so nothing to undo there.
+
+                await client.query(`
+                    UPDATE member_savings
+                    SET    status = 'REVERSED', reversed_at = NOW(), reversed_by = $1
+                    WHERE  id = $2
+                `, [req.user.id, entry.id]);
+
+                await logAction(req.user.id, ACTIONS.SAVINGS_ENTRY_REVERSED, MODULES.FINANCE, {
+                    ipAddress:   req.ip,
+                    recordType:  'member_savings',
+                    recordId:    entry.id,
+                    description: `Savings entry reversed alongside transaction ${referenceCode}: user #${entry.user_id}`,
+                    client,
+                });
+
+                savingsReversed = true;
+            }
+        } else if (tx.inflow_type === 'SAVINGS_HANDOUT_OUT') {
+            const handoutResult = await client.query(`
+                SELECT * FROM savings_handouts WHERE transaction_id = $1 FOR UPDATE
+            `, [tx.id]);
+
+            if (handoutResult.rows.length > 0 && handoutResult.rows[0].status !== 'REVERSED') {
+                const handout = handoutResult.rows[0];
+                const principalAmount = parseFloat(handout.principal_amount);
+                const interestAmount = parseFloat(handout.interest_amount) || 0;
+
+                await client.query(`
+                    UPDATE savings_balances
+                    SET    principal_balance   = principal_balance + $1,
+                           accrued_interest    = accrued_interest + $2,
+                           total_interest_paid = GREATEST(0, total_interest_paid - $2),
+                           updated_at = NOW()
+                    WHERE  user_id = $3
+                `, [principalAmount, interestAmount, handout.user_id]);
+
+                await client.query(`
+                    UPDATE savings_handouts
+                    SET    status = 'REVERSED', reversed_at = NOW(), reversed_by = $1
+                    WHERE  id = $2
+                `, [req.user.id, handout.id]);
+
+                await logAction(req.user.id, ACTIONS.SAVINGS_HANDOUT_REVERSED, MODULES.FINANCE, {
+                    ipAddress:   req.ip,
+                    recordType:  'savings_handouts',
+                    recordId:    handout.id,
+                    description: `Savings handout reversed alongside transaction ${referenceCode}: user #${handout.user_id}`,
+                    client,
+                });
+
+                savingsReversed = true;
+            }
+        }
+
         await logAction(req.user.id, ACTIONS.TRANSACTION_REVERSED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'transactions',
             recordId:    transactionId,
             oldValues:   { original_transaction_id: tx.id },
-            newValues:   { referenceCode, reason, balanceBefore, balanceAfter, contributionReversed, depositReversed },
+            newValues:   {
+                referenceCode, reason, balanceBefore, balanceAfter,
+                contributionReversed, depositReversed, sideFundReversed, savingsReversed,
+            },
             description: `Transaction reversed: ${referenceCode} — Reason: ${reason}` +
                          `${contributionReversed ? ' (linked shareholder contribution marked REVERSED and shareholding recalculated)' : ''}` +
-                         `${depositReversed ? ' (linked deposit entry reversed and deposit balance decremented)' : ''}`,
+                         `${depositReversed ? ' (linked deposit entry reversed and deposit balance decremented)' : ''}` +
+                         `${sideFundReversed ? ' (linked side fund due/credit applications reversed)' : ''}` +
+                         `${savingsReversed ? ' (linked savings entry reversed and balance adjusted)' : ''}`,
             client,
         });
 
@@ -1283,6 +1530,7 @@ const reverseTransaction = asyncHandler(async (req, res) => {
             original_id:        tx.id,
             balance_before:     balanceBefore,
             balance_after:      balanceAfter,
+            warning:            sideFundWarning || undefined,
         }, `Transaction reversed successfully. Reference: ${referenceCode}`);
     });
 });

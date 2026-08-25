@@ -1551,7 +1551,7 @@ CREATE TABLE member_savings (
     requisition_id              INTEGER REFERENCES requisitions(id),
     recorded_by                 INTEGER REFERENCES users(id),  -- who entered it (may differ from user_id, the owner)
     status                      VARCHAR(30)   NOT NULL DEFAULT 'ACTIVE'
-                                CHECK (status IN ('PENDING_APPROVAL','ACTIVE','WITHDRAWN','REJECTED','CANCELLED')),
+                                CHECK (status IN ('PENDING_APPROVAL','ACTIVE','WITHDRAWN','REJECTED','CANCELLED','REVERSED')),
     notes                       TEXT,
     review_notes                TEXT,
     secretary_approved_by       INTEGER REFERENCES users(id),
@@ -1562,6 +1562,13 @@ CREATE TABLE member_savings (
     withdrawn_by                INTEGER REFERENCES users(id),
     created_at                  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     created_by                  INTEGER       NOT NULL REFERENCES users(id),
+    -- v1.41.0: set when the linked deposit `transaction_id` is reversed
+    -- (transactionsController.reverseTransaction) — for a FLEXIBLE entry,
+    -- savings_balances.principal_balance has already been decremented back
+    -- by that point; a FIXED_TERM entry never touched savings_balances in
+    -- the first place, so only its own status flips.
+    reversed_at                 TIMESTAMPTZ,
+    reversed_by                 INTEGER REFERENCES users(id),
     CONSTRAINT positive_savings_principal CHECK (principal_amount > 0),
     CONSTRAINT maturity_after_deposit CHECK (maturity_date IS NULL OR maturity_date > deposit_date)
 );
@@ -1623,13 +1630,18 @@ CREATE TABLE savings_handouts (
     handout_date      DATE          NOT NULL,
     notes             TEXT,
     status            VARCHAR(30)   NOT NULL DEFAULT 'PENDING_CONFIRMATION'
-                      CHECK (status IN ('PENDING_CONFIRMATION','CONFIRMED','REJECTED')),
+                      CHECK (status IN ('PENDING_CONFIRMATION','CONFIRMED','REJECTED','REVERSED')),
     transaction_id    INTEGER REFERENCES transactions(id),  -- set once confirmed
     entered_by        INTEGER       NOT NULL REFERENCES users(id),
     confirmed_at      TIMESTAMPTZ,
     rejected_reason   TEXT,
     rejected_at       TIMESTAMPTZ,
     created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- v1.41.0: set when the linked `transaction_id` (the handout's DEBIT)
+    -- is reversed — by that point principal_balance/accrued_interest have
+    -- already been restored on savings_balances.
+    reversed_at       TIMESTAMPTZ,
+    reversed_by       INTEGER REFERENCES users(id),
     CONSTRAINT positive_handout_principal CHECK (principal_amount > 0),
     CONSTRAINT positive_handout_total     CHECK (total_amount > 0)
 );
@@ -1703,6 +1715,33 @@ CREATE TABLE side_fund_dues (
     CONSTRAINT non_negative_side_fund_paid CHECK (amount_paid >= 0),
     UNIQUE (user_id, period)
 );
+
+-- v1.41.0 — append-only record of exactly what one transaction applied
+-- to the side fund, written by sideFundService.applySideFundPayment.
+-- Exists because side_fund_dues.transaction_id above is last-write-wins
+-- (a due paid off across several separate payments only remembers the
+-- most recent one) and side_fund_member_credit has no history at all —
+-- neither can answer "what did transaction X actually do?" on their own,
+-- which a reversal (transactionsController.reverseTransaction) needs to
+-- know. One row per (transaction, due) touched, plus one row per
+-- transaction if it banked overpayment as credit (due_id NULL). Also
+-- naturally handles bulkPayDues, where one transaction can span several
+-- members/dues — reversal just queries every row for that transaction_id.
+CREATE TABLE side_fund_payment_applications (
+    id               SERIAL PRIMARY KEY,
+    transaction_id   INTEGER       NOT NULL REFERENCES transactions(id),
+    user_id          INTEGER       NOT NULL REFERENCES users(id),
+    due_id           INTEGER REFERENCES side_fund_dues(id),
+    application_type VARCHAR(20)   NOT NULL
+                     CHECK (application_type IN ('DUE_PAYMENT', 'CREDIT_BANKED')),
+    amount           NUMERIC(20,4) NOT NULL CHECK (amount > 0),
+    is_reversed      BOOLEAN       NOT NULL DEFAULT FALSE,
+    reversed_at      TIMESTAMPTZ,
+    reversed_by      INTEGER REFERENCES users(id),
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT due_payment_needs_due_id CHECK (application_type != 'DUE_PAYMENT' OR due_id IS NOT NULL)
+);
+CREATE INDEX idx_side_fund_applications_tx ON side_fund_payment_applications (transaction_id);
 
 -- Expenses drawn from the side fund envelope. The actual money
 -- movement is a completely normal EXPENSE transaction against the

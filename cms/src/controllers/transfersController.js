@@ -546,7 +546,10 @@ const approveTransfer = asyncHandler(async (req, res) => {
                 type:       'TRANSFER_POSTED',
                 title:      'Transfer approved and posted',
                 body:       `Your transfer from ${transfer.from_name} to ${transfer.to_name} for ${transfer.amount_sent} has been fully approved and posted.`,
-                link:       `/transfers/${transfer.id}`,
+                // v1.41.0 fix: there is no /transfers/:id detail route —
+                // TransfersPage.jsx is list-only — so this used to silently
+                // bounce to the dashboard.
+                link:       `/transfers`,
                 module:     'FINANCE',
                 recordType: 'transfers',
                 recordId:   transfer.id,

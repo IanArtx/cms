@@ -143,7 +143,11 @@ const createRequisition = asyncHandler(async (req, res) => {
         notifyMany(approversResult.rows, 'REQUISITION_PENDING', (approver) => ({
             title:      'New requisition awaiting your approval',
             body:       `${req.user.first_name || 'A member'} submitted "${title}" for ${amount_requested}. Reference: ${referenceCode}.`,
-            link:       `/requisitions/${reqId}`,
+            // v1.41.0 fix: there is no /requisitions/:id detail route —
+            // RequisitionsPage.jsx is list-only — so this used to silently
+            // bounce to the dashboard. Matches the other requisition
+            // notifications elsewhere in this file.
+            link:       `/requisitions`,
             module:     'FINANCE',
             recordType: 'requisitions',
             recordId:   reqId,

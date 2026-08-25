@@ -520,7 +520,9 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
         await notifyMany(signatoriesResult.rows, 'CERTIFICATE_ROUND_OPENED', (recipient) => ({
             title: `${certificateType === 'ANNUAL' ? 'Annual' : 'Monthly'} Certificate of Shares round needs your signature`,
             body:  `${issued} certificate(s) for ${periodLabel} are ready and waiting on your signature.`,
-            link:  '/certificates',
+            // v1.41.0 fix: '/certificates' isn't a real route — certificate
+            // download/signing actually lives on the Profile page.
+            link:  '/profile',
             module: 'SYSTEM',
             recordType: 'certificate_signing_rounds',
             recordId: round.id,

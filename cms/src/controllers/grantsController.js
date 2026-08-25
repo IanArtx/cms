@@ -294,7 +294,9 @@ const approveGrant = asyncHandler(async (req, res) => {
             type:       'GRANT_APPROVED',
             title:      'Grant approved',
             body:       `The grant "${grant.rows[0].title}" from ${grant.rows[0].grantor_name} was approved.`,
-            link:       `/grants/${id}`,
+            // v1.41.0 fix: there is no /grants/:id detail route — GrantsPage.jsx
+            // is list-only — so this used to silently bounce to the dashboard.
+            link:       `/grants`,
             module:     'GRANTS',
             recordType: 'grants',
             recordId:   parseInt(id),

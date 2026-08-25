@@ -459,7 +459,20 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
                                 backgroundColor: 'var(--cms-surface)', borderRadius: '12px',
                                 boxShadow: '0 10px 40px rgba(0,0,0,0.12)',
                                 border: '1px solid var(--cms-border)', zIndex: 20,
-                                overflow: 'hidden',
+                                // The width axis was already clamped to the viewport, but
+                                // nothing capped the overall HEIGHT — on a short/mobile
+                                // screen the header + both notification lists + footer
+                                // could add up to more than the visible viewport, with only
+                                // the two inner lists independently scrollable, pushing the
+                                // footer (and part of the second list) off-screen and
+                                // unreachable. Capping the whole panel's height relative to
+                                // the viewport and letting IT scroll as one unit fixes that,
+                                // while the inner lists keep their own scroll for the normal
+                                // (tall-viewport) case.
+                                maxHeight: 'min(640px, calc(100vh - 88px))',
+                                display: 'flex', flexDirection: 'column',
+                                overflowY: 'auto', overflowX: 'hidden',
+                                WebkitOverflowScrolling: 'touch',
                             }}>
                                 {/* Header */}
                                 <div style={{
@@ -468,6 +481,7 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
                                     display: 'flex',
                                     justifyContent: 'space-between',
                                     alignItems: 'center',
+                                    flexShrink: 0,
                                 }}>
                                     <p style={{
                                         fontSize: '13px', fontWeight: '600',
@@ -668,6 +682,7 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
                                     padding: '10px 16px',
                                     borderTop: '1px solid var(--cms-surface-divider)',
                                     textAlign: 'center',
+                                    flexShrink: 0,
                                 }}>
                                     <p style={{
                                         fontSize: '11px', color: 'var(--cms-text-muted)', margin: 0,

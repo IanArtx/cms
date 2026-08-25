@@ -111,7 +111,10 @@ const setSharePrice = asyncHandler(async (req, res) => {
     notifyMany(shareholders.rows, 'SHARE_PRICE_UPDATED', (holder) => ({
         title: 'Share price updated',
         body:  `The price per share is now ${price_per_share}, effective ${effectiveDate}.`,
-        link:  `/dashboard`,
+        // v1.41.0 fix: the dashboard's index route is '/', not '/dashboard' —
+        // this only ever "worked" by accident, via the router's catch-all
+        // redirecting the unmatched path back to '/'.
+        link:  `/`,
         module: 'SYSTEM',
         recordType: 'share_price_history',
         recordId:   newPrice.id,

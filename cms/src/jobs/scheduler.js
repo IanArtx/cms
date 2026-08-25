@@ -532,7 +532,9 @@ const scheduleCertificateSigningReminders = () => {
                 await notifyMany(signatoriesResult.rows, 'CERTIFICATE_ROUND_REMINDER', (recipient) => ({
                     title: `Last week of the month — Certificate of Shares signature still pending`,
                     body:  `The ${round.period_label} certificate round is still waiting on your signature. Please review now that accounts are up to date.`,
-                    link:  '/certificates',
+                    // v1.41.0 fix: '/certificates' isn't a real route — certificate
+                    // download/signing actually lives on the Profile page.
+                    link:  '/profile',
                     module: 'SYSTEM',
                     recordType: 'certificate_signing_rounds',
                     recordId: round.id,

@@ -619,7 +619,11 @@ const sendIndividualReportsToAllMembers = async (year, month) => {
             type:   'PERSONAL_REPORT_SENT',
             title:  `Your personal report — ${report.period}`,
             body:   `Your personal financial report for ${report.period} has been emailed to you.`,
-            link:   `/reports/me`,
+            // v1.41.0 fix: '/reports/me' isn't a real route (this monthly
+            // report is emailed only, never saved as an in-app Document) —
+            // the closest real page showing this member's own live
+            // financial standing is their Portfolio.
+            link:   `/portfolio`,
             module: 'REPORTS',
         });
 

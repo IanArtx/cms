@@ -447,7 +447,9 @@ const approveEvent = asyncHandler(async (req, res) => {
                 type:       'EVENT_NOTIFICATION',
                 title:      `${event.event_type_name}: ${event.title}`,
                 body:       `You are notified of an event on ${eventDate}${event.location ? ` at ${event.location}` : ''}.`,
-                link:       `/events/${id}`,
+                // v1.41.0 fix: there is no /events/:id detail route — EventsPage.jsx
+                // is list-only — so this used to silently bounce to the dashboard.
+                link:       `/events`,
                 module:     'EVENTS',
                 recordType: 'events',
                 recordId:   parseInt(id),

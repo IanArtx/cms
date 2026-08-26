@@ -597,7 +597,8 @@ const approveTransfer = asyncHandler(async (req, res) => {
             type:       'TRANSFER_APPROVAL_PROGRESS',
             title:      'Transfer approval progress',
             body:       `Your transfer received an approval. ${remaining} more needed before it posts.`,
-            link:       `/transfers/${transfer.id}`,
+            // v1.41.1 fix: no /transfers/:id detail route exists — TransfersPage.jsx is list-only.
+            link:       `/transfers`,
             module:     'FINANCE',
             recordType: 'transfers',
             recordId:   transfer.id,
@@ -665,7 +666,8 @@ const rejectTransfer = asyncHandler(async (req, res) => {
             type:       'TRANSFER_REJECTED',
             title:      'Transfer rejected',
             body:       `Your transfer of ${transfer.amount_sent} was rejected.${reason ? ` Reason: ${reason}` : ''}`,
-            link:       `/transfers/${transfer.id}`,
+            // v1.41.1 fix: no /transfers/:id detail route exists — TransfersPage.jsx is list-only.
+            link:       `/transfers`,
             module:     'FINANCE',
             recordType: 'transfers',
             recordId:   transfer.id,

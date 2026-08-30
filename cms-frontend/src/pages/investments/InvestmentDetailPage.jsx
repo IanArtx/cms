@@ -533,6 +533,7 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
     const [payingId, setPayingId] = useState(null);
     const [adjustingCoupon, setAdjustingCoupon] = useState(null);
     const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+    const [showSettlementModal, setShowSettlementModal] = useState(false);
     const [error, setError] = useState(null);
     const coupons = investment.coupons || [];
     const currency = investment.currency_code;
@@ -569,6 +570,13 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
         ? parseFloat(investment.settlement_percentage) : null;
     const discountAmount = investment.settlement_discount_amount !== null && investment.settlement_discount_amount !== undefined
         ? parseFloat(investment.settlement_discount_amount) : null;
+    // v1.42.0: settlement value can still be recorded (and is
+    // auto-funded the moment it is) any time after approval, as long
+    // as nothing has been funded against this investment yet by any
+    // means — once actual_expenditure > 0 it's locked, same principle
+    // as the coupon schedule locking after the first coupon is paid.
+    const canRecordSettlement = canManage && investment.status === 'ACTIVE' &&
+        parseFloat(investment.actual_expenditure || 0) === 0;
 
     return (
         <div className="card mb-6">
@@ -584,7 +592,7 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                             onClick={() => setShowRescheduleModal(true)}
                             className="text-xs text-primary-700 hover:text-primary-800 font-medium"
                         >
-                            {investment.first_coupon_date ? 'Edit First Coupon Date' : 'Set First Coupon Date'}
+                            Edit Coupon Date / Frequency
                         </button>
                     )}
                 </div>
@@ -635,6 +643,21 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                             . Coupon payments remain calculated on the full face value.
                         </p>
                     </div>
+                </div>
+            )}
+
+            {!hasSettlement && canRecordSettlement && (
+                <div className="mb-5 p-3 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-xs text-amber-900">
+                        Settlement value wasn't known when this bond was approved, so it hasn't been funded yet.
+                        Record it now to fund it automatically.
+                    </p>
+                    <button
+                        onClick={() => setShowSettlementModal(true)}
+                        className="text-xs text-amber-900 hover:text-amber-950 font-semibold underline"
+                    >
+                        Record Settlement Value
+                    </button>
                 </div>
             )}
 
@@ -748,6 +771,12 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                 onSuccess={onPaid}
                 investment={investment}
             />
+            <RecordSettlementValueModal
+                isOpen={showSettlementModal}
+                onClose={() => setShowSettlementModal(false)}
+                onSuccess={onPaid}
+                investment={investment}
+            />
         </div>
     );
 };
@@ -856,8 +885,11 @@ const RecordActualCouponPaymentModal = ({ coupon, investment, onClose, onSuccess
 // Sets/corrects the first coupon date and regenerates the whole
 // schedule from it — only usable before any coupon has been paid.
 // ============================================================
+const COUPON_FREQUENCY_OPTIONS = ['MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', 'AT_MATURITY'];
+
 const UpdateCouponScheduleModal = ({ isOpen, onClose, onSuccess, investment }) => {
     const [firstCouponDate, setFirstCouponDate] = useState(investment.first_coupon_date?.slice(0, 10) || '');
+    const [frequency, setFrequency] = useState(investment.coupon_frequency || 'QUARTERLY');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
@@ -870,6 +902,7 @@ const UpdateCouponScheduleModal = ({ isOpen, onClose, onSuccess, investment }) =
         try {
             await investmentsAPI.updateCouponSchedule(investment.id, {
                 first_coupon_date: firstCouponDate,
+                coupon_frequency: frequency,
             });
             onSuccess();
             onClose();
@@ -886,11 +919,12 @@ const UpdateCouponScheduleModal = ({ isOpen, onClose, onSuccess, investment }) =
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">
-                        {investment.first_coupon_date ? 'Edit' : 'Set'} First Coupon Date
+                        Edit Coupon Date / Frequency
                     </h2>
                     <p className="text-xs text-gray-400 mb-4">
-                        The rest of the coupon schedule will be recalculated automatically from this date,
-                        using the bond's existing rate and frequency.
+                        The rest of the coupon schedule will be recalculated automatically from this date and
+                        frequency, using the bond's existing face value and rate. Only usable until the first
+                        coupon has actually been paid.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -905,12 +939,88 @@ const UpdateCouponScheduleModal = ({ isOpen, onClose, onSuccess, investment }) =
                                 onChange={e => setFirstCouponDate(e.target.value)}
                                 required />
                         </div>
+                        <div>
+                            <label className="label">Coupon Frequency *</label>
+                            <select className="input"
+                                value={frequency}
+                                onChange={e => setFrequency(e.target.value)}
+                                required>
+                                {COUPON_FREQUENCY_OPTIONS.map(f => (
+                                    <option key={f} value={f}>{f.replace(/_/g, ' ')}</option>
+                                ))}
+                            </select>
+                        </div>
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading}
                                 className="btn-primary">
                                 {loading ? 'Saving...' : 'Save & Recalculate'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// v1.42.0 — record (or correct) a bond's settlement value once it's
+// already ACTIVE, immediately auto-funding it. Only rendered/usable
+// while nothing has been funded against the investment yet
+// (actual_expenditure still 0) — see canRecordSettlement above.
+const RecordSettlementValueModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [amount, setAmount] = useState(investment.settlement_value || '');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.setSettlementValue(investment.id, { settlement_value: amount });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Record Settlement Value</h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        The price actually paid for this bond (at par, a discount, or a premium to face value).
+                        This amount will be deducted from the funding account immediately — the investment can't
+                        go below a zero balance.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Settlement Value *</label>
+                            <input type="number" step="0.01" min="0.01" className="input"
+                                value={amount}
+                                onChange={e => setAmount(e.target.value)}
+                                required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading}
+                                className="btn-primary">
+                                {loading ? 'Recording...' : 'Record & Fund'}
                             </button>
                         </div>
                     </form>

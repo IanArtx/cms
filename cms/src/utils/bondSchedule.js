@@ -107,6 +107,25 @@ function generateBondCouponSchedule({
     // date supplied (bond already running when bought) or the usual
     // issue-date-plus-one-period (bond bought at/near issuance).
     const anchorDate = firstCouponDate || toISODate(addMonthsUTC(issueDate, months));
+    const anchor = new Date(`${anchorDate}T00:00:00Z`);
+
+    // v1.42.0 — an anchor on/after maturity used to be accepted
+    // silently: the `while (dueDate < maturity)` loop below simply
+    // never ran, and the schedule collapsed to just the one forced
+    // final coupon pushed after the loop — looking exactly like "the
+    // whole schedule got wiped down to one row" from the outside, with
+    // no error to explain why. A coupon due exactly at (or after)
+    // maturity is already what that forced final push produces on its
+    // own, so there's never a legitimate reason for the anchor itself
+    // to be that late — reject it clearly instead of quietly losing
+    // every other coupon.
+    if (anchor >= maturity) {
+        throw new Error(
+            `First coupon date (${anchorDate}) must be before the maturity date (${maturityDate}). ` +
+            `A final coupon at maturity is already generated automatically — there's no need to set ` +
+            `the first coupon date that late, and doing so would wipe out every other scheduled coupon.`
+        );
+    }
 
     let couponNumber = 1;
     let dueDate = new Date(`${anchorDate}T00:00:00Z`);

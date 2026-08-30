@@ -1058,7 +1058,8 @@ CREATE TABLE investment_returns (
     return_type     VARCHAR(30)   NOT NULL
                     CHECK (return_type IN (
                         'DIVIDEND','PROFIT_SHARE','CAPITAL_GAIN',
-                        'INTEREST','RENTAL','OTHER'
+                        'INTEREST','RENTAL','OTHER',
+                        'PRINCIPAL' -- v1.42.0: bond face value repaid at maturity
                     )),
     amount          NUMERIC(20,4) NOT NULL,
     return_date     DATE          NOT NULL,

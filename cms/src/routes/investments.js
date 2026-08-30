@@ -238,10 +238,31 @@ router.patch('/:id/coupon-schedule',
     validators.idParam('id'),
     [
         body('first_coupon_date')
-            .isISO8601().withMessage('A valid first coupon date is required'),
+            .optional({ nullable: true }).isISO8601().withMessage('A valid first coupon date is required'),
+        // v1.42.0 — frequency can now also be changed here, same as
+        // first coupon date; both are optional individually but at
+        // least one must be supplied (checked in the controller).
+        body('coupon_frequency')
+            .optional().isIn(['MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', 'AT_MATURITY'])
+            .withMessage('Invalid coupon frequency'),
     ],
     validateRequest,
     investmentsController.updateCouponSchedule
+);
+
+// v1.42.0 — record a bond's settlement value once it's already ACTIVE
+// (approval doesn't require it to be known up front), auto-funding it
+// immediately. Locked once the investment has actually been funded by
+// any means.
+router.patch('/:id/settlement-value',
+    requirePermissions(['INVESTMENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('settlement_value')
+            .isFloat({ min: 0.01 }).withMessage('A settlement value greater than zero is required'),
+    ],
+    validateRequest,
+    investmentsController.setSettlementValue
 );
 
 // ============================================================

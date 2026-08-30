@@ -392,16 +392,23 @@ const approveInvestment = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
     await withTransaction(async (client) => {
-        const investment = await client.query(`
-            SELECT * FROM investments WHERE id = $1 FOR UPDATE
+        const investResult = await client.query(`
+            SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code, r.public_id
+            FROM   investments i
+            JOIN   accounts a ON a.id = i.funding_account_id
+            JOIN   references_registry r ON r.id = i.reference_id
+            WHERE  i.id = $1
+            FOR UPDATE
         `, [id]);
 
-        if (investment.rows.length === 0) {
+        if (investResult.rows.length === 0) {
             throw createError.notFound('Investment not found');
         }
-        if (investment.rows[0].status !== 'PENDING') {
+        const investment = investResult.rows[0];
+
+        if (investment.status !== 'PENDING') {
             throw createError.badRequest(
-                `Investment cannot be approved. Status: ${investment.rows[0].status}`
+                `Investment cannot be approved. Status: ${investment.status}`
             );
         }
 
@@ -422,17 +429,208 @@ const approveInvestment = asyncHandler(async (req, res) => {
             AND    record_id   = $1
         `, [id]);
 
+        // v1.42.0 — a BOND whose settlement value is already known (set
+        // at creation, or edited in while still PENDING) is
+        // automatically funded for that exact amount the moment it's
+        // approved — no separate manual "Fund" step needed for money
+        // that's already known and due. Guarded by postTransaction's
+        // own negative-balance/floor-limit check, exactly as it is for
+        // a manual funding entry — if the account can't cover it, this
+        // whole approval fails and rolls back rather than activating
+        // an unpaid-for bond. If settlement_value isn't known yet, the
+        // investment still activates — see setSettlementValue below for
+        // the "fill it in later" path once it's available.
+        let settlementFunded = null;
+        const isBond = investment.investment_type === 'BOND';
+        if (isBond && investment.settlement_value !== null && parseFloat(investment.settlement_value) > 0) {
+            const funding = await postInvestmentFunding(client, investment, {
+                amount:      parseFloat(investment.settlement_value),
+                description: `Bond settlement value, auto-funded on approval — ${investment.name} (${investment.reference_code})`,
+                valueDate:   new Date().toISOString().slice(0, 10),
+                userId:      req.user.id,
+            });
+            settlementFunded = {
+                amount:         parseFloat(investment.settlement_value),
+                reference_code: funding.referenceCode,
+                balance_after:  funding.balanceAfter,
+            };
+
+            await logAction(req.user.id, ACTIONS.INVESTMENT_SETTLEMENT_FUNDED, MODULES.INVESTMENTS, {
+                ipAddress:   req.ip,
+                recordType:  'investments',
+                recordId:    parseInt(id),
+                newValues:   settlementFunded,
+                description: `Bond settlement value ${settlementFunded.amount} auto-funded on approval: ${settlementFunded.reference_code} (investment ID ${id})`,
+                client,
+            });
+        }
+
         await logAction(req.user.id, ACTIONS.INVESTMENT_APPROVED, MODULES.INVESTMENTS, {
             ipAddress:   req.ip,
             recordType:  'investments',
             recordId:    parseInt(id),
-            description: `Investment approved: ID ${id}`,
+            newValues:   { settlementFunded },
+            description: `Investment approved: ID ${id}` +
+                         (settlementFunded ? ` — settlement value ${settlementFunded.amount} auto-funded (${settlementFunded.reference_code})` : ''),
             client,
         });
 
-        sendSuccess(res, null, 'Investment approved successfully');
+        sendSuccess(res, { settlement_funded: settlementFunded }, 'Investment approved successfully');
     });
 });
+
+// ============================================================
+// RECORD SETTLEMENT VALUE (post-approval)
+// PATCH /api/investments/:id/settlement-value
+// v1.42.0 — settlement_value can be set/edited freely while an
+// investment is still PENDING (editInvestment). Once it's ACTIVE, it
+// used to be permanently un-settable if it wasn't known at approval
+// time. This closes that gap: an ACTIVE bond that has never been
+// funded yet (actual_expenditure still 0 — nothing has been auto- or
+// manually funded against it) can have its settlement value filled in
+// here, which immediately triggers the same guarded auto-funding
+// approval would have done had it been known then. Once ANY funding
+// has happened (actual_expenditure > 0), this is locked — same
+// "can't rewrite money that's already moved" principle as the coupon
+// schedule being locked after the first coupon is paid.
+// ============================================================
+const setSettlementValue = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { settlement_value } = req.body;
+
+    if (settlement_value === undefined || settlement_value === null || parseFloat(settlement_value) <= 0) {
+        throw createError.badRequest('A settlement value greater than zero is required');
+    }
+
+    await withTransaction(async (client) => {
+        const investResult = await client.query(`
+            SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code, r.public_id
+            FROM   investments i
+            JOIN   accounts a ON a.id = i.funding_account_id
+            JOIN   references_registry r ON r.id = i.reference_id
+            WHERE  i.id = $1
+            FOR UPDATE
+        `, [id]);
+
+        if (investResult.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = investResult.rows[0];
+
+        if (investment.investment_type !== 'BOND') {
+            throw createError.badRequest('Only bond investments have a settlement value');
+        }
+        if (investment.status !== 'ACTIVE') {
+            throw createError.badRequest(
+                'This investment must be approved and active before its settlement value can be recorded here — ' +
+                'while still pending, edit it directly instead'
+            );
+        }
+        if (parseFloat(investment.actual_expenditure) > 0) {
+            throw createError.badRequest(
+                'This investment has already been funded — its settlement value can no longer be changed here'
+            );
+        }
+
+        const amount = parseFloat(settlement_value);
+
+        await client.query('UPDATE investments SET settlement_value = $1 WHERE id = $2', [amount, id]);
+
+        const funding = await postInvestmentFunding(client, investment, {
+            amount,
+            description: `Bond settlement value, recorded and funded — ${investment.name} (${investment.reference_code})`,
+            valueDate:   new Date().toISOString().slice(0, 10),
+            userId:      req.user.id,
+        });
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_SETTLEMENT_VALUE_RECORDED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    parseInt(id),
+            oldValues:   { settlement_value: investment.settlement_value },
+            newValues:   { settlement_value: amount, reference_code: funding.referenceCode },
+            description: `Settlement value ${amount} recorded and funded: ${funding.referenceCode} (investment ID ${id})`,
+            client,
+        });
+
+        sendSuccess(res, {
+            settlement_value:      amount,
+            transaction_reference: funding.referenceCode,
+            balance_before:        funding.balanceBefore,
+            balance_after:         funding.balanceAfter,
+        }, `Settlement value recorded and funded. Reference: ${funding.referenceCode}`);
+    });
+});
+
+// ============================================================
+// SHARED: post a capital-funding DEBIT against an investment.
+// v1.42.0 — extracted out of fundInvestment so the exact same
+// reference-generation / postTransaction / investment_funding /
+// actual_expenditure(+supplementary_budget) logic is reused by
+// approveInvestment (bond settlement value, auto-funded on approval
+// when already known) and setSettlementValue (the same, triggered
+// later if it wasn't known yet at approval time) — rather than three
+// near-duplicate copies of this money-movement logic drifting apart
+// over time. Must be called from inside an existing withTransaction
+// block, with `investment` already SELECT ... FOR UPDATE locked by
+// the caller and carrying its joined account/reference columns
+// (currency_id, reference_code — see the JOIN shape used below).
+// ============================================================
+async function postInvestmentFunding(client, investment, {
+    amount, categoryId, description, valueDate, projectId, userId,
+}) {
+    const { referenceId: txRefId, referenceCode: txRefCode } =
+        await generateReference(
+            client,
+            resolveModuleCode(investment),
+            'INVEST-OUT',
+            'TRANSACTION',
+            userId
+        );
+
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId:       investment.funding_account_id,
+        transactionType: 'DEBIT',
+        inflowType:      'EXPENSE',
+        amount,
+        currencyId:      investment.currency_id,
+        categoryId:      categoryId || investment.category_id,
+        description:     description ||
+                         `Investment funding — ${investment.name} (${investment.reference_code})`,
+        valueDate,
+        createdBy:       userId,
+        referenceId:     txRefId,
+        investmentId:    investment.id,
+    });
+
+    await linkReferenceToRecord(client, txRefId, transactionId);
+
+    await client.query(`
+        INSERT INTO investment_funding (
+            investment_id, project_id, transaction_id, amount, created_by
+        ) VALUES ($1, $2, $3, $4, $5)
+    `, [investment.id, projectId || null, transactionId, amount, userId]);
+
+    // Auto-log any portion of this funding that pushes total spend
+    // past planned_budget as supplementary budget (v1.40.0).
+    const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
+        investment.planned_budget, investment.actual_expenditure, amount
+    );
+    await client.query(`
+        UPDATE investments
+        SET    actual_expenditure   = $1,
+               supplementary_budget = supplementary_budget + $2
+        WHERE  id = $3
+    `, [newExpenditure, supplementaryDelta, investment.id]);
+
+    if (projectId) {
+        await client.query(`
+            UPDATE projects SET actual_expenditure = actual_expenditure + $1 WHERE id = $2
+        `, [amount, projectId]);
+    }
+
+    return { transactionId, referenceCode: txRefCode, balanceBefore, balanceAfter };
+}
 
 // ============================================================
 // FUND INVESTMENT
@@ -466,69 +664,17 @@ const fundInvestment = asyncHandler(async (req, res) => {
             );
         }
 
-        // Generate transaction reference
-        const { referenceId: txRefId, referenceCode: txRefCode } =
-            await generateReference(
-                client,
-                resolveModuleCode(investment),
-                'INVEST-OUT',
-                'TRANSACTION',
-                req.user.id
-            );
-
-        // Post debit transaction on the funding account
-        const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
-            accountId:       investment.funding_account_id,
-            transactionType: 'DEBIT',
-            inflowType:      'EXPENSE',
-            amount,
-            currencyId:      investment.currency_id,
-            categoryId:      category_id || investment.category_id,
-            description:     description ||
-                             `Investment funding — ${investment.name} (${investment.reference_code})`,
-            valueDate:       value_date,
-            createdBy:       req.user.id,
-            referenceId:     txRefId,
-            investmentId:    investment.id,
+        const funding = await postInvestmentFunding(client, investment, {
+            amount, categoryId: category_id, description, valueDate: value_date,
+            projectId: project_id, userId: req.user.id,
         });
 
-        await linkReferenceToRecord(client, txRefId, transactionId);
-
-        // Record investment funding link
-        await client.query(`
-            INSERT INTO investment_funding (
-                investment_id, project_id, transaction_id, amount, created_by
-            ) VALUES ($1, $2, $3, $4, $5)
-        `, [id, project_id || null, transactionId, amount, req.user.id]);
-
-        // Update actual expenditure on investment — and auto-log any
-        // portion of this funding that pushes total spend past
-        // planned_budget as supplementary budget (v1.40.0).
-        const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
-            investment.planned_budget, investment.actual_expenditure, amount
-        );
-        await client.query(`
-            UPDATE investments
-            SET    actual_expenditure   = $1,
-                   supplementary_budget = supplementary_budget + $2
-            WHERE  id = $3
-        `, [newExpenditure, supplementaryDelta, id]);
-
-        // If linked to a project, update project expenditure too
-        if (project_id) {
-            await client.query(`
-                UPDATE projects
-                SET    actual_expenditure = actual_expenditure + $1
-                WHERE  id = $2
-            `, [amount, project_id]);
-        }
-
         sendCreated(res, {
-            transaction_reference: txRefCode,
+            transaction_reference: funding.referenceCode,
             amount_funded:         amount,
-            balance_before:        balanceBefore,
-            balance_after:         balanceAfter,
-        }, `Investment funded. Reference: ${txRefCode}`);
+            balance_before:        funding.balanceBefore,
+            balance_after:         funding.balanceAfter,
+        }, `Investment funded. Reference: ${funding.referenceCode}`);
     });
 });
 
@@ -1565,6 +1711,100 @@ const payBondCoupon = asyncHandler(async (req, res) => {
             couponId,
         ]);
 
+        // --- 3. Face value repayment — v1.42.0. A bond returns its
+        // principal at maturity alongside the final coupon's interest;
+        // previously this controller never credited it at all. "Final"
+        // is determined by coupon_number, not by due_date, so it stays
+        // correct even if the schedule was edited/rescheduled after
+        // this coupon's row was first created. Credited at FACE VALUE
+        // always — settlement_value only ever affected what was paid
+        // to acquire the bond, never what's owed back at maturity.
+        // Deliberately NOT added to investments.total_returns: that
+        // figure drives roi_percentage/performance_status, and getting
+        // your own principal back is not profit — folding it in would
+        // make ROI look wildly (and wrongly) inflated the moment a
+        // bond matures.
+        let principalRepaid = null;
+        let completedAtMaturity = false;
+        const maxCouponResult = await client.query(
+            'SELECT MAX(coupon_number) AS max_num FROM bond_coupons WHERE investment_id = $1',
+            [id]
+        );
+        const isFinalCoupon = coupon.coupon_number === parseInt(maxCouponResult.rows[0].max_num);
+
+        if (isFinalCoupon) {
+            const faceValue = parseFloat(investment.face_value);
+
+            const { referenceId: prinRefId, referenceCode: prinRefCode } =
+                await generateReference(client, MODULE_CODES.INVESTMENT, 'PRINCIPAL', 'INVESTMENT_RETURN', req.user.id);
+            const { referenceId: prinTxRefId } =
+                await generateReference(client, resolveModuleCode(investment), 'INVEST-IN', 'TRANSACTION', req.user.id);
+
+            const prinPosted = await postTransaction(client, {
+                accountId:       investment.returns_account_id,
+                transactionType: 'CREDIT',
+                inflowType:      'INVESTMENT_RETURN',
+                amount:          faceValue,
+                currencyId:      investment.currency_id,
+                categoryId:      investment.category_id,
+                description:     `Bond face value repaid at maturity — ${investment.name} (${investment.reference_code})`,
+                valueDate:       paymentDate,
+                createdBy:       req.user.id,
+                referenceId:     prinTxRefId,
+                investmentId:    investment.id,
+            });
+            finalBalanceAfter = prinPosted.balanceAfter;
+
+            await linkReferenceToRecord(client, prinTxRefId, prinPosted.transactionId);
+
+            const prinReturnResult = await client.query(`
+                INSERT INTO investment_returns (
+                    reference_id, investment_id, transaction_id,
+                    return_type, amount, return_date, notes, created_by
+                ) VALUES ($1, $2, $3, 'PRINCIPAL', $4, $5, $6, $7)
+                RETURNING id
+            `, [
+                prinRefId, id, prinPosted.transactionId, faceValue, paymentDate,
+                `Face value (principal) repaid alongside final coupon #${coupon.coupon_number}`,
+                req.user.id,
+            ]);
+            await linkReferenceToRecord(client, prinRefId, prinReturnResult.rows[0].id);
+
+            principalRepaid = { referenceCode: prinRefCode, amount: faceValue };
+
+            await logAction(req.user.id, ACTIONS.INVESTMENT_PRINCIPAL_REPAID, MODULES.INVESTMENTS, {
+                ipAddress:   req.ip,
+                recordType:  'investment_returns',
+                recordId:    prinReturnResult.rows[0].id,
+                newValues:   { referenceCode: prinRefCode, amount: faceValue },
+                description: `Bond face value repaid at maturity: ${prinRefCode} — ${faceValue} (investment ID ${id})`,
+                client,
+            });
+
+            // A matured bond that's just had its final coupon AND its
+            // principal repaid has nothing left to do — automatically
+            // close it out, the same way a natural conclusion (rather
+            // than an early termination) should look. Only from ACTIVE
+            // — if it's mid termination-review (PENDING_TERMINATION),
+            // that workflow owns the final status, not this.
+            if (investment.status === 'ACTIVE') {
+                await client.query(`
+                    UPDATE investments
+                    SET    status = 'COMPLETED', actual_end_date = $1
+                    WHERE  id = $2 AND status = 'ACTIVE'
+                `, [paymentDate, id]);
+                completedAtMaturity = true;
+
+                await logAction(req.user.id, ACTIONS.INVESTMENT_COMPLETED_AT_MATURITY, MODULES.INVESTMENTS, {
+                    ipAddress:   req.ip,
+                    recordType:  'investments',
+                    recordId:    parseInt(id),
+                    description: `Investment automatically marked COMPLETED at maturity: ID ${id}`,
+                    client,
+                });
+            }
+        }
+
         await logAction(req.user.id, isAdjusted ? ACTIONS.INVESTMENT_COUPON_ADJUSTED : ACTIONS.INVESTMENT_RETURN, MODULES.INVESTMENTS, {
             ipAddress:   req.ip,
             recordType:  'bond_coupons',
@@ -1574,6 +1814,7 @@ const payBondCoupon = asyncHandler(async (req, res) => {
                 scheduled_gross_amount: parseFloat(coupon.gross_amount),
                 gross_amount: grossAmount, tax_amount: taxAmount, net_amount: netAmount,
                 is_adjusted: isAdjusted, balanceBefore, balanceAfter: finalBalanceAfter,
+                is_final_coupon: isFinalCoupon, principal_repaid: principalRepaid,
             },
             description: isAdjusted
                 ? `Bond coupon #${coupon.coupon_number} paid with ACTUAL amount: ${retRefCode} — gross ${grossAmount} (scheduled ${parseFloat(coupon.gross_amount)}), tax ${taxAmount}, net ${netAmount}`
@@ -1582,35 +1823,47 @@ const payBondCoupon = asyncHandler(async (req, res) => {
         });
 
         sendSuccess(res, {
-            coupon_id:        coupon.id,
-            coupon_number:    coupon.coupon_number,
-            return_reference: retRefCode,
-            gross_amount:     grossAmount,
-            tax_amount:       taxAmount,
-            net_amount:       netAmount,
-            is_adjusted:      isAdjusted,
-            balance_before:   balanceBefore,
-            balance_after:    finalBalanceAfter,
-        }, `Coupon #${coupon.coupon_number} marked paid. Reference: ${retRefCode}`);
+            coupon_id:            coupon.id,
+            coupon_number:        coupon.coupon_number,
+            return_reference:     retRefCode,
+            gross_amount:         grossAmount,
+            tax_amount:           taxAmount,
+            net_amount:           netAmount,
+            is_adjusted:          isAdjusted,
+            balance_before:       balanceBefore,
+            balance_after:        finalBalanceAfter,
+            is_final_coupon:      isFinalCoupon,
+            principal_repaid:     principalRepaid,
+            completed_at_maturity: completedAtMaturity,
+        }, principalRepaid
+            ? `Coupon #${coupon.coupon_number} marked paid, and face value ${principalRepaid.amount} repaid at maturity. Reference: ${retRefCode}`
+            : `Coupon #${coupon.coupon_number} marked paid. Reference: ${retRefCode}`);
     });
 });
 
 // ============================================================
-// UPDATE FIRST COUPON DATE / RESCHEDULE COUPON SCHEDULE
+// UPDATE FIRST COUPON DATE AND/OR FREQUENCY / RESCHEDULE COUPON SCHEDULE
 // PATCH /api/investments/:id/coupon-schedule
 // A bond's first coupon date is sometimes not known at the time of
-// purchase/settlement. This lets it be filled in or corrected later —
-// the WHOLE schedule is regenerated from the new anchor date so every
+// purchase/settlement, and — v1.42.0 — its payment frequency can turn
+// out to have been recorded wrong too (or simply need correcting for
+// the same "not known yet" reason). Either or both can be supplied;
+// whichever isn't provided keeps its current value. The WHOLE schedule
+// is regenerated from the resulting anchor date + frequency so every
 // later coupon date auto-recalculates too (same math as at creation
 // time). Only allowed while no coupon has actually been paid yet —
 // once real money has moved against coupon #1, the schedule is locked
-// (use editInvestment's normal PENDING-only path is not an option
+// (editInvestment's normal PENDING-only path is not an option
 // post-approval, and this endpoint deliberately doesn't touch amounts
 // already paid).
 // ============================================================
 const updateCouponSchedule = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { first_coupon_date } = req.body;
+    const { first_coupon_date, coupon_frequency } = req.body;
+
+    if (first_coupon_date === undefined && coupon_frequency === undefined) {
+        throw createError.badRequest('Provide a first coupon date and/or a frequency to update');
+    }
 
     await withTransaction(async (client) => {
         const existing = await client.query(
@@ -1635,14 +1888,17 @@ const updateCouponSchedule = asyncHandler(async (req, res) => {
             );
         }
 
+        const newFirstCouponDate = first_coupon_date !== undefined ? first_coupon_date : investment.first_coupon_date;
+        const newFrequency       = coupon_frequency || investment.coupon_frequency;
+
         const schedule = generateBondCouponSchedule({
             faceValue:          parseFloat(investment.face_value),
             couponRate:         parseFloat(investment.coupon_rate),
-            frequency:          investment.coupon_frequency,
+            frequency:          newFrequency,
             taxWithholdingRate: parseFloat(investment.tax_withholding_rate) || 0,
             issueDate:          investment.start_date,
             maturityDate:       investment.expected_end_date,
-            firstCouponDate:    first_coupon_date,
+            firstCouponDate:    newFirstCouponDate,
         });
 
         await client.query('DELETE FROM bond_coupons WHERE investment_id = $1', [id]);
@@ -1659,17 +1915,17 @@ const updateCouponSchedule = asyncHandler(async (req, res) => {
         }
 
         await client.query(
-            'UPDATE investments SET first_coupon_date = $1 WHERE id = $2',
-            [first_coupon_date, id]
+            'UPDATE investments SET first_coupon_date = $1, coupon_frequency = $2 WHERE id = $3',
+            [newFirstCouponDate, newFrequency, id]
         );
 
         await logAction(req.user.id, ACTIONS.INVESTMENT_COUPON_SCHEDULE_UPDATED, MODULES.INVESTMENTS, {
             ipAddress:   req.ip,
             recordType:  'investments',
             recordId:    id,
-            oldValues:   { first_coupon_date: investment.first_coupon_date },
-            newValues:   { first_coupon_date },
-            description: `Bond coupon schedule rescheduled from first coupon date ${first_coupon_date}: investment ID ${id}`,
+            oldValues:   { first_coupon_date: investment.first_coupon_date, coupon_frequency: investment.coupon_frequency },
+            newValues:   { first_coupon_date: newFirstCouponDate, coupon_frequency: newFrequency },
+            description: `Bond coupon schedule rescheduled (first coupon date ${newFirstCouponDate}, frequency ${newFrequency}): investment ID ${id}`,
             client,
         });
 
@@ -2014,6 +2270,7 @@ module.exports = {
     recordInvestmentTransaction,
     payBondCoupon,
     updateCouponSchedule,
+    setSettlementValue,
     requestTermination,
     confirmTerminationRecords,
     approveTermination,

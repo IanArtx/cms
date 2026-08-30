@@ -166,6 +166,8 @@ export const investmentsAPI = {
     confirmTerminationRecords:(id)       => api.post(`/investments/${id}/terminate/confirm-records`),
     approveTermination:       (id, data) => api.post(`/investments/${id}/terminate/approve`, data),
     rejectTermination:        (id, data) => api.post(`/investments/${id}/terminate/reject`, data),
+    // v1.42.0
+    setSettlementValue:       (id, data) => api.patch(`/investments/${id}/settlement-value`, data),
 };
 
 // ============================================================

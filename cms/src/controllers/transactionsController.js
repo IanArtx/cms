@@ -497,6 +497,10 @@ const creditShareholderContribution = async (client, {
     return {
         transactionId, balanceBefore, balanceAfter,
         referenceCode, contributor, account,
+        // v1.43.0 — added so callers that need to link back to the
+        // exact shareholder_contributions row (e.g. a capital goal
+        // call payment tranche) don't have to re-query for it.
+        contributionId,
     };
 };
 

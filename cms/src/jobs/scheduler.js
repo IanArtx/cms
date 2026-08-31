@@ -13,10 +13,11 @@
 //   6c. Document signature reminders — daily 08:30
 //   7. Side fund due generation    — 1st of every month at 00:15
 //   8. Side fund default check     — 1st of every month at 00:20
+//   9. Capital goal call deadlines — every day at 00:30
 // ============================================================
 
 const cron = require('node-cron');
-const { query } = require('../config/database');
+const { query, withTransaction } = require('../config/database');
 const logger = require('../config/logger');
 const {
     sendGeneralReportToAllMembers,
@@ -29,6 +30,7 @@ const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateDuesForPeriod } = require('../services/sideFundService');
+const { processIteration1Deadline, processIteration2Deadline } = require('../services/capitalGoalCallService');
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -707,6 +709,73 @@ const scheduleAuditAccessExpiryReminders = () => {
 };
 
 // ============================================================
+// JOB 9: CAPITAL GOAL CALL — DEADLINE TRANSITIONS (v1.43.0)
+// Runs daily at 00:30 (after the side fund jobs). Two independent
+// sweeps:
+//   1. Every monthly call still in ITERATION_1 whose own deadline has
+//      passed — either closes it outright (target was fully met) or
+//      opens iteration 2 for 7 more days (capitalGoalCallService
+//      handles both branches and all the eligibility/notification
+//      logic — this job is just the trigger).
+//   2. Every monthly call in ITERATION_2 whose 7-day window has
+//      passed — closes it out. No further iterations.
+// Each row is processed in its own transaction so one failure can't
+// block the rest of the sweep.
+// ============================================================
+const scheduleCapitalGoalCallDeadlines = () => {
+    cron.schedule('30 0 * * *', async () => {
+        logger.info('Starting capital goal call deadline sweep...');
+        const today = new Date().toISOString().slice(0, 10);
+        let iteration1Processed = 0;
+        let iteration2Processed = 0;
+
+        try {
+            const dueIteration1 = await query(`
+                SELECT id FROM capital_goal_monthly_calls
+                WHERE  status = 'ITERATION_1' AND iteration1_deadline < $1
+            `, [today]);
+            for (const row of dueIteration1.rows) {
+                try {
+                    await withTransaction(async (client) => {
+                        const callResult = await client.query(
+                            'SELECT * FROM capital_goal_monthly_calls WHERE id = $1 FOR UPDATE', [row.id]
+                        );
+                        if (callResult.rows.length === 0) return;
+                        await processIteration1Deadline(client, callResult.rows[0]);
+                    });
+                    iteration1Processed++;
+                } catch (err) {
+                    logger.error(`Capital goal call iteration-1 deadline processing failed for monthly call ${row.id}`, { error: err.message });
+                }
+            }
+
+            const dueIteration2 = await query(`
+                SELECT id FROM capital_goal_monthly_calls
+                WHERE  status = 'ITERATION_2' AND iteration2_deadline < $1
+            `, [today]);
+            for (const row of dueIteration2.rows) {
+                try {
+                    await withTransaction(async (client) => {
+                        await processIteration2Deadline(client, row.id);
+                    });
+                    iteration2Processed++;
+                } catch (err) {
+                    logger.error(`Capital goal call iteration-2 deadline processing failed for monthly call ${row.id}`, { error: err.message });
+                }
+            }
+
+            logger.info(`Capital goal call deadline sweep completed — ${iteration1Processed} iteration-1 deadline(s), ${iteration2Processed} iteration-2 deadline(s) processed`);
+        } catch (err) {
+            logger.error('Capital goal call deadline sweep failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Capital goal call deadline sweep scheduled: 30 0 * * *');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -719,6 +788,7 @@ const startAllJobs = () => {
     scheduleDailySavingsAccrual();
     scheduleSideFundDueGeneration();
     scheduleSideFundDefaultCheck();
+    scheduleCapitalGoalCallDeadlines();
     scheduleMonthlyShareCertificates();
     scheduleAnnualShareCertificates();
     scheduleCertificateSigningReminders();

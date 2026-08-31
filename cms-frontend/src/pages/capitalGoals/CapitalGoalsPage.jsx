@@ -15,11 +15,17 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 
+const currentFiscalYear = () => new Date().getFullYear();
+
+// v1.43.0 — every new goal is call-based: shareholders pledge into
+// equal monthly calls rather than the old free-form contribution
+// flow. goal_type/fiscal_year/call_deadline_day are all required now.
 const BLANK_FORM = {
     title: '', description: '', target_amount: '',
     currency_id: '', start_date: '', end_date: '',
+    goal_type: 'PRIMARY', fiscal_year: String(currentFiscalYear()), call_deadline_day: '20',
 };
 
 // ============================================================
@@ -44,6 +50,9 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                 currency_id: form.currency_id,
                 start_date: form.start_date,
                 end_date: form.end_date,
+                goal_type: form.goal_type,
+                fiscal_year: parseInt(form.fiscal_year),
+                call_deadline_day: parseInt(form.call_deadline_day),
             });
             onSuccess();
             onClose();
@@ -75,9 +84,9 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">New Capital Goal</h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        A target amount of shareholder capital to raise over a date range —
-                        the system splits it evenly across the months for you and tracks
-                        actual contributions against that automatically.
+                        A target amount of shareholder capital to raise over a date range. The system splits it
+                        evenly into monthly calls that shareholders pledge against ("call on shares") — a Treasurer
+                        approves each pledge as it's paid, which is what actually counts toward progress here.
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -96,6 +105,26 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                             <textarea className="input" rows={2}
                                 value={form.description}
                                 onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="label">Goal Type *</label>
+                                <select className="input" value={form.goal_type}
+                                    onChange={e => setForm(p => ({ ...p, goal_type: e.target.value }))} required>
+                                    <option value="PRIMARY">Primary (the year's general capital goal)</option>
+                                    <option value="SECONDARY">Secondary (an extra goal alongside the primary)</option>
+                                </select>
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Each fiscal year has exactly one Primary goal — this is required once the
+                                    feature is active. Any number of Secondary goals can also run in the same year.
+                                </p>
+                            </div>
+                            <div>
+                                <label className="label">Fiscal Year *</label>
+                                <input type="number" className="input" value={form.fiscal_year}
+                                    onChange={e => setForm(p => ({ ...p, fiscal_year: e.target.value }))}
+                                    min="2000" max="2200" required />
+                            </div>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
@@ -130,6 +159,17 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                                     onChange={e => setForm(p => ({ ...p, end_date: e.target.value }))}
                                     required />
                             </div>
+                        </div>
+                        <div>
+                            <label className="label">Monthly Call Deadline Day *</label>
+                            <input type="number" className="input" value={form.call_deadline_day}
+                                onChange={e => setForm(p => ({ ...p, call_deadline_day: e.target.value }))}
+                                min="1" max="28" required />
+                            <p className="text-xs text-gray-400 mt-1">
+                                The day of each month pledges are due by (1–28, so it applies safely to every
+                                month including February). A shareholder who settles their pledge late is fined
+                                5% if within 7 days of this deadline, 10% after that.
+                            </p>
                         </div>
                         {monthlyPreview && (
                             <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2">
@@ -261,12 +301,18 @@ const CapitalGoalsPage = () => {
                 title="Capital Goals"
                 subtitle="Fundraising targets — a monthly split is generated automatically and tracked against actual contributions"
                 actions={
-                    hasPermission('CAPITAL_GOAL_MANAGE') && (
-                        <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-2">
-                            <PlusIcon className="h-4 w-4" />
-                            New Goal
-                        </button>
-                    )
+                    <div className="flex items-center gap-3">
+                        <Link to="/capital-goals/my-calls" className="btn-secondary flex items-center gap-2">
+                            <ClipboardDocumentCheckIcon className="h-4 w-4" />
+                            My Capital Calls
+                        </Link>
+                        {hasPermission('CAPITAL_GOAL_MANAGE') && (
+                            <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-2">
+                                <PlusIcon className="h-4 w-4" />
+                                New Goal
+                            </button>
+                        )}
+                    </div>
                 }
             />
 

@@ -24,6 +24,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
+const { generateMonthlyCallsForGoal } = require('../services/capitalGoalCallService');
 
 // ============================================================
 // INTERNAL HELPER — compute the expected-vs-actual breakdown for one
@@ -37,44 +38,65 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
     const start = new Date(goal.start_date);
     const end = new Date(goal.end_date);
     const today = new Date();
+    const isCallBased = goal.goal_type !== null && goal.goal_type !== undefined;
 
-    // One row per calendar month in [start_date, end_date], each with
-    // that month's actual APPROVED contribution total (0 if none) —
-    // Postgres does the month-bucketing and the join in one query.
-    const monthly = await query(`
-        WITH months AS (
-            SELECT generate_series(
-                date_trunc('month', $2::date),
-                date_trunc('month', $3::date),
-                interval '1 month'
-            )::date AS month_start
-        ),
-        actual AS (
-            SELECT date_trunc('month', contribution_date)::date AS month_start,
-                   SUM(amount) AS actual_amount
-            FROM   shareholder_contributions
-            WHERE  status = 'APPROVED'
-            AND    currency_id = $1
-            AND    contribution_date BETWEEN $2 AND $3
-            GROUP  BY 1
-        )
-        SELECT m.month_start, COALESCE(a.actual_amount, 0) AS actual_amount
-        FROM   months m
-        LEFT JOIN actual a ON a.month_start = m.month_start
-        ORDER  BY m.month_start
-    `, [goal.currency_id, goal.start_date, goal.end_date]);
+    // v1.43.0 — a call-based goal's actual collected amount must come
+    // from capital_goal_payment_applications (always in the goal's own
+    // currency, already correctly converted at time of approval) —
+    // NOT raw shareholder_contributions filtered by currency_id, which
+    // would silently miss any call paid in a different currency than
+    // the goal itself (a call-based goal's pledges are explicitly
+    // allowed to be in whatever currency the shareholder chooses).
+    // Each month's own target is also the ALREADY-FIXED
+    // capital_goal_monthly_calls.monthly_target, not a freshly
+    // recomputed target/totalMonths split (they're mathematically the
+    // same value, but reading the stored one keeps this in lockstep
+    // with whatever the monthly call rows actually say).
+    const monthly = isCallBased
+        ? await query(`
+            SELECT mc.period AS period_label, mc.monthly_target,
+                   COALESCE(SUM(app.amount), 0) AS actual_amount
+            FROM   capital_goal_monthly_calls mc
+            LEFT JOIN capital_goal_payment_applications app ON app.monthly_call_id = mc.id
+            WHERE  mc.capital_goal_id = $1
+            GROUP  BY mc.id, mc.period, mc.monthly_target
+            ORDER  BY mc.period
+        `, [goal.id])
+        : await query(`
+            WITH months AS (
+                SELECT generate_series(
+                    date_trunc('month', $2::date),
+                    date_trunc('month', $3::date),
+                    interval '1 month'
+                )::date AS month_start
+            ),
+            actual AS (
+                SELECT date_trunc('month', contribution_date)::date AS month_start,
+                       SUM(amount) AS actual_amount
+                FROM   shareholder_contributions
+                WHERE  status = 'APPROVED'
+                AND    currency_id = $1
+                AND    contribution_date BETWEEN $2 AND $3
+                GROUP  BY 1
+            )
+            SELECT m.month_start, COALESCE(a.actual_amount, 0) AS actual_amount
+            FROM   months m
+            LEFT JOIN actual a ON a.month_start = m.month_start
+            ORDER  BY m.month_start
+        `, [goal.currency_id, goal.start_date, goal.end_date]);
 
     const totalMonths = monthly.rows.length;
     const expectedMonthly = totalMonths > 0 ? target / totalMonths : target;
 
     let expectedCumulative = 0;
     let actualCumulative = 0;
-    const months = monthly.rows.map((row, i) => {
-        expectedCumulative += expectedMonthly;
+    const months = monthly.rows.map((row) => {
+        const thisMonthExpected = isCallBased ? parseFloat(row.monthly_target) : expectedMonthly;
+        expectedCumulative += thisMonthExpected;
         actualCumulative += parseFloat(row.actual_amount);
         return {
-            month: row.month_start.toISOString().slice(0, 7), // 'YYYY-MM'
-            expected_monthly: Math.round(expectedMonthly * 100) / 100,
+            month: isCallBased ? row.period_label : row.month_start.toISOString().slice(0, 7), // 'YYYY-MM'
+            expected_monthly: Math.round(thisMonthExpected * 100) / 100,
             actual_monthly: parseFloat(row.actual_amount),
             expected_cumulative: Math.round(expectedCumulative * 100) / 100,
             actual_cumulative: Math.round(actualCumulative * 100) / 100,
@@ -126,11 +148,24 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
 };
 
 // ============================================================
-// CREATE CAPITAL GOAL
+// CREATE CAPITAL GOAL (v1.43.0 — Capital Goal Calls)
 // POST /api/capital-goals
+//
+// Every new goal is now either the year's single PRIMARY goal or a
+// SECONDARY goal alongside it — both always split into equal monthly
+// calls (capitalGoalCallService.generateMonthlyCallsForGoal), pledged
+// against by shareholders rather than funded through free-form
+// contributions. goal_type/fiscal_year/call_deadline_day are all
+// required; only pre-v1.43.0 goals (untouched, historical) have these
+// NULL. Exactly one PRIMARY goal per fiscal_year is enforced by the
+// database's own partial unique index — caught here and turned into a
+// clear error rather than a raw constraint-violation message.
 // ============================================================
 const createGoal = asyncHandler(async (req, res) => {
-    const { title, description, target_amount, currency_id, start_date, end_date } = req.body;
+    const {
+        title, description, target_amount, currency_id, start_date, end_date,
+        goal_type, fiscal_year, call_deadline_day,
+    } = req.body;
 
     await withTransaction(async (client) => {
         const currency = await client.query(
@@ -140,6 +175,18 @@ const createGoal = asyncHandler(async (req, res) => {
             throw createError.notFound('Currency not found');
         }
 
+        if (goal_type === 'PRIMARY') {
+            const existingPrimary = await client.query(
+                "SELECT id, title FROM capital_goals WHERE fiscal_year = $1 AND goal_type = 'PRIMARY'",
+                [fiscal_year]
+            );
+            if (existingPrimary.rows.length > 0) {
+                throw createError.badRequest(
+                    `${fiscal_year} already has a primary goal ("${existingPrimary.rows[0].title}") — only one is allowed per year.`
+                );
+            }
+        }
+
         const { referenceId, referenceCode } = await generateReference(
             client, MODULE_CODES.CAPITAL_GOAL, 'GOAL', 'CAPITAL_GOAL', req.user.id
         );
@@ -147,28 +194,35 @@ const createGoal = asyncHandler(async (req, res) => {
         const result = await client.query(`
             INSERT INTO capital_goals (
                 reference_id, title, description, target_amount,
-                currency_id, start_date, end_date, status, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8)
+                currency_id, start_date, end_date, status, created_by,
+                goal_type, fiscal_year, call_deadline_day
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $9, $10, $11)
             RETURNING id
         `, [
             referenceId, title.trim(), description || null, target_amount,
             currency_id, start_date, end_date, req.user.id,
+            goal_type, fiscal_year, call_deadline_day,
         ]);
 
         const goalId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, goalId);
 
+        const { totalMonths, monthlyTarget } = await generateMonthlyCallsForGoal(client, {
+            capitalGoalId: goalId, startDate: start_date, endDate: end_date,
+            targetAmount: target_amount, callDeadlineDay: call_deadline_day,
+        });
+
         await logAction(req.user.id, ACTIONS.CAPITAL_GOAL_CREATED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'capital_goals',
             recordId:    goalId,
-            newValues:   { referenceCode, title, target_amount, currency_id, start_date, end_date },
-            description: `Capital goal created: ${referenceCode} — ${title} (${target_amount})`,
+            newValues:   { referenceCode, title, target_amount, currency_id, start_date, end_date, goal_type, fiscal_year, call_deadline_day, totalMonths, monthlyTarget },
+            description: `Capital goal created: ${referenceCode} — ${title} (${target_amount}, ${goal_type} for ${fiscal_year}, ${totalMonths} monthly call(s) of ${monthlyTarget} each)`,
             client,
         });
 
-        sendCreated(res, { goal_id: goalId, reference: referenceCode },
-            `Capital goal created. Reference: ${referenceCode}`);
+        sendCreated(res, { goal_id: goalId, reference: referenceCode, total_months: totalMonths, monthly_target: monthlyTarget },
+            `Capital goal created with ${totalMonths} monthly call(s). Reference: ${referenceCode}`);
     });
 });
 
@@ -192,6 +246,22 @@ const updateGoal = asyncHandler(async (req, res) => {
         if (goal.status !== 'ACTIVE') {
             throw createError.badRequest(
                 `Only an active goal can be edited. Current status: ${goal.status}`
+            );
+        }
+
+        // v1.43.0 — a call-based goal (goal_type set) has already had
+        // its entire monthly call schedule generated and fixed at
+        // creation time (capitalGoalCallService.generateMonthlyCallsForGoal),
+        // possibly with real pledges/payments against it already.
+        // Changing the target/currency/dates afterwards would desync
+        // every monthly_calls row from numbers that no longer add up,
+        // so only title/description remain editable for these — a
+        // legacy (pre-v1.43.0) goal keeps the full original behavior.
+        const isCallBased = goal.goal_type !== null;
+        if (isCallBased && (target_amount || currency_id || start_date || end_date)) {
+            throw createError.badRequest(
+                'The target amount, currency, and dates of a capital goal call cannot be changed once its monthly ' +
+                'schedule has been generated — only the title and description can still be edited.'
             );
         }
 

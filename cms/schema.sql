@@ -2812,16 +2812,139 @@ CREATE TABLE capital_goals (
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     created_by     INTEGER       NOT NULL REFERENCES users(id),
     updated_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- v1.43.0 — Capital Goal Calls. NULL on every goal created before
+    -- this version (a legacy, free-form goal funded by ordinary
+    -- shareholder_contributions, untouched by any of this). Every new
+    -- goal from here on always sets these three: goal_type distinguishes
+    -- the one yearly PRIMARY goal from any number of SECONDARY goals
+    -- alongside it (enforced one-per-year via the partial unique index
+    -- below); fiscal_year ties it to a calendar year; call_deadline_day
+    -- is the day of each covered month that its own iteration-1 pledge
+    -- round closes on. See capital_goal_monthly_calls below — a goal
+    -- itself is never pledged against directly, only its monthly rows.
+    goal_type          VARCHAR(20)
+                       CHECK (goal_type IS NULL OR goal_type IN ('PRIMARY', 'SECONDARY')),
+    fiscal_year        INTEGER,
+    call_deadline_day  SMALLINT
+                       CHECK (call_deadline_day IS NULL OR (call_deadline_day BETWEEN 1 AND 28)),
     CONSTRAINT positive_goal_target CHECK (target_amount > 0),
     CONSTRAINT valid_goal_range CHECK (end_date >= start_date)
 );
 
 CREATE INDEX idx_capital_goals_status ON capital_goals (status);
 
+-- Exactly one PRIMARY goal per fiscal year — legacy goals (goal_type
+-- NULL) are entirely unaffected by this index.
+CREATE UNIQUE INDEX one_primary_capital_goal_per_year
+    ON capital_goals (fiscal_year) WHERE goal_type = 'PRIMARY';
+
 INSERT INTO permissions (code, module, description) VALUES
     ('CAPITAL_GOAL_VIEW',   'FINANCE', 'View capital fundraising goals and their progress'),
     ('CAPITAL_GOAL_MANAGE', 'FINANCE', 'Create, edit, and cancel capital fundraising goals')
 ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- CAPITAL GOAL CALLS (v1.43.0) — "call on shares"
+--
+-- A PRIMARY or SECONDARY capital_goals row is never pledged against
+-- directly. It's pre-split, in full, at creation time, into one
+-- capital_goal_monthly_calls row per calendar month it covers, each
+-- with its own fixed target (goal.target_amount / total_months) and
+-- its own iteration-1 deadline (goal.call_deadline_day of that
+-- month). Shareholders pledge against a specific month.
+--
+-- Approving a pledge (capital_goal_pledges -> capital_goal_pledge_
+-- payments) IS the act of recording the money arriving — same
+-- "approval = posting" shape Requisitions/Fines already use — and
+-- immediately issues real shares via the ordinary shareholder_
+-- contributions core. A pledge can be settled across more than one
+-- tranche (capital_goal_pledge_payments), each judged for lateness
+-- independently.
+--
+-- If a month's target isn't fully met by its iteration-1 deadline,
+-- iteration 2 opens automatically for 7 more days, offered only to
+-- members who pledged ABOVE that month's baseline in iteration 1 —
+-- never fined, regardless of how it's eventually settled. Any
+-- shortfall left over keeps rolling forward, stacked onto every
+-- later month's own iteration 2, until it's actually covered —
+-- capital_goal_payment_applications (same pattern as v1.41.0's
+-- side_fund_payment_applications) records exactly which month(s) one
+-- payment actually counted toward, oldest-unpaid-period-first.
+-- ============================================================
+
+CREATE TABLE capital_goal_monthly_calls (
+    id                SERIAL PRIMARY KEY,
+    capital_goal_id   INTEGER       NOT NULL REFERENCES capital_goals(id),
+    period            CHAR(7)       NOT NULL,  -- 'YYYY-MM'
+    monthly_target    NUMERIC(20,4) NOT NULL,  -- goal.target_amount / total_months, fixed at generation
+    iteration1_deadline DATE        NOT NULL,
+    iteration2_deadline DATE,                  -- set only once iteration 2 actually opens
+    status            VARCHAR(20)   NOT NULL DEFAULT 'ITERATION_1'
+                      CHECK (status IN ('ITERATION_1', 'ITERATION_2', 'CLOSED')),
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_monthly_target CHECK (monthly_target > 0),
+    CONSTRAINT unique_goal_period UNIQUE (capital_goal_id, period)
+);
+
+CREATE INDEX idx_capital_goal_monthly_calls_goal   ON capital_goal_monthly_calls (capital_goal_id);
+CREATE INDEX idx_capital_goal_monthly_calls_status ON capital_goal_monthly_calls (status);
+
+CREATE TABLE capital_goal_pledges (
+    id                     SERIAL PRIMARY KEY,
+    reference_id           INTEGER       NOT NULL REFERENCES references_registry(id),
+    monthly_call_id        INTEGER       NOT NULL REFERENCES capital_goal_monthly_calls(id),
+    user_id                INTEGER       NOT NULL REFERENCES users(id),
+    iteration              SMALLINT      NOT NULL CHECK (iteration IN (1, 2)),
+    currency_id            INTEGER       NOT NULL REFERENCES currencies(id),
+    pledged_amount         NUMERIC(20,4) NOT NULL CHECK (pledged_amount >= 0),
+    baseline_amount_snapshot NUMERIC(20,4) NOT NULL, -- the suggested equal-split shown at entry time
+    status                 VARCHAR(20)   NOT NULL DEFAULT 'PENDING'
+                           CHECK (status IN ('PENDING', 'PARTIAL', 'FULFILLED', 'REJECTED')),
+    amount_settled         NUMERIC(20,4) NOT NULL DEFAULT 0 CHECK (amount_settled >= 0),
+    submitted_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    reviewed_by            INTEGER REFERENCES users(id),
+    reviewed_at            TIMESTAMPTZ,
+    review_notes           TEXT,
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT unique_pledge_per_iteration UNIQUE (monthly_call_id, user_id, iteration),
+    CONSTRAINT settled_not_over_pledged CHECK (amount_settled <= pledged_amount)
+);
+
+CREATE INDEX idx_capital_goal_pledges_call   ON capital_goal_pledges (monthly_call_id);
+CREATE INDEX idx_capital_goal_pledges_user   ON capital_goal_pledges (user_id);
+CREATE INDEX idx_capital_goal_pledges_status ON capital_goal_pledges (status);
+
+CREATE TABLE capital_goal_pledge_payments (
+    id                             SERIAL PRIMARY KEY,
+    pledge_id                      INTEGER       NOT NULL REFERENCES capital_goal_pledges(id),
+    amount                         NUMERIC(20,4) NOT NULL CHECK (amount > 0), -- in the pledge's own currency
+    account_id                     INTEGER       NOT NULL REFERENCES accounts(id),
+    transaction_id                 INTEGER       NOT NULL REFERENCES transactions(id),
+    shareholder_contribution_id    INTEGER       NOT NULL REFERENCES shareholder_contributions(id),
+    converted_amount_goal_currency NUMERIC(20,4) NOT NULL, -- frozen conversion into the capital goal's own currency, for progress tracking
+    exchange_rate_to_goal_currency NUMERIC(20,8) NOT NULL,
+    is_late                        BOOLEAN       NOT NULL DEFAULT FALSE,
+    days_late                      INTEGER,
+    -- fine_id added via ALTER TABLE further down, right after the
+    -- `fines` table itself is created (fines is defined later in this
+    -- file than capital_goals — same reason requisitions.fine_id is
+    -- added the same way, just below fines' own CREATE TABLE).
+    approved_by                    INTEGER       NOT NULL REFERENCES users(id),
+    approved_at                    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    notes                          TEXT
+);
+
+CREATE INDEX idx_capital_goal_pledge_payments_pledge ON capital_goal_pledge_payments (pledge_id);
+
+CREATE TABLE capital_goal_payment_applications (
+    id              SERIAL PRIMARY KEY,
+    payment_id      INTEGER       NOT NULL REFERENCES capital_goal_pledge_payments(id),
+    monthly_call_id INTEGER       NOT NULL REFERENCES capital_goal_monthly_calls(id),
+    amount          NUMERIC(20,4) NOT NULL CHECK (amount > 0) -- always in the capital goal's own currency
+);
+
+CREATE INDEX idx_capital_goal_payment_applications_payment ON capital_goal_payment_applications (payment_id);
+CREATE INDEX idx_capital_goal_payment_applications_call   ON capital_goal_payment_applications (monthly_call_id);
 
 -- ============================================================
 -- GROUP 26: PAYMENT ACKNOWLEDGEMENTS (v1.30.0, extended v1.30.2,
@@ -3012,6 +3135,10 @@ CREATE INDEX idx_fines_user   ON fines (user_id);
 CREATE INDEX idx_fines_status ON fines (status);
 
 ALTER TABLE requisitions ADD COLUMN fine_id INTEGER REFERENCES fines(id);
+
+-- v1.43.0 — only ever set for a late ITERATION 1 pledge payment
+-- tranche (capital_goal_pledge_payments); see that table above.
+ALTER TABLE capital_goal_pledge_payments ADD COLUMN fine_id INTEGER REFERENCES fines(id);
 
 DO $$
 DECLARE

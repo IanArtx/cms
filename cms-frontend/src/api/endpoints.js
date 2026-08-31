@@ -199,6 +199,24 @@ export const capitalGoalsAPI = {
 };
 
 // ============================================================
+// CAPITAL GOAL CALLS (v1.43.0) — "call on shares" pledges against a
+// specific monthly call. See capitalGoalsController for the goal
+// itself; these all hang off /capital-goals too.
+// ============================================================
+export const capitalGoalCallsAPI = {
+    getMyPledges:            ()               => api.get('/capital-goals/my-calls'),
+    getMonthlyCallById:      (monthlyCallId)  => api.get(`/capital-goals/monthly-calls/${monthlyCallId}`),
+    submitPledge:            (monthlyCallId, data) => api.post(`/capital-goals/monthly-calls/${monthlyCallId}/pledges`, data),
+    editPledge:               (pledgeId, data) => api.patch(`/capital-goals/pledges/${pledgeId}`, data),
+    rejectPledge:             (pledgeId, data) => api.post(`/capital-goals/pledges/${pledgeId}/reject`, data),
+    approvePledgePayment:     (pledgeId, data) => api.post(`/capital-goals/pledges/${pledgeId}/approve`, data),
+    getPledgesForMonthlyCall: (monthlyCallId)  => api.get(`/capital-goals/monthly-calls/${monthlyCallId}/pledges`),
+    getMonthlyCallStatus:     (monthlyCallId)  => api.get(`/capital-goals/monthly-calls/${monthlyCallId}/status`),
+    listMonthlyCallsForGoal:  (goalId)         => api.get(`/capital-goals/${goalId}/monthly-calls`),
+    getGoalContributionStats: (goalId)         => api.get(`/capital-goals/${goalId}/stats`),
+};
+
+// ============================================================
 // PAYMENT ACKNOWLEDGEMENTS (v1.30.0)
 // ============================================================
 export const paymentAcknowledgementsAPI = {

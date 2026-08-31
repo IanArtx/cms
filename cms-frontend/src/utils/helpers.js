@@ -84,6 +84,9 @@ export const getStatusBadgeClass = (status) => {
         ON_TRACK:         'badge-green',
         TARGET_REACHED:   'badge-green',
         FINAL_APPROVED:   'badge-green',
+        // Capital Goal Calls (v1.43.0) — a fully-settled pledge, and a
+        // monthly call whose target has been fully met.
+        FULFILLED:        'badge-green',
 
         // Yellow — in progress/pending
         PENDING:              'badge-yellow',
@@ -96,6 +99,12 @@ export const getStatusBadgeClass = (status) => {
         ON_HOLD:              'badge-yellow',
         PENDING_ACK:          'badge-yellow',
         PENDING_TERMINATION:  'badge-yellow',
+        // Capital Goal Calls (v1.43.0)
+        PLEDGED:              'badge-yellow',
+        PARTIAL:              'badge-yellow',
+        PARTIALLY_PAID:       'badge-yellow',
+        ITERATION_1:          'badge-yellow',
+        ITERATION_2:          'badge-yellow',
 
         // Red — negative/failed
         OVERDUE:     'badge-red',
@@ -114,6 +123,10 @@ export const getStatusBadgeClass = (status) => {
         CLOSED:       'badge-blue',
         ACKNOWLEDGED: 'badge-blue',
         TERMINATED:   'badge-blue',
+        // Capital Goal Calls (v1.43.0) — a shareholder hasn't pledged
+        // anything yet (deliberately neutral, not red — not pledging at
+        // all is never fined and shouldn't visually read as a failure).
+        NOT_RESPONDED: 'badge-gray',
     };
 
     return statusMap[status.toUpperCase()] || 'badge-gray';

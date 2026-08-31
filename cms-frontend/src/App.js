@@ -30,6 +30,8 @@ import MmfPage from './pages/mmf/MmfPage';
 import MmfDetailPage from './pages/mmf/MmfDetailPage';
 import CapitalGoalsPage from './pages/capitalGoals/CapitalGoalsPage';
 import CapitalGoalDetailPage from './pages/capitalGoals/CapitalGoalDetailPage';
+import MyCapitalCallsPage from './pages/capitalGoals/MyCapitalCallsPage';
+import CapitalCallDetailPage from './pages/capitalGoals/CapitalCallDetailPage';
 import PaymentAcknowledgementsPage from './pages/paymentAcknowledgements/PaymentAcknowledgementsPage';
 import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
 import EventsPage from './pages/events/EventsPage';
@@ -133,6 +135,12 @@ function App() {
                             <Route path="mmf" element={<MmfPage />} />
                             <Route path="mmf/:id" element={<MmfDetailPage />} />
                             <Route path="capital-goals" element={<CapitalGoalsPage />} />
+                            {/* v1.43.0 Capital Goal Calls — static segments (my-calls,
+                                monthly-calls/:id) before the dynamic capital-goals/:id;
+                                React Router v6 ranks by specificity regardless of
+                                declaration order, but kept in this order for clarity. */}
+                            <Route path="capital-goals/my-calls" element={<MyCapitalCallsPage />} />
+                            <Route path="capital-goals/monthly-calls/:id" element={<CapitalCallDetailPage />} />
                             <Route path="capital-goals/:id" element={<CapitalGoalDetailPage />} />
                             <Route path="events" element={<EventsPage />} />
                             <Route path="documents/generate" element={<GenerateDocumentPage />} />

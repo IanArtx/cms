@@ -1878,13 +1878,19 @@ const updateCouponSchedule = asyncHandler(async (req, res) => {
             throw createError.badRequest('This investment does not have a bond coupon schedule');
         }
 
-        const paidCount = await client.query(`
+        // v1.42.1 — widened from status = 'PAID' to status != 'PENDING' so
+        // this also blocks rescheduling over a coupon marked MISSED by
+        // the termination workflow (Section 39.8) — that's a real
+        // historical record too (a coupon that was never going to be
+        // paid because the bond was terminated), not something a
+        // reschedule should be able to silently erase.
+        const settledCount = await client.query(`
             SELECT COUNT(*) AS n FROM bond_coupons
-            WHERE  investment_id = $1 AND status = 'PAID'
+            WHERE  investment_id = $1 AND status != 'PENDING'
         `, [id]);
-        if (parseInt(paidCount.rows[0].n) > 0) {
+        if (parseInt(settledCount.rows[0].n) > 0) {
             throw createError.badRequest(
-                'The coupon schedule cannot be rescheduled once a coupon has already been paid'
+                'The coupon schedule cannot be rescheduled once a coupon has already been paid or marked missed'
             );
         }
 

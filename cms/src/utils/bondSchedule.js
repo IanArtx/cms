@@ -40,6 +40,27 @@ function toISODate(date) {
     return date.toISOString().slice(0, 10);
 }
 
+// v1.42.1 — issueDate/maturityDate/firstCouponDate are frequently
+// passed straight from a database row (e.g. `investment.start_date`),
+// where node-postgres returns a DATE column as a native JS Date
+// object, not a plain "YYYY-MM-DD" string. Every other date-handling
+// line in this file does `new Date(`${someDate}T00:00:00Z`)`, which
+// assumes a string — handed a Date object instead, the template
+// literal silently stringifies it via Date.prototype.toString()
+// (e.g. "Wed Jun 18 2043 02:00:00 GMT+0200 (Central European Summer
+// Time)"), producing an unparseable string and an Invalid Date. This
+// normalizes any of the three accepted shapes (a Date object, a bare
+// "YYYY-MM-DD" string, or a full ISO timestamp string) into a plain
+// date-only string up front, so every comparison below is always
+// against a real date.
+function normalizeDateInput(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (value instanceof Date) {
+        return isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+    }
+    return String(value).slice(0, 10);
+}
+
 /**
  * @param {object} params
  * @param {number|string} params.faceValue        bond principal
@@ -68,8 +89,33 @@ function generateBondCouponSchedule({
     const fv       = parseFloat(faceValue);
     const rate     = parseFloat(couponRate) / 100;
     const taxRate  = parseFloat(taxWithholdingRate || 0) / 100;
+
+    // v1.42.1 — see normalizeDateInput() above. Must happen before any
+    // of the three inputs are used, including the AT_MATURITY branch
+    // just below (which does its own issue/maturity math).
+    issueDate       = normalizeDateInput(issueDate);
+    maturityDate    = normalizeDateInput(maturityDate);
+    firstCouponDate = normalizeDateInput(firstCouponDate);
+
     const issue    = new Date(`${issueDate}T00:00:00Z`);
     const maturity = new Date(`${maturityDate}T00:00:00Z`);
+
+    if (isNaN(issue.getTime()) || isNaN(maturity.getTime())) {
+        // Was previously possible to reach this function with an
+        // unparseable issue/maturity date (see v1.42.1 note above) and
+        // never find out — every comparison against an Invalid Date
+        // silently evaluates to false, which is exactly what let the
+        // schedule-collapse bug hide behind the anchor-date validation
+        // added in v1.42.0: that check (`anchor >= maturity`, below)
+        // also silently evaluated to false against an Invalid Date, so
+        // it never caught what was actually going wrong. Failing loudly
+        // here means any future date-shape problem surfaces immediately
+        // instead of quietly producing a one-coupon schedule.
+        throw new Error(
+            `Could not parse a valid issue date (${issueDate}) or maturity date (${maturityDate}) ` +
+            `for this bond's coupon schedule.`
+        );
+    }
 
     if (maturity <= issue) {
         throw new Error('Maturity date must be after issue date');

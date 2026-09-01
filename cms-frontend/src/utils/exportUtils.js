@@ -394,6 +394,33 @@ const stampOverlay = (data) => {
 };
 
 // ============================================================
+// PERSON FIELD HELPERS (v1.45.0)
+// Meeting Minutes / Agenda / Resolution now let a user pick a
+// Chairperson/Secretary/attendee from a dropdown of system users
+// (stored as `${key}_user_id` + `${key}_name`) or just type a free
+// name (stored as the plain `${key}` string, same as before this
+// version). Both shapes render identically here — the picker never
+// changes what gets printed, only whether the named person also
+// becomes a required digital signatory (see documentsController.js
+// approveDocument / signatureService.ensurePersonSignatureSlots).
+// personName() reads either shape; personListNames() does the same
+// for a repeatable list field (attendees/present), which is either
+// the old single free-text blob or an array of
+// { user_id, name } / plain-string entries.
+// ============================================================
+const personName = (data, key) => data[`${key}_name`] || data[key] || '';
+
+const personListNames = (value) => {
+    if (Array.isArray(value)) {
+        return value
+            .map(p => (typeof p === 'string' ? p : p?.name))
+            .filter(Boolean)
+            .join(', ');
+    }
+    return value || '';
+};
+
+// ============================================================
 // DOCUMENT TRAIL
 // Every document that's meant to be filed should say, at a
 // glance, who prepared it, who approved/reviewed it, and anyone
@@ -1355,15 +1382,15 @@ export const meetingAgendaTemplate = (data) => `<!DOCTYPE html>
         </div>
         <div class="meta-item">
             <div class="meta-label">Chairperson</div>
-            <div class="meta-value">${data.chairperson || '—'}</div>
+            <div class="meta-value">${personName(data, 'chairperson') || '—'}</div>
         </div>
         <div class="meta-item">
             <div class="meta-label">Secretary</div>
-            <div class="meta-value">${data.secretary || '—'}</div>
+            <div class="meta-value">${personName(data, 'secretary') || '—'}</div>
         </div>
         <div class="meta-item">
             <div class="meta-label">Expected Attendees</div>
-            <div class="meta-value">${data.attendees || '—'}</div>
+            <div class="meta-value">${personListNames(data.attendees) || '—'}</div>
         </div>
     </div>
 
@@ -1390,10 +1417,23 @@ export const meetingAgendaTemplate = (data) => `<!DOCTYPE html>
     </div>` : ''}
 
     ${documentTrail([
-        { role: 'Chairperson', name: data.chairperson, date: data.meeting_date },
-        { role: 'Secretary',   name: data.secretary,   date: data.meeting_date },
+        { role: 'Chairperson', name: personName(data, 'chairperson'), date: data.meeting_date },
+        { role: 'Secretary',   name: personName(data, 'secretary'),   date: data.meeting_date },
         { role: 'Prepared By', name: data.prepared_by, date: data.generated_date },
     ])}
+
+    <div class="signature-section">
+        <div class="signature-block">
+            Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
+            Signature: _______________<br>
+            Date: _______________
+        </div>
+        <div class="signature-block">
+            Secretary: ${personName(data, 'secretary') || '_______________'}<br>
+            Signature: _______________<br>
+            Date: _______________
+        </div>
+    </div>
 
     ${footer(`${COMPANY_NAME} | ${data.meeting_title || ''}`)}
 </div>
@@ -1432,15 +1472,15 @@ export const meetingMinutesTemplate = (data) => `<!DOCTYPE html>
         </div>
         <div class="meta-item">
             <div class="meta-label">Chairperson</div>
-            <div class="meta-value">${data.chairperson || '—'}</div>
+            <div class="meta-value">${personName(data, 'chairperson') || '—'}</div>
         </div>
         <div class="meta-item">
             <div class="meta-label">Secretary</div>
-            <div class="meta-value">${data.secretary || '—'}</div>
+            <div class="meta-value">${personName(data, 'secretary') || '—'}</div>
         </div>
         <div class="meta-item">
             <div class="meta-label">Present</div>
-            <div class="meta-value">${data.present || '—'}</div>
+            <div class="meta-value">${personListNames(data.present) || '—'}</div>
         </div>
         <div class="meta-item">
             <div class="meta-label">Apologies</div>
@@ -1495,19 +1535,19 @@ export const meetingMinutesTemplate = (data) => `<!DOCTYPE html>
     </div>
 
     ${documentTrail([
-        { role: 'Chairperson', name: data.chairperson,  date: data.meeting_date },
-        { role: 'Secretary',   name: data.secretary,    date: data.meeting_date },
+        { role: 'Chairperson', name: personName(data, 'chairperson'),  date: data.meeting_date },
+        { role: 'Secretary',   name: personName(data, 'secretary'),    date: data.meeting_date },
         { role: 'Prepared By', name: data.prepared_by,  date: data.generated_date },
     ])}
 
     <div class="signature-section">
         <div class="signature-block">
-            Chairperson: ${data.chairperson || '_______________'}<br>
+            Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
             Signature: _______________<br>
             Date: _______________
         </div>
         <div class="signature-block">
-            Secretary: ${data.secretary || '_______________'}<br>
+            Secretary: ${personName(data, 'secretary') || '_______________'}<br>
             Signature: _______________<br>
             Date: _______________
         </div>
@@ -1765,12 +1805,12 @@ export const resolutionTemplate = (data) => `<!DOCTYPE html>
     <div class="stamp-overlay-wrap">
         <div class="signature-section">
             <div class="signature-block">
-                Chairperson: ${data.chairperson || '_______________'}<br>
+                Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
                 Signature: _______________<br>
                 Date: _______________
             </div>
             <div class="signature-block">
-                Secretary: ${data.secretary || '_______________'}<br>
+                Secretary: ${personName(data, 'secretary') || '_______________'}<br>
                 Signature: _______________<br>
                 Date: _______________
             </div>

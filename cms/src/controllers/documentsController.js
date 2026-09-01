@@ -17,9 +17,37 @@ const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../u
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
 const {
-    ensureSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories,
+    ensureSignatureSlots, ensurePersonSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories,
     getMyPendingSignatures: getMyPendingSignaturesService, SIGNABLE_DOCUMENT_TYPES,
 } = require('../services/signatureService');
+
+// ============================================================
+// PERSON-SPECIFIC SIGNATORY TEMPLATE TYPES (v1.45.0, Section 33.8)
+// Meeting Minutes, Meeting Agenda, and Resolutions let the person
+// generating the document pick a Chairperson/Secretary from a
+// dropdown of system users (stored as `${field}_user_id` +
+// `${field}_name` in template_data) or just type a free-text name
+// (stored as a plain string under the same key as before this
+// version — no `_user_id` companion). Only the dropdown-selected
+// case creates a required signature slot: a free-text name is purely
+// cosmetic on the printed document and never blocks it from being
+// finalised. See extractPersonSignatories() below.
+// ============================================================
+const PERSON_SIGNATORY_DOCUMENT_TYPES = ['MEETING_MINUTES', 'MEETING_AGENDA', 'RESOLUTION'];
+const PERSON_SIGNATORY_FIELDS = [
+    { key: 'chairperson', positionTitle: 'Chairman' },
+    { key: 'secretary',   positionTitle: 'Secretary' },
+];
+
+const extractPersonSignatories = (documentType, templateData) => {
+    if (!PERSON_SIGNATORY_DOCUMENT_TYPES.includes(documentType) || !templateData) return [];
+    return PERSON_SIGNATORY_FIELDS
+        .map(({ key, positionTitle }) => {
+            const userId = parseInt(templateData[`${key}_user_id`], 10);
+            return Number.isInteger(userId) ? { userId, positionTitle } : null;
+        })
+        .filter(Boolean);
+};
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 
@@ -272,24 +300,44 @@ const generateDocument = asyncHandler(async (req, res) => {
 const approveDocument = asyncHandler(async (req, res) => {
     const { id } = req.params;
 
-    const docResult = await query('SELECT id, title, status, document_type FROM documents WHERE id = $1', [id]);
+    const docResult = await query('SELECT id, title, status, document_type, template_data FROM documents WHERE id = $1', [id]);
     if (docResult.rows.length === 0) {
         throw createError.notFound('Document not found');
     }
     const doc = docResult.rows[0];
 
-    if (SIGNABLE_DOCUMENT_TYPES.includes(doc.document_type)) {
-        // Checked BEFORE ensureSignatureSlots so we can tell "opening
-        // for the first time" apart from "already open, Approve was
-        // clicked again" — only the former should notify signatories,
+    // v1.45.0 — a document can need signatures for either or both of
+    // two independent reasons: role-based requirements configured in
+    // Settings -> Signatories (SIGNABLE_DOCUMENT_TYPES), and/or a
+    // specific named Chairman/Secretary picked when the document was
+    // generated (personSignatories). Both open PENDING slots on the
+    // same target and the document only becomes FINAL once every slot
+    // of either kind is signed.
+    const personSignatories = extractPersonSignatories(doc.document_type, doc.template_data);
+    const isRoleSignable = SIGNABLE_DOCUMENT_TYPES.includes(doc.document_type);
+
+    if (isRoleSignable || personSignatories.length > 0) {
+        // Checked BEFORE opening slots so we can tell "opening for the
+        // first time" apart from "already open, Approve was clicked
+        // again" — only the former should notify signatories,
         // otherwise every repeat click would re-email everyone.
         const alreadyHadSlots = (await getSignatureStatus('DOCUMENT', doc.id)).length > 0;
 
-        const { hasRequirements, roles } = await withTransaction(async (client) =>
-            ensureSignatureSlots(client, 'DOCUMENT', doc.id, doc.document_type)
-        );
+        const { hasRequirements, roles } = await withTransaction(async (client) => {
+            const roleResult = isRoleSignable
+                ? await ensureSignatureSlots(client, 'DOCUMENT', doc.id, doc.document_type)
+                : { hasRequirements: false, roles: [] };
 
-        if (hasRequirements) {
+            if (personSignatories.length > 0) {
+                await ensurePersonSignatureSlots(client, 'DOCUMENT', doc.id, personSignatories);
+            }
+
+            return roleResult;
+        });
+
+        const hasAnyRequirements = hasRequirements || personSignatories.length > 0;
+
+        if (hasAnyRequirements) {
             if (!alreadyHadSlots) {
                 await notifyPendingSignatories('DOCUMENT', doc.id, 'DOCUMENT_SIGNATURE_REQUESTED', {
                     title: `Signature needed: ${doc.title}`,
@@ -306,8 +354,12 @@ const approveDocument = asyncHandler(async (req, res) => {
             if (doc.status !== 'DRAFT') {
                 return sendSuccess(res, { ...doc, signatures }, 'This document requires multiple signatures — signing slots are open');
             }
+            const labels = [
+                ...roles.map(r => r.role_name),
+                ...personSignatories.map(p => p.positionTitle),
+            ];
             return sendSuccess(res, { ...doc, signatures },
-                `Signature slots opened for: ${roles.map(r => r.role_name).join(', ')}. The document becomes final once everyone signs.`);
+                `Signature slots opened for: ${labels.join(', ')}. The document becomes final once everyone signs.`);
         }
     }
 

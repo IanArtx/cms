@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { documentsAPI, categoriesAPI } from '../../api/endpoints';
+import { documentsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { getErrorMessage } from '../../utils/helpers';
 import { useAuth } from '../../contexts/AuthContext';
 import PageHeader from '../../components/common/PageHeader';
@@ -31,10 +31,10 @@ const TEMPLATE_FIELDS = {
             { key: 'meeting_title',    label: 'Meeting Title',      type: 'text',     required: true },
             { key: 'meeting_date',     label: 'Meeting Date',       type: 'date',     required: true },
             { key: 'meeting_time',     label: 'Meeting Time',       type: 'time',     required: true },
-            { key: 'venue',            label: 'Venue / Location',   type: 'text',     required: true },
-            { key: 'chairperson',      label: 'Chairperson',        type: 'text',     required: true },
-            { key: 'secretary',        label: 'Secretary',          type: 'text',     required: true },
-            { key: 'attendees',        label: 'Expected Attendees', type: 'textarea', required: true },
+            { key: 'venue',            label: 'Venue / Location',   type: 'text',       required: true },
+            { key: 'chairperson',      label: 'Chairperson',        type: 'person',     required: true },
+            { key: 'secretary',        label: 'Secretary',          type: 'person',     required: true },
+            { key: 'attendees',        label: 'Expected Attendees', type: 'personList', required: false },
             { key: 'additional_notes', label: 'Additional Notes',   type: 'textarea', required: false },
         ],
         dynamicSections: [
@@ -61,10 +61,10 @@ const TEMPLATE_FIELDS = {
             { key: 'meeting_title', label: 'Meeting Title',     type: 'text',     required: true },
             { key: 'meeting_date',  label: 'Meeting Date',      type: 'date',     required: true },
             { key: 'meeting_time',  label: 'Meeting Time',      type: 'time',     required: true },
-            { key: 'venue',         label: 'Venue',             type: 'text',     required: true },
-            { key: 'chairperson',   label: 'Chairperson',       type: 'text',     required: true },
-            { key: 'secretary',     label: 'Secretary',         type: 'text',     required: true },
-            { key: 'present',       label: 'Members Present',   type: 'textarea', required: true },
+            { key: 'venue',         label: 'Venue',             type: 'text',       required: true },
+            { key: 'chairperson',   label: 'Chairperson',       type: 'person',     required: true },
+            { key: 'secretary',     label: 'Secretary',         type: 'person',     required: true },
+            { key: 'present',       label: 'Members Present',   type: 'personList', required: false },
             { key: 'apologies',     label: 'Apologies',         type: 'textarea', required: false },
             { key: 'closure_notes', label: 'Closure Notes',     type: 'textarea', required: false },
             { key: 'close_time',    label: 'Meeting Closed At', type: 'time',     required: false },
@@ -123,9 +123,9 @@ const TEMPLATE_FIELDS = {
             { key: 'meeting_type',     label: 'Meeting Type',     type: 'text', required: true,
               placeholder: 'e.g. Board Meeting, AGM' },
             { key: 'meeting_date',     label: 'Meeting Date',     type: 'date', required: true },
-            { key: 'resolution_date',  label: 'Resolution Date',  type: 'date', required: true },
-            { key: 'chairperson',      label: 'Chairperson',      type: 'text', required: true },
-            { key: 'secretary',        label: 'Secretary',        type: 'text', required: true },
+            { key: 'resolution_date',  label: 'Resolution Date',  type: 'date',   required: true },
+            { key: 'chairperson',      label: 'Chairperson',      type: 'person', required: true },
+            { key: 'secretary',        label: 'Secretary',        type: 'person', required: true },
             { key: 'proposed_by',      label: 'Proposed By',      type: 'text', required: true },
             { key: 'seconded_by',      label: 'Seconded By',      type: 'text', required: false },
             { key: 'vote_result',      label: 'Vote Outcome',     type: 'text', required: true,
@@ -202,6 +202,92 @@ const DynamicSection = ({ section, values, onChange }) => {
 };
 
 // ============================================================
+// PERSON PICKER (v1.45.0)
+// A dropdown of active system users, or — toggled by the link below
+// it — a plain free-text name for someone who isn't in the system
+// (e.g. a guest chairing a meeting). Only the dropdown case resolves
+// to a real user_id; documentsController.js only turns a Chairperson/
+// Secretary field into a required digital-signature slot when a real
+// user_id came through, so typing a free name is always safe and
+// never blocks the document.
+// ============================================================
+const PersonPicker = ({ users, userId, name, onChange, required, placeholder }) => {
+    const [typing, setTyping] = useState(!userId && !!name);
+
+    return (
+        <div>
+            {typing ? (
+                <input type="text" className="input"
+                    value={name || ''}
+                    onChange={e => onChange({ userId: '', name: e.target.value })}
+                    placeholder={placeholder || 'Type a name'}
+                    required={required} />
+            ) : (
+                <select className="input" value={userId || ''}
+                    onChange={e => {
+                        const id = e.target.value;
+                        const u = users.find(x => String(x.id) === id);
+                        onChange({ userId: id, name: u ? `${u.first_name} ${u.last_name}` : '' });
+                    }}
+                    required={required}>
+                    <option value="">Select person...</option>
+                    {users.map(u => (
+                        <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
+                    ))}
+                </select>
+            )}
+            <button type="button"
+                onClick={() => { setTyping(t => !t); onChange({ userId: '', name: '' }); }}
+                className="text-xs text-primary-600 hover:text-primary-700 mt-1">
+                {typing ? 'Choose from list instead' : "Not in the list? Type a name instead"}
+            </button>
+        </div>
+    );
+};
+
+// ============================================================
+// PERSON LIST FIELD (v1.45.0)
+// A repeatable list of PersonPicker rows — used for "attendees"/
+// "present" fields, which can mix system users and free-typed names.
+// Purely for the printed record (no signature implications), unlike
+// the single Chairperson/Secretary PersonPicker fields above.
+// ============================================================
+const PersonListField = ({ users, values, onChange, addLabel = 'Add Person' }) => {
+    const addRow = () => onChange([...values, { user_id: '', name: '' }]);
+    const removeRow = (index) => onChange(values.filter((_, i) => i !== index));
+    const updateRow = (index, patch) =>
+        onChange(values.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+    return (
+        <div className="border border-gray-200 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-semibold text-gray-700">{addLabel}</p>
+                <button type="button" onClick={addRow}
+                    className="text-sm text-primary-600 hover:text-primary-700 font-medium">
+                    + {addLabel}
+                </button>
+            </div>
+            {values.length === 0 && (
+                <p className="text-sm text-gray-400 text-center py-4">
+                    No one added yet. Click "{addLabel}" to add.
+                </p>
+            )}
+            {values.map((row, index) => (
+                <div key={index} className="flex gap-2 mb-2 items-start">
+                    <div className="flex-1">
+                        <PersonPicker users={users} userId={row.user_id} name={row.name}
+                            onChange={({ userId, name }) => updateRow(index, { user_id: userId, name })} />
+                    </div>
+                    <button type="button" onClick={() => removeRow(index)}
+                        className="mt-2 text-red-400 hover:text-red-600 text-sm flex-shrink-0"
+                        title="Remove">✕</button>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN GENERATE DOCUMENT PAGE
 // ============================================================
 const GenerateDocumentPage = () => {
@@ -210,6 +296,7 @@ const GenerateDocumentPage = () => {
 
     const [templates,        setTemplates]        = useState([]);
     const [categories,       setCategories]       = useState([]);
+    const [users,            setUsers]            = useState([]);
     const [selectedTemplate, setSelectedTemplate] = useState(null);
     const [loading,          setLoading]          = useState(false);
     const [loadingTemplates, setLoadingTemplates] = useState(true);
@@ -225,9 +312,11 @@ const GenerateDocumentPage = () => {
         Promise.all([
             documentsAPI.getTemplates(),
             categoriesAPI.getAll({ flat: true }),
-        ]).then(([tRes, cRes]) => {
+            usersAPI.getAllUsers({ is_active: true, limit: 500 }),
+        ]).then(([tRes, cRes, uRes]) => {
             setTemplates(tRes.data.data || []);
             setCategories(cRes.data.data || []);
+            setUsers(uRes.data.data || []);
         }).catch(() => {})
           .finally(() => setLoadingTemplates(false));
     }, []);
@@ -242,11 +331,10 @@ const GenerateDocumentPage = () => {
         setSuccess(null);
         setPreviewHtml(null);
         const config = TEMPLATE_FIELDS[template.template_type];
-        if (config?.dynamicSections) {
-            const initial = {};
-            config.dynamicSections.forEach(s => { initial[s.key] = []; });
-            setDynamicValues(initial);
-        }
+        const initial = {};
+        (config?.dynamicSections || []).forEach(s => { initial[s.key] = []; });
+        (config?.fields || []).filter(f => f.type === 'personList').forEach(f => { initial[f.key] = []; });
+        setDynamicValues(initial);
     };
 
     const handleGenerate = async (e) => {
@@ -404,7 +492,8 @@ const GenerateDocumentPage = () => {
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
                             {config.fields.map(field => (
                                 <div key={field.key}
-                                    className={field.type === 'textarea' ? 'sm:col-span-2' : ''}>
+                                    className={(field.type === 'textarea' || field.type === 'personList')
+                                        ? 'sm:col-span-2' : ''}>
                                     <label className="label">
                                         {field.label}
                                         {field.required && (
@@ -428,6 +517,19 @@ const GenerateDocumentPage = () => {
                                                 <option key={opt} value={opt}>{opt}</option>
                                             ))}
                                         </select>
+                                    ) : field.type === 'person' ? (
+                                        <PersonPicker users={users}
+                                            userId={fieldValues[`${field.key}_user_id`]}
+                                            name={fieldValues[`${field.key}_name`]}
+                                            required={field.required}
+                                            onChange={({ userId, name }) => setFieldValues(p => ({
+                                                ...p, [`${field.key}_user_id`]: userId, [`${field.key}_name`]: name }))} />
+                                    ) : field.type === 'personList' ? (
+                                        <PersonListField users={users}
+                                            values={dynamicValues[field.key] || []}
+                                            addLabel={field.label}
+                                            onChange={vals => setDynamicValues(p => ({
+                                                ...p, [field.key]: vals }))} />
                                     ) : (
                                         <input type={field.type} className="input"
                                             value={fieldValues[field.key] || ''}

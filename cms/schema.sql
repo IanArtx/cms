@@ -2478,9 +2478,15 @@ CREATE TABLE signature_requirements (
 
 -- One row per required-role signing slot on a specific signable
 -- thing. target_type/target_id points at either a `documents` row or
--- a `certificate_signing_rounds` row. required_role_id is a ROLE —
--- whoever currently holds it may fill the slot; signed_by records
--- who actually did. signature_snapshot_path is a copy of that
+-- a `certificate_signing_rounds` row. Each slot is required by
+-- EITHER a ROLE (required_role_id — whoever currently holds it may
+-- fill the slot) OR, since v1.45.0, one SPECIFIC person
+-- (required_user_id — only that exact user may fill it, regardless
+-- of what role they hold; position_title is a free-text label like
+-- 'Chairman'/'Secretary' describing their capacity on this one
+-- document, purely for display). Exactly one of the two must be set
+-- — see document_signatures_slot_type_check below. signed_by records
+-- who actually signed; signature_snapshot_path is a copy of that
 -- person's users.signature_path taken at signing time, so a later
 -- change to their stored signature never alters something already
 -- signed.
@@ -2489,16 +2495,31 @@ CREATE TABLE document_signatures (
     target_type             VARCHAR(20) NOT NULL
                             CHECK (target_type IN ('DOCUMENT', 'CERTIFICATE_ROUND')),
     target_id               INTEGER NOT NULL,
-    required_role_id        INTEGER NOT NULL REFERENCES roles(id),
+    required_role_id        INTEGER REFERENCES roles(id),
+    required_user_id        INTEGER REFERENCES users(id),
+    position_title          VARCHAR(50),
     status                  VARCHAR(20) NOT NULL DEFAULT 'PENDING'
                             CHECK (status IN ('PENDING', 'SIGNED')),
     signed_by               INTEGER REFERENCES users(id),
     signature_snapshot_path TEXT,
     signed_at               TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (target_type, target_id, required_role_id)
+    CONSTRAINT document_signatures_slot_type_check CHECK (
+        (required_role_id IS NOT NULL AND required_user_id IS NULL) OR
+        (required_role_id IS NULL AND required_user_id IS NOT NULL)
+    )
 );
 CREATE INDEX idx_doc_signatures_target ON document_signatures (target_type, target_id);
+-- Two partial unique indexes instead of one composite UNIQUE, since
+-- required_role_id and required_user_id are each NULL half the time
+-- now (a plain UNIQUE constraint would let that NULL column silently
+-- stop deduplicating the other one).
+CREATE UNIQUE INDEX document_signatures_role_slot_unique
+    ON document_signatures (target_type, target_id, required_role_id)
+    WHERE required_role_id IS NOT NULL;
+CREATE UNIQUE INDEX document_signatures_user_slot_unique
+    ON document_signatures (target_type, target_id, required_user_id)
+    WHERE required_user_id IS NOT NULL;
 
 -- One row per (certificate_type, period_label) monthly/annual batch.
 -- Every share_certificates row issued in that batch links to it via

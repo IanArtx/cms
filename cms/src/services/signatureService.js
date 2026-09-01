@@ -66,11 +66,39 @@ const ensureSignatureSlots = async (client, targetType, targetId, documentType) 
         await client.query(`
             INSERT INTO document_signatures (target_type, target_id, required_role_id)
             VALUES ($1, $2, $3)
-            ON CONFLICT (target_type, target_id, required_role_id) DO NOTHING
+            ON CONFLICT (target_type, target_id, required_role_id)
+            WHERE required_role_id IS NOT NULL DO NOTHING
         `, [targetType, targetId, role.role_id]);
     }
 
     return { hasRequirements: true, roles };
+};
+
+// ============================================================
+// ENSURE PERSON-SPECIFIC SIGNATURE SLOTS EXIST (v1.45.0) — the
+// counterpart to ensureSignatureSlots above, but for a slot tied to
+// one specific named USER rather than a role. Used when a document's
+// own template_data names a specific person as e.g. Chairman or
+// Secretary (Meeting Minutes/Agenda, Resolutions) — that person
+// becomes a required signer for THIS document regardless of which
+// role(s) they currently hold. Idempotent, same as ensureSignatureSlots.
+// `people` is an array of { userId, positionTitle }; entries with no
+// userId are silently skipped (a typed free-text name that doesn't
+// resolve to a real system user never creates a signature slot).
+// ============================================================
+const ensurePersonSignatureSlots = async (client, targetType, targetId, people = []) => {
+    const created = [];
+    for (const person of people) {
+        if (!person || !person.userId) continue;
+        await client.query(`
+            INSERT INTO document_signatures (target_type, target_id, required_user_id, position_title)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (target_type, target_id, required_user_id)
+            WHERE required_user_id IS NOT NULL DO NOTHING
+        `, [targetType, targetId, person.userId, person.positionTitle || null]);
+        created.push(person);
+    }
+    return { hasRequirements: created.length > 0, people: created };
 };
 
 // ============================================================
@@ -99,23 +127,22 @@ const signSlot = async (client, { targetType, targetId, userId }) => {
     `, [userId]);
     const userRoleIds = userRolesResult.rows.map(r => r.role_id);
 
-    if (userRoleIds.length === 0) {
-        throw createError.forbidden('Your role does not have a pending signature slot on this item');
-    }
-
-    // Find a PENDING slot whose required role this user actually holds
+    // Find a PENDING slot this user can fill — either a role-based
+    // slot whose role they currently hold, or (v1.45.0) a slot naming
+    // them specifically as a required signer (e.g. Chairman/Secretary
+    // on a Meeting Minutes/Agenda/Resolution) regardless of role.
     const slotResult = await client.query(`
-        SELECT id, required_role_id
+        SELECT id, required_role_id, required_user_id
         FROM   document_signatures
         WHERE  target_type = $1 AND target_id = $2
         AND    status = 'PENDING'
-        AND    required_role_id = ANY($3::int[])
+        AND    (required_user_id = $3 OR required_role_id = ANY($4::int[]))
         LIMIT  1
         FOR UPDATE
-    `, [targetType, targetId, userRoleIds]);
+    `, [targetType, targetId, userId, userRoleIds]);
 
     if (slotResult.rows.length === 0) {
-        throw createError.forbidden('There is no pending signature slot here that your role covers (either you already signed, someone else already covered your role, or your role is not a required signatory for this).');
+        throw createError.forbidden('There is no pending signature slot here that you can sign (either you already signed, someone else already covered it, or you are not a required signatory for this).');
     }
     const slot = slotResult.rows[0];
 
@@ -159,24 +186,40 @@ const signSlot = async (client, { targetType, targetId, userId }) => {
 // ============================================================
 const getSignatureStatus = async (targetType, targetId) => {
     const result = await query(`
-        SELECT ds.id, ds.required_role_id, r.name AS role_name, ds.status,
-               ds.signed_by, u.first_name AS signer_first_name, u.last_name AS signer_last_name,
+        SELECT ds.id, ds.required_role_id, r.name AS role_name,
+               ds.required_user_id, ds.position_title,
+               ru.first_name AS required_first_name, ru.last_name AS required_last_name,
+               ds.status, ds.signed_by,
+               u.first_name AS signer_first_name, u.last_name AS signer_last_name,
                ds.signature_snapshot_path, ds.signed_at
         FROM   document_signatures ds
-        JOIN   roles r ON r.id = ds.required_role_id
-        LEFT JOIN users u ON u.id = ds.signed_by
+        LEFT JOIN roles r  ON r.id = ds.required_role_id
+        LEFT JOIN users ru ON ru.id = ds.required_user_id
+        LEFT JOIN users u  ON u.id = ds.signed_by
         WHERE  ds.target_type = $1 AND ds.target_id = $2
-        ORDER  BY r.name
+        ORDER  BY COALESCE(r.name, ds.position_title, '')
     `, [targetType, targetId]);
 
+    // v1.45.0 — a slot is either role-based (required_role_id) or
+    // person-based (required_user_id, e.g. a named Chairman/Secretary
+    // who must sign regardless of role). role_name is kept as the
+    // display label either way — for a person-based slot it falls
+    // back to position_title ('Chairman'/'Secretary') or the person's
+    // own name, so existing frontend code that just shows role_name
+    // keeps working unchanged; required_user_name is additionally
+    // exposed for callers that want to show the named person too.
     return result.rows.map(row => ({
-        role_id:           row.required_role_id,
-        role_name:         row.role_name,
-        status:            row.status,
-        signed_by:         row.signed_by,
-        signer_name:       row.signed_by ? `${row.signer_first_name} ${row.signer_last_name}` : null,
-        signature_url:     row.signature_snapshot_path,
-        signed_at:         row.signed_at,
+        role_id:            row.required_role_id,
+        role_name:          row.required_role_id
+                                 ? row.role_name
+                                 : (row.position_title || `${row.required_first_name} ${row.required_last_name}`),
+        required_user_id:   row.required_user_id,
+        required_user_name: row.required_user_id ? `${row.required_first_name} ${row.required_last_name}` : null,
+        status:              row.status,
+        signed_by:           row.signed_by,
+        signer_name:         row.signed_by ? `${row.signer_first_name} ${row.signer_last_name}` : null,
+        signature_url:       row.signature_snapshot_path,
+        signed_at:           row.signed_at,
     }));
 };
 
@@ -191,40 +234,65 @@ const getSignatureStatus = async (targetType, targetId) => {
 // differently while sharing the actual lookup-and-send logic.
 // ============================================================
 const notifyPendingSignatories = async (targetType, targetId, notificationType, { title, link, recordType, emailSubject, buildEmailHtml }) => {
-    const pending = await query(`
+    const pendingRoles = await query(`
         SELECT DISTINCT ds.required_role_id, r.name AS role_name
         FROM   document_signatures ds
         JOIN   roles r ON r.id = ds.required_role_id
         WHERE  ds.target_type = $1 AND ds.target_id = $2 AND ds.status = 'PENDING'
+        AND    ds.required_role_id IS NOT NULL
     `, [targetType, targetId]);
 
-    if (pending.rows.length === 0) return { notified: 0 };
+    // v1.45.0 — a target can also have person-based pending slots
+    // (a specific named Chairman/Secretary), which have no role at
+    // all — these are gathered separately and merged into the same
+    // recipient list below.
+    const pendingPeople = await query(`
+        SELECT DISTINCT ds.required_user_id, ds.position_title
+        FROM   document_signatures ds
+        WHERE  ds.target_type = $1 AND ds.target_id = $2 AND ds.status = 'PENDING'
+        AND    ds.required_user_id IS NOT NULL
+    `, [targetType, targetId]);
 
-    const roleIds = pending.rows.map(r => r.required_role_id);
-    const roleNameByHolder = new Map(); // userId -> [roleNames]
+    if (pendingRoles.rows.length === 0 && pendingPeople.rows.length === 0) return { notified: 0 };
 
-    const holders = await query(`
-        SELECT DISTINCT u.id, u.first_name, u.email, ur.role_id
-        FROM   user_roles ur
-        JOIN   users u ON u.id = ur.user_id AND u.is_active = TRUE
-        WHERE  ur.role_id = ANY($1::int[]) AND ur.revoked_at IS NULL
-    `, [roleIds]);
+    const labelsByHolder = new Map(); // userId -> { first_name, email, labels: [] }
 
-    const roleNameById = new Map(pending.rows.map(r => [r.required_role_id, r.role_name]));
-    for (const h of holders.rows) {
-        const names = roleNameByHolder.get(h.id) || [];
-        names.push(roleNameById.get(h.role_id));
-        roleNameByHolder.set(h.id, names);
+    if (pendingRoles.rows.length > 0) {
+        const roleIds = pendingRoles.rows.map(r => r.required_role_id);
+        const holders = await query(`
+            SELECT DISTINCT u.id, u.first_name, u.email, ur.role_id
+            FROM   user_roles ur
+            JOIN   users u ON u.id = ur.user_id AND u.is_active = TRUE
+            WHERE  ur.role_id = ANY($1::int[]) AND ur.revoked_at IS NULL
+        `, [roleIds]);
+
+        const roleNameById = new Map(pendingRoles.rows.map(r => [r.required_role_id, r.role_name]));
+        for (const h of holders.rows) {
+            if (!labelsByHolder.has(h.id)) {
+                labelsByHolder.set(h.id, { first_name: h.first_name, email: h.email, labels: [] });
+            }
+            labelsByHolder.get(h.id).labels.push(roleNameById.get(h.role_id));
+        }
     }
 
-    // Dedup recipients (a person can hold more than one required role)
-    const recipients = [];
-    const seen = new Set();
-    for (const h of holders.rows) {
-        if (seen.has(h.id)) continue;
-        seen.add(h.id);
-        recipients.push({ id: h.id, first_name: h.first_name, email: h.email, roleNames: roleNameByHolder.get(h.id) });
+    if (pendingPeople.rows.length > 0) {
+        const userIds = pendingPeople.rows.map(r => r.required_user_id);
+        const people = await query(`
+            SELECT id, first_name, email FROM users WHERE id = ANY($1::int[]) AND is_active = TRUE
+        `, [userIds]);
+
+        const titleByUser = new Map(pendingPeople.rows.map(r => [r.required_user_id, r.position_title]));
+        for (const p of people.rows) {
+            if (!labelsByHolder.has(p.id)) {
+                labelsByHolder.set(p.id, { first_name: p.first_name, email: p.email, labels: [] });
+            }
+            labelsByHolder.get(p.id).labels.push(titleByUser.get(p.id) || 'Signatory');
+        }
     }
+
+    const recipients = Array.from(labelsByHolder.entries()).map(([id, v]) => ({
+        id, first_name: v.first_name, email: v.email, roleNames: v.labels,
+    }));
 
     await notifyMany(recipients, notificationType, (recipient) => ({
         title,
@@ -260,7 +328,6 @@ const getMyPendingSignatures = async (userId) => {
         [userId]
     );
     const roleIds = userRolesResult.rows.map(r => r.role_id);
-    if (roleIds.length === 0) return [];
 
     const dedupeByTarget = (rows, mapFn) => {
         const byId = new Map();
@@ -274,7 +341,11 @@ const getMyPendingSignatures = async (userId) => {
         return Array.from(byId.values());
     };
 
-    const docRows = await query(`
+    // v1.45.0 — roleIds may legitimately be empty (a person can be
+    // named a specific-person signatory, e.g. Chairman, without
+    // holding any role at all), so role-based lookups below use a
+    // guaranteed-empty-safe array rather than short-circuiting.
+    const docRoleRows = roleIds.length > 0 ? (await query(`
         SELECT d.id AS target_id, d.title, d.document_type, rr.reference_code, r.name AS role_name
         FROM   document_signatures ds
         JOIN   documents d             ON d.id = ds.target_id AND ds.target_type = 'DOCUMENT'
@@ -282,16 +353,28 @@ const getMyPendingSignatures = async (userId) => {
         JOIN   references_registry rr  ON rr.id = d.reference_id
         WHERE  ds.status = 'PENDING' AND ds.required_role_id = ANY($1::int[])
         ORDER  BY d.title
-    `, [roleIds]);
+    `, [roleIds])).rows : [];
 
-    const certRows = await query(`
+    const docPersonRows = (await query(`
+        SELECT d.id AS target_id, d.title, d.document_type, rr.reference_code,
+               COALESCE(ds.position_title, 'Signatory') AS role_name
+        FROM   document_signatures ds
+        JOIN   documents d             ON d.id = ds.target_id AND ds.target_type = 'DOCUMENT'
+        JOIN   references_registry rr  ON rr.id = d.reference_id
+        WHERE  ds.status = 'PENDING' AND ds.required_user_id = $1
+        ORDER  BY d.title
+    `, [userId])).rows;
+
+    const docRows = { rows: [...docRoleRows, ...docPersonRows] };
+
+    const certRows = roleIds.length > 0 ? await query(`
         SELECT csr.id AS target_id, csr.certificate_type, csr.period_label, r.name AS role_name
         FROM   document_signatures ds
         JOIN   certificate_signing_rounds csr ON csr.id = ds.target_id AND ds.target_type = 'CERTIFICATE_ROUND'
         JOIN   roles r                        ON r.id = ds.required_role_id
         WHERE  ds.status = 'PENDING' AND ds.required_role_id = ANY($1::int[])
         ORDER  BY csr.period_label DESC
-    `, [roleIds]);
+    `, [roleIds]) : { rows: [] };
 
     const documents = dedupeByTarget(docRows.rows, row => ({
         target_type:     'DOCUMENT',
@@ -315,6 +398,7 @@ module.exports = {
     SIGNABLE_DOCUMENT_TYPES,
     getRequiredRoles,
     ensureSignatureSlots,
+    ensurePersonSignatureSlots,
     signSlot,
     getSignatureStatus,
     notifyPendingSignatories,

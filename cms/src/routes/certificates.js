@@ -82,8 +82,13 @@ router.get('/rounds',
     certificatesController.getRounds
 );
 
+// v1.44.0 — no route-level role gate anymore. A required signatory
+// who ISN'T Treasurer/Assistant Treasurer/Admin (e.g. a Director-only
+// signatory role) needs to be able to open this round to sign it;
+// getRoundById itself checks Treasurer/Assistant Treasurer/Admin OR
+// "currently holds a pending slot on this specific round" and 403s
+// otherwise.
 router.get('/rounds/:id',
-    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
     certificatesController.getRoundById
 );
 

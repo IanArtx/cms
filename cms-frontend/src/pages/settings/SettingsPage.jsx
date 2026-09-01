@@ -961,17 +961,31 @@ const CompanyTab = () => {
 };
 
 // ============================================================
-// SIGNATORIES TAB (v1.23.0, Section 4.29)
-// Which roles must sign each of the four multi-signature-eligible
-// document types before it counts as approved. Leaving a type with
-// zero roles selected turns the requirement off entirely for that
-// type — it falls back to the original single-approver flow.
+// SIGNATORIES TAB (v1.23.0, Section 4.29; widened v1.44.0)
+// Which roles must sign each multi-signature-eligible document type
+// before it counts as approved. Widened from the original 4 to every
+// document type in the system, mirroring StampsTab's own
+// STAMPABLE_TYPES below — being listed here only makes a type
+// ELIGIBLE, nothing changes for it until roles are actually selected.
+// Leaving a type with zero roles selected turns the requirement off
+// entirely for that type — it falls back to the original single-
+// approver flow.
 // ============================================================
 const SIGNABLE_TYPES = [
-    { key: 'RESOLUTION',       label: 'Resolutions' },
-    { key: 'LOAN_AGREEMENT',   label: 'Loan Agreements' },
-    { key: 'GRANT_AGREEMENT',  label: 'Grant Agreements' },
-    { key: 'SHARE_CERTIFICATE', label: 'Share Certificates (monthly/annual rounds)' },
+    { key: 'RESOLUTION',                  label: 'Resolutions' },
+    { key: 'LOAN_AGREEMENT',              label: 'Loan Agreements' },
+    { key: 'GRANT_AGREEMENT',             label: 'Grant Agreements' },
+    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual rounds)' },
+    { key: 'CONTRACT',                    label: 'Contracts' },
+    { key: 'MEETING_MINUTES',             label: 'Meeting Minutes' },
+    { key: 'MEETING_AGENDA',              label: 'Meeting Agendas' },
+    { key: 'INVESTMENT_PROPOSAL',         label: 'Investment Proposals' },
+    { key: 'FINANCIAL_REPORT_GENERAL',    label: 'Financial Reports (General)' },
+    { key: 'FINANCIAL_REPORT_INDIVIDUAL', label: 'Financial Reports (Individual)' },
+    { key: 'RECEIPT',                     label: 'Receipts' },
+    { key: 'AUDITOR_FEEDBACK',            label: 'Auditor Feedback' },
+    { key: 'AUDIT_REPORT',                label: 'Audit Reports' },
+    { key: 'OTHER',                       label: 'Other' },
 ];
 
 const SignatoriesTab = () => {

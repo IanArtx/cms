@@ -16,7 +16,10 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
-const { ensureSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories, SIGNABLE_DOCUMENT_TYPES } = require('../services/signatureService');
+const {
+    ensureSignatureSlots, signSlot, getSignatureStatus, notifyPendingSignatories,
+    getMyPendingSignatures: getMyPendingSignaturesService, SIGNABLE_DOCUMENT_TYPES,
+} = require('../services/signatureService');
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 
@@ -541,6 +544,20 @@ const archiveDocument = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// GET MY PENDING SIGNATURES (v1.44.0, Section 4.29)
+// GET /api/documents/pending-signatures
+// Everything currently awaiting the caller's own signature, spanning
+// both regular documents and share-certificate signing rounds — see
+// signatureService.getMyPendingSignatures for the query itself.
+// Registered before GET /:id in routes/documents.js — "pending-
+// signatures" would otherwise be swallowed as an :id value.
+// ============================================================
+const getMyPendingSignatures = asyncHandler(async (req, res) => {
+    const items = await getMyPendingSignaturesService(req.user.id);
+    sendSuccess(res, items);
+});
+
+// ============================================================
 // GET ALL DOCUMENTS
 // GET /api/documents?document_type=MEETING_MINUTES&status=FINAL
 // ============================================================
@@ -590,6 +607,38 @@ const getAllDocuments = asyncHandler(async (req, res) => {
             OR d.id IN (SELECT document_id FROM staff_document_grants WHERE user_id = $${p} AND revoked_at IS NULL)
         )`);
         params.push(req.user.id);
+    }
+
+    // v1.44.0 — a document with any still-OPEN signature slot (i.e.
+    // signature_requirements were configured for its type and at
+    // least one required role hasn't signed yet) is kept out of the
+    // general list for anyone except: its own creator, an Admin, or
+    // someone currently holding one of the still-pending required
+    // roles. It becomes visible to everyone the moment every required
+    // signature is in — same as a document whose type never had a
+    // signature requirement configured, which was never affected by
+    // this at all (the NOT EXISTS branch below covers both that case
+    // and the "already fully signed" case identically).
+    {
+        const myRoleNames = req.user.roles || [];
+        const isAdmin = myRoleNames.includes('Admin');
+        p++; const meParam = p; params.push(req.user.id);
+        p++; const adminParam = p; params.push(isAdmin);
+        p++; const rolesParam = p; params.push(myRoleNames);
+        conditions.push(`(
+            NOT EXISTS (
+                SELECT 1 FROM document_signatures dsv
+                WHERE dsv.target_type = 'DOCUMENT' AND dsv.target_id = d.id AND dsv.status = 'PENDING'
+            )
+            OR d.created_by = $${meParam}
+            OR $${adminParam}::boolean
+            OR EXISTS (
+                SELECT 1 FROM document_signatures dsv2
+                JOIN roles rv2 ON rv2.id = dsv2.required_role_id
+                WHERE dsv2.target_type = 'DOCUMENT' AND dsv2.target_id = d.id AND dsv2.status = 'PENDING'
+                AND rv2.name = ANY($${rolesParam}::text[])
+            )
+        )`);
     }
 
     const where = 'WHERE ' + conditions.join(' AND ');
@@ -778,6 +827,7 @@ module.exports = {
     generateDocument,
     approveDocument,
     signDocument,
+    getMyPendingSignatures,
     getDocumentSignatures,
     getDocumentStamps,
     createNewVersion,

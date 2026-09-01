@@ -2457,9 +2457,17 @@ CREATE TABLE member_consents (
 -- single-approver approveDocument flow.
 CREATE TABLE signature_requirements (
     id            SERIAL PRIMARY KEY,
+    -- v1.44.0 — widened from the original 4 to every document type
+    -- (mirrors document_stamp_requirements' own CHECK below). Being
+    -- listed here only makes a type ELIGIBLE for a signature
+    -- requirement; an Admin still has to configure one in Settings ->
+    -- Signatories for anything to actually change.
     document_type VARCHAR(30) NOT NULL
                   CHECK (document_type IN (
-                      'RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'
+                      'RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE',
+                      'CONTRACT', 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
+                      'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
+                      'RECEIPT', 'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER'
                   )),
     role_id       INTEGER NOT NULL REFERENCES roles(id),
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,

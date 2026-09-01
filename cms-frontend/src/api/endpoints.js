@@ -277,6 +277,9 @@ export const documentsAPI = {
     // v1.23.0 — multi-signatory approval (Section 4.29)
     sign:               (id) => api.post(`/documents/${id}/sign`),
     getSignatures:      (id) => api.get(`/documents/${id}/signatures`),
+    // v1.44.0 — everything (documents + certificate rounds) currently
+    // awaiting the caller's own signature
+    getPendingSignatures: ()  => api.get('/documents/pending-signatures'),
     // v1.24.0 — company stamps/seals (Section 4.30)
     getStamps:          (id) => api.get(`/documents/${id}/stamps`),
     archive:        (id)     => api.post(`/documents/${id}/archive`),

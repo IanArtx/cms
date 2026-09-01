@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI } from '../../api/endpoints';
+import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI, certificatesAPI } from '../../api/endpoints';
 import { formatDate, formatFileSize, getErrorMessage, truncate } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
@@ -518,42 +518,54 @@ const CompanyArchive = ({ categories }) => {
 // a standing grant rather than a time-boxed engagement.
 // ============================================================
 // ============================================================
-// SIGNATURES MODAL (v1.23.0, Section 4.29)
-// Shown for RESOLUTION/LOAN_AGREEMENT/GRANT_AGREEMENT documents once
-// signature slots exist (i.e. an Admin has configured
-// signature_requirements for that type and someone has called
-// Approve at least once). Lists every required role, who — if
-// anyone — has signed, and offers a Sign button to the current user
-// if their role still has a pending slot.
+// SIGNATURES MODAL (v1.23.0, Section 4.29; generalized v1.44.0)
+// Shown once signature slots exist for a target (i.e. an Admin has
+// configured signature_requirements for that document type and
+// someone has called Approve/opened the round at least once). Lists
+// every required role, who — if anyone — has signed, and offers a
+// Sign button to the current user if their role still has a pending
+// slot. Works for both a regular document (target.targetType
+// 'DOCUMENT') and a share-certificate signing round
+// ('CERTIFICATE_ROUND') — the two use slightly different endpoints
+// under the hood (documentsAPI vs certificatesAPI) but render
+// identically, since both are backed by the same document_signatures
+// table server-side.
 // ============================================================
-const SignaturesModal = ({ isOpen, document, onClose, onSigned }) => {
+const SignaturesModal = ({ isOpen, target, onClose, onSigned }) => {
     const { hasRole } = useAuth();
     const [signatures, setSignatures] = useState([]);
     const [stamps, setStamps] = useState([]);
     const [loading, setLoading] = useState(true);
     const [signing, setSigning] = useState(false);
     const [error, setError] = useState(null);
+    const isRound = target?.targetType === 'CERTIFICATE_ROUND';
 
     const load = useCallback(async () => {
-        if (!document) return;
+        if (!target) return;
         try {
             setLoading(true);
-            const [sigRes, stampRes] = await Promise.all([
-                documentsAPI.getSignatures(document.id),
-                documentsAPI.getStamps(document.id).catch(() => ({ data: { data: [] } })),
-            ]);
-            setSignatures(sigRes.data.data || []);
-            setStamps(stampRes.data.data || []);
+            if (isRound) {
+                const roundRes = await certificatesAPI.getRoundById(target.id);
+                setSignatures(roundRes.data.data.signatures || []);
+                setStamps(roundRes.data.data.stamps || []);
+            } else {
+                const [sigRes, stampRes] = await Promise.all([
+                    documentsAPI.getSignatures(target.id),
+                    documentsAPI.getStamps(target.id).catch(() => ({ data: { data: [] } })),
+                ]);
+                setSignatures(sigRes.data.data || []);
+                setStamps(stampRes.data.data || []);
+            }
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
             setLoading(false);
         }
-    }, [document]);
+    }, [target, isRound]);
 
     useEffect(() => { if (isOpen) load(); }, [isOpen, load]);
 
-    if (!isOpen || !document) return null;
+    if (!isOpen || !target) return null;
 
     const myPendingSlot = signatures.find(s => s.status === 'PENDING' && hasRole(s.role_name));
     const allSigned = signatures.length > 0 && signatures.every(s => s.status === 'SIGNED');
@@ -562,7 +574,11 @@ const SignaturesModal = ({ isOpen, document, onClose, onSigned }) => {
         setError(null);
         setSigning(true);
         try {
-            await documentsAPI.sign(document.id);
+            if (isRound) {
+                await certificatesAPI.signRound(target.id);
+            } else {
+                await documentsAPI.sign(target.id);
+            }
             await load();
             if (onSigned) onSigned();
         } catch (err) {
@@ -576,7 +592,7 @@ const SignaturesModal = ({ isOpen, document, onClose, onSigned }) => {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Signatures — {document.title}</h3>
+                    <h3 className="text-lg font-semibold text-gray-900">Signatures — {target.title}</h3>
                     <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
                         <XMarkIcon className="h-5 w-5" />
                     </button>
@@ -774,9 +790,22 @@ const DocumentsPage = () => {
     const [activeTab,  setActiveTab]  = useState('documents');
     const [actionLoading, setActionLoading] = useState(null);
     const [grantingDoc, setGrantingDoc] = useState(null);
-    const [signaturesDoc, setSignaturesDoc] = useState(null);
+    const [signaturesTarget, setSignaturesTarget] = useState(null);
+    const [pendingSignatures, setPendingSignatures] = useState([]);
+    const [pendingLoading, setPendingLoading] = useState(true);
     const canGrantAccess = hasRole('Admin');
-    const SIGNABLE_DOCUMENT_TYPES = ['RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT'];
+    // v1.44.0 — widened from the original 3 to every type a `documents`
+    // row can actually take (SHARE_CERTIFICATE never appears here, since
+    // certificates live in their own table/round, not this one) — the
+    // pencil icon shows on any row now; the modal itself already says
+    // "no signature requirement configured" when nothing's been set up
+    // for that particular type in Settings -> Signatories.
+    const SIGNABLE_DOCUMENT_TYPES = [
+        'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
+        'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
+        'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT',
+        'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER',
+    ];
 
     const [typeFilter,   setTypeFilter]   = useState('');
     const [statusFilter, setStatusFilter] = useState('');
@@ -797,11 +826,28 @@ const DocumentsPage = () => {
         }
     }, [page, typeFilter, statusFilter]);
 
+    // v1.44.0 — everything currently awaiting my own signature, across
+    // both regular documents and share-certificate signing rounds.
+    // Loaded independently of the main document list/pagination so it
+    // stays accurate regardless of which tab/filter is active.
+    const loadPendingSignatures = useCallback(async () => {
+        try {
+            setPendingLoading(true);
+            const res = await documentsAPI.getPendingSignatures();
+            setPendingSignatures(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setPendingLoading(false);
+        }
+    }, []);
+
     useEffect(() => {
         loadDocuments();
+        loadPendingSignatures();
         categoriesAPI.getAll({ flat: true })
             .then(r => setCategories(r.data.data)).catch(() => {});
-    }, [loadDocuments]);
+    }, [loadDocuments, loadPendingSignatures]);
 
     const handleApprove = async (id) => {
         setActionLoading(id);
@@ -957,7 +1003,7 @@ const DocumentsPage = () => {
                         on a pending one. */}
                     {SIGNABLE_DOCUMENT_TYPES.includes(row.document_type) && (
                         <button
-                            onClick={() => setSignaturesDoc(row)}
+                            onClick={() => setSignaturesTarget({ id: row.id, title: row.title, targetType: 'DOCUMENT' })}
                             className={`p-1.5 rounded-lg transition-colors ${
                                 row.fully_signed
                                     ? 'bg-green-50 text-green-600 hover:bg-green-100'
@@ -1054,6 +1100,27 @@ const DocumentsPage = () => {
                     <ShieldCheckIcon className="h-4 w-4" />
                     Company Archive
                 </button>
+                {/* v1.44.0 — everything currently awaiting my own
+                    signature, spanning both documents and share
+                    certificate rounds (Section 4.29). */}
+                <button
+                    onClick={() => setActiveTab('pending-signatures')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg
+                        text-sm font-medium transition-colors ${activeTab === 'pending-signatures'
+                            ? 'bg-primary-700 text-white'
+                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
+                >
+                    <PencilSquareIcon className="h-4 w-4" />
+                    Pending My Signature
+                    {pendingSignatures.length > 0 && (
+                        <span className={`text-xs font-bold rounded-full px-1.5 ${
+                            activeTab === 'pending-signatures' ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
+                        }`}>
+                            {pendingSignatures.length}
+                        </span>
+                    )}
+                </button>
             </div>
 
             {/* All Documents Tab */}
@@ -1104,6 +1171,46 @@ const DocumentsPage = () => {
                 <CompanyArchive categories={categories} />
             )}
 
+            {/* Pending My Signature Tab (v1.44.0, Section 4.29) — spans
+                both regular documents and share-certificate signing
+                rounds, since neither the "All Documents" list nor
+                anywhere else in the app shows the two side by side. */}
+            {activeTab === 'pending-signatures' && (
+                <div className="card">
+                    {pendingLoading ? (
+                        <p className="text-sm text-gray-400 py-4 text-center">Loading...</p>
+                    ) : pendingSignatures.length === 0 ? (
+                        <p className="text-sm text-gray-400 py-4 text-center">
+                            Nothing is currently awaiting your signature.
+                        </p>
+                    ) : (
+                        <div className="divide-y divide-gray-100">
+                            {pendingSignatures.map(item => (
+                                <div key={`${item.target_type}-${item.target_id}`}
+                                    className="flex items-center justify-between py-3 gap-4 flex-wrap">
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-medium text-gray-900">
+                                            {item.title}
+                                            {item.reference_code && (
+                                                <span className="ml-2 font-mono text-xs text-primary-700">{item.reference_code}</span>
+                                            )}
+                                        </p>
+                                        <p className="text-xs text-gray-400">
+                                            {item.subtitle} — your signature needed as {item.role_names.join(' / ')}
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => setSignaturesTarget({ id: item.target_id, title: item.title, targetType: item.target_type })}
+                                        className="btn-primary text-sm flex-shrink-0">
+                                        Review &amp; Sign
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
             <UploadModal
                 isOpen={showUpload}
                 onClose={() => setShowUpload(false)}
@@ -1119,10 +1226,10 @@ const DocumentsPage = () => {
             />
 
             <SignaturesModal
-                isOpen={!!signaturesDoc}
-                document={signaturesDoc}
-                onClose={() => setSignaturesDoc(null)}
-                onSigned={loadDocuments}
+                isOpen={!!signaturesTarget}
+                target={signaturesTarget}
+                onClose={() => setSignaturesTarget(null)}
+                onSigned={() => { loadDocuments(); loadPendingSignatures(); }}
             />
         </div>
     );

@@ -15,6 +15,7 @@ const { sendSuccess } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { invalidateBrandingCache } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey } = require('../services/storageService');
+const { SIGNABLE_DOCUMENT_TYPES } = require('../services/signatureService');
 
 // ============================================================
 // GET COMPANY SETTINGS
@@ -210,8 +211,10 @@ const updateMembershipAgreement = asyncHandler(async (req, res) => {
 // Admin only. Returns every document type alongside whichever roles
 // are currently required to sign it (active rows only).
 // ============================================================
-const SIGNABLE_DOCUMENT_TYPES = ['RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'];
-
+// v1.44.0 — was a locally-duplicated copy of this same list (drifted
+// from signatureService.js's own, which is the one actually enforced
+// at sign time); now imported from there so there's exactly one
+// source of truth.
 const getSignatureRequirements = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT sr.id, sr.document_type, sr.role_id, r.name AS role_name

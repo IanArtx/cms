@@ -130,6 +130,17 @@ router.post('/generate',
 );
 
 // ============================================================
+// GET MY PENDING SIGNATURES (v1.44.0, Section 4.29)
+// GET /api/documents/pending-signatures
+// MUST be registered before GET /:id below — Express would otherwise
+// match "pending-signatures" as the :id value (same hazard as
+// /capital-goals/my-calls vs /:id, Section 33.7).
+// ============================================================
+router.get('/pending-signatures',
+    documentsController.getMyPendingSignatures
+);
+
+// ============================================================
 // GET SINGLE DOCUMENT
 // GET /api/documents/:id
 // ============================================================
@@ -165,12 +176,15 @@ router.post('/:id/approve',
 // ============================================================
 // SIGN DOCUMENT (v1.23.0, Section 4.29)
 // POST /api/documents/:id/sign
-// Fills the caller's role's pending signature slot — same
-// DOCUMENT_APPROVE permission as approving, since signing is the
-// per-signatory half of the same approval action.
+// v1.44.0 — no longer gated behind DOCUMENT_APPROVE. Being a
+// currently-held required-signatory role for this document is what
+// actually matters, and signSlot (signatureService.js) is what
+// enforces that — the same pattern POST /certificates/rounds/:id/sign
+// already used. Requiring DOCUMENT_APPROVE too meant a role added as
+// a signatory in Settings -> Signatories couldn't sign unless an
+// Admin separately remembered to also grant it that permission.
 // ============================================================
 router.post('/:id/sign',
-    requirePermissions(['DOCUMENT_APPROVE']),
     validators.idParam('id'),
     validateRequest,
     documentsController.signDocument

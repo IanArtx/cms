@@ -169,6 +169,14 @@ const getRounds = asyncHandler(async (req, res) => {
 // ============================================================
 // GET ONE SIGNING ROUND, WITH SIGNATURE STATUS
 // GET /api/certificates/rounds/:id
+// v1.44.0 — previously route-gated to Treasurer/Assistant Treasurer/
+// Admin only, which meant a Director-only (or any other role)
+// required signatory was notified to sign a round but had no way to
+// actually open it. Now: those three roles can always view any
+// round (the management case — browsing/auditing rounds they didn't
+// necessarily sign), OR the caller can view THIS specific round if
+// they currently hold one of its still-PENDING required-signatory
+// roles. Anyone else gets a 403, same as before for the general case.
 // ============================================================
 const getRoundById = asyncHandler(async (req, res) => {
     const { id } = req.params;
@@ -183,6 +191,15 @@ const getRoundById = asyncHandler(async (req, res) => {
     if (roundResult.rows.length === 0) throw createError.notFound('Signing round not found');
 
     const signatures = await getSignatureStatus('CERTIFICATE_ROUND', id);
+
+    const managementRoles = ['Treasurer', 'Assistant Treasurer', 'Admin'];
+    const myRoles = req.user.roles || [];
+    const isManager = managementRoles.some(r => myRoles.includes(r));
+    const isPendingSignatory = signatures.some(s => s.status === 'PENDING' && myRoles.includes(s.role_name));
+    if (!isManager && !isPendingSignatory) {
+        throw createError.forbidden('You do not have access to this signing round');
+    }
+
     const stamps = await getAppliedStamps('CERTIFICATE_ROUND', id);
 
     sendSuccess(res, { ...roundResult.rows[0], signatures, stamps });

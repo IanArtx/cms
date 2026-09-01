@@ -18,7 +18,20 @@ const { createError } = require('../utils/errors');
 const { notifyMany } = require('./notificationService');
 const { copyObject, generateKey, toKey } = require('./storageService');
 
-const SIGNABLE_DOCUMENT_TYPES = ['RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'];
+// v1.44.0 — widened from the original 4 (RESOLUTION/LOAN_AGREEMENT/
+// GRANT_AGREEMENT/SHARE_CERTIFICATE) to every document type in the
+// system, mirroring STAMPABLE_DOCUMENT_TYPES (settingsController.js)
+// which already covers all of them. Being in this list only means a
+// document type is ELIGIBLE to require signatures — an Admin still
+// has to actually configure required roles for it in Settings ->
+// Signatories (signature_requirements) before anything changes for
+// that type in practice.
+const SIGNABLE_DOCUMENT_TYPES = [
+    'RESOLUTION', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE',
+    'CONTRACT', 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
+    'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
+    'RECEIPT', 'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER',
+];
 
 // ============================================================
 // GET ACTIVE REQUIRED ROLES for a document type
@@ -229,6 +242,75 @@ const notifyPendingSignatories = async (targetType, targetId, notificationType, 
     return { notified: recipients.length };
 };
 
+// ============================================================
+// GET MY PENDING SIGNATURES (v1.44.0) — every DOCUMENT and
+// CERTIFICATE_ROUND target where the caller currently holds at least
+// one still-PENDING required-signatory slot, across both the
+// `documents` table (Resolutions, Loan/Grant Agreements, etc.) and
+// `certificate_signing_rounds` (Share Certificates) — the two never
+// otherwise show up in the same list anywhere in the app. Powers the
+// "Pending My Signature" tab. One row per target (not per role slot)
+// — role_names collects every one of the caller's currently-pending
+// roles on that same target, since a person can hold more than one
+// required role.
+// ============================================================
+const getMyPendingSignatures = async (userId) => {
+    const userRolesResult = await query(
+        'SELECT role_id FROM user_roles WHERE user_id = $1 AND revoked_at IS NULL',
+        [userId]
+    );
+    const roleIds = userRolesResult.rows.map(r => r.role_id);
+    if (roleIds.length === 0) return [];
+
+    const dedupeByTarget = (rows, mapFn) => {
+        const byId = new Map();
+        for (const row of rows) {
+            if (!byId.has(row.target_id)) {
+                byId.set(row.target_id, { ...mapFn(row), role_names: [row.role_name] });
+            } else {
+                byId.get(row.target_id).role_names.push(row.role_name);
+            }
+        }
+        return Array.from(byId.values());
+    };
+
+    const docRows = await query(`
+        SELECT d.id AS target_id, d.title, d.document_type, rr.reference_code, r.name AS role_name
+        FROM   document_signatures ds
+        JOIN   documents d             ON d.id = ds.target_id AND ds.target_type = 'DOCUMENT'
+        JOIN   roles r                 ON r.id = ds.required_role_id
+        JOIN   references_registry rr  ON rr.id = d.reference_id
+        WHERE  ds.status = 'PENDING' AND ds.required_role_id = ANY($1::int[])
+        ORDER  BY d.title
+    `, [roleIds]);
+
+    const certRows = await query(`
+        SELECT csr.id AS target_id, csr.certificate_type, csr.period_label, r.name AS role_name
+        FROM   document_signatures ds
+        JOIN   certificate_signing_rounds csr ON csr.id = ds.target_id AND ds.target_type = 'CERTIFICATE_ROUND'
+        JOIN   roles r                        ON r.id = ds.required_role_id
+        WHERE  ds.status = 'PENDING' AND ds.required_role_id = ANY($1::int[])
+        ORDER  BY csr.period_label DESC
+    `, [roleIds]);
+
+    const documents = dedupeByTarget(docRows.rows, row => ({
+        target_type:     'DOCUMENT',
+        target_id:       row.target_id,
+        title:           row.title,
+        subtitle:        row.document_type.replace(/_/g, ' '),
+        reference_code:  row.reference_code,
+    }));
+
+    const rounds = dedupeByTarget(certRows.rows, row => ({
+        target_type: 'CERTIFICATE_ROUND',
+        target_id:   row.target_id,
+        title:       `${row.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly'} Share Certificates`,
+        subtitle:    row.period_label,
+    }));
+
+    return [...documents, ...rounds];
+};
+
 module.exports = {
     SIGNABLE_DOCUMENT_TYPES,
     getRequiredRoles,
@@ -236,4 +318,5 @@ module.exports = {
     signSlot,
     getSignatureStatus,
     notifyPendingSignatories,
+    getMyPendingSignatures,
 };

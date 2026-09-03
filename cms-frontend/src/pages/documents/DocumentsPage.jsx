@@ -28,6 +28,7 @@ import {
     UserPlusIcon,
     XMarkIcon,
     PencilSquareIcon,
+    TrashIcon,
 } from '@heroicons/react/24/outline';
 
 // Renderers for SYSTEM_GENERATED documents — same client-side template
@@ -42,10 +43,12 @@ const GENERATED_RENDERERS = {
     RECEIPT:          receiptTemplate,
     RESOLUTION:       resolutionTemplate,
     AUDITOR_FEEDBACK: auditorFeedbackTemplate,
-    // v1.34.0 — Member Portfolio Summary, generated from each member's
-    // own Portfolio page rather than through this page's own Generate
-    // flow, but still stored/reopened the exact same way as every
-    // other SYSTEM_GENERATED document.
+    // v1.34.0 — Member Portfolio Summary. As of v1.46.0 the Portfolio
+    // page's Print action no longer saves a document here at all (it
+    // was never supposed to) — this renderer only exists to still
+    // preview/reopen documents of this type that were generated
+    // before that fix, stored the same way as every other
+    // SYSTEM_GENERATED document.
     FINANCIAL_REPORT_INDIVIDUAL: memberPortfolioTemplate,
 };
 
@@ -332,6 +335,22 @@ const CompanyArchive = ({ categories }) => {
         }
     };
 
+    // v1.46.0 — the missing "take it back out" action. Soft removal
+    // (see deleteDocument in documentsController.js) — the document
+    // just disappears from every list, including this one.
+    const handleRemove = async (doc) => {
+        if (!window.confirm(`Remove "${doc.title}" from the archive? This can't be undone from here.`)) return;
+        setActionLoading(doc.id);
+        try {
+            await documentsAPI.remove(doc.id);
+            setDocuments(prev => prev.filter(d => d.id !== doc.id));
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const loadArchive = useCallback(async () => {
         try {
             setLoading(true);
@@ -492,6 +511,18 @@ const CompanyArchive = ({ categories }) => {
                                     <ArrowDownTrayIcon className="h-3.5 w-3.5" />
                                     Download
                                 </button>
+                                {hasPermission('DOCUMENT_DELETE') && (
+                                    <button
+                                        onClick={() => handleRemove(doc)}
+                                        disabled={actionLoading === doc.id}
+                                        title="Remove from the archive"
+                                        className="flex items-center justify-center gap-1.5
+                                            text-xs font-medium text-red-600 py-1.5 px-2 rounded-lg
+                                            border border-red-200 hover:bg-red-50 transition-colors"
+                                    >
+                                        <TrashIcon className="h-3.5 w-3.5" />
+                                    </button>
+                                )}
                             </div>
                         </div>
                     ))}
@@ -873,6 +904,22 @@ const DocumentsPage = () => {
         }
     };
 
+    // v1.46.0 — the missing "take it back out" action for a document
+    // that's already ARCHIVED. Soft removal (see deleteDocument in
+    // documentsController.js) — it just disappears from every list.
+    const handleRemove = async (id, title) => {
+        if (!window.confirm(`Remove "${title}" from the archive? This can't be undone from here.`)) return;
+        setActionLoading(id);
+        try {
+            await documentsAPI.remove(id);
+            loadDocuments();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const handleView = async (doc) => {
         setActionLoading(doc.id);
         try {
@@ -1024,6 +1071,17 @@ const DocumentsPage = () => {
                             title="Archive"
                         >
                             <ArchiveBoxIcon className="h-4 w-4" />
+                        </button>
+                    )}
+                    {row.status === 'ARCHIVED' && hasPermission('DOCUMENT_DELETE') && (
+                        <button
+                            onClick={() => handleRemove(row.id, row.title)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-red-50 text-red-600
+                                hover:bg-red-100 transition-colors"
+                            title="Remove from archive"
+                        >
+                            <TrashIcon className="h-4 w-4" />
                         </button>
                     )}
                     {canGrantAccess && (

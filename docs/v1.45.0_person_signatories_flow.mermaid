@@ -1,0 +1,30 @@
+flowchart TD
+    A["Someone generates a Meeting Minutes,\nMeeting Agenda, or Resolution document"] --> B{"Fill in Chairperson /\nSecretary field"}
+    B -->|"Pick from dropdown\n(a real system user)"| C["System stores that\nperson's user ID + name"]
+    B -->|"Type a name instead\n(not a system user)"| D["System stores just\nthe typed name"]
+
+    C --> E["Attendees / Present list\n(same dropdown-or-type picker,\nprinted only, no signing)"]
+    D --> E
+
+    E --> F["Document saved as DRAFT"]
+    F --> G["Someone clicks Approve"]
+
+    G --> H{"Does this document type\nhave role-based signers too?\n(Settings -> Signatories)"}
+    H -->|Yes| I["Open role-based\nsignature slot(s)"]
+    H -->|No| J["Skip - no role-based slot"]
+
+    I --> K
+    J --> K{"Was Chairperson/Secretary\npicked from the dropdown?"}
+    K -->|Yes| L["Open a PERSON-SPECIFIC\nsignature slot for\nthat exact person"]
+    K -->|"No (typed name)"| M["No slot opened -\njust prints on the document,\nnever blocks approval"]
+
+    L --> N["Named person and/or role holder(s)\nlog in and sign themselves\n(nothing auto-signs)"]
+    M --> N
+
+    N --> O{"Have ALL required\nslots been signed?"}
+    O -->|No| N
+    O -->|Yes| P["Document becomes FINAL\nand appears in the general\nDocuments list"]
+
+    style A fill:#eef2ff,stroke:#4f46e5
+    style P fill:#ecfdf5,stroke:#059669
+    style M fill:#fff7ed,stroke:#ea580c

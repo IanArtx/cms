@@ -596,6 +596,72 @@ const archiveDocument = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// DELETE (REMOVE FROM ARCHIVE) DOCUMENT (v1.46.0)
+// DELETE /api/documents/:id
+//
+// Requested directly: there was no way to remove something from the
+// Company Archive once it landed there — archiveDocument (above) is
+// a one-way DRAFT/FINAL -> ARCHIVED move with no counterpart. This
+// adds the missing "take it back out" action.
+//
+// Eligibility deliberately mirrors getAllDocuments' own "is this in
+// the Company Archive view" condition, not just `status = 'ARCHIVED'`
+// on its own — a document uploaded directly INTO the archive
+// (UploadModal's isArchive flag, related_record_type =
+// 'COMPANY_ARCHIVE') starts life as an ordinary DRAFT/FINAL document
+// and never goes through the separate Archive action at all, so
+// requiring status = 'ARCHIVED' first would make most archive uploads
+// permanently undeletable. Either condition being true means "this is
+// something currently sitting in the archive," which is exactly what
+// was asked to be removable.
+//
+// This is a SOFT removal, same pattern as archiveDocument itself —
+// the row is never actually deleted from the database. A real
+// DELETE FROM documents would either be blocked outright (grants,
+// grant_conditions, loans_received/given, staff_document_grants,
+// audit_engagement_documents, report_log all hold real foreign keys
+// into documents.id with no ON DELETE clause) or, worse, silently
+// orphan document_signatures/document_stamps_applied history (those
+// two link to documents via a polymorphic target_type/target_id
+// pair, not an enforced FK, so a hard delete wouldn't even error —
+// it would just quietly corrupt the audit trail of who signed/
+// stamped a now-vanished document). Flipping status to DELETED and
+// excluding it from every list view (getAllDocuments, same as the
+// existing SUPERSEDED exclusion) gets the same practical outcome —
+// gone from the archive, gone from the general list — with none of
+// that risk, and matches this codebase's own established convention
+// of soft-deactivating referenced records rather than hard-deleting
+// them (see e.g. users.is_active, company_stamps.is_active).
+// ============================================================
+const deleteDocument = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const result = await query(`
+        UPDATE documents
+        SET    status = 'DELETED'
+        WHERE  id = $1
+        AND    (status = 'ARCHIVED' OR related_record_type = 'COMPANY_ARCHIVE')
+        AND    status != 'DELETED'
+        RETURNING id, title, status
+    `, [id]);
+
+    if (result.rows.length === 0) {
+        throw createError.badRequest(
+            'Document not found or not in the archive — only a document currently in the Company Archive (or archived elsewhere) can be removed.'
+        );
+    }
+
+    await logAction(req.user.id, ACTIONS.DOCUMENT_DELETED, MODULES.DOCUMENTS, {
+        ipAddress:   req.ip,
+        recordType:  'documents',
+        recordId:    parseInt(id),
+        description: `Document removed from archive: ID ${id} (${result.rows[0].title})`,
+    });
+
+    sendSuccess(res, null, 'Document permanently removed from the archive');
+});
+
+// ============================================================
 // GET MY PENDING SIGNATURES (v1.44.0, Section 4.29)
 // GET /api/documents/pending-signatures
 // Everything currently awaiting the caller's own signature, spanning
@@ -617,7 +683,12 @@ const getAllDocuments = asyncHandler(async (req, res) => {
     const { document_type, status, related_record_type, related_record_id } = req.query;
     const { page, limit, offset } = getPagination(req.query);
 
-    const conditions = ['d.status != \'SUPERSEDED\''];
+    // v1.46.0 — DELETED (soft-removed from the archive) is excluded
+    // here the same way SUPERSEDED always was, so a removed document
+    // disappears from every list view (both the plain "All Documents"
+    // list and the Company Archive tab's OR-in-ARCHIVED condition
+    // below, since a DELETED document is no longer ARCHIVED either).
+    const conditions = ['d.status NOT IN (\'SUPERSEDED\', \'DELETED\')'];
     const params = [];
     let p = 0;
 
@@ -884,6 +955,7 @@ module.exports = {
     getDocumentStamps,
     createNewVersion,
     archiveDocument,
+    deleteDocument,
     getAllDocuments,
     getDocumentById,
     downloadDocument,

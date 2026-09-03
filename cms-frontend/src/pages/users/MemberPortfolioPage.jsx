@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { usersAPI, documentsAPI, categoriesAPI } from '../../api/endpoints';
+import { usersAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import { memberPortfolioTemplate, printDocument } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
@@ -56,8 +56,6 @@ const MemberPortfolioPage = () => {
     const [portfolio, setPortfolio] = useState(null);
     const [loading,   setLoading]   = useState(true);
     const [error,     setError]     = useState(null);
-    const [generating, setGenerating] = useState(false);
-    const [genError,   setGenError]   = useState(null);
 
     const loadPortfolio = useCallback(async () => {
         if (!targetId) return;
@@ -90,62 +88,6 @@ const MemberPortfolioPage = () => {
         );
     };
 
-    // --------------------------------------------------------
-    // Formal generated Document — saved to the Documents library
-    // (source SYSTEM_GENERATED, document_type
-    // FINANCIAL_REPORT_INDIVIDUAL — see migration_v1.34.0.sql),
-    // audit-logged, downloadable/re-printable later from Documents.
-    // Same generic POST /documents/generate every other generated
-    // document type uses (Receipt, Resolution, etc.) — this button
-    // just builds template_data from the portfolio already on screen
-    // instead of asking the admin to re-type it into a form.
-    // --------------------------------------------------------
-    const handleGenerateDocument = async () => {
-        setGenerating(true);
-        setGenError(null);
-        try {
-            const [templatesRes, categoriesRes] = await Promise.all([
-                documentsAPI.getTemplates(),
-                categoriesAPI.getAll(),
-            ]);
-            const template = (templatesRes.data.data || [])
-                .find(t => t.template_type === 'FINANCIAL_REPORT_INDIVIDUAL');
-            if (!template) {
-                throw new Error(
-                    'Portfolio Summary template not found — run migration_v1.34.0.sql first.'
-                );
-            }
-            const docCategory = (categoriesRes.data.data || [])
-                .find(c => c.module === 'DOCUMENT');
-            if (!docCategory) {
-                throw new Error('No Document category found to file this under.');
-            }
-
-            const templateData = {
-                ...portfolio,
-                prepared_by:    authUser ? `${authUser.first_name} ${authUser.last_name}` : '',
-                generated_date: new Date().toLocaleDateString('en-GB'),
-            };
-
-            await documentsAPI.generate({
-                template_id:   template.id,
-                category_id:   docCategory.id,
-                title: `Portfolio Summary - ${portfolio.profile.first_name} ${portfolio.profile.last_name} - ${new Date().toLocaleDateString('en-GB')}`,
-                document_type: 'FINANCIAL_REPORT_INDIVIDUAL',
-                template_data: templateData,
-            });
-
-            printDocument(
-                memberPortfolioTemplate(templateData),
-                `Portfolio Summary - ${portfolio.profile.first_name} ${portfolio.profile.last_name}`
-            );
-        } catch (err) {
-            setGenError(getErrorMessage(err));
-        } finally {
-            setGenerating(false);
-        }
-    };
-
     if (loading) return <LoadingSpinner fullPage text="Loading portfolio..." />;
     if (error) return (
         <div>
@@ -166,24 +108,13 @@ const MemberPortfolioPage = () => {
                 backTo={isSelf ? '/' : '/users'}
                 actions={
                     <div className="flex flex-wrap gap-2">
-                        <button onClick={handlePrint} className="btn-secondary flex items-center gap-2">
+                        <button onClick={handlePrint} className="btn-primary flex items-center gap-2">
                             <PrinterIcon className="h-4 w-4" />
-                            Print
-                        </button>
-                        <button onClick={handleGenerateDocument} disabled={generating}
-                            className="btn-primary flex items-center gap-2">
-                            <PrinterIcon className="h-4 w-4" />
-                            {generating ? 'Generating...' : 'Generate Portfolio Summary'}
+                            Print / Save as PDF
                         </button>
                     </div>
                 }
             />
-
-            {genError && (
-                <div className="mb-6">
-                    <ErrorMessage message={genError} onDismiss={() => setGenError(null)} />
-                </div>
-            )}
 
             {/* Summary banner */}
             <div className="card mb-6">

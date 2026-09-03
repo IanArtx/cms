@@ -25,6 +25,7 @@ const { logAction, ACTIONS, MODULES } = require('./auditService');
 const { ensureSignatureSlots, getSignatureStatus } = require('./signatureService');
 const { applyStamps, getAppliedStamps } = require('./stampService');
 const { notifyMany } = require('./notificationService');
+const { renderHtmlToPdfBuffer } = require('./pdfService');
 const logger = require('../config/logger');
 
 // ============================================================
@@ -284,26 +285,12 @@ const renderCertificateHtml = async (cert, signatures = null, stamps = null) => 
 
 // ============================================================
 // RENDER CERTIFICATE TO A PDF BUFFER (headless Chrome)
+// v1.46.0 — the actual headless-Chrome rendering was factored out
+// into the shared pdfService.js (reused by reportService.js's
+// monthly report emails); this stays as a thin, backward-compatible
+// wrapper so every existing call site here is unaffected.
 // ============================================================
-const renderCertificatePdfBuffer = async (html) => {
-    const puppeteer = require('puppeteer');
-    const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    try {
-        const page = await browser.newPage();
-        await page.setContent(html, { waitUntil: 'networkidle0' });
-        const pdfBuffer = await page.pdf({
-            format: 'A4',
-            printBackground: true,
-            margin: { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' },
-        });
-        return pdfBuffer;
-    } finally {
-        await browser.close();
-    }
-};
+const renderCertificatePdfBuffer = async (html) => renderHtmlToPdfBuffer(html);
 
 // ============================================================
 // EMAIL A CERTIFICATE TO ITS HOLDER (PDF attachment)

@@ -227,4 +227,17 @@ router.post('/:id/archive',
     documentsController.archiveDocument
 );
 
+// ============================================================
+// DELETE (REMOVE FROM ARCHIVE) DOCUMENT (v1.46.0)
+// DELETE /api/documents/:id
+// Only ever succeeds on a document that's already ARCHIVED — see
+// deleteDocument's own comment in documentsController.js.
+// ============================================================
+router.delete('/:id',
+    requirePermissions(['DOCUMENT_DELETE']),
+    validators.idParam('id'),
+    validateRequest,
+    documentsController.deleteDocument
+);
+
 module.exports = router;

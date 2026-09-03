@@ -12,7 +12,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
-import { DocumentTextIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { DocumentTextIcon, ArrowLeftIcon, EyeIcon } from '@heroicons/react/24/outline';
 import {
     meetingAgendaTemplate,
     meetingMinutesTemplate,
@@ -307,6 +307,14 @@ const GenerateDocumentPage = () => {
     const [categoryId,       setCategoryId]       = useState('');
     const [fieldValues,      setFieldValues]      = useState({});
     const [dynamicValues,    setDynamicValues]    = useState({});
+    // v1.46.0 — previewing (local render, nothing saved) is now a
+    // separate step from actually generating (saving to the Documents
+    // library). pendingPayload holds exactly what would be POSTed,
+    // built once at Preview time; generated flags that it's already
+    // been saved, so Confirm can't be clicked twice into two identical
+    // documents — the bug this was built to fix.
+    const [pendingPayload,   setPendingPayload]   = useState(null);
+    const [generated,        setGenerated]        = useState(false);
 
     useEffect(() => {
         Promise.all([
@@ -330,6 +338,8 @@ const GenerateDocumentPage = () => {
         setError(null);
         setSuccess(null);
         setPreviewHtml(null);
+        setPendingPayload(null);
+        setGenerated(false);
         const config = TEMPLATE_FIELDS[template.template_type];
         const initial = {};
         (config?.dynamicSections || []).forEach(s => { initial[s.key] = []; });
@@ -337,47 +347,72 @@ const GenerateDocumentPage = () => {
         setDynamicValues(initial);
     };
 
-    const handleGenerate = async (e) => {
+    // --------------------------------------------------------
+    // PREVIEW (v1.46.0) — renders locally from the local template
+    // engine ONLY. Nothing is sent to the backend and nothing is
+    // saved yet, so previewing (or re-previewing after changing a
+    // field) any number of times can never create a duplicate
+    // document — that only happens in handleConfirmGenerate below,
+    // and only once per click.
+    // --------------------------------------------------------
+    const handlePreview = (e) => {
         e.preventDefault();
         if (!selectedTemplate) return;
+        setError(null);
+        setSuccess(null);
+        setGenerated(false);
+
+        const config = TEMPLATE_FIELDS[selectedTemplate.template_type];
+        const templateData = {
+            // NOTE: company name/address are deliberately NOT included here —
+            // every exportUtils template pulls them live from Settings > Company
+            // (via setBranding()) at render time, so persisting a stale
+            // snapshot here would only be misleading, never actually used.
+            generated_date:  new Date().toLocaleDateString('en-GB'),
+            prepared_by:     user ? `${user.first_name} ${user.last_name}` : '',
+            ...fieldValues,
+            ...dynamicValues,
+        };
+
+        const docCategory = categories.find(c => c.module === 'DOCUMENT');
+
+        const payload = {
+            template_id:   selectedTemplate.id,
+            category_id:   categoryId || docCategory?.id,
+            title:         title ||
+                `${config?.label} — ${new Date().toLocaleDateString('en-GB')}`,
+            document_type: selectedTemplate.template_type,
+            template_data: templateData,
+        };
+
+        if (!payload.category_id) {
+            setError('Please select a document category');
+            return;
+        }
+
+        // Render using the local template engine — read-only, no
+        // backend call. Keep the exact payload we'd save, for Confirm
+        // below, so Confirm never has to re-read form state (which
+        // could have changed again by the time it's clicked).
+        setPreviewHtml(config.renderer(templateData));
+        setPendingPayload(payload);
+    };
+
+    // --------------------------------------------------------
+    // CONFIRM & SAVE (v1.46.0) — the one and only place that actually
+    // calls documentsAPI.generate(). Guarded by `loading`/`generated`
+    // so the button can't fire twice for the same preview; the only
+    // way to save a second time is to deliberately change a field and
+    // preview again, which is a genuinely new document, not a
+    // duplicate click.
+    // --------------------------------------------------------
+    const handleConfirmGenerate = async () => {
+        if (!pendingPayload || loading || generated) return;
         setLoading(true);
         setError(null);
-        setPreviewHtml(null);
-
         try {
-            const config = TEMPLATE_FIELDS[selectedTemplate.template_type];
-            const templateData = {
-                // NOTE: company name/address are deliberately NOT included here —
-                // every exportUtils template pulls them live from Settings > Company
-                // (via setBranding()) at render time, so persisting a stale
-                // snapshot here would only be misleading, never actually used.
-                generated_date:  new Date().toLocaleDateString('en-GB'),
-                prepared_by:     user ? `${user.first_name} ${user.last_name}` : '',
-                ...fieldValues,
-                ...dynamicValues,
-            };
-
-            const docCategory = categories.find(c => c.module === 'DOCUMENT');
-
-            const payload = {
-                template_id:   selectedTemplate.id,
-                category_id:   categoryId || docCategory?.id,
-                title:         title ||
-                    `${config?.label} — ${new Date().toLocaleDateString('en-GB')}`,
-                document_type: selectedTemplate.template_type,
-                template_data: templateData,
-            };
-
-            if (!payload.category_id) {
-                throw new Error('Please select a document category');
-            }
-
-            // Save to document library
-            await documentsAPI.generate(payload);
-
-            // Render using the local template engine
-            const rendered = config.renderer(templateData);
-            setPreviewHtml(rendered);
+            await documentsAPI.generate(pendingPayload);
+            setGenerated(true);
             setSuccess(
                 'Document generated and saved to library. ' +
                 'Use "Print / Save as PDF" to download.'
@@ -459,7 +494,7 @@ const GenerateDocumentPage = () => {
             </div>
 
             {selectedTemplate && config && (
-                <form onSubmit={handleGenerate}>
+                <form onSubmit={handlePreview}>
                     {/* Step 2 */}
                     <div className="card mb-6">
                         <h3 className="section-title mb-4">Step 2 — Document Details</h3>
@@ -556,35 +591,58 @@ const GenerateDocumentPage = () => {
                     <div className="flex justify-end gap-3 mb-6">
                         <button type="button" onClick={() => navigate('/documents')}
                             className="btn-secondary">Cancel</button>
-                        <button type="submit" disabled={loading}
+                        <button type="submit"
                             className="btn-primary flex items-center gap-2">
-                            <DocumentTextIcon className="h-4 w-4" />
-                            {loading ? 'Generating...' : 'Generate Document'}
+                            <EyeIcon className="h-4 w-4" />
+                            {previewHtml ? 'Update Preview' : 'Preview'}
                         </button>
                     </div>
                 </form>
             )}
 
-            {/* Preview */}
+            {/* Preview — v1.46.0: local render only, nothing saved yet.
+                Review it, change a field above and preview again if
+                something needs fixing, then Confirm to actually save
+                it to the Documents library. This is also what stops
+                the old bug where clicking Generate more than once
+                created the same document multiple times — saving now
+                only ever happens from the single Confirm button below,
+                which disables itself the moment it succeeds. */}
             {previewHtml && (
                 <div className="card mt-6">
                     <div className="flex items-center justify-between mb-4">
-                        <h3 className="section-title">Document Preview</h3>
+                        <div>
+                            <h3 className="section-title">Document Preview</h3>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                                {generated
+                                    ? 'Saved to the Documents library.'
+                                    : 'Not saved yet — review it, then confirm below.'}
+                            </p>
+                        </div>
                         <div className="flex gap-2">
                             <button
                                 onClick={() => {
                                     const iframe = document.getElementById('doc-preview');
                                     iframe.contentWindow.print();
                                 }}
-                                className="btn-primary flex items-center gap-2"
+                                className="btn-secondary flex items-center gap-2"
                             >
                                 <DocumentTextIcon className="h-4 w-4" />
                                 Print / Save as PDF
                             </button>
-                            <button onClick={() => setPreviewHtml(null)}
-                                className="btn-secondary">
-                                Close
-                            </button>
+                            {generated ? (
+                                <button onClick={() => navigate('/documents')}
+                                    className="btn-primary flex items-center gap-2">
+                                    <DocumentTextIcon className="h-4 w-4" />
+                                    Done — Go to Documents
+                                </button>
+                            ) : (
+                                <button onClick={handleConfirmGenerate} disabled={loading}
+                                    className="btn-primary flex items-center gap-2">
+                                    <DocumentTextIcon className="h-4 w-4" />
+                                    {loading ? 'Saving...' : 'Confirm & Save to Library'}
+                                </button>
+                            )}
                         </div>
                     </div>
                     <div className="border border-gray-200 rounded-lg overflow-hidden">

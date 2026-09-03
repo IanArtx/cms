@@ -283,6 +283,9 @@ export const documentsAPI = {
     // v1.24.0 — company stamps/seals (Section 4.30)
     getStamps:          (id) => api.get(`/documents/${id}/stamps`),
     archive:        (id)     => api.post(`/documents/${id}/archive`),
+    // v1.46.0 — remove an already-ARCHIVED document from the archive
+    // (soft removal — see deleteDocument in documentsController.js)
+    remove:         (id)     => api.delete(`/documents/${id}`),
     newVersion:     (id, data) => api.post(`/documents/${id}/new-version`, data, {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),

@@ -10,6 +10,74 @@ const { query } = require('../config/database');
 const { sendEmail } = require('../config/email');
 const { notify } = require('./notificationService');
 const { getBranding } = require('./emailTemplates');
+const { renderHtmlToPdfBuffer } = require('./pdfService');
+
+// ============================================================
+// BRIEF SUMMARY HELPERS (v1.46.0)
+// Requested directly: these monthly emails should carry the full
+// report as a PDF attachment, with a brief summary of the details in
+// the email TEXT itself — not the entire report dumped inline as the
+// email body, which is what renderGeneralReportHTML/
+// renderIndividualReportHTML (below) were only ever used for before
+// this version. Those two full-detail renderers are unchanged and
+// now feed the PDF instead; these small helpers build the short
+// summary that goes in the email body alongside the attachment.
+// ============================================================
+const sumByCurrency = (rows, amountKey = 'total_amount') => {
+    const totals = new Map();
+    for (const row of rows) {
+        const cur = row.currency_code || '';
+        totals.set(cur, (totals.get(cur) || 0) + (parseFloat(row[amountKey]) || 0));
+    }
+    return totals;
+};
+
+const formatCurrencyTotals = (totals) => {
+    if (totals.size === 0) return 'none this period';
+    return Array.from(totals.entries())
+        .map(([cur, amt]) => `${cur} ${amt.toLocaleString('en-US', { maximumFractionDigits: 2 })}`)
+        .join(', ');
+};
+
+const buildGeneralReportSummaryHtml = (report, companyName, recipientName) => {
+    const income   = formatCurrencyTotals(sumByCurrency(report.income));
+    const expenses = formatCurrencyTotals(sumByCurrency(report.expenses));
+
+    return `
+        <p>Dear ${recipientName},</p>
+        <p>${companyName}'s monthly report for <strong>${report.period}</strong> is attached as a PDF.
+        Here's a brief summary:</p>
+        <ul style="line-height:1.8;">
+            <li>Total income this period: <strong>${income}</strong></li>
+            <li>Total expenses this period: <strong>${expenses}</strong></li>
+            <li>Active investments: <strong>${report.investments.length}</strong></li>
+            <li>Active loans: <strong>${report.loans.length}</strong></li>
+            <li>Active grants: <strong>${report.grants.length}</strong></li>
+            <li>Upcoming events (next 30 days): <strong>${report.upcoming_events.length}</strong></li>
+        </ul>
+        <p>See the attached PDF for the full report.</p>
+    `;
+};
+
+const buildIndividualReportSummaryHtml = (report, companyName) => {
+    const periodTotal = report.contributions_period
+        .reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0);
+
+    return `
+        <p>Dear ${report.member.first_name},</p>
+        <p>Your personal financial report from ${companyName} for <strong>${report.period}</strong>
+        is attached as a PDF. Here's a brief summary:</p>
+        <ul style="line-height:1.8;">
+            ${report.shareholding ? `
+            <li>Shares held: <strong>${parseFloat(report.shareholding.shares_held).toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong>
+                (${report.shareholding.percentage || '—'}% of the company)</li>` : ''}
+            <li>Contributions this period: <strong>${report.contributions_period.length}</strong>,
+                totaling <strong>${periodTotal.toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong></li>
+            <li>Total contributed to date: <strong>${parseFloat(report.total_contributed).toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong></li>
+        </ul>
+        <p>See the attached PDF for the full report, including every contribution this period.</p>
+    `;
+};
 
 // ============================================================
 // GENERATE GENERAL COMPANY REPORT
@@ -545,9 +613,16 @@ const renderIndividualReportHTML = async (report) => {
 // ============================================================
 const sendGeneralReportToAllMembers = async (year, month) => {
     const report    = await generateGeneralReport(year, month);
-    const html      = await renderGeneralReportHTML(report);
+    const fullHtml  = await renderGeneralReportHTML(report);
     const branding  = await getBranding();
     const subject   = `${branding.company_name} — Monthly Report: ${report.period}`;
+
+    // v1.46.0 — the full report becomes the PDF attachment instead of
+    // the entire email body; rendered ONCE here (not per-recipient —
+    // every member gets the identical PDF, and each headless-Chrome
+    // render has a real cold-start cost, see pdfService.js).
+    const pdfBuffer = await renderHtmlToPdfBuffer(fullHtml);
+    const pdfFilename = `${branding.company_name.replace(/[^a-z0-9]+/gi, '-')}-Monthly-Report-${report.period.replace(/\s+/g, '-')}.pdf`;
 
     // Get all active members
     const members = await query(`
@@ -560,10 +635,12 @@ const sendGeneralReportToAllMembers = async (year, month) => {
 
     const results = [];
     for (const member of members.rows) {
+        const html = buildGeneralReportSummaryHtml(report, branding.company_name, member.first_name);
         const result = await sendEmail({
             to:      member.email,
             subject,
             html,
+            attachments: [{ filename: pdfFilename, content: pdfBuffer }],
         });
         results.push({ email: member.email, ...result });
 
@@ -606,11 +683,21 @@ const sendIndividualReportsToAllMembers = async (year, month) => {
         const report = await generateIndividualReport(member.id, year, month);
         if (!report) continue;
 
-        const html = await renderIndividualReportHTML(report);
+        // v1.46.0 — full report becomes a personal PDF attachment;
+        // brief summary in the email body. Each member's report is
+        // genuinely different, so this render (and the PDF render) has
+        // to happen per-member, same per-member cost the certificate
+        // pipeline already accepts for exactly this reason.
+        const fullHtml = await renderIndividualReportHTML(report);
+        const pdfBuffer = await renderHtmlToPdfBuffer(fullHtml);
+        const pdfFilename = `${branding.company_name.replace(/[^a-z0-9]+/gi, '-')}-Personal-Report-${report.period.replace(/\s+/g, '-')}.pdf`;
+
+        const html = buildIndividualReportSummaryHtml(report, branding.company_name);
         const result = await sendEmail({
             to:      member.email,
             subject: `${branding.company_name} — Your Personal Report: ${report.period}`,
             html,
+            attachments: [{ filename: pdfFilename, content: pdfBuffer }],
         });
         results.push({ email: member.email, ...result });
 

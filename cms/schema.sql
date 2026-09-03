@@ -1282,7 +1282,14 @@ CREATE TABLE documents (
     related_record_type VARCHAR(50),
     related_record_id   INTEGER,
     status              VARCHAR(30)  NOT NULL DEFAULT 'DRAFT'
-                        CHECK (status IN ('DRAFT','FINAL','ARCHIVED','SUPERSEDED')),
+                        -- DELETED (v1.46.0) — a soft removal, only ever reached
+                        -- from ARCHIVED (see deleteDocument in documentsController.js).
+                        -- The row itself is never actually removed (would break
+                        -- references_registry, document_signatures,
+                        -- document_stamps_applied, grants/loans agreement links,
+                        -- etc.) — DELETED documents are just excluded from every
+                        -- list view, the same way SUPERSEDED already was.
+                        CHECK (status IN ('DRAFT','FINAL','ARCHIVED','SUPERSEDED','DELETED')),
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     created_by          INTEGER      NOT NULL REFERENCES users(id),
     approved_by         INTEGER REFERENCES users(id),
@@ -2000,6 +2007,7 @@ INSERT INTO permissions (code, module, description) VALUES
     ('DOCUMENT_GENERATE',                   'DOCUMENTS',    'Generate documents from templates'),
     ('DOCUMENT_APPROVE',                    'DOCUMENTS',    'Approve and finalise documents'),
     ('DOCUMENT_ARCHIVE',                    'DOCUMENTS',    'Archive or supersede documents'),
+    ('DOCUMENT_DELETE',                     'DOCUMENTS',    'Permanently remove an archived document from the archive'),
     -- Events
     ('EVENT_VIEW',                          'EVENTS',       'View company events'),
     ('EVENT_CREATE',                        'EVENTS',       'Create new events'),

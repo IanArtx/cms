@@ -175,6 +175,12 @@ const MyCapitalCallsPage = () => {
     // and (for iteration 2) actually eligible.
     const actionableCalls = openCalls.filter(c => !c.already_pledged && c.eligible);
     const waitingCalls = openCalls.filter(c => !c.already_pledged && !c.eligible);
+    // v1.48.0 — previously invisible: a call I've already pledged into
+    // fell out of BOTH lists above with no trace, so "nothing open"
+    // looked identical whether there was truly nothing anywhere, or
+    // I'd simply already acted on everything currently open. Tracked
+    // separately so the empty-state message can tell the two apart.
+    const alreadyPledgedOpenCalls = openCalls.filter(c => c.already_pledged);
 
     const pledgeColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
@@ -243,7 +249,11 @@ const MyCapitalCallsPage = () => {
                     <div className="flex items-center gap-3 py-4">
                         <HandRaisedIcon className="h-6 w-6 text-gray-300 flex-shrink-0" />
                         <p className="text-sm text-gray-400">
-                            Nothing open for you to pledge into right now — check back once a new monthly call opens.
+                            {alreadyPledgedOpenCalls.length > 0
+                                ? "You've already pledged into everything that's currently open — check back once a new monthly call opens."
+                                : waitingCalls.length > 0
+                                    ? "Nothing you're eligible for right now — see below."
+                                    : "Nothing open for you to pledge into right now — check back once a new monthly call opens."}
                         </p>
                     </div>
                 ) : (

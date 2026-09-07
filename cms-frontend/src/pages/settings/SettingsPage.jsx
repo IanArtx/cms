@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { accountsAPI, usersAPI, categoriesAPI, settingsAPI, systemAPI } from '../../api/endpoints';
+import { accountsAPI, usersAPI, categoriesAPI, settingsAPI, systemAPI, capitalGoalsAPI } from '../../api/endpoints';
 import { getErrorMessage, formatDate } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -27,6 +27,7 @@ import {
     CheckBadgeIcon,
     TrashIcon,
     CalendarDaysIcon,
+    ScaleIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -1587,6 +1588,130 @@ const FiscalQuartersTab = () => {
 };
 
 // ============================================================
+// CAPITAL CALL FINES TAB (v1.48.0)
+// The rate/grace period applied to a late capital call settlement —
+// used to be hardcoded (ITERATION1_GRACE_DAYS, ITERATION2_WINDOW_DAYS,
+// FINE_PERCENTAGE_WITHIN_GRACE, FINE_PERCENTAGE_AFTER_GRACE), now a
+// single admin-editable row (capital_call_fine_settings). Same
+// load/save shape as CompanyTab above.
+// ============================================================
+const CapitalCallFinesTab = () => {
+    const [form, setForm] = useState({
+        grace_days: 7,
+        fine_percentage_within_grace: 5,
+        fine_percentage_after_grace: 10,
+        iteration2_window_days: 7,
+    });
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+
+    const load = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await capitalGoalsAPI.getFineSettings();
+            const data = res.data.data;
+            setForm({
+                grace_days: data.grace_days ?? 7,
+                fine_percentage_within_grace: data.fine_percentage_within_grace ?? 5,
+                fine_percentage_after_grace: data.fine_percentage_after_grace ?? 10,
+                iteration2_window_days: data.iteration2_window_days ?? 7,
+            });
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError(null);
+        setSuccess(null);
+        setSaving(true);
+        try {
+            await capitalGoalsAPI.updateFineSettings({
+                grace_days: parseInt(form.grace_days),
+                fine_percentage_within_grace: parseFloat(form.fine_percentage_within_grace),
+                fine_percentage_after_grace: parseFloat(form.fine_percentage_after_grace),
+                iteration2_window_days: parseInt(form.iteration2_window_days),
+            });
+            setSuccess('Capital call fine settings updated — takes effect on the next late settlement.');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (loading) return <LoadingSpinner size="md" text="Loading fine settings..." />;
+
+    return (
+        <div className="p-6 max-w-2xl">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Capital Call Fines</h3>
+            <p className="text-sm text-gray-500 mb-6">
+                Controls the automatic fine assigned when a shareholder settles their monthly
+                capital call late. Within the grace period after the deadline, the lower
+                percentage applies; beyond it, the higher one does. The iteration 2 window is
+                how many days the second pledging round stays open once a shortfall triggers it.
+                These used to be fixed in code — now any Admin can adjust them here, and changes
+                apply immediately to the next late settlement (already-assigned fines are untouched).
+            </p>
+
+            {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+            {success && (
+                <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                    {success}
+                </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label className="label">Grace Period (days)</label>
+                        <input type="number" min="0" step="1" className="input"
+                            value={form.grace_days}
+                            onChange={e => setForm(p => ({ ...p, grace_days: e.target.value }))} />
+                        <p className="text-xs text-gray-400 mt-1">
+                            Days after the deadline still counted as "within grace"
+                        </p>
+                    </div>
+                    <div>
+                        <label className="label">Iteration 2 Window (days)</label>
+                        <input type="number" min="1" step="1" className="input"
+                            value={form.iteration2_window_days}
+                            onChange={e => setForm(p => ({ ...p, iteration2_window_days: e.target.value }))} />
+                        <p className="text-xs text-gray-400 mt-1">
+                            How long the second pledging round stays open
+                        </p>
+                    </div>
+                    <div>
+                        <label className="label">Fine % — Within Grace</label>
+                        <input type="number" min="0" max="100" step="0.01" className="input"
+                            value={form.fine_percentage_within_grace}
+                            onChange={e => setForm(p => ({ ...p, fine_percentage_within_grace: e.target.value }))} />
+                    </div>
+                    <div>
+                        <label className="label">Fine % — After Grace</label>
+                        <input type="number" min="0" max="100" step="0.01" className="input"
+                            value={form.fine_percentage_after_grace}
+                            onChange={e => setForm(p => ({ ...p, fine_percentage_after_grace: e.target.value }))} />
+                    </div>
+                </div>
+                <div className="flex justify-end">
+                    <button type="submit" disabled={saving} className="btn-primary text-sm">
+                        {saving ? 'Saving...' : 'Save Changes'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// ============================================================
 // MEMBERSHIP AGREEMENT TAB (v1.23.0, Section 4.29)
 // The text every new member reads and consents to once, at
 // /consent, before they can use the rest of the system.
@@ -1694,6 +1819,7 @@ const SettingsPage = () => {
         { key: 'signatories', label: 'Signatories', icon: DocumentCheckIcon },
         { key: 'stamps',      label: 'Stamps',      icon: CheckBadgeIcon },
         { key: 'fiscal-quarters', label: 'Fiscal Quarters', icon: CalendarDaysIcon },
+        { key: 'capital-call-fines', label: 'Capital Call Fines', icon: ScaleIcon },
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
     ];
 
@@ -1738,6 +1864,7 @@ const SettingsPage = () => {
                 {activeTab === 'signatories' && <SignatoriesTab />}
                 {activeTab === 'stamps' && <StampsTab />}
                 {activeTab === 'fiscal-quarters' && <FiscalQuartersTab />}
+                {activeTab === 'capital-call-fines' && <CapitalCallFinesTab />}
                 {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
             </div>
         </div>

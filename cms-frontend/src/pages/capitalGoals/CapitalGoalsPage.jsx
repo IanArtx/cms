@@ -243,10 +243,21 @@ const CapitalGoalsPage = () => {
             header: 'Goal',
             render: row => (
                 <div>
-                    <Link to={`/capital-goals/${row.id}`}
-                        className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline">
-                        {row.title}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                        <Link to={`/capital-goals/${row.id}`}
+                            className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline">
+                            {row.title}
+                        </Link>
+                        {/* v1.48.0 — a legacy (pre-v1.43.0) goal never got a
+                            monthly pledge schedule and nobody can pledge
+                            into it until an Admin/Treasurer activates one
+                            from its detail page. */}
+                        {row.status === 'ACTIVE' && !row.goal_type && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium flex-shrink-0">
+                                Calls not activated
+                            </span>
+                        )}
+                    </div>
                     <p className="text-xs text-gray-400">
                         {formatDate(row.start_date)} – {formatDate(row.end_date)}
                     </p>

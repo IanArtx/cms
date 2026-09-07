@@ -16,7 +16,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import {
-    PencilIcon, XMarkIcon, FlagIcon, TrophyIcon,
+    PencilIcon, XMarkIcon, FlagIcon, TrophyIcon, BoltIcon, HandRaisedIcon,
 } from '@heroicons/react/24/outline';
 import {
     LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -154,6 +154,122 @@ const EditGoalModal = ({ isOpen, onClose, onSuccess, goal, currencies }) => {
 };
 
 // ============================================================
+// ACTIVATE CALL SCHEDULE MODAL (v1.48.0)
+// Requested directly: "the capital calling system isn't active yet
+// as planned... I would like that the capital system starts
+// functioning immediately." A goal created before this feature
+// existed (goal_type NULL — see schema.sql's comment on
+// capital_goals.goal_type) was deliberately never retrofitted
+// automatically, since its numbers/history shouldn't silently change
+// shape. This is the explicit, one-time, opt-in action: turn this
+// goal into a call-based one (or regenerate a call-based goal's
+// missing schedule, if that's somehow all this is) starting now.
+// ============================================================
+const ActivateCallScheduleModal = ({ isOpen, onClose, onSuccess, goal }) => {
+    const isLegacy = goal && goal.goal_type == null;
+    const [form, setForm] = useState({ goal_type: 'PRIMARY', fiscal_year: '', call_deadline_day: '20' });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [result, setResult] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && goal) {
+            setForm({
+                goal_type: 'PRIMARY',
+                fiscal_year: String(new Date(goal.start_date).getUTCFullYear()),
+                call_deadline_day: '20',
+            });
+            setResult(null);
+            setError(null);
+        }
+    }, [isOpen, goal]);
+
+    if (!isOpen || !goal) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await capitalGoalsAPI.activateCallSchedule(goal.id, isLegacy ? {
+                goal_type: form.goal_type,
+                fiscal_year: parseInt(form.fiscal_year),
+                call_deadline_day: parseInt(form.call_deadline_day),
+            } : {});
+            setResult(res.data);
+            onSuccess();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Activate Capital Calls</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {isLegacy
+                            ? 'This goal was created before the capital call (pledge) system existed, so it never got a monthly schedule. This turns it into a call-based goal starting now — its target, currency and date range stay exactly as they are.'
+                            : "This goal is call-based but has no monthly calls yet — this generates its schedule now."}
+                    </p>
+                    {error && (
+                        <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>
+                    )}
+                    {result ? (
+                        <div className="space-y-4">
+                            <div className="rounded-lg bg-green-50 border border-green-100 p-3 text-sm text-green-800">
+                                {result.message}
+                            </div>
+                            <div className="flex justify-end">
+                                <button type="button" onClick={onClose} className="btn-primary">Done</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            {isLegacy && (
+                                <>
+                                    <div>
+                                        <label className="label">Goal Type *</label>
+                                        <select className="input" value={form.goal_type}
+                                            onChange={e => setForm(p => ({ ...p, goal_type: e.target.value }))} required>
+                                            <option value="PRIMARY">Primary (the year's general capital goal)</option>
+                                            <option value="SECONDARY">Secondary (an extra goal alongside the primary)</option>
+                                        </select>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="label">Fiscal Year *</label>
+                                            <input type="number" className="input" value={form.fiscal_year}
+                                                onChange={e => setForm(p => ({ ...p, fiscal_year: e.target.value }))} required />
+                                        </div>
+                                        <div>
+                                            <label className="label">Call Deadline Day *</label>
+                                            <input type="number" className="input" min="1" max="28" value={form.call_deadline_day}
+                                                onChange={e => setForm(p => ({ ...p, call_deadline_day: e.target.value }))} required />
+                                            <p className="text-xs text-gray-400 mt-1">Day of each month iteration 1 closes on (1–28).</p>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                <button type="submit" disabled={loading} className="btn-primary">
+                                    {loading ? 'Activating...' : 'Activate Now'}
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // STAT TILE
 // ============================================================
 const StatTile = ({ label, value, tone = 'default' }) => (
@@ -180,6 +296,7 @@ const CapitalGoalDetailPage = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [showEdit, setShowEdit] = useState(false);
+    const [showActivate, setShowActivate] = useState(false);
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
     const [actionLoading, setActionLoading] = useState(false);
     const [monthlyCalls, setMonthlyCalls] = useState([]);
@@ -206,11 +323,37 @@ const CapitalGoalDetailPage = () => {
     // for call-based goals (goal_type set). Loaded once the goal itself
     // has come back so we know which kind it is.
     const isCallBased = goal && goal.goal_type != null;
+    const [callsChecked, setCallsChecked] = useState(false);
+    const refreshCalls = useCallback(() => {
+        capitalGoalCallsAPI.listMonthlyCallsForGoal(id)
+            .then(r => setMonthlyCalls(r.data.data || []))
+            .catch(() => {})
+            .finally(() => setCallsChecked(true));
+        capitalGoalCallsAPI.getGoalContributionStats(id).then(r => setStats(r.data.data)).catch(() => {});
+    }, [id]);
     useEffect(() => {
         if (!isCallBased) return;
-        capitalGoalCallsAPI.listMonthlyCallsForGoal(id).then(r => setMonthlyCalls(r.data.data || [])).catch(() => {});
-        capitalGoalCallsAPI.getGoalContributionStats(id).then(r => setStats(r.data.data)).catch(() => {});
-    }, [id, isCallBased]);
+        refreshCalls();
+    }, [isCallBased, refreshCalls]);
+
+    const handleActivateSuccess = () => {
+        loadGoal();
+        refreshCalls();
+    };
+
+    // The "current" open call(s) — whichever month(s) a shareholder can
+    // still pledge into right now, so this is visible on the goal's
+    // own page and not only buried on the separate My Capital Calls
+    // page. Prefers ITERATION_1 (the normal case) but also surfaces an
+    // ITERATION_2 (second-round) call if that's what's actually open.
+    const openMonths = (goal?.months || []).filter(m => m.call_status === 'ITERATION_1' || m.call_status === 'ITERATION_2');
+
+    // Show the "Activate Capital Calls" CTA once we actually know
+    // there's nothing to pledge into yet — either a legacy goal that
+    // never had a schedule at all, or (defensively) a call-based goal
+    // whose schedule somehow never got generated.
+    const needsActivation = goal && goal.status === 'ACTIVE' &&
+        (!isCallBased || (isCallBased && callsChecked && monthlyCalls.length === 0));
 
     const handleCancel = async () => {
         setActionLoading(true);
@@ -275,6 +418,12 @@ const CapitalGoalDetailPage = () => {
                         <PencilIcon className="h-4 w-4" />
                         Edit
                     </button>
+                    {needsActivation && (
+                        <button onClick={() => setShowActivate(true)} className="btn-primary flex items-center gap-2">
+                            <BoltIcon className="h-4 w-4" />
+                            Activate Capital Calls
+                        </button>
+                    )}
                     <button onClick={handleComplete} disabled={actionLoading}
                         className="btn-secondary flex items-center gap-2">
                         <FlagIcon className="h-4 w-4" />
@@ -285,6 +434,59 @@ const CapitalGoalDetailPage = () => {
                         <XMarkIcon className="h-4 w-4" />
                         Cancel Goal
                     </button>
+                </div>
+            )}
+
+            {/* v1.48.0 — no shareholder can pledge into this goal at all
+                until its monthly call schedule exists. Shown to anyone
+                who can see the goal (not just managers) so it's obvious
+                why "My Capital Calls" looks empty, rather than a silent
+                dead end. */}
+            {needsActivation && (
+                <div className="rounded-lg bg-amber-50 border border-amber-100 p-4 mb-6 flex items-start gap-3">
+                    <BoltIcon className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                        <p className="text-sm font-medium text-amber-800">
+                            Capital calls aren't active for this goal yet
+                        </p>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                            {isCallBased
+                                ? "This goal's monthly schedule hasn't been generated yet — no one can pledge into it until it is."
+                                : "This goal was created before the pledge system existed, so shareholders have no monthly call to pledge into. An Admin/Treasurer can activate it below."}
+                            {!canManage && ' Ask an Admin or Treasurer to activate it.'}
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {/* v1.48.0 — the current month's call, front and center on the
+                goal's own page (not only on the separate My Capital Calls
+                page), so members can see at a glance what's due and by
+                when without hunting for it. */}
+            {isCallBased && openMonths.length > 0 && (
+                <div className="rounded-lg bg-blue-50 border border-blue-100 p-4 mb-6">
+                    <div className="flex items-start gap-3">
+                        <HandRaisedIcon className="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="text-sm font-medium text-blue-900">
+                                Open for pledges right now: {openMonths.map(m => m.month).join(', ')}
+                            </p>
+                            <div className="mt-2 space-y-1">
+                                {openMonths.map(m => (
+                                    <p key={m.month} className="text-xs text-blue-700">
+                                        <strong>{m.month}</strong> — target {fmt(m.expected_monthly)}
+                                        {m.iteration1_deadline && m.call_status === 'ITERATION_1' &&
+                                            ` — due ${formatDate(m.iteration1_deadline)}`}
+                                        {m.call_status === 'ITERATION_2' && ' — second-round call, no late fine applies'}
+                                    </p>
+                                ))}
+                            </div>
+                            <Link to="/capital-goals/my-calls"
+                                className="inline-block mt-3 text-xs font-medium text-blue-700 hover:text-blue-800 px-3 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 transition-colors">
+                                Go to My Capital Calls to pledge
+                            </Link>
+                        </div>
+                    </div>
                 </div>
             )}
 
@@ -464,6 +666,13 @@ const CapitalGoalDetailPage = () => {
                 onSuccess={loadGoal}
                 goal={goal}
                 currencies={currencies}
+            />
+
+            <ActivateCallScheduleModal
+                isOpen={showActivate}
+                onClose={() => setShowActivate(false)}
+                onSuccess={handleActivateSuccess}
+                goal={goal}
             />
 
             <ConfirmModal

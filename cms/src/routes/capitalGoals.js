@@ -110,19 +110,64 @@ router.post('/:id/complete',
 );
 
 // ============================================================
+// ACTIVATE CALL SCHEDULE (v1.48.0) — turn a legacy goal (goal_type
+// NULL) into a call-based one, or regenerate a call-based goal's
+// missing schedule; see the controller's own header comment. Only
+// goal_type/fiscal_year/call_deadline_day are optional at the
+// validator level — the controller itself enforces they're required
+// when the target goal is still legacy.
+// ============================================================
+router.post('/:id/activate-call-schedule',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('goal_type').optional().isIn(['PRIMARY', 'SECONDARY']).withMessage('goal_type must be PRIMARY or SECONDARY'),
+        body('fiscal_year').optional().isInt({ min: 2000, max: 2200 }).withMessage('A valid fiscal year is required'),
+        body('call_deadline_day').optional().isInt({ min: 1, max: 28 }).withMessage('call_deadline_day must be between 1 and 28'),
+    ],
+    validateRequest,
+    capitalGoalsController.activateCallSchedule
+);
+
+// ============================================================
 // CAPITAL GOAL CALLS (v1.43.0) — pledges against a specific monthly
 // call. Reuses CAPITAL_GOAL_VIEW/MANAGE — no new permission codes.
 //
 // NOTE: /my-calls MUST be registered before the generic GET /:id
 // below — Express matches routes in registration order, and /:id
 // would otherwise swallow a request for "/my-calls" by treating
-// "my-calls" as the :id value.
+// "my-calls" as the :id value. Same reasoning applies to
+// /fine-settings below.
 // ============================================================
 
 // My own pledges + which open calls I can still pledge into.
 // GET /api/capital-goals/my-calls
 router.get('/my-calls',
     capitalGoalCallsController.getMyPledges
+);
+
+// ============================================================
+// CAPITAL CALL FINE SETTINGS (v1.48.0) — company-wide, admin-
+// configurable late-payment fine rate/grace period, replacing what
+// used to be hardcoded constants. GET is open to any Shareholder
+// (CAPITAL_GOAL_VIEW) — transparency about what a late payment costs;
+// PATCH is CAPITAL_GOAL_MANAGE only.
+// ============================================================
+router.get('/fine-settings',
+    requirePermissions(['CAPITAL_GOAL_VIEW']),
+    capitalGoalsController.getFineSettingsHandler
+);
+
+router.patch('/fine-settings',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    [
+        body('grace_days').optional().isInt({ min: 0 }).withMessage('grace_days must be a non-negative whole number'),
+        body('fine_percentage_within_grace').optional().isFloat({ min: 0, max: 100 }).withMessage('fine_percentage_within_grace must be between 0 and 100'),
+        body('fine_percentage_after_grace').optional().isFloat({ min: 0, max: 100 }).withMessage('fine_percentage_after_grace must be between 0 and 100'),
+        body('iteration2_window_days').optional().isInt({ min: 1 }).withMessage('iteration2_window_days must be at least 1'),
+    ],
+    validateRequest,
+    capitalGoalsController.updateFineSettings
 );
 
 // ============================================================

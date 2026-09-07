@@ -2088,6 +2088,37 @@ INSERT INTO savings_settings (id, interest_rate, interest_period, interest_calcu
 VALUES (1, 0, 'ANNUALLY', 'SIMPLE')
 ON CONFLICT (id) DO NOTHING;
 
+-- ============================================================
+-- CAPITAL CALL FINE SETTINGS (v1.48.0)
+-- Single-row table (id is always 1), same convention as
+-- savings_settings — a company-wide configuration an Admin edits
+-- through Settings > Capital Call Fines instead of a code change.
+-- Governs the automatic late-payment fine capitalGoalCallService.js
+-- assigns on a late iteration-1 capital call settlement: within
+-- `grace_days` of the deadline, a smaller percentage applies; beyond
+-- it, the larger one does. `iteration2_window_days` is how long a
+-- monthly call's second round stays open once opened. These four
+-- values used to be hardcoded module-level constants
+-- (ITERATION1_GRACE_DAYS, ITERATION2_WINDOW_DAYS,
+-- FINE_PERCENTAGE_WITHIN_GRACE, FINE_PERCENTAGE_AFTER_GRACE) — the
+-- defaults below match those exact prior values, so existing
+-- behaviour is unchanged until an Admin deliberately edits them.
+-- ============================================================
+CREATE TABLE capital_call_fine_settings (
+    id                            INTEGER      PRIMARY KEY DEFAULT 1,
+    grace_days                    INTEGER      NOT NULL DEFAULT 7,
+    fine_percentage_within_grace  NUMERIC(5,2) NOT NULL DEFAULT 5,
+    fine_percentage_after_grace   NUMERIC(5,2) NOT NULL DEFAULT 10,
+    iteration2_window_days        INTEGER      NOT NULL DEFAULT 7,
+    updated_by                    INTEGER REFERENCES users(id),
+    updated_at                    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT single_row_only_fine_settings CHECK (id = 1)
+);
+
+INSERT INTO capital_call_fine_settings (id)
+VALUES (1)
+ON CONFLICT (id) DO NOTHING;
+
 -- Side fund starts inactive with no parent account/currency until an
 -- Admin/Treasurer activates it from Settings.
 INSERT INTO side_fund_config (id, is_active, monthly_amount, current_balance)

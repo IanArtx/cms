@@ -24,7 +24,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
-const { generateMonthlyCallsForGoal } = require('../services/capitalGoalCallService');
+const { generateMonthlyCallsForGoal, catchUpMonthlyCalls, getFineSettings } = require('../services/capitalGoalCallService');
 
 // ============================================================
 // INTERNAL HELPER — compute the expected-vs-actual breakdown for one
@@ -54,12 +54,13 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
     // with whatever the monthly call rows actually say).
     const monthly = isCallBased
         ? await query(`
-            SELECT mc.period AS period_label, mc.monthly_target,
+            SELECT mc.id AS monthly_call_id, mc.period AS period_label, mc.monthly_target,
+                   mc.status AS call_status, mc.iteration1_deadline, mc.iteration2_deadline,
                    COALESCE(SUM(app.amount), 0) AS actual_amount
             FROM   capital_goal_monthly_calls mc
             LEFT JOIN capital_goal_payment_applications app ON app.monthly_call_id = mc.id
             WHERE  mc.capital_goal_id = $1
-            GROUP  BY mc.id, mc.period, mc.monthly_target
+            GROUP  BY mc.id, mc.period, mc.monthly_target, mc.status, mc.iteration1_deadline, mc.iteration2_deadline
             ORDER  BY mc.period
         `, [goal.id])
         : await query(`
@@ -100,6 +101,15 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
             actual_monthly: parseFloat(row.actual_amount),
             expected_cumulative: Math.round(expectedCumulative * 100) / 100,
             actual_cumulative: Math.round(actualCumulative * 100) / 100,
+            // Only present for a call-based goal — lets the frontend
+            // highlight whichever period is currently open for pledging
+            // without a second round-trip to /capital-goals/my-calls.
+            ...(isCallBased ? {
+                monthly_call_id: row.monthly_call_id,
+                call_status: row.call_status,
+                iteration1_deadline: row.iteration1_deadline,
+                iteration2_deadline: row.iteration2_deadline,
+            } : {}),
         };
     });
 
@@ -397,7 +407,7 @@ const getAllGoals = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT
             g.id, g.title, g.description, g.target_amount, g.start_date, g.end_date,
-            g.status, g.created_at,
+            g.status, g.created_at, g.goal_type,
             r.reference_code, r.public_id,
             c.code AS currency_code, c.symbol AS currency_symbol,
             u.first_name || ' ' || u.last_name AS created_by_name
@@ -448,6 +458,216 @@ const getGoalById = asyncHandler(async (req, res) => {
     sendSuccess(res, { ...goal, ...progress });
 });
 
+// ============================================================
+// ACTIVATE CALL SCHEDULE (v1.48.0)
+// POST /api/capital-goals/:id/activate-call-schedule
+//
+// Requested directly: "the capital calling system isn't active yet
+// as planned. There is no way for any shareholder to make a pledge
+// for the monthly targets." Root cause — a capital goal created
+// before v1.43.0 (or any goal whose monthly schedule never got
+// generated for some other reason) has goal_type/fiscal_year/
+// call_deadline_day all NULL and zero capital_goal_monthly_calls
+// rows, by this system's own explicit design (see schema.sql's
+// comment on capital_goals.goal_type) — a legacy goal is funded by
+// ordinary shareholder_contributions and was never meant to grow a
+// pledge schedule on its own. There is no automatic migration path
+// for this (an existing goal's numbers/history shouldn't silently
+// change shape) — this endpoint is the explicit, one-time, opt-in
+// "turn this goal into a call-based one, starting now" action.
+//
+// Covers two cases:
+//   1. A legacy goal (goal_type IS NULL) — goal_type/fiscal_year/
+//      call_deadline_day are supplied in the request body and saved
+//      onto the goal for the first time.
+//   2. A goal that's already call-based but somehow has zero monthly
+//      call rows (defensive — e.g. a partial failure during
+//      creation) — regenerates from the goal's own already-set
+//      fields, no body fields required.
+// Either way: generateMonthlyCallsForGoal splits the goal's own
+// target_amount/start_date/end_date into the full monthly schedule,
+// then catchUpMonthlyCalls immediately runs the same deadline-sweep
+// jobs/scheduler.js's daily cron does — so whichever period is
+// genuinely current opens right away instead of waiting for the next
+// 00:30 tick, with no backdated fines (fines only ever apply at the
+// moment a payment actually settles late, never as a blanket penalty
+// for an unmet closed period with nothing pledged against it).
+// ============================================================
+const activateCallSchedule = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { goal_type, fiscal_year, call_deadline_day } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT * FROM capital_goals WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) throw createError.notFound('Capital goal not found');
+        const goal = existing.rows[0];
+
+        if (goal.status !== 'ACTIVE') {
+            throw createError.badRequest(`Only an active goal can have its call schedule activated. Current status: ${goal.status}`);
+        }
+
+        const alreadyHasCalls = await client.query(
+            'SELECT 1 FROM capital_goal_monthly_calls WHERE capital_goal_id = $1 LIMIT 1', [id]
+        );
+        if (alreadyHasCalls.rows.length > 0) {
+            throw createError.badRequest('This goal already has a monthly call schedule — activation only runs once.');
+        }
+
+        let effectiveGoalType = goal.goal_type;
+        let effectiveFiscalYear = goal.fiscal_year;
+        let effectiveDeadlineDay = goal.call_deadline_day;
+
+        if (!goal.goal_type) {
+            // Legacy goal — turning it into a call-based one for the
+            // first time, so all three fields must be supplied now.
+            if (!['PRIMARY', 'SECONDARY'].includes(goal_type)) {
+                throw createError.badRequest('goal_type must be PRIMARY or SECONDARY to activate a call schedule on a legacy goal.');
+            }
+            if (!fiscal_year || !Number.isInteger(parseInt(fiscal_year))) {
+                throw createError.badRequest('A valid fiscal_year is required to activate a call schedule on a legacy goal.');
+            }
+            if (!call_deadline_day || call_deadline_day < 1 || call_deadline_day > 28) {
+                throw createError.badRequest('call_deadline_day must be between 1 and 28.');
+            }
+
+            effectiveGoalType = goal_type;
+            effectiveFiscalYear = parseInt(fiscal_year);
+            effectiveDeadlineDay = parseInt(call_deadline_day);
+
+            if (effectiveGoalType === 'PRIMARY') {
+                const existingPrimary = await client.query(
+                    "SELECT id, title FROM capital_goals WHERE fiscal_year = $1 AND goal_type = 'PRIMARY' AND id != $2",
+                    [effectiveFiscalYear, id]
+                );
+                if (existingPrimary.rows.length > 0) {
+                    throw createError.badRequest(
+                        `${effectiveFiscalYear} already has a primary goal ("${existingPrimary.rows[0].title}") — only one is allowed per year.`
+                    );
+                }
+            }
+
+            await client.query(`
+                UPDATE capital_goals
+                SET    goal_type = $1, fiscal_year = $2, call_deadline_day = $3, updated_at = NOW()
+                WHERE  id = $4
+            `, [effectiveGoalType, effectiveFiscalYear, effectiveDeadlineDay, id]);
+        }
+        // Else: already call-based with zero rows (defensive case) —
+        // reuse whatever goal_type/fiscal_year/call_deadline_day it
+        // already has; nothing to update.
+
+        const { totalMonths, monthlyTarget } = await generateMonthlyCallsForGoal(client, {
+            capitalGoalId: id, startDate: goal.start_date, endDate: goal.end_date,
+            targetAmount: goal.target_amount, callDeadlineDay: effectiveDeadlineDay,
+        });
+
+        const { iteration1Processed, iteration2Processed } = await catchUpMonthlyCalls(client, id);
+
+        const currentlyOpen = await client.query(`
+            SELECT period, status FROM capital_goal_monthly_calls
+            WHERE  capital_goal_id = $1 AND status IN ('ITERATION_1', 'ITERATION_2')
+            ORDER  BY period
+        `, [id]);
+
+        await logAction(req.user.id, ACTIONS.CAPITAL_GOAL_UPDATED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'capital_goals',
+            recordId:    parseInt(id),
+            newValues:   { goal_type: effectiveGoalType, fiscal_year: effectiveFiscalYear, call_deadline_day: effectiveDeadlineDay, totalMonths, monthlyTarget },
+            description: `Call schedule activated for capital goal ID ${id} — ${totalMonths} monthly call(s) of ${monthlyTarget} each generated, ${iteration1Processed + iteration2Processed} already-past-due period(s) caught up, ${currentlyOpen.rows.length} now open`,
+            client,
+        });
+
+        sendSuccess(res, {
+            total_months: totalMonths,
+            monthly_target: monthlyTarget,
+            caught_up: iteration1Processed + iteration2Processed,
+            open_periods: currentlyOpen.rows,
+        }, currentlyOpen.rows.length > 0
+            ? `Call schedule activated — ${currentlyOpen.rows.map(r => r.period).join(', ')} now open for pledges.`
+            : 'Call schedule activated, but every period is already past its deadline window — nothing is open right now.');
+    });
+});
+
+// ============================================================
+// GET / UPDATE CAPITAL CALL FINE SETTINGS (v1.48.0)
+// GET  /api/capital-goals/fine-settings — CAPITAL_GOAL_VIEW (any
+//      Shareholder can see the rate that would apply to them if they
+//      settle a capital call late — the same "transparency by
+//      default" treatment already given to signature/stamp
+//      requirements elsewhere in Settings).
+// PATCH /api/capital-goals/fine-settings — CAPITAL_GOAL_MANAGE only.
+// These replace the four previously hardcoded constants in
+// capitalGoalCallService.js (ITERATION1_GRACE_DAYS,
+// ITERATION2_WINDOW_DAYS, FINE_PERCENTAGE_WITHIN_GRACE,
+// FINE_PERCENTAGE_AFTER_GRACE) with a single admin-editable row —
+// see capital_call_fine_settings in schema.sql/migration_v1.48.0.sql.
+// ============================================================
+const getFineSettingsHandler = asyncHandler(async (req, res) => {
+    // getFineSettings expects a client-shaped object (client.query(text, params))
+    // so it can also be called from inside a withTransaction block in
+    // capitalGoalCallService.js — outside a transaction, the plain
+    // module-level `query` function is wrapped to look the same.
+    const settings = await getFineSettings({ query });
+    sendSuccess(res, settings);
+});
+
+const updateFineSettings = asyncHandler(async (req, res) => {
+    const {
+        grace_days, fine_percentage_within_grace,
+        fine_percentage_after_grace, iteration2_window_days,
+    } = req.body;
+
+    if (grace_days !== undefined && (!Number.isInteger(grace_days) || grace_days < 0)) {
+        throw createError.badRequest('grace_days must be a non-negative whole number of days');
+    }
+    if (iteration2_window_days !== undefined && (!Number.isInteger(iteration2_window_days) || iteration2_window_days < 1)) {
+        throw createError.badRequest('iteration2_window_days must be a whole number of days, at least 1');
+    }
+    for (const [label, value] of [
+        ['fine_percentage_within_grace', fine_percentage_within_grace],
+        ['fine_percentage_after_grace', fine_percentage_after_grace],
+    ]) {
+        if (value !== undefined && (isNaN(parseFloat(value)) || parseFloat(value) < 0 || parseFloat(value) > 100)) {
+            throw createError.badRequest(`${label} must be a percentage between 0 and 100`);
+        }
+    }
+
+    const result = await query(`
+        UPDATE capital_call_fine_settings
+        SET    grace_days                   = COALESCE($1, grace_days),
+               fine_percentage_within_grace = COALESCE($2, fine_percentage_within_grace),
+               fine_percentage_after_grace   = COALESCE($3, fine_percentage_after_grace),
+               iteration2_window_days       = COALESCE($4, iteration2_window_days),
+               updated_by                   = $5,
+               updated_at                   = NOW()
+        WHERE  id = 1
+        RETURNING *
+    `, [
+        grace_days ?? null,
+        fine_percentage_within_grace ?? null,
+        fine_percentage_after_grace ?? null,
+        iteration2_window_days ?? null,
+        req.user.id,
+    ]);
+
+    if (result.rows.length === 0) {
+        throw createError.notFound('Capital call fine settings not found');
+    }
+
+    await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.FINANCE, {
+        ipAddress:   req.ip,
+        recordType:  'capital_call_fine_settings',
+        recordId:    1,
+        newValues:   result.rows[0],
+        description: `Capital call fine settings updated: ${result.rows[0].fine_percentage_within_grace}% within ${result.rows[0].grace_days} day(s) grace, ${result.rows[0].fine_percentage_after_grace}% after; iteration 2 window ${result.rows[0].iteration2_window_days} day(s)`,
+    });
+
+    sendSuccess(res, result.rows[0], 'Capital call fine settings updated');
+});
+
 module.exports = {
     createGoal,
     updateGoal,
@@ -455,4 +675,7 @@ module.exports = {
     completeGoal,
     getAllGoals,
     getGoalById,
+    activateCallSchedule,
+    getFineSettingsHandler,
+    updateFineSettings,
 };

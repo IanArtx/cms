@@ -196,6 +196,13 @@ export const capitalGoalsAPI = {
     update:    (id, data) => api.patch(`/capital-goals/${id}`, data),
     cancel:    (id, data) => api.post(`/capital-goals/${id}/cancel`, data),
     complete:  (id)       => api.post(`/capital-goals/${id}/complete`),
+    // v1.48.0 — turns a legacy (pre-v1.43.0) goal into a call-based one,
+    // or regenerates a call-based goal's missing schedule.
+    activateCallSchedule: (id, data) => api.post(`/capital-goals/${id}/activate-call-schedule`, data),
+    // v1.48.0 — Admin-configurable late-payment fine rate/grace period,
+    // replacing what used to be hardcoded constants.
+    getFineSettings:    ()     => api.get('/capital-goals/fine-settings'),
+    updateFineSettings: (data) => api.patch('/capital-goals/fine-settings', data),
 };
 
 // ============================================================

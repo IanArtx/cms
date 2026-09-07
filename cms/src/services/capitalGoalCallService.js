@@ -54,10 +54,38 @@ const {
     addDaysUTC, toISODate,
 } = require('../utils/dateUtils');
 
-const ITERATION1_GRACE_DAYS = 7;
-const ITERATION2_WINDOW_DAYS = 7;
-const FINE_PERCENTAGE_WITHIN_GRACE = 5;
-const FINE_PERCENTAGE_AFTER_GRACE = 10;
+// v1.48.0 — these four used to be hardcoded module-level constants
+// (ITERATION1_GRACE_DAYS=7, ITERATION2_WINDOW_DAYS=7,
+// FINE_PERCENTAGE_WITHIN_GRACE=5, FINE_PERCENTAGE_AFTER_GRACE=10).
+// They're now Admin-configurable via Settings > Capital Call Fines
+// (capital_call_fine_settings, a single-row table — same convention
+// as savings_settings). getFineSettings reads the live row on every
+// call rather than caching, exactly like savingsController's own
+// getSavingsSettings — this is a rarely-hit path (only on a late
+// iteration-1 settlement, or the daily deadline-sweep cron), so
+// there's no meaningful cost to always reading fresh, and it means
+// an Admin's edit takes effect immediately with no cache to bust.
+// The inline fallback object matches the exact prior hardcoded
+// values, so a database that predates this table (or where the
+// seeded row was somehow deleted) behaves identically to before.
+const DEFAULT_FINE_SETTINGS = {
+    grace_days: 7,
+    fine_percentage_within_grace: 5,
+    fine_percentage_after_grace: 10,
+    iteration2_window_days: 7,
+};
+
+const getFineSettings = async (client) => {
+    const result = await client.query('SELECT * FROM capital_call_fine_settings WHERE id = 1');
+    if (result.rows.length === 0) return DEFAULT_FINE_SETTINGS;
+    const row = result.rows[0];
+    return {
+        grace_days:                    parseInt(row.grace_days),
+        fine_percentage_within_grace:  parseFloat(row.fine_percentage_within_grace),
+        fine_percentage_after_grace:   parseFloat(row.fine_percentage_after_grace),
+        iteration2_window_days:        parseInt(row.iteration2_window_days),
+    };
+};
 
 // ============================================================
 // GENERATE THE FULL MONTHLY SCHEDULE FOR A GOAL — called once, right
@@ -456,9 +484,10 @@ const approvePledgePayment = async (client, {
     // --- Fine (iteration 1, late tranches only) ---
     let fine = null;
     if (isLate) {
-        const finePercentage = daysLate <= ITERATION1_GRACE_DAYS
-            ? FINE_PERCENTAGE_WITHIN_GRACE
-            : FINE_PERCENTAGE_AFTER_GRACE;
+        const fineSettings = await getFineSettings(client);
+        const finePercentage = daysLate <= fineSettings.grace_days
+            ? fineSettings.fine_percentage_within_grace
+            : fineSettings.fine_percentage_after_grace;
         const fineAmount = parseFloat((requestedAmount * (finePercentage / 100)).toFixed(4));
 
         const { referenceId: fineRefId, referenceCode: fineRefCode } =
@@ -625,7 +654,8 @@ const processIteration1Deadline = async (client, monthlyCall) => {
     }
 
     const ctx = await computeIteration2Context(client, monthlyCall);
-    const deadline2 = toISODate(addDaysUTC(monthlyCall.iteration1_deadline, ITERATION2_WINDOW_DAYS));
+    const { iteration2_window_days } = await getFineSettings(client);
+    const deadline2 = toISODate(addDaysUTC(monthlyCall.iteration1_deadline, iteration2_window_days));
 
     await client.query(`
         UPDATE capital_goal_monthly_calls
@@ -660,6 +690,60 @@ const processIteration1Deadline = async (client, monthlyCall) => {
 // simply closes the round out. No further iterations.
 const processIteration2Deadline = async (client, monthlyCallId) => {
     await client.query("UPDATE capital_goal_monthly_calls SET status = 'CLOSED' WHERE id = $1", [monthlyCallId]);
+};
+
+// ============================================================
+// CATCH-UP SWEEP (v1.48.0) — runs the exact same deadline-processing
+// logic as jobs/scheduler.js's daily cron, but scoped to one goal and
+// run synchronously, right after that goal's monthly schedule is
+// (re)generated. Needed for activateCallSchedule below: a goal whose
+// schedule is generated retroactively (e.g. a legacy goal turned into
+// a call-based one, or a goal whose calls were somehow never created)
+// would otherwise sit with every past month still showing
+// ITERATION_1 — technically "open" but with a deadline that's already
+// passed — until the next 00:30 cron tick. Running the sweep
+// immediately means whichever period is genuinely current opens (or
+// is correctly mid-iteration-2) right away, with no wait and no
+// unfair backdated fines (a fine is only ever assigned at the moment
+// a payment is actually approved late, never as a blanket penalty for
+// an unmet/closed period with zero pledges).
+// ============================================================
+const catchUpMonthlyCalls = async (client, capitalGoalId) => {
+    const today = new Date().toISOString().slice(0, 10);
+    let iteration1Processed = 0;
+    let iteration2Processed = 0;
+
+    // A handful of rounds is enough — each round can only close out
+    // calls whose deadline has already passed, and a single goal has
+    // at most a few dozen monthly rows, so this converges immediately
+    // rather than needing to match the daily cron's per-day cadence.
+    for (let round = 0; round < 24; round++) {
+        const dueIteration1 = await client.query(`
+            SELECT id FROM capital_goal_monthly_calls
+            WHERE  capital_goal_id = $1 AND status = 'ITERATION_1' AND iteration1_deadline < $2
+        `, [capitalGoalId, today]);
+        for (const row of dueIteration1.rows) {
+            const callResult = await client.query(
+                'SELECT * FROM capital_goal_monthly_calls WHERE id = $1 FOR UPDATE', [row.id]
+            );
+            if (callResult.rows.length === 0) continue;
+            await processIteration1Deadline(client, callResult.rows[0]);
+            iteration1Processed++;
+        }
+
+        const dueIteration2 = await client.query(`
+            SELECT id FROM capital_goal_monthly_calls
+            WHERE  capital_goal_id = $1 AND status = 'ITERATION_2' AND iteration2_deadline < $2
+        `, [capitalGoalId, today]);
+        for (const row of dueIteration2.rows) {
+            await processIteration2Deadline(client, row.id);
+            iteration2Processed++;
+        }
+
+        if (dueIteration1.rows.length === 0 && dueIteration2.rows.length === 0) break;
+    }
+
+    return { iteration1Processed, iteration2Processed };
 };
 
 // ============================================================
@@ -731,9 +815,8 @@ module.exports = {
     approvePledgePayment,
     processIteration1Deadline,
     processIteration2Deadline,
+    catchUpMonthlyCalls,
     computeGoalContributionStats,
-    ITERATION1_GRACE_DAYS,
-    ITERATION2_WINDOW_DAYS,
-    FINE_PERCENTAGE_WITHIN_GRACE,
-    FINE_PERCENTAGE_AFTER_GRACE,
+    getFineSettings,
+    DEFAULT_FINE_SETTINGS,
 };

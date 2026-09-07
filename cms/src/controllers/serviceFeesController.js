@@ -145,11 +145,16 @@ const getAgreementById = asyncHandler(async (req, res) => {
 
     const agreementResult = await query(`
         SELECT a.*, u.first_name || ' ' || u.last_name AS user_name,
-               c.code AS currency_code, acc.name AS account_name
+               c.code AS currency_code, acc.name AS account_name,
+               cat.name AS category_name, cp.full_path AS category_trail,
+               creator.first_name || ' ' || creator.last_name AS created_by_name
         FROM   service_fee_agreements a
-        JOIN   users u     ON u.id = a.user_id
-        JOIN   currencies c ON c.id = a.currency_id
-        JOIN   accounts acc ON acc.id = a.account_id
+        JOIN   users u        ON u.id = a.user_id
+        JOIN   currencies c   ON c.id = a.currency_id
+        JOIN   accounts acc   ON acc.id = a.account_id
+        JOIN   categories cat ON cat.id = a.category_id
+        JOIN   category_paths cp ON cp.category_id = a.category_id
+        JOIN   users creator  ON creator.id = a.created_by
         WHERE  a.id = $1
     `, [id]);
     if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
@@ -166,7 +171,24 @@ const getAgreementById = asyncHandler(async (req, res) => {
         ORDER BY p.payment_date DESC
     `, [id]);
 
-    sendSuccess(res, { ...agreementResult.rows[0], payments: paymentsResult.rows });
+    // v1.47.0 — full amendment history for the agreement detail page:
+    // every past change to the monthly amount, with its effective date
+    // and who made it. Newest change first.
+    const amendmentsResult = await query(`
+        SELECT am.id, am.previous_amount, am.new_amount, am.reason,
+               am.effective_from, am.created_at,
+               u.first_name || ' ' || u.last_name AS amended_by_name
+        FROM   service_fee_agreement_amendments am
+        JOIN   users u ON u.id = am.amended_by
+        WHERE  am.agreement_id = $1
+        ORDER BY am.effective_from DESC, am.created_at DESC
+    `, [id]);
+
+    sendSuccess(res, {
+        ...agreementResult.rows[0],
+        payments: paymentsResult.rows,
+        amendments: amendmentsResult.rows,
+    });
 });
 
 // PATCH /api/service-fees/agreements/:id
@@ -175,15 +197,30 @@ const getAgreementById = asyncHandler(async (req, res) => {
 // an end_date). If the paying account changes, currency_id is
 // recomputed from the new account server-side — same reasoning as
 // createAgreement above, an account can only ever hold one currency.
+//
+// v1.47.0 — whenever monthly_amount is actually changing (not just
+// resent unchanged), a reason and an effective_from date are now
+// required, and the change is recorded as an append-only row in
+// service_fee_agreement_amendments (previous amount, new amount,
+// reason, effective date, who made the change) — the original amount
+// is never overwritten without a trace, mirroring how
+// loan_received_rate_amendments tracks penalty-rate changes.
 const updateAgreement = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { monthly_amount, account_id, category_id, notes, status, end_date } = req.body;
+    const { monthly_amount, account_id, category_id, notes, status, end_date, reason, effective_from } = req.body;
 
     const existing = await query('SELECT * FROM service_fee_agreements WHERE id = $1', [id]);
     if (existing.rows.length === 0) throw createError.notFound('Service fee agreement not found');
 
     if (status === 'ENDED' && !end_date) {
         throw createError.badRequest('An end date is required to end an agreement');
+    }
+
+    const isAmountChanging = monthly_amount !== undefined && monthly_amount !== null &&
+        parseFloat(monthly_amount) !== parseFloat(existing.rows[0].monthly_amount);
+
+    if (isAmountChanging && (!reason || !reason.trim() || !effective_from)) {
+        throw createError.badRequest('A reason and an effective date are required when changing the monthly amount');
     }
 
     let currency_id = null;
@@ -198,30 +235,44 @@ const updateAgreement = asyncHandler(async (req, res) => {
         currency_id = accountResult.rows[0].currency_id;
     }
 
-    const updated = await query(`
-        UPDATE service_fee_agreements
-        SET    monthly_amount = COALESCE($1, monthly_amount),
-               account_id     = COALESCE($2, account_id),
-               currency_id    = COALESCE($3, currency_id),
-               category_id    = COALESCE($4, category_id),
-               notes          = COALESCE($5, notes),
-               status         = COALESCE($6, status),
-               end_date       = COALESCE($7, end_date)
-        WHERE  id = $8
-        RETURNING *
-    `, [monthly_amount || null, account_id || null, currency_id, category_id || null,
-        notes !== undefined ? notes : null, status || null, end_date || null, id]);
+    const updated = await withTransaction(async (client) => {
+        const result = await client.query(`
+            UPDATE service_fee_agreements
+            SET    monthly_amount = COALESCE($1, monthly_amount),
+                   account_id     = COALESCE($2, account_id),
+                   currency_id    = COALESCE($3, currency_id),
+                   category_id    = COALESCE($4, category_id),
+                   notes          = COALESCE($5, notes),
+                   status         = COALESCE($6, status),
+                   end_date       = COALESCE($7, end_date)
+            WHERE  id = $8
+            RETURNING *
+        `, [monthly_amount || null, account_id || null, currency_id, category_id || null,
+            notes !== undefined ? notes : null, status || null, end_date || null, id]);
+
+        if (isAmountChanging) {
+            await client.query(`
+                INSERT INTO service_fee_agreement_amendments
+                    (agreement_id, previous_amount, new_amount, reason, effective_from, amended_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            `, [id, existing.rows[0].monthly_amount, monthly_amount, reason.trim(), effective_from, req.user.id]);
+        }
+
+        return result.rows[0];
+    });
 
     await logAction(req.user.id, ACTIONS.SERVICE_FEE_AGREEMENT_UPDATED, MODULES.STAFF, {
         ipAddress:   req.ip,
         recordType:  'service_fee_agreements',
         recordId:    parseInt(id),
         oldValues:   existing.rows[0],
-        newValues:   updated.rows[0],
-        description: `Service fee agreement ID ${id} updated`,
+        newValues:   updated,
+        description: isAmountChanging
+            ? `Service fee agreement ID ${id} amended: monthly amount ${existing.rows[0].monthly_amount} -> ${monthly_amount}, effective ${effective_from} (${reason.trim()})`
+            : `Service fee agreement ID ${id} updated`,
     });
 
-    sendSuccess(res, updated.rows[0], 'Service fee agreement updated');
+    sendSuccess(res, updated, 'Service fee agreement updated');
 });
 
 // POST /api/service-fees/agreements/:id/pay

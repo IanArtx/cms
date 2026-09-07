@@ -532,6 +532,13 @@ const RequisitionsPage = () => {
 
     const canApprove = hasPermission('FINANCE_TRANSACTION_CREATE') &&
                        hasPermission('FINANCE_VIEW_ALL');
+    // v1.47.0 — monitoring visibility is its own, broader flag: anyone
+    // holding FINANCE_VIEW_ALL (the same permission the backend's
+    // GET / route actually requires) can see the All Requests tab and
+    // watch every member's requisitions, even without the extra
+    // FINANCE_TRANSACTION_CREATE permission canApprove above still
+    // requires for the Approve/Reject action buttons themselves.
+    const canViewAll = hasPermission('FINANCE_VIEW_ALL');
     const isTreasuryRole = hasRole(['Treasurer', 'Assistant Treasurer']);
 
     const canEdit = (row) =>
@@ -577,14 +584,14 @@ const RequisitionsPage = () => {
 
     useEffect(() => {
         loadMyReqs();
-        if (canApprove) loadAllReqs();
+        if (canViewAll) loadAllReqs();
         accountsAPI.getAll().then(r => setAccounts(r.data.data)).catch(() => {});
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data)).catch(() => {});
-    }, [loadMyReqs, loadAllReqs, canApprove]);
+    }, [loadMyReqs, loadAllReqs, canViewAll]);
 
     const handleSuccess = () => {
         loadMyReqs();
-        if (canApprove) loadAllReqs();
+        if (canViewAll) loadAllReqs();
     };
 
     // Columns for My Requisitions
@@ -883,7 +890,7 @@ const RequisitionsPage = () => {
                         ({myReqs.length})
                     </span>
                 </button>
-                {canApprove && (
+                {canViewAll && (
                     <button
                         onClick={() => setActiveTab('all')}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg
@@ -933,7 +940,7 @@ const RequisitionsPage = () => {
             )}
 
             {/* All Requests Tab */}
-            {activeTab === 'all' && canApprove && (
+            {activeTab === 'all' && canViewAll && (
                 <>
                     {/* Status Filter */}
                     <div className="card mb-4">

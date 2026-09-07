@@ -2039,7 +2039,11 @@ INSERT INTO permissions (code, module, description) VALUES
     ('SIDE_FUND_VIEW',                      'FINANCE',      'View side fund balance, dues, and spending history'),
     ('SIDE_FUND_MANAGE',                    'FINANCE',      'Activate/deactivate the side fund and change its settings'),
     ('SIDE_FUND_CONTRIBUTION_RECORD',       'FINANCE',      'Record a member''s monthly side fund due as paid'),
-    ('SIDE_FUND_EXPENSE_RECORD',            'FINANCE',      'Record an expense drawn from the side fund');
+    ('SIDE_FUND_EXPENSE_RECORD',            'FINANCE',      'Record an expense drawn from the side fund'),
+    -- Service Fees (v1.47.0 — replaces the old hardcoded Admin/Treasurer
+    -- role gates on this module with real permissions)
+    ('SERVICE_FEE_VIEW',                    'FINANCE',      'View all service fee agreements, payment history, and reimbursement requests'),
+    ('SERVICE_FEE_MANAGE',                  'FINANCE',      'Create/edit/terminate service fee agreements, record payments, and review reimbursements');
 
 -- ============================================================
 -- GROUP 15: COMPANY SETTINGS (BRANDING)
@@ -2397,6 +2401,24 @@ CREATE TABLE service_fee_payments (
     CONSTRAINT positive_service_fee_payment CHECK (amount > 0)
 );
 
+-- Monthly-amount change history — mirrors loan_received_rate_amendments:
+-- the original amount is never overwritten, one row per change, so the
+-- agreement detail page (v1.47.0) can show an exact effective-dated
+-- history of every adjustment to the service money instead of just the
+-- current figure.
+CREATE TABLE service_fee_agreement_amendments (
+    id               SERIAL PRIMARY KEY,
+    agreement_id     INTEGER       NOT NULL REFERENCES service_fee_agreements(id),
+    previous_amount  NUMERIC(20,4) NOT NULL,
+    new_amount       NUMERIC(20,4) NOT NULL,
+    reason           TEXT          NOT NULL,
+    effective_from   DATE          NOT NULL,
+    amended_by       INTEGER       NOT NULL REFERENCES users(id),
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_service_fee_amendment_amounts
+        CHECK (previous_amount > 0 AND new_amount > 0)
+);
+
 -- Ad hoc expense reimbursement requests from a contracted person —
 -- structurally similar to a Requisitions EXPENSE request, kept
 -- separate since Requisitions' other request type
@@ -2428,6 +2450,7 @@ CREATE INDEX idx_staff_document_grants_user            ON staff_document_grants 
 CREATE INDEX idx_staff_document_grants_doc              ON staff_document_grants (document_id);
 CREATE INDEX idx_service_fee_agreements_user            ON service_fee_agreements (user_id);
 CREATE INDEX idx_service_fee_payments_agreement         ON service_fee_payments (agreement_id);
+CREATE INDEX idx_service_fee_amendments_agreement       ON service_fee_agreement_amendments (agreement_id);
 CREATE INDEX idx_service_reimbursement_requests_user    ON service_reimbursement_requests (user_id);
 
 

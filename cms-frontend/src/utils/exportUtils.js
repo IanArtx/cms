@@ -2452,6 +2452,144 @@ export const auditorFeedbackTemplate = (data) => {
 };
 
 // ============================================================
+// SERVICE FEE AGREEMENT STATEMENT (v1.47.0)
+// Downloadable/printable summary for a single service fee agreement's
+// detail page — mirrors loanTemplate's shape: recipient details,
+// agreement terms, the full payment history, and (new) the amendment
+// history with each change's effective date and reason, so a reader
+// sees exactly when and why the monthly amount ever changed without
+// needing the amount ever being silently overwritten.
+// ============================================================
+export const serviceFeeAgreementTemplate = (agreement, payments = [], amendments = []) => {
+    const totalPaid = payments.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Service Fee Agreement Statement</title>
+    <style>${getBaseStyles()}</style>
+</head>
+<body>
+<div class="page">
+    ${letterhead('Service Fee Agreement Statement', `AGR-${agreement.id}`, new Date())}
+
+    <div class="doc-title">Service Fee Agreement Statement</div>
+    <div class="doc-subtitle">Contracted Person: ${agreement.user_name}</div>
+
+    <div class="meta-box cols-4">
+        <div class="meta-item">
+            <div class="meta-label">Contracted Person</div>
+            <div class="meta-value">${agreement.user_name}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Status</div>
+            <div class="meta-value">${badge(agreement.status)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Current Monthly Amount</div>
+            <div class="meta-value large">
+                ${agreement.currency_code} ${fmt.amount(agreement.monthly_amount)}
+            </div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Total Paid To Date</div>
+            <div class="meta-value large green">
+                ${agreement.currency_code} ${fmt.amount(totalPaid)}
+            </div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Paying Account</div>
+            <div class="meta-value">${agreement.account_name || '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Start Date</div>
+            <div class="meta-value">${fmt.date(agreement.start_date)}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">End Date</div>
+            <div class="meta-value">${agreement.end_date ? fmt.date(agreement.end_date) : '—'}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Notes</div>
+            <div class="meta-value">${agreement.notes || '—'}</div>
+        </div>
+    </div>
+
+    ${payments.length > 0 ? `
+    <div class="section">
+        <div class="section-title">Payment History</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Reference</th>
+                    <th class="text-right">Amount</th>
+                    <th>Paid By</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${payments.map((p, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${fmt.date(p.payment_date)}</td>
+                    <td class="font-mono">${p.reference_code || '—'}</td>
+                    <td class="text-right font-bold text-green">
+                        ${agreement.currency_code} ${fmt.amount(p.amount)}
+                    </td>
+                    <td class="text-gray">${p.paid_by_name || '—'}</td>
+                </tr>`).join('')}
+                <tr class="total-row">
+                    <td colspan="3">TOTAL PAID</td>
+                    <td class="text-right text-green">
+                        ${agreement.currency_code} ${fmt.amount(totalPaid)}
+                    </td>
+                    <td></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    ` : '<p style="color:#9ca3af;font-size:11px;">No payments recorded yet.</p>'}
+
+    ${amendments.length > 0 ? `
+    <div class="section">
+        <div class="section-title">Monthly Amount Change History</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Effective From</th>
+                    <th class="text-right">Previous Amount</th>
+                    <th class="text-right">New Amount</th>
+                    <th>Reason</th>
+                    <th>Amended By</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${amendments.map(a => `
+                <tr>
+                    <td>${fmt.date(a.effective_from)}</td>
+                    <td class="text-right">${agreement.currency_code} ${fmt.amount(a.previous_amount)}</td>
+                    <td class="text-right font-bold">${agreement.currency_code} ${fmt.amount(a.new_amount)}</td>
+                    <td class="text-gray">${a.reason || '—'}</td>
+                    <td class="text-gray">${a.amended_by_name || '—'}</td>
+                </tr>`).join('')}
+            </tbody>
+        </table>
+    </div>
+    ` : ''}
+
+    ${documentTrail([
+        { role: 'Created By', name: agreement.created_by_name, date: agreement.created_at },
+    ])}
+
+    ${footer()}
+</div>
+</body>
+</html>`;
+};
+
+// ============================================================
 // PRINT / EXPORT FUNCTION
 // Opens document in new tab and triggers print dialog
 // ============================================================

@@ -1,0 +1,42 @@
+flowchart TD
+    subgraph A["1. Requisitions monitoring bug — fixed"]
+        A1["Admin/Treasurer holds\nFINANCE_VIEW_ALL only"] --> A2{"Old code: canApprove needed\nFINANCE_VIEW_ALL AND\nFINANCE_TRANSACTION_CREATE"}
+        A2 -->|"Before: tab never loads"| A3["All Requisitions tab\nstays empty"]
+        A2 -->|"After: new canViewAll flag\n(FINANCE_VIEW_ALL alone)"| A4["All Requisitions tab\npopulates correctly"]
+        A4 --> A5["Approve/Reject buttons still\ngated by the old canApprove\n(no new approval rights)"]
+    end
+
+    subgraph B["2. Acknowledgements / Fines — already correct"]
+        B1["Checked PaymentAcknowledgementsPage.jsx\nand FinesPage.jsx"] --> B2["Both already gate on a single\nview permission — no bug found"]
+    end
+
+    subgraph C["3. Service Fees permission overhaul"]
+        C1["Old: hardcoded requireRoles\n(Admin / Treasurer / Asst Treasurer)"] --> C2["New: SERVICE_FEE_VIEW +\nSERVICE_FEE_MANAGE permissions"]
+        C2 --> C3["VIEW = list/read agreements\nand reimbursements (monitor)"]
+        C2 --> C4["MANAGE = create/edit/pay/\nterminate/approve/reject"]
+        C3 --> C5["Admin must grant these via\nSettings -> Roles -> Permissions"]
+        C4 --> C5
+    end
+
+    subgraph D["4. Service Fee agreement detail page"]
+        D1["Click an agreement row\nin the Agreements table"] --> D2["/service-fees/agreements/:id"]
+        D2 --> D3["Header: current amount,\ntotal paid to date"]
+        D2 --> D4["Payment history table"]
+        D2 --> D5["Amendment history:\nprevious -> new amount,\nreason, effective date"]
+        D2 --> D6["Record Payment / Amend /\nTerminate (SERVICE_FEE_MANAGE)"]
+        D2 --> D7["Download Summary\n(printable statement)"]
+    end
+
+    subgraph E["5. Amount change = tracked history"]
+        E1["Admin amends monthly_amount"] --> E2{"Reason + effective date\nprovided?"}
+        E2 -->|No| E3["Rejected — 400 error"]
+        E2 -->|Yes| E4["New row in\nservice_fee_agreement_amendments\n(previous, new, reason, date)"]
+        E4 --> E5["Agreement's monthly_amount\nupdated — old value never lost"]
+    end
+
+    style A4 fill:#ecfdf5,stroke:#059669
+    style B2 fill:#ecfdf5,stroke:#059669
+    style C5 fill:#fef9c3,stroke:#ca8a04
+    style D7 fill:#ecfdf5,stroke:#059669
+    style E5 fill:#ecfdf5,stroke:#059669
+    style E3 fill:#fee2e2,stroke:#dc2626

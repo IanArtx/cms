@@ -2,12 +2,20 @@
 // SERVICE FEES ROUTES (v1.21.0)
 // Prefix: /api/service-fees
 //
-// ADMIN routes (requireRoles(['Admin'])): create/edit a service fee
-// agreement — the same direct-role-check treatment given to
-// Settings, floor limits, and Audit engagement management.
-// TREASURER routes (requireRoles(['Treasurer','Assistant Treasurer'])):
-// record payments and review reimbursement requests — actually
-// moving money is a Treasurer duty, same as everywhere else.
+// v1.47.0 — converted from hardcoded requireRoles(['Admin']) /
+// requireRoles(['Treasurer','Assistant Treasurer']) gates to the
+// same permission-based system every other finance module
+// (Fines, Requisitions, Payment Acknowledgements/Confirmations)
+// already uses. Two new permissions:
+//   - SERVICE_FEE_VIEW: list/read agreements and reimbursements —
+//     lets a Treasurer/Admin monitor everything even if they don't
+//     hold SERVICE_FEE_MANAGE, mirroring FINANCE_VIEW_ALL elsewhere.
+//   - SERVICE_FEE_MANAGE: create/edit/terminate an agreement, record
+//     a payment, approve/reject a reimbursement — actually moving
+//     money or changing the arrangement.
+// Neither permission is auto-granted to any role by the migration —
+// an Admin must assign them via Settings > Roles > Permissions,
+// same as every other permission added this way.
 // SELF-SERVICE routes: open to any authenticated user (not just the
 // Administrative Officer role), since a service fee arrangement
 // could in principle be set up for anyone contracted this way.
@@ -16,7 +24,7 @@
 const router = require('express').Router();
 const { body, query } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, requirePermissions } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const serviceFeesController = require('../controllers/serviceFeesController');
 
@@ -29,21 +37,21 @@ router.use(requireConsent);
 // ============================================================
 
 router.get('/agreements',
-    requireRoles(['Admin', 'Treasurer', 'Assistant Treasurer']),
+    requirePermissions(['SERVICE_FEE_VIEW']),
     [query('status').optional().isIn(['ACTIVE', 'ENDED'])],
     validateRequest,
     serviceFeesController.listAgreements
 );
 
 router.get('/agreements/:id',
-    requireRoles(['Admin', 'Treasurer', 'Assistant Treasurer']),
+    requirePermissions(['SERVICE_FEE_VIEW']),
     validators.idParam('id'),
     validateRequest,
     serviceFeesController.getAgreementById
 );
 
 router.post('/agreements',
-    requireRoles(['Admin']),
+    requirePermissions(['SERVICE_FEE_MANAGE']),
     [
         body('user_id').isInt({ min: 1 }).withMessage('A valid user is required'),
         body('monthly_amount').isFloat({ gt: 0 }).withMessage('A valid monthly amount is required'),
@@ -59,7 +67,7 @@ router.post('/agreements',
 );
 
 router.patch('/agreements/:id',
-    requireRoles(['Admin']),
+    requirePermissions(['SERVICE_FEE_MANAGE']),
     validators.idParam('id'),
     [
         body('monthly_amount').optional().isFloat({ gt: 0 }),
@@ -68,13 +76,19 @@ router.patch('/agreements/:id',
         body('notes').optional().trim(),
         body('status').optional().isIn(['ACTIVE', 'ENDED']),
         body('end_date').optional().isISO8601(),
+        // v1.47.0 — required by the controller only when monthly_amount
+        // is actually changing (checked there, since that's conditional
+        // on comparing against the existing row); optional here so a
+        // PATCH that doesn't touch the amount isn't forced to send them.
+        body('reason').optional().trim(),
+        body('effective_from').optional().isISO8601().withMessage('Invalid effective date'),
     ],
     validateRequest,
     serviceFeesController.updateAgreement
 );
 
 router.post('/agreements/:id/pay',
-    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
+    requirePermissions(['SERVICE_FEE_MANAGE']),
     validators.idParam('id'),
     [
         body('amount').optional().isFloat({ gt: 0 }),
@@ -119,7 +133,7 @@ router.get('/my-reimbursements',
 );
 
 router.get('/reimbursements',
-    requireRoles(['Admin', 'Treasurer', 'Assistant Treasurer']),
+    requirePermissions(['SERVICE_FEE_VIEW']),
     [query('status').optional().isIn(['PENDING', 'APPROVED', 'REJECTED'])],
     validateRequest,
     serviceFeesController.listReimbursements
@@ -132,7 +146,7 @@ router.get('/reimbursements/:id/receipt',
 );
 
 router.post('/reimbursements/:id/approve',
-    requireRoles(['Treasurer', 'Assistant Treasurer']),
+    requirePermissions(['SERVICE_FEE_MANAGE']),
     validators.idParam('id'),
     [
         body('account_id').isInt({ min: 1 }).withMessage('A valid account is required'),
@@ -143,7 +157,7 @@ router.post('/reimbursements/:id/approve',
 );
 
 router.post('/reimbursements/:id/reject',
-    requireRoles(['Treasurer', 'Assistant Treasurer']),
+    requirePermissions(['SERVICE_FEE_MANAGE']),
     validators.idParam('id'),
     [body('review_notes').trim().notEmpty().withMessage('A reason is required')],
     validateRequest,

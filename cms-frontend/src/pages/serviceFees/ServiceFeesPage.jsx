@@ -17,6 +17,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { serviceFeesAPI, accountsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -41,11 +42,12 @@ const SERVICE_FEE_CATEGORY_HINT = 'Service Fees';
 // underneath the account select. The backend derives currency_id
 // from account_id itself; nothing here needs to send it.
 // ============================================================
-const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, categories, editingAgreement }) => {
+export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, categories, editingAgreement }) => {
     const isEdit = !!editingAgreement;
     const [form, setForm] = useState({
         user_id: '', monthly_amount: '', account_id: '',
         category_id: '', start_date: '', notes: '',
+        reason: '', effective_from: '',
     });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -59,15 +61,21 @@ const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, cat
                 category_id: String(editingAgreement.category_id || ''),
                 start_date: editingAgreement.start_date ? editingAgreement.start_date.slice(0, 10) : '',
                 notes: editingAgreement.notes || '',
+                reason: '', effective_from: '',
             });
         } else {
-            setForm({ user_id: '', monthly_amount: '', account_id: '', category_id: '', start_date: '', notes: '' });
+            setForm({ user_id: '', monthly_amount: '', account_id: '', category_id: '', start_date: '', notes: '', reason: '', effective_from: '' });
         }
     }, [editingAgreement, isOpen]);
 
     if (!isOpen) return null;
 
     const selectedAccount = accounts.find(a => String(a.id) === String(form.account_id));
+    // Only ask for a reason/effective date when the monthly amount is
+    // actually being changed — matches the backend, which only requires
+    // (and only records an amendment-history row for) a real change.
+    const amountIsChanging = isEdit &&
+        parseFloat(form.monthly_amount || '0') !== parseFloat(editingAgreement?.monthly_amount || '0');
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -80,6 +88,7 @@ const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, cat
                     account_id: parseInt(form.account_id),
                     category_id: parseInt(form.category_id),
                     notes: form.notes,
+                    ...(amountIsChanging ? { reason: form.reason, effective_from: form.effective_from } : {}),
                 });
             } else {
                 await serviceFeesAPI.createAgreement({
@@ -138,6 +147,24 @@ const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, cat
                                 value={form.monthly_amount}
                                 onChange={e => setForm(p => ({ ...p, monthly_amount: e.target.value }))} required />
                         </div>
+                        {amountIsChanging && (
+                            <div className="rounded-lg bg-amber-50 border border-amber-100 p-3 space-y-3">
+                                <p className="text-xs text-amber-700">
+                                    Changing the monthly amount from {editingAgreement.monthly_amount} — this is
+                                    recorded in the agreement's change history, never overwritten.
+                                </p>
+                                <div>
+                                    <label className="label">Reason for Change *</label>
+                                    <input type="text" className="input" value={form.reason}
+                                        onChange={e => setForm(p => ({ ...p, reason: e.target.value }))} required />
+                                </div>
+                                <div>
+                                    <label className="label">Effective From *</label>
+                                    <input type="date" className="input" value={form.effective_from}
+                                        onChange={e => setForm(p => ({ ...p, effective_from: e.target.value }))} required />
+                                </div>
+                            </div>
+                        )}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="label">Paying Account *</label>
@@ -197,7 +224,7 @@ const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accounts, cat
 // general amend form — ending an agreement needs exactly one extra
 // fact (the end date) and should read as a deliberate, distinct step.
 // ============================================================
-const TerminateAgreementModal = ({ isOpen, agreement, onClose, onSuccess }) => {
+export const TerminateAgreementModal = ({ isOpen, agreement, onClose, onSuccess }) => {
     const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -256,7 +283,7 @@ const TerminateAgreementModal = ({ isOpen, agreement, onClose, onSuccess }) => {
 // actually paid (Cash / Bank Transfer / Mobile Money) — the real
 // transaction only posts once the recipient confirms it from
 // Payment Acknowledgements > Payment Confirmations.
-const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
+export const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
     const BLANK = {
         amount: '', payment_date: '', notes: '',
         payment_method: 'CASH', mobile_money_provider: '', external_reference: '',
@@ -598,14 +625,20 @@ const RejectReimbursementModal = ({ isOpen, reimbursement, onClose, onSuccess })
 // MAIN SERVICE FEES PAGE
 // ============================================================
 const ServiceFeesPage = () => {
-    const { hasRole } = useAuth();
-    // Viewing the Agreements tab and recording a monthly payment is a
-    // Treasurer duty too (same as everywhere else money moves) — only
-    // creating/editing the agreement itself is Admin-only, matching the
-    // backend's own requireRoles split in routes/serviceFees.js.
-    const canViewAgreements = hasRole(['Admin', 'Treasurer', 'Assistant Treasurer']);
-    const canManageAgreements = hasRole('Admin');
-    const canReviewReimbursements = hasRole(['Treasurer', 'Assistant Treasurer']);
+    const { hasPermission } = useAuth();
+    // v1.47.0 — converted from hardcoded hasRole(...) checks to the
+    // permission system, matching the backend's requirePermissions
+    // split in routes/serviceFees.js. VIEW flags guarantee full
+    // monitoring visibility (an Admin/Treasurer can see every
+    // agreement and reimbursement request even without rights to act
+    // on them); MANAGE flags gate the actual action buttons —
+    // Record Payment/Amend/Terminate/New Agreement and
+    // Approve/Reject Reimbursement — unchanged from what those
+    // buttons required before.
+    const canViewAgreements = hasPermission('SERVICE_FEE_VIEW');
+    const canManageAgreements = hasPermission('SERVICE_FEE_MANAGE');
+    const canViewReimbursements = hasPermission('SERVICE_FEE_VIEW');
+    const canManageReimbursements = hasPermission('SERVICE_FEE_MANAGE');
 
     const [activeTab, setActiveTab] = useState('mine');
     const [myAgreement, setMyAgreement] = useState(null);
@@ -654,14 +687,14 @@ const ServiceFeesPage = () => {
     }, [canViewAgreements]);
 
     const loadReimbursements = useCallback(async () => {
-        if (!canReviewReimbursements) return;
+        if (!canViewReimbursements) return;
         try {
             const res = await serviceFeesAPI.listReimbursements();
             setReimbursements(res.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         }
-    }, [canReviewReimbursements]);
+    }, [canViewReimbursements]);
 
     useEffect(() => {
         loadMine();
@@ -693,7 +726,17 @@ const ServiceFeesPage = () => {
     ];
 
     const agreementColumns = [
-        { header: 'Person', render: row => <span className="text-sm font-medium text-gray-900">{row.user_name}</span> },
+        {
+            header: 'Person',
+            render: row => (
+                <Link
+                    to={`/service-fees/agreements/${row.id}`}
+                    className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline"
+                >
+                    {row.user_name}
+                </Link>
+            ),
+        },
         { header: 'Monthly Fee', render: row => <span className="text-sm font-bold text-gray-900">{parseFloat(row.monthly_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} {row.currency_code}</span> },
         { header: 'Account', render: row => <span className="text-sm text-gray-500">{row.account_name}</span> },
         { header: 'Last Paid', render: row => <span className="text-sm text-gray-500">{row.last_paid_date ? formatDate(row.last_paid_date) : 'Never'}</span> },
@@ -702,7 +745,7 @@ const ServiceFeesPage = () => {
             header: 'Actions',
             render: row => (
                 <div className="flex gap-2">
-                    {row.status === 'ACTIVE' && (
+                    {row.status === 'ACTIVE' && canManageAgreements && (
                         <button onClick={() => setPayingAgreement(row)}
                             className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors"
                             title="Record Payment">
@@ -739,14 +782,18 @@ const ServiceFeesPage = () => {
             header: 'Actions',
             render: row => row.status === 'PENDING' && (
                 <div className="flex gap-2">
-                    <button onClick={() => setApprovingReimbursement(row)}
-                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
-                        <CheckIcon className="h-4 w-4" />
-                    </button>
-                    <button onClick={() => setRejectingReimbursement(row)}
-                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
-                        <XMarkIcon className="h-4 w-4" />
-                    </button>
+                    {canManageReimbursements && (
+                        <>
+                            <button onClick={() => setApprovingReimbursement(row)}
+                                className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
+                                <CheckIcon className="h-4 w-4" />
+                            </button>
+                            <button onClick={() => setRejectingReimbursement(row)}
+                                className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
+                                <XMarkIcon className="h-4 w-4" />
+                            </button>
+                        </>
+                    )}
                     {row.receipt_file_name && (
                         <a href={`/api/service-fees/reimbursements/${row.id}/receipt`} target="_blank" rel="noreferrer"
                             className="p-1.5 rounded-lg bg-gray-50 text-gray-500 hover:bg-gray-100 transition-colors" title="View Receipt">
@@ -793,7 +840,7 @@ const ServiceFeesPage = () => {
                         Agreements
                     </button>
                 )}
-                {canReviewReimbursements && (
+                {canViewReimbursements && (
                     <button onClick={() => setActiveTab('reimbursements')}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                             activeTab === 'reimbursements' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -863,7 +910,7 @@ const ServiceFeesPage = () => {
                 />
             )}
 
-            {activeTab === 'reimbursements' && canReviewReimbursements && (
+            {activeTab === 'reimbursements' && canViewReimbursements && (
                 <DataTable
                     columns={reimbColumns}
                     data={reimbursements}

@@ -53,6 +53,7 @@ import DepositsPage from './pages/deposits/DepositsPage';
 import AboutPage from './pages/about/AboutPage';
 import RequisitionsPage from './pages/requisitions/RequisitionsPage';
 import ServiceFeesPage from './pages/serviceFees/ServiceFeesPage';
+import ServiceFeeAgreementDetailPage from './pages/serviceFees/ServiceFeeAgreementDetailPage';
 import AuditManagementPage from './pages/audit/AuditManagementPage';
 import AuditorPortalPage from './pages/audit/AuditorPortalPage';
 import AuditReviewPage from './pages/audit/AuditReviewPage';
@@ -160,6 +161,7 @@ function App() {
                             <Route path="about" element={<AboutPage />} />
                             <Route path="requisitions" element={<RequisitionsPage />} />
                             <Route path="service-fees" element={<ServiceFeesPage />} />
+                            <Route path="service-fees/agreements/:id" element={<ServiceFeeAgreementDetailPage />} />
                             <Route path="payment-acknowledgements" element={<PaymentAcknowledgementsPage />} />
                             <Route path="audit" element={
                                 <ProtectedRoute requiredRole="Auditor">

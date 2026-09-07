@@ -1,0 +1,32 @@
+flowchart TD
+    subgraph A["1. Remove from Archive"]
+        A1["Document sits in the\nCompany Archive"] --> A2{"Admin clicks\nthe Trash icon"}
+        A2 --> A3["Confirm prompt"]
+        A3 -->|Confirm| A4["Status quietly flips\nto DELETED"]
+        A4 --> A5["Disappears from Archive\nand All Documents\n(row + history kept in DB)"]
+    end
+
+    subgraph B["2. Portfolio Summary"]
+        B1["Member opens\ntheir Portfolio page"] --> B2["Clicks Print"]
+        B2 --> B3["Browser print dialog opens\n(can Save as PDF)"]
+        B3 --> B4["Nothing saved to\nthe Documents library"]
+    end
+
+    subgraph C["3. Monthly Report Emails"]
+        C1["Scheduled job runs\n(1st of the month)"] --> C2["Full report rendered\nto a PDF"]
+        C2 --> C3["Short bullet-point\nsummary written"]
+        C3 --> C4["Email sent:\nsummary in body,\nfull PDF attached"]
+    end
+
+    subgraph D["4. Generate Document"]
+        D1["Fill in template fields"] --> D2["Click Preview\n(local only, nothing saved)"]
+        D2 --> D3{"Looks right?"}
+        D3 -->|"No - edit a field"| D1
+        D3 -->|Yes| D4["Click Confirm & Save\nto Library"]
+        D4 --> D5["Saved once -\nbutton disables itself"]
+    end
+
+    style A5 fill:#ecfdf5,stroke:#059669
+    style B4 fill:#ecfdf5,stroke:#059669
+    style C4 fill:#ecfdf5,stroke:#059669
+    style D5 fill:#ecfdf5,stroke:#059669

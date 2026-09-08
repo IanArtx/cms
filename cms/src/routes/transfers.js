@@ -12,7 +12,7 @@
 // ============================================================
 
 const router = require('express').Router();
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const transfersController = require('../controllers/transfersController');
@@ -26,10 +26,53 @@ router.use(blockFinanceRestricted);
 // ============================================================
 // GET ALL TRANSFERS
 // GET /api/transfers?status=PENDING&transfer_type=PRIMARY_TO_SECONDARY
+// v1.50.0 — account_id/from_date/to_date added (additive; all still
+// optional) so the Transfers page can filter the ledger the same way
+// Transactions already does, feeding the new chart/summary section.
 // ============================================================
 router.get('/',
     requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('from_date must be a valid date'),
+        query('to_date').optional().isISO8601().withMessage('to_date must be a valid date'),
+    ],
+    validateRequest,
     transfersController.getTransfers
+);
+
+// ============================================================
+// TRANSFER ANALYTICS (v1.50.0) — per-currency volume, exchange rate
+// trend, charges, largest/smallest completed transfer, and most/
+// least-active quarters, for the Transfers page's new chart section.
+// Registered before /:id — same reasoning as every other static-
+// before-dynamic route ordering in this codebase.
+// GET /api/transfers/analytics
+// ============================================================
+router.get('/analytics',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('from_date must be a valid date'),
+        query('to_date').optional().isISO8601().withMessage('to_date must be a valid date'),
+    ],
+    validateRequest,
+    transfersController.getTransferAnalytics
+);
+
+// ============================================================
+// EXPORT TRANSFERS AS CSV (v1.50.0)
+// GET /api/transfers/export
+// ============================================================
+router.get('/export',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('from_date must be a valid date'),
+        query('to_date').optional().isISO8601().withMessage('to_date must be a valid date'),
+    ],
+    validateRequest,
+    transfersController.exportTransfersCsv
 );
 
 // ============================================================

@@ -21,6 +21,9 @@ const { wrapEmail } = require('../services/emailTemplates');
 const { applySideFundPayment } = require('../services/sideFundService');
 const { getOrCreateSavingsBalance, getSavingsAccount } = require('../services/savingsService');
 const { convertToShareCurrency, getExchangeRateOn } = require('../services/sharePricingService');
+const { loadFiscalQuarters, bucketAndSummarize } = require('../services/quarterAnalyticsService');
+const { rowsToCsv, sendCsv } = require('../utils/csv');
+const { normalizeDateInput } = require('../utils/dateUtils');
 
 // ============================================================
 // INTERNAL HELPER — GET CURRENT FLOOR LIMIT
@@ -1540,14 +1543,13 @@ const reverseTransaction = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
-// GET TRANSACTION LEDGER
-// GET /api/transactions?account_id=1&page=1&limit=20
-// Returns paginated transaction history for an account.
+// SHARED FILTER BUILDER (v1.50.0) — factored out of getTransactions
+// so the new analytics/export endpoints below filter identically
+// (same account_id/inflow_type/from_date/to_date query params,
+// same WHERE clause) without a second, driftable copy of this logic.
 // ============================================================
-const getTransactions = asyncHandler(async (req, res) => {
-    const { account_id, inflow_type, from_date, to_date } = req.query;
-    const { page, limit, offset } = getPagination(req.query);
-
+const buildTransactionFilters = (reqQuery) => {
+    const { account_id, inflow_type, from_date, to_date } = reqQuery;
     const conditions = [];
     const params = [];
     let p = 0;
@@ -1569,9 +1571,18 @@ const getTransactions = asyncHandler(async (req, res) => {
         params.push(to_date);
     }
 
-    const where = conditions.length > 0
-        ? 'WHERE ' + conditions.join(' AND ')
-        : '';
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    return { where, params, paramCount: p };
+};
+
+// ============================================================
+// GET TRANSACTION LEDGER
+// GET /api/transactions?account_id=1&page=1&limit=20
+// Returns paginated transaction history for an account.
+// ============================================================
+const getTransactions = asyncHandler(async (req, res) => {
+    const { page, limit, offset } = getPagination(req.query);
+    const { where, params, paramCount: p } = buildTransactionFilters(req.query);
 
     // Count total
     const countResult = await query(
@@ -1617,6 +1628,108 @@ const getTransactions = asyncHandler(async (req, res) => {
     `, params);
 
     sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
+// TRANSACTION ANALYTICS (v1.50.0) — Income vs Expense by currency,
+// plus which quarter (fiscal if configured, else calendar —
+// quarterAnalyticsService) saw the most/least of each, for the
+// Transactions page's new top-of-page chart section. Honors the
+// exact same filters as the ledger itself (account_id/inflow_type/
+// from_date/to_date) so "what you're looking at" and "what the chart
+// summarizes" always match. Currencies are kept separate rather than
+// converted to one display currency — a EUR total and a UGX total
+// are never added together, by design (exact historical figures,
+// no FX-conversion assumptions baked into the analytics).
+// GET /api/transactions/analytics
+// ============================================================
+// A single request pulling every matching row for a potentially
+// long-lived ledger could be huge — 20,000 is generous for this
+// system's real scale (a single company's shareholder/member base)
+// while still bounding worst-case memory/response size. A ledger
+// past this size should filter by date range first, same as any
+// other "export everything" operation in this app.
+const ANALYTICS_ROW_CAP = 20000;
+
+const getTransactionAnalytics = asyncHandler(async (req, res) => {
+    const { where, params } = buildTransactionFilters(req.query);
+
+    const result = await query(`
+        SELECT t.value_date, t.transaction_type, t.amount, c.code AS currency_code
+        FROM   transactions t
+        JOIN   currencies c ON c.id = t.currency_id
+        ${where}
+        ORDER  BY t.value_date ASC
+        LIMIT  ${ANALYTICS_ROW_CAP}
+    `, params);
+
+    const rows = result.rows.map(r => ({
+        date: r.value_date,
+        currency: r.currency_code,
+        amount: r.amount,
+        direction: (r.transaction_type === 'CREDIT' || r.transaction_type === 'REVERSAL_CREDIT') ? 'IN' : 'OUT',
+    }));
+
+    const fiscalQuarters = await loadFiscalQuarters();
+    const byCurrency = bucketAndSummarize(rows, fiscalQuarters);
+
+    sendSuccess(res, {
+        by_currency: byCurrency,
+        row_count: rows.length,
+        truncated: rows.length >= ANALYTICS_ROW_CAP,
+    });
+});
+
+// ============================================================
+// EXPORT TRANSACTIONS AS CSV (v1.50.0)
+// GET /api/transactions/export — same filters as the ledger, but
+// returns every matching row (not just the current page) as a CSV
+// download. This doubles as the "general ledger" export: clear every
+// filter first and it exports the complete ledger.
+// ============================================================
+const exportTransactionsCsv = asyncHandler(async (req, res) => {
+    const { where, params } = buildTransactionFilters(req.query);
+
+    const result = await query(`
+        SELECT
+            r.reference_code, r.public_id, t.description,
+            t.transaction_type, t.inflow_type,
+            c.code AS currency_code, t.amount, t.balance_after,
+            t.value_date, t.status, a.name AS account_name,
+            cp.full_path AS category_trail, cat.name AS category_name,
+            u.first_name || ' ' || u.last_name AS created_by_name
+        FROM  transactions t
+        JOIN  references_registry r  ON r.id  = t.reference_id
+        JOIN  currencies c           ON c.id  = t.currency_id
+        JOIN  categories cat         ON cat.id = t.category_id
+        JOIN  category_paths cp      ON cp.category_id = t.category_id
+        JOIN  users u                ON u.id  = t.created_by
+        JOIN  accounts a             ON a.id  = t.account_id
+        ${where}
+        ORDER BY t.value_date ASC, t.posted_at ASC
+        LIMIT ${ANALYTICS_ROW_CAP}
+    `, params);
+
+    const isCredit = (row) => row.transaction_type === 'CREDIT' || row.transaction_type === 'REVERSAL_CREDIT';
+
+    const csv = rowsToCsv([
+        { key: 'reference_code', header: 'Reference' },
+        { key: 'public_id',      header: 'Public ID' },
+        { key: 'value_date',     header: 'Date', format: v => normalizeDateInput(v) || '' },
+        { key: 'description',    header: 'Description' },
+        { key: 'account_name',   header: 'Account' },
+        { key: 'category_trail', header: 'Category', format: (v, row) => v || row.category_name },
+        { key: 'transaction_type', header: 'Direction', format: (_v, row) => (isCredit(row) ? 'Income' : 'Expense') },
+        { key: 'inflow_type',    header: 'Type' },
+        { key: 'currency_code',  header: 'Currency' },
+        { key: 'amount',         header: 'Amount', format: (v, row) => (isCredit(row) ? '' : '-') + parseFloat(v).toFixed(2) },
+        { key: 'balance_after',  header: 'Balance After', format: v => parseFloat(v).toFixed(2) },
+        { key: 'status',         header: 'Status' },
+        { key: 'created_by_name', header: 'Recorded By' },
+    ], result.rows);
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    sendCsv(res, `transactions-${stamp}.csv`, csv);
 });
 
 // ============================================================
@@ -1666,6 +1779,8 @@ module.exports = {
     recordInflow,
     reverseTransaction,
     getTransactions,
+    getTransactionAnalytics,
+    exportTransactionsCsv,
     getTransactionById,
     postTransaction,
 };

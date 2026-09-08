@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI, capitalGoalsAPI } from '../../api/endpoints';
+import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI, capitalGoalsAPI, capitalGoalCallsAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/common/StatusBadge';
@@ -113,6 +113,41 @@ const CapitalGoalCard = ({ goal }) => {
 };
 
 // ============================================================
+// CURRENT CAPITAL CALL CARD (v1.50.0)
+// Shows the PRIMARY capital goal's currently open monthly call (if
+// any), for any authenticated member — clicking it goes straight to
+// the pledging page for that call. Deliberately scoped to only the
+// PRIMARY goal's call (not every open call across every active
+// goal, including SECONDARY ones) per the resolved clarifying
+// answer. Renders nothing if there's no PRIMARY goal, or it has no
+// call currently open for pledging — this also covers legacy goals
+// that were never activated onto the call schedule at all.
+// ============================================================
+const CurrentCapitalCallCard = ({ call }) => {
+    if (!call) return null;
+
+    return (
+        <Link to="/capital-goals/my-calls" className="card mt-4 block hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-2 mb-2">
+                <FlagIcon className="h-4 w-4 text-primary-600" />
+                <h2 className="section-title mb-0">Open Capital Call — {call.goal_title}</h2>
+                <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                    {call.period}
+                </span>
+            </div>
+            <p className="text-sm text-gray-500">
+                Monthly target: {call.currency_code} {parseFloat(call.monthly_target).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+                {call.already_pledged
+                    ? 'You have already pledged for this call — click to review.'
+                    : 'You have not pledged yet — click to pledge.'}
+            </p>
+        </Link>
+    );
+};
+
+// ============================================================
 // STAT CARD COMPONENT
 // If `to` is given, the whole card is a link to that section.
 // ============================================================
@@ -179,6 +214,7 @@ const DashboardPage = () => {
     const [investments,  setInvestments]  = useState([]);
     const [performance,  setPerformance]  = useState(null);
     const [capitalGoal,  setCapitalGoal]  = useState(null);
+    const [primaryOpenCall, setPrimaryOpenCall] = useState(null);
     const [loading,      setLoading]      = useState(true);
 
     // Determine if user is shareholder-only
@@ -248,6 +284,21 @@ const DashboardPage = () => {
             .then(res => setCapitalGoal((res.data.data || [])[0] || null))
             .catch(() => {});
     }, [hasPermission]);
+
+    // Current open call for the year's PRIMARY capital goal only (v1.50.0)
+    // — /capital-goals/my-calls is a per-user endpoint open to any
+    // authenticated member (it's "my" pledges), so this isn't gated
+    // behind CAPITAL_GOAL_VIEW the way the card above is. open_calls
+    // already comes back ordered by period ascending, so the first
+    // PRIMARY match is the soonest-open one.
+    useEffect(() => {
+        capitalGoalCallsAPI.getMyPledges()
+            .then(res => {
+                const openCalls = res.data.data?.open_calls || [];
+                setPrimaryOpenCall(openCalls.find(c => c.goal_type === 'PRIMARY') || null);
+            })
+            .catch(() => {});
+    }, []);
 
     if (loading) {
         return <LoadingSpinner fullPage text="Loading dashboard..." />;
@@ -497,6 +548,9 @@ const DashboardPage = () => {
 
                     {/* Nearest active capital goal, if any (v1.29.0) */}
                     <CapitalGoalCard goal={capitalGoal} />
+
+                    {/* Current open call for the PRIMARY goal, if any (v1.50.0) */}
+                    <CurrentCapitalCallCard call={primaryOpenCall} />
 
                     {/* Active Investments Summary */}
                     {hasPermission('INVESTMENT_VIEW') && investments.length > 0 && (

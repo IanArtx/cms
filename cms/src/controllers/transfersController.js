@@ -19,6 +19,9 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { loadFiscalQuarters, bucketAndSummarize } = require('../services/quarterAnalyticsService');
+const { rowsToCsv, sendCsv } = require('../utils/csv');
+const { normalizeDateInput } = require('../utils/dateUtils');
 
 // ============================================================
 // INITIATE A TRANSFER
@@ -688,10 +691,15 @@ const rejectTransfer = asyncHandler(async (req, res) => {
 // GET ALL TRANSFERS
 // GET /api/transfers
 // ============================================================
-const getTransfers = asyncHandler(async (req, res) => {
-    const { status, transfer_type } = req.query;
-    const { page, limit, offset } = getPagination(req.query);
-
+// ============================================================
+// SHARED FILTER BUILDER (v1.50.0) — factored out of getTransfers so
+// the new analytics/export endpoints below filter identically. Adds
+// account_id (matches either leg) and a value_date range on top of
+// the pre-existing status/transfer_type filters — additive, so any
+// existing caller of GET /transfers with no new params is unaffected.
+// ============================================================
+const buildTransferFilters = (reqQuery) => {
+    const { status, transfer_type, account_id, from_date, to_date } = reqQuery;
     const conditions = [];
     const params = [];
     let p = 0;
@@ -704,10 +712,26 @@ const getTransfers = asyncHandler(async (req, res) => {
         p++; conditions.push(`t.transfer_type = $${p}`);
         params.push(transfer_type.toUpperCase());
     }
+    if (account_id) {
+        p++; conditions.push(`(t.from_account_id = $${p} OR t.to_account_id = $${p})`);
+        params.push(account_id);
+    }
+    if (from_date) {
+        p++; conditions.push(`t.value_date >= $${p}`);
+        params.push(from_date);
+    }
+    if (to_date) {
+        p++; conditions.push(`t.value_date <= $${p}`);
+        params.push(to_date);
+    }
 
-    const where = conditions.length > 0
-        ? 'WHERE ' + conditions.join(' AND ')
-        : '';
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    return { where, params, paramCount: p };
+};
+
+const getTransfers = asyncHandler(async (req, res) => {
+    const { page, limit, offset } = getPagination(req.query);
+    const { where, params, paramCount: p } = buildTransferFilters(req.query);
 
     const countResult = await query(
         `SELECT COUNT(*) AS total FROM transfers t ${where}`, params
@@ -757,6 +781,166 @@ const getTransfers = asyncHandler(async (req, res) => {
     `, params);
 
     sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
+// TRANSFER ANALYTICS (v1.50.0) — for the Transfers page's new chart
+// section: per-currency (the SENDING currency of each transfer)
+// monthly volume, the exchange rate actually used on each transfer
+// over time, total bank charges, the single largest/smallest
+// completed transfer, and most/least-active quarters (fiscal if
+// configured, else calendar). Deliberately restricted to `status =
+// 'POSTED'` — the only status where money has actually, finally
+// moved (PENDING/AWAITING_APPROVAL/APPROVED never posted;
+// REJECTED never will; REVERSED moved and then un-moved) — a
+// "largest transfer" or a volume trend built from transfers that
+// never happened would be misleading. The CSV export below is NOT
+// restricted this way; it's a ledger export and shows every status.
+// GET /api/transfers/analytics
+// ============================================================
+const TRANSFER_ANALYTICS_ROW_CAP = 20000;
+
+const getTransferAnalytics = asyncHandler(async (req, res) => {
+    const { where: filterWhere, params: filterParams } = buildTransferFilters(req.query);
+    const postedCondition = filterWhere ? `${filterWhere} AND t.status = 'POSTED'` : `WHERE t.status = 'POSTED'`;
+
+    const result = await query(`
+        SELECT t.value_date, t.amount_sent, t.amount_received, t.exchange_rate,
+               t.sending_bank_charge, t.receiving_bank_charge,
+               t.reference_id, fc.code AS from_currency, tc.code AS to_currency,
+               fa.name AS from_account, ta.name AS to_account,
+               r.reference_code
+        FROM   transfers t
+        JOIN   currencies fc ON fc.id = t.currency_sent_id
+        JOIN   currencies tc ON tc.id = t.currency_received_id
+        JOIN   accounts fa   ON fa.id = t.from_account_id
+        JOIN   accounts ta   ON ta.id = t.to_account_id
+        JOIN   references_registry r ON r.id = t.reference_id
+        ${postedCondition}
+        ORDER  BY t.value_date ASC
+        LIMIT  ${TRANSFER_ANALYTICS_ROW_CAP}
+    `, filterParams);
+
+    const rows = result.rows;
+
+    // Volume — grouped by the currency actually LEAVING an account
+    // (amount_sent's own currency), the side with a real, immediate
+    // balance impact. Treated as a pure "expense-shaped" series (an
+    // outflow from the sending account) since there's no natural
+    // "income" counterpart for an internal transfer the way there is
+    // for Transactions' Income vs Expense chart.
+    const volumeRows = rows.map(r => ({
+        date: r.value_date, currency: r.from_currency, amount: r.amount_sent, direction: 'OUT',
+    }));
+    const fiscalQuarters = await loadFiscalQuarters();
+    const volumeByCurrency = bucketAndSummarize(volumeRows, fiscalQuarters);
+
+    // Exchange rate trend — one point per transfer, per currency PAIR
+    // (e.g. "EUR -> UGX"), so a company with more than one pair never
+    // has them plotted on the same misleading line.
+    const rateByPair = {};
+    for (const r of rows) {
+        if (r.from_currency === r.to_currency) continue; // same-currency transfer, rate is always 1 — not worth charting
+        const pairKey = `${r.from_currency} -> ${r.to_currency}`;
+        if (!rateByPair[pairKey]) rateByPair[pairKey] = [];
+        rateByPair[pairKey].push({
+            date: normalizeDateInput(r.value_date),
+            rate: parseFloat(r.exchange_rate),
+        });
+    }
+
+    // Charges — total bank charges (both legs), by currency of the
+    // leg the charge was actually deducted in.
+    let totalChargesByCurrency = {};
+    for (const r of rows) {
+        const sending = parseFloat(r.sending_bank_charge) || 0;
+        const receiving = parseFloat(r.receiving_bank_charge) || 0;
+        if (sending > 0) totalChargesByCurrency[r.from_currency] = (totalChargesByCurrency[r.from_currency] || 0) + sending;
+        if (receiving > 0) totalChargesByCurrency[r.to_currency] = (totalChargesByCurrency[r.to_currency] || 0) + receiving;
+    }
+
+    // Largest / smallest completed transfer, by currency of amount_sent
+    // (never compared across currencies — same "keep currencies
+    // separate" rule as everything else here).
+    const largestSmallestByCurrency = {};
+    for (const r of rows) {
+        const cur = r.from_currency;
+        const amount = parseFloat(r.amount_sent);
+        const entry = {
+            reference_code: r.reference_code,
+            amount,
+            from_account: r.from_account,
+            to_account: r.to_account,
+            date: normalizeDateInput(r.value_date),
+        };
+        if (!largestSmallestByCurrency[cur]) {
+            largestSmallestByCurrency[cur] = { largest: entry, smallest: entry };
+        } else {
+            if (amount > largestSmallestByCurrency[cur].largest.amount) largestSmallestByCurrency[cur].largest = entry;
+            if (amount < largestSmallestByCurrency[cur].smallest.amount) largestSmallestByCurrency[cur].smallest = entry;
+        }
+    }
+
+    sendSuccess(res, {
+        volume_by_currency: volumeByCurrency,
+        rate_by_pair: rateByPair,
+        total_charges_by_currency: totalChargesByCurrency,
+        largest_smallest_by_currency: largestSmallestByCurrency,
+        row_count: rows.length,
+        truncated: rows.length >= TRANSFER_ANALYTICS_ROW_CAP,
+    });
+});
+
+// ============================================================
+// EXPORT TRANSFERS AS CSV (v1.50.0)
+// GET /api/transfers/export — same filters as the ledger (every
+// status, unlike the analytics above), returns every matching row.
+// ============================================================
+const exportTransfersCsv = asyncHandler(async (req, res) => {
+    const { where, params } = buildTransferFilters(req.query);
+
+    const result = await query(`
+        SELECT
+            r.reference_code, r.public_id, t.transfer_type,
+            fa.name AS from_account, ta.name AS to_account,
+            fc.code AS from_currency, t.amount_sent,
+            tc.code AS to_currency, t.amount_received,
+            t.exchange_rate, t.sending_bank_charge, t.receiving_bank_charge,
+            t.value_date, t.status, t.description,
+            u.first_name || ' ' || u.last_name AS initiated_by
+        FROM  transfers t
+        JOIN  references_registry r ON r.id  = t.reference_id
+        JOIN  accounts fa           ON fa.id = t.from_account_id
+        JOIN  accounts ta           ON ta.id = t.to_account_id
+        JOIN  currencies fc         ON fc.id = t.currency_sent_id
+        JOIN  currencies tc         ON tc.id = t.currency_received_id
+        JOIN  users u               ON u.id  = t.created_by
+        ${where}
+        ORDER BY t.value_date ASC, t.created_at ASC
+        LIMIT ${TRANSFER_ANALYTICS_ROW_CAP}
+    `, params);
+
+    const csv = rowsToCsv([
+        { key: 'reference_code', header: 'Reference' },
+        { key: 'public_id',      header: 'Public ID' },
+        { key: 'value_date',     header: 'Date', format: v => normalizeDateInput(v) || '' },
+        { key: 'transfer_type',  header: 'Type' },
+        { key: 'from_account',   header: 'From Account' },
+        { key: 'to_account',     header: 'To Account' },
+        { key: 'from_currency',  header: 'Currency Sent' },
+        { key: 'amount_sent',    header: 'Amount Sent', format: v => parseFloat(v).toFixed(2) },
+        { key: 'to_currency',    header: 'Currency Received' },
+        { key: 'amount_received', header: 'Amount Received', format: v => parseFloat(v).toFixed(2) },
+        { key: 'exchange_rate',  header: 'Exchange Rate', format: v => parseFloat(v).toFixed(4) },
+        { key: 'sending_bank_charge',   header: 'Sending Charge', format: v => parseFloat(v || 0).toFixed(2) },
+        { key: 'receiving_bank_charge', header: 'Receiving Charge', format: v => parseFloat(v || 0).toFixed(2) },
+        { key: 'status',         header: 'Status' },
+        { key: 'description',    header: 'Description' },
+        { key: 'initiated_by',   header: 'Initiated By' },
+    ], result.rows);
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    sendCsv(res, `transfers-${stamp}.csv`, csv);
 });
 
 // ============================================================
@@ -822,5 +1006,7 @@ module.exports = {
     approveTransfer,
     rejectTransfer,
     getTransfers,
+    getTransferAnalytics,
+    exportTransfersCsv,
     getTransferById,
 };

@@ -2624,3 +2624,22 @@ export const previewDocument = (html, title = 'Document') => {
     win.document.close();
     win.focus();
 };
+
+// ============================================================
+// DOWNLOAD BLOB (v1.50.0)
+// Triggers a browser download for a Blob already fetched via axios
+// with `responseType: 'blob'` (same pattern documentsAPI.download
+// already uses) — used by the new Transactions/Transfers CSV
+// exports. A transient off-screen <a download> is the standard way
+// to do this without navigating the page away.
+// ============================================================
+export const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+};

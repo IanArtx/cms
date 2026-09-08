@@ -1,0 +1,50 @@
+flowchart TD
+    subgraph A["1. Accounts page — market history charts"]
+        A1["Open /accounts"] --> A2["MarketHistoryCharts fetches\nsharesAPI.getHistory +\nexchangeRatesAPI.getHistory"]
+        A2 --> A3{"At least 2 data\npoints to trend?"}
+        A3 -->|No| A4["Section hidden entirely"]
+        A3 -->|Yes| A5["Share price line chart\n+ one line per FX currency pair"]
+        A5 --> A6["Rendered above the\naccount list"]
+    end
+
+    subgraph B["2. Transactions page — analytics + CSV"]
+        B1["Open /transactions,\napply filters (optional)"] --> B2["GET /transactions/analytics\n(same filters as the ledger)"]
+        B2 --> B3["quarterAnalyticsService buckets\nrows into fiscal or calendar quarters"]
+        B3 --> B4["Income vs Expense chart\nper currency, kept separate"]
+        B4 --> B5["Best/Worst income + expense\nquarter callouts"]
+        B1 --> B6["Click Export CSV"]
+        B6 --> B7["GET /transactions/export\n(same filters, all matching rows)"]
+        B7 --> B8["CSV downloads —\nclear filters first for\nfull general ledger"]
+    end
+
+    subgraph C["3. Transfers page — filters + analytics + CSV"]
+        C1["Open /transfers"] --> C2["New Filters card:\naccount / from date / to date"]
+        C2 --> C3["GET /transfers/analytics\n(POSTED transfers only)"]
+        C3 --> C4["Per-currency volume chart\n+ most/least active quarter"]
+        C3 --> C5["Exchange rate trend\nper currency pair"]
+        C3 --> C6["Largest/smallest transfer\n+ total bank charges"]
+        C2 --> C7["Click Export CSV"]
+        C7 --> C8["GET /transfers/export\n(every status, not just POSTED)"]
+    end
+
+    subgraph D["4. Dashboard — current capital call widget"]
+        D1["Any signed-in member\nopens the Dashboard"] --> D2["GET /capital-goals/my-calls\n(existing per-user endpoint)"]
+        D2 --> D3{"An open call belongs\nto the year's PRIMARY goal?"}
+        D3 -->|No| D4["Widget hidden\n(covers un-activated\nlegacy goals too)"]
+        D3 -->|Yes| D5["Card shows period,\nmonthly target, pledge status"]
+        D5 --> D6["Click card ->\n/capital-goals/my-calls\n(the pledging page)"]
+    end
+
+    subgraph E["Bug found + fixed during verification"]
+        E1["value_date columns come back\nfrom the database as JS Date\nobjects, not strings"] --> E2{"Old code:\nString(value_date).slice(0,10)"}
+        E2 -->|"Before"| E3["Garbage date shown:\n'Mon Jan 05' instead of\n'2026-01-05'"]
+        E2 -->|"After: normalizeDateInput()\nused everywhere"| E4["Correct 'YYYY-MM-DD'\nin CSV rows and\nrate-trend chart"]
+    end
+
+    style A4 fill:#f3f4f6,stroke:#6b7280
+    style B8 fill:#ecfdf5,stroke:#059669
+    style C8 fill:#ecfdf5,stroke:#059669
+    style D4 fill:#f3f4f6,stroke:#6b7280
+    style D6 fill:#ecfdf5,stroke:#059669
+    style E3 fill:#fee2e2,stroke:#dc2626
+    style E4 fill:#ecfdf5,stroke:#059669

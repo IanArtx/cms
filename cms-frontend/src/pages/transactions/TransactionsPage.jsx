@@ -12,9 +12,104 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, FunnelIcon, ArrowDownTrayIcon, ArrowUturnLeftIcon } from '@heroicons/react/24/outline';
-import { transactionTemplate, printDocument } from '../../utils/exportUtils';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { PlusIcon, FunnelIcon, ArrowDownTrayIcon, ArrowUturnLeftIcon, PrinterIcon } from '@heroicons/react/24/outline';
+import { transactionTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import {
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from 'recharts';
+
+// Reads an axios error whose response body is a Blob (because the
+// request used responseType: 'blob') and tries to recover the JSON
+// error message the backend actually sent, instead of showing a
+// generic failure. Same pattern as DocumentsPage's local helper.
+const getBlobErrorMessage = async (err) => {
+    const blob = err?.response?.data;
+    if (blob instanceof Blob && blob.type === 'application/json') {
+        try {
+            const text = await blob.text();
+            const parsed = JSON.parse(text);
+            if (parsed?.message) return parsed.message;
+        } catch {
+            // fall through to generic message below
+        }
+    }
+    return getErrorMessage(err);
+};
+
+// ============================================================
+// INCOME VS EXPENSE CHARTS (v1.50.0)
+// One card per currency actually in use — kept strictly separate
+// (never converted/summed into one display currency) so every
+// figure shown is an exact historical amount, never an FX estimate.
+// Each card shows a monthly Income vs Expense chart plus the
+// most/least income and expense quarter (fiscal quarters from
+// Settings if any are configured and cover that date, otherwise an
+// ordinary calendar quarter — quarterAnalyticsService on the
+// backend). Honors whatever filters are currently applied on the
+// page, same data the ledger table below is showing.
+// ============================================================
+const QuarterCallout = ({ label, quarter, tone }) => (
+    <div className={`rounded-lg p-3 ${tone === 'good' ? 'bg-green-50 dark:bg-green-950' : 'bg-red-50 dark:bg-red-950'}`}>
+        <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+        {quarter ? (
+            <>
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100 mt-0.5">{quarter.label}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {parseFloat(quarter.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                </p>
+            </>
+        ) : (
+            <p className="text-xs text-gray-400 mt-0.5">Not enough data</p>
+        )}
+    </div>
+);
+
+const IncomeExpenseCharts = ({ analytics, loading }) => {
+    const theme = useChartTheme();
+
+    if (loading) return null;
+    const currencies = Object.keys(analytics?.by_currency || {});
+    if (currencies.length === 0) return null;
+
+    return (
+        <div className="mb-6">
+            <h3 className="section-title mb-3">Income vs Expense</h3>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {currencies.map(currency => {
+                    const c = analytics.by_currency[currency];
+                    return (
+                        <div className="card" key={currency}>
+                            <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
+                                {currency}
+                            </h4>
+                            <ResponsiveContainer width="100%" height={200}>
+                                <BarChart data={c.monthly}>
+                                    <CartesianGrid {...theme.gridProps} />
+                                    <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                    <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
+                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                    <Tooltip {...theme.tooltipProps}
+                                        formatter={(v) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`]} />
+                                    <Legend {...theme.legendProps} />
+                                    <Bar dataKey="income" name="Income" fill={theme.success} radius={[4, 4, 0, 0]} />
+                                    <Bar dataKey="expense" name="Expense" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                            <div className="grid grid-cols-2 gap-2 mt-3">
+                                <QuarterCallout label="Best Income Quarter" quarter={c.most_income_quarter} tone="good" />
+                                <QuarterCallout label="Weakest Income Quarter" quarter={c.least_income_quarter} tone="bad" />
+                                <QuarterCallout label="Highest Expense Quarter" quarter={c.most_expense_quarter} tone="bad" />
+                                <QuarterCallout label="Lowest Expense Quarter" quarter={c.least_expense_quarter} tone="good" />
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
 
 // ============================================================
 // RECORD CONTRIBUTION MODAL
@@ -489,6 +584,9 @@ const TransactionsPage = () => {
     const [shareholders, setShareholders] = useState([]);
     const [preview,      setPreview]      = useState(null);
     const [reversing,    setReversing]    = useState(null);
+    const [analytics,        setAnalytics]        = useState(null);
+    const [analyticsLoading, setAnalyticsLoading] = useState(true);
+    const [exportingCsv,     setExportingCsv]     = useState(false);
 
     // Filters
     const [filters, setFilters] = useState({
@@ -517,9 +615,36 @@ const TransactionsPage = () => {
         usersAPI.getShareholders().then(r => setShareholders(r.data.data || [])).catch(() => {});
     }, [loadTransactions]);
 
+    // Analytics (Income vs Expense chart + quarter callouts) — depends
+    // only on the filters, never on `page`, since it summarizes every
+    // matching row, not just the visible page of 20.
+    useEffect(() => {
+        setAnalyticsLoading(true);
+        const params = { ...filters };
+        Object.keys(params).forEach(k => !params[k] && delete params[k]);
+        transactionsAPI.getAnalytics(params)
+            .then(res => setAnalytics(res.data.data))
+            .catch(() => setAnalytics(null))
+            .finally(() => setAnalyticsLoading(false));
+    }, [filters]);
+
     // --------------------------------------------------------
     // EXPORT FUNCTIONS — must be inside TransactionsPage
     // --------------------------------------------------------
+    const handleExportCsv = async () => {
+        setExportingCsv(true);
+        try {
+            const params = { ...filters };
+            Object.keys(params).forEach(k => !params[k] && delete params[k]);
+            const res = await transactionsAPI.exportCsv(params);
+            downloadBlob(res.data, `transactions-${new Date().toISOString().slice(0, 10)}.csv`);
+        } catch (err) {
+            setError(await getBlobErrorMessage(err));
+        } finally {
+            setExportingCsv(false);
+        }
+    };
+
     const handleExportAll = () => {
         const html = transactionTemplate(transactions, {
             accountName: filters.account_id
@@ -659,9 +784,19 @@ const TransactionsPage = () => {
                         <button
                             onClick={handleExportAll}
                             className="btn-secondary flex items-center gap-2"
+                            title="Open a printable ledger document for the current filters"
+                        >
+                            <PrinterIcon className="h-4 w-4" />
+                            Print
+                        </button>
+                        <button
+                            onClick={handleExportCsv}
+                            disabled={exportingCsv}
+                            className="btn-secondary flex items-center gap-2"
+                            title="Download every transaction matching the current filters as a CSV file — clear all filters first for the complete general ledger"
                         >
                             <ArrowDownTrayIcon className="h-4 w-4" />
-                            Export
+                            {exportingCsv ? 'Exporting...' : 'Export CSV'}
                         </button>
                         {hasPermission('FINANCE_TRANSACTION_CREATE') && (
                             <div style={{ position: 'relative' }}>
@@ -745,6 +880,8 @@ const TransactionsPage = () => {
                     <ErrorMessage message={error} onDismiss={() => setError(null)} />
                 </div>
             )}
+
+            <IncomeExpenseCharts analytics={analytics} loading={analyticsLoading} />
 
             {/* Filters */}
             <div className="card mb-6">

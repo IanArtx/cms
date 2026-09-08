@@ -89,6 +89,10 @@ export const transactionsAPI = {
     recordExpense:    (data)   => api.post('/transactions/expenses', data),
     recordInflow:     (data)   => api.post('/transactions/inflows', data),
     reverse:          (id, data) => api.post(`/transactions/${id}/reverse`, data),
+    // v1.50.0 — Income vs Expense by currency + most/least quarter,
+    // and a CSV export honoring the same filters as the ledger.
+    getAnalytics:     (params) => api.get('/transactions/analytics', { params }),
+    exportCsv:        (params) => api.get('/transactions/export', { params, responseType: 'blob' }),
 };
 
 // ============================================================
@@ -101,6 +105,10 @@ export const transfersAPI = {
     update:    (id, data) => api.patch(`/transfers/${id}`, data),
     approve:   (id, data) => api.post(`/transfers/${id}/approve`, data),
     reject:    (id, data) => api.post(`/transfers/${id}/reject`, data),
+    // v1.50.0 — per-currency volume/rate/charges + largest-smallest,
+    // and a CSV export honoring the same filters as the ledger.
+    getAnalytics: (params) => api.get('/transfers/analytics', { params }),
+    exportCsv:    (params) => api.get('/transfers/export', { params, responseType: 'blob' }),
 };
 
 // ============================================================

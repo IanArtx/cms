@@ -42,6 +42,41 @@ router.get('/',
 );
 
 // ============================================================
+// TRANSACTION ANALYTICS (v1.50.0) — Income vs Expense by currency +
+// most/least income/expense quarter, for the Transactions page's
+// chart section. Same filters as the ledger itself. Registered
+// before /:id (a static path would otherwise be swallowed by the
+// dynamic one — same reasoning as capitalGoals.js's /my-calls).
+// GET /api/transactions/analytics
+// ============================================================
+router.get('/analytics',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('from_date must be a valid date'),
+        query('to_date').optional().isISO8601().withMessage('to_date must be a valid date'),
+    ],
+    validateRequest,
+    transactionsController.getTransactionAnalytics
+);
+
+// ============================================================
+// EXPORT TRANSACTIONS AS CSV (v1.50.0)
+// GET /api/transactions/export — same filters as the ledger; clear
+// every filter first to export the complete general ledger.
+// ============================================================
+router.get('/export',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('from_date must be a valid date'),
+        query('to_date').optional().isISO8601().withMessage('to_date must be a valid date'),
+    ],
+    validateRequest,
+    transactionsController.exportTransactionsCsv
+);
+
+// ============================================================
 // GET SINGLE TRANSACTION
 // GET /api/transactions/:id
 // ============================================================

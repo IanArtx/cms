@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI, sideFundAPI } from '../../api/endpoints';
+import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI, sideFundAPI, capitalGoalCallsAPI } from '../../api/endpoints';
 import { formatDate, formatCurrency, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -20,7 +20,39 @@ import {
     ArrowTrendingUpIcon,
     TrophyIcon,
     WalletIcon,
+    FlagIcon,
 } from '@heroicons/react/24/outline';
+
+// ============================================================
+// CURRENT CAPITAL CALL CARD (v1.50.0) — same widget as the staff
+// Dashboard: the PRIMARY capital goal's currently open monthly call,
+// if any, linking straight to the pledging page. Shareholders are
+// exactly who this matters most to, so it's duplicated here rather
+// than only showing on the staff-facing DashboardPage.
+// ============================================================
+const CurrentCapitalCallCard = ({ call }) => {
+    if (!call) return null;
+
+    return (
+        <Link to="/capital-goals/my-calls" className="card block hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-2 mb-2">
+                <FlagIcon className="h-4 w-4 text-primary-600" />
+                <h2 className="section-title mb-0">Open Capital Call — {call.goal_title}</h2>
+                <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                    {call.period}
+                </span>
+            </div>
+            <p className="text-sm text-gray-500">
+                Monthly target: {call.currency_code} {parseFloat(call.monthly_target).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+                {call.already_pledged
+                    ? 'You have already pledged for this call — click to review.'
+                    : 'You have not pledged yet — click to pledge.'}
+            </p>
+        </Link>
+    );
+};
 
 // ============================================================
 // BEST/WORST PERFORMING INVESTMENT CARD
@@ -134,6 +166,7 @@ const ShareholderDashboard = () => {
     const [sideFund,        setSideFund]        = useState(null);
     const [sideFundOverdue, setSideFundOverdue]  = useState(null);
     const [sideFundCredit,  setSideFundCredit]   = useState(null);
+    const [primaryOpenCall, setPrimaryOpenCall]  = useState(null);
     const [loading,      setLoading]      = useState(true);
     const [error,        setError]        = useState(null);
 
@@ -206,6 +239,19 @@ const ShareholderDashboard = () => {
         };
 
         load();
+    }, []);
+
+    // Separate, independent fetch (own error handling — no goal simply
+    // means the card doesn't render) for the PRIMARY capital goal's
+    // currently open call, if any. See DashboardPage.jsx for the
+    // identical staff-side widget and full reasoning.
+    useEffect(() => {
+        capitalGoalCallsAPI.getMyPledges()
+            .then(res => {
+                const openCalls = res.data.data?.open_calls || [];
+                setPrimaryOpenCall(openCalls.find(c => c.goal_type === 'PRIMARY') || null);
+            })
+            .catch(() => {});
     }, []);
 
     if (loading) return <LoadingSpinner fullPage text="Loading your dashboard..." />;
@@ -397,6 +443,9 @@ const ShareholderDashboard = () => {
 
                 {/* Right Column */}
                 <div className="space-y-4">
+                    {/* Current open capital call (PRIMARY goal only) */}
+                    <CurrentCapitalCallCard call={primaryOpenCall} />
+
                     {/* Best/Worst Performing Investment */}
                     <PerformanceCard performance={performance} />
 

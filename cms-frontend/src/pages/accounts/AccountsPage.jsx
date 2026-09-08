@@ -25,7 +25,7 @@ import {
     PencilSquareIcon,
 } from '@heroicons/react/24/outline';
 import {
-    AreaChart, Area, XAxis, YAxis, CartesianGrid,
+    AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid,
     Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
 } from 'recharts';
 
@@ -1428,6 +1428,116 @@ const ExchangeRatesCard = ({ rates, canEdit, onEditClick }) => (
 );
 
 // ============================================================
+// MARKET HISTORY CHARTS (v1.50.0)
+// Share price and currency exchange rate trends over time, shown
+// once for the whole page (not per account) right after the
+// current-figure cards above and before the account tiles below —
+// "the bigger picture, before drilling into a specific account's own
+// ledger," per the direct request for a more appealing Accounts page.
+// Reuses the same history endpoints Settings/Reports already read
+// (sharesAPI.getHistory / exchangeRatesAPI.getHistory), fetched at
+// each endpoint's own max page size (100 — the shared getPagination
+// helper's own cap) — share price and FX rates change far less often
+// than transactions, so the 100 most recent changes comfortably
+// covers a normal company's real history. Each currency pair gets
+// its own small chart rather than one shared axis: an EUR->UGX rate
+// (~3,800) and an EUR->USD rate (~1.05) plotted on the same line
+// chart would flatten the smaller one into a flat line at the bottom.
+// ============================================================
+const MarketHistoryCharts = () => {
+    const theme = useChartTheme();
+    const [priceHistory, setPriceHistory] = useState([]);
+    const [rateHistory,  setRateHistory]  = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        Promise.all([
+            sharesAPI.getHistory({ limit: 100 }).catch(() => ({ data: { data: [] } })),
+            exchangeRatesAPI.getHistory({ limit: 100 }).catch(() => ({ data: { data: [] } })),
+        ]).then(([priceRes, rateRes]) => {
+            setPriceHistory(priceRes.data.data || []);
+            setRateHistory(rateRes.data.data || []);
+        }).finally(() => setLoading(false));
+    }, []);
+
+    // Never blocks the rest of the page — a slow/failed history fetch
+    // just means this section quietly doesn't appear.
+    if (loading || (priceHistory.length === 0 && rateHistory.length === 0)) return null;
+
+    // Both endpoints return newest-first; a left-to-right timeline
+    // needs oldest-first.
+    const priceChartData = [...priceHistory].reverse().map(p => ({
+        date: formatDate(p.effective_from),
+        price: parseFloat(p.price_per_share),
+    }));
+    const priceCurrency = priceHistory[0]?.currency_code || '';
+
+    const byPair = {};
+    for (const r of [...rateHistory].reverse()) {
+        const pairKey = `${r.base_currency_code} → ${r.target_currency_code}`;
+        if (!byPair[pairKey]) byPair[pairKey] = [];
+        byPair[pairKey].push({ date: formatDate(r.effective_from), rate: parseFloat(r.rate) });
+    }
+    const pairs = Object.keys(byPair);
+    const anyChartable = priceChartData.length > 1 || pairs.some(k => byPair[k].length > 1);
+
+    if (!anyChartable) return null;
+
+    return (
+        <div className="mb-6">
+            <h3 className="section-title mb-3">Market History</h3>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {priceChartData.length > 1 && (
+                    <div className="card">
+                        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
+                            Share Price Over Time{priceCurrency && ` (${priceCurrency})`}
+                        </h4>
+                        <ResponsiveContainer width="100%" height={200}>
+                            <LineChart data={priceChartData}>
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
+                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                <Tooltip {...theme.tooltipProps}
+                                    formatter={(v) => [
+                                        `${priceCurrency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 })}`,
+                                        'Price per Share',
+                                    ]} />
+                                <Line type="stepAfter" dataKey="price" stroke={theme.primary}
+                                    strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
+                            </LineChart>
+                        </ResponsiveContainer>
+                    </div>
+                )}
+                {pairs.filter(k => byPair[k].length > 1).map((pairKey, idx) => {
+                    const data = byPair[pairKey];
+                    const color = theme.series[idx % theme.series.length];
+                    return (
+                        <div className="card" key={pairKey}>
+                            <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
+                                Exchange Rate — {pairKey}
+                            </h4>
+                            <ResponsiveContainer width="100%" height={200}>
+                                <LineChart data={data}>
+                                    <CartesianGrid {...theme.gridProps} />
+                                    <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                    <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
+                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                    <Tooltip {...theme.tooltipProps}
+                                        formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
+                                    <Line type="stepAfter" dataKey="rate" stroke={color}
+                                        strokeWidth={2} dot={{ r: 3, fill: color }} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // RECALCULATE SHAREHOLDING CARD (v1.33.0)
 // Admin only. Entry point into the preview/commit flow below —
 // just explains what it does and opens the modal.
@@ -1746,6 +1856,10 @@ const AccountsPage = () => {
                 canEdit={canEditRates}
                 onEditClick={() => setShowRateModal(true)}
             />
+
+            {/* Market History — share price + exchange rate trends, once
+                per page, before the account tiles below (v1.50.0) */}
+            <MarketHistoryCharts />
 
             {/* Shareholding Recalculate — Admin only, matches backend requireRoles(['Admin']) */}
             {isAdmin && (

@@ -85,6 +85,11 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                 ...form,
                 amount_requested: parseFloat(form.amount_requested),
                 contribution_date: needsDate ? form.contribution_date : undefined,
+                // An empty string here previously reached the backend's
+                // isISO8601() check as a "present but invalid" value
+                // instead of "omitted", failing validation on every
+                // EXPENSE requisition with no Required By date entered.
+                required_by_date: form.required_by_date || undefined,
             };
             if (isEdit) {
                 await requisitionsAPI.update(editingRecord.id, payload);

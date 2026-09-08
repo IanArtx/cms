@@ -48,8 +48,14 @@ router.post('/',
             .trim().notEmpty().withMessage('Purpose is required'),
         body('description')
             .optional().trim(),
+        // checkFalsy: true — an empty string ('') is "present" as far as
+        // plain .optional() is concerned, so a blank date input (the
+        // common case when this field isn't used, e.g. every EXPENSE
+        // requisition) was reaching isISO8601() and failing validation
+        // rather than being treated as omitted. Same fix applied to
+        // contribution_date/fine_id below for the same reason.
         body('required_by_date')
-            .optional().isISO8601().withMessage('Invalid date'),
+            .optional({ checkFalsy: true }).isISO8601().withMessage('Invalid date'),
         body('priority')
             .optional()
             .isIn(['LOW', 'NORMAL', 'HIGH', 'URGENT'])
@@ -59,9 +65,9 @@ router.post('/',
             .isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT'])
             .withMessage('Invalid requisition type'),
         body('contribution_date')
-            .optional().isISO8601().withMessage('Invalid contribution date').custom(notFutureDate),
+            .optional({ checkFalsy: true }).isISO8601().withMessage('Invalid contribution date').custom(notFutureDate),
         body('fine_id')
-            .optional().isInt({ min: 1 }).withMessage('Invalid fine'),
+            .optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('Invalid fine'),
     ],
     validateRequest,
     requisitionsController.createRequisition
@@ -76,11 +82,14 @@ router.patch('/:id',
         body('title').optional().trim().notEmpty(),
         body('amount_requested').optional().isFloat({ min: 0.01 }),
         body('purpose').optional().trim().notEmpty(),
-        body('required_by_date').optional().isISO8601(),
+        // Same checkFalsy fix as POST / above — a blank ('') date/id
+        // field is "present" to plain .optional() and was failing
+        // validation instead of being treated as omitted.
+        body('required_by_date').optional({ checkFalsy: true }).isISO8601(),
         body('priority').optional().isIn(['LOW', 'NORMAL', 'HIGH', 'URGENT']),
         body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT']),
-        body('contribution_date').optional().isISO8601().custom(notFutureDate),
-        body('fine_id').optional().isInt({ min: 1 }).withMessage('Invalid fine'),
+        body('contribution_date').optional({ checkFalsy: true }).isISO8601().custom(notFutureDate),
+        body('fine_id').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('Invalid fine'),
     ],
     validateRequest,
     requisitionsController.editRequisition

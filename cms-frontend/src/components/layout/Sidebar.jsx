@@ -10,9 +10,11 @@
 // express as a class.
 // ============================================================
 
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useBranding } from '../../contexts/BrandingContext';
+import { capitalGoalsAPI } from '../../api/endpoints';
 import Avatar from '../common/Avatar';
 import {
     HomeIcon,
@@ -66,6 +68,21 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
     // actual security boundary.
     const isAdminOfficer = hasRole('Administrative Officer');
 
+    // v1.51.0 — Capital Goal Tracking is an admin-toggleable feature;
+    // hide the nav link entirely while it's paused (part of the "full
+    // pause" behaviour) rather than leaving a link that would just lead
+    // to write-endpoints rejecting. Defaults to shown (true) until the
+    // check resolves, and stays shown on error — this is a visibility
+    // nicety, not the actual enforcement (the backend still blocks
+    // writes regardless), so failing open here is the safer default.
+    const [capitalGoalTrackingEnabled, setCapitalGoalTrackingEnabled] = useState(true);
+    useEffect(() => {
+        if (!hasPermission('CAPITAL_GOAL_VIEW')) return;
+        capitalGoalsAPI.getTrackingSettings()
+            .then(res => setCapitalGoalTrackingEnabled(res.data.data.tracking_enabled))
+            .catch(() => {});
+    }, [hasPermission]);
+
     const navItems = isAuditorOnly ? [
         { label: 'Audit', href: '/audit', icon: ShieldCheckIcon, show: true },
     ] : [
@@ -78,7 +95,7 @@ const Sidebar = ({ isOpen, onClose, onLogoutClick }) => {
         { label: 'Loans',        href: '/loans',        icon: CreditCardIcon,      show: hasPermission('LOAN_VIEW') && !isAdminOfficer },
         { label: 'Investments',  href: '/investments',  icon: ChartBarIcon,        show: hasPermission('INVESTMENT_VIEW') && !isAdminOfficer },
         { label: 'Money Market Funds', href: '/mmf',     icon: CircleStackIcon,     show: hasPermission('MMF_VIEW') && !isAdminOfficer },
-        { label: 'Capital Goals', href: '/capital-goals', icon: FlagIcon,           show: hasPermission('CAPITAL_GOAL_VIEW') && !isAdminOfficer },
+        { label: 'Capital Goals', href: '/capital-goals', icon: FlagIcon,           show: hasPermission('CAPITAL_GOAL_VIEW') && !isAdminOfficer && capitalGoalTrackingEnabled },
         { label: 'Dividends',    href:  '/dividends',   icon:  BanknotesIcon,      show:  hasPermission('FINANCE_VIEW_ALL') && !isAdminOfficer,},
         /* v1.36.0: was "show: !isAdminOfficer" only — no permission
            check at all, so Secretary/Assistant Secretary/Coordinator

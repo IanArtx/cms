@@ -62,6 +62,11 @@ router.post('/',
             .isInt({ min: 2000, max: 2200 }).withMessage('A valid fiscal year is required'),
         body('call_deadline_day')
             .isInt({ min: 1, max: 28 }).withMessage('call_deadline_day must be between 1 and 28'),
+        // v1.51.0 — optional effective date of adoption; the controller
+        // itself validates it's the 1st of a month and falls within
+        // [start_date, end_date] (a clearer, feature-specific message
+        // than a raw isISO8601 failure would give).
+        body('effective_from').optional({ nullable: true }).isISO8601().withMessage('effective_from must be a valid date'),
     ],
     validateRequest,
     capitalGoalsController.createGoal
@@ -124,6 +129,7 @@ router.post('/:id/activate-call-schedule',
         body('goal_type').optional().isIn(['PRIMARY', 'SECONDARY']).withMessage('goal_type must be PRIMARY or SECONDARY'),
         body('fiscal_year').optional().isInt({ min: 2000, max: 2200 }).withMessage('A valid fiscal year is required'),
         body('call_deadline_day').optional().isInt({ min: 1, max: 28 }).withMessage('call_deadline_day must be between 1 and 28'),
+        body('effective_from').optional({ nullable: true }).isISO8601().withMessage('effective_from must be a valid date'),
     ],
     validateRequest,
     capitalGoalsController.activateCallSchedule
@@ -168,6 +174,25 @@ router.patch('/fine-settings',
     ],
     validateRequest,
     capitalGoalsController.updateFineSettings
+);
+
+// ============================================================
+// CAPITAL GOAL TRACKING TOGGLE (v1.51.0) — company-wide on/off
+// switch for the whole feature. GET open to any Shareholder
+// (CAPITAL_GOAL_VIEW), PATCH is CAPITAL_GOAL_MANAGE only. Must be
+// registered before the generic GET /:id below, same reasoning as
+// /my-calls and /fine-settings above.
+// ============================================================
+router.get('/settings/tracking',
+    requirePermissions(['CAPITAL_GOAL_VIEW']),
+    capitalGoalsController.getCapitalGoalTrackingSettingsHandler
+);
+
+router.patch('/settings/tracking',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    [ body('tracking_enabled').isBoolean().withMessage('tracking_enabled must be true or false') ],
+    validateRequest,
+    capitalGoalsController.updateCapitalGoalTrackingSettings
 );
 
 // ============================================================

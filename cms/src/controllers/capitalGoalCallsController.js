@@ -11,6 +11,18 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const capitalGoalCallService = require('../services/capitalGoalCallService');
 
+// Shared write-guard (v1.51.0) — every pledge/payment-writing action
+// below rejects with a clear error while Capital Goal Tracking is
+// switched off; reads (my-calls, status grid, stats, etc.) are left
+// alone since existing data must stay fully visible during a pause.
+const assertTrackingEnabled = async () => {
+    if (!(await capitalGoalCallService.isCapitalGoalTrackingEnabled({ query }))) {
+        throw createError.badRequest(
+            'Capital Goal Tracking is currently turned off for this company. An Admin can re-enable it in Settings.'
+        );
+    }
+};
+
 // ============================================================
 // SUBMIT A PLEDGE
 // POST /api/capital-goals/monthly-calls/:monthlyCallId/pledges
@@ -21,6 +33,8 @@ const capitalGoalCallService = require('../services/capitalGoalCallService');
 const submitPledge = asyncHandler(async (req, res) => {
     const { monthlyCallId } = req.params;
     const { iteration, currency_id, pledged_amount } = req.body;
+
+    await assertTrackingEnabled();
 
     await withTransaction(async (client) => {
         const { pledge, referenceCode, baseline } = await capitalGoalCallService.submitPledge(client, {
@@ -44,6 +58,8 @@ const editPledge = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { pledged_amount, currency_id } = req.body;
 
+    await assertTrackingEnabled();
+
     await withTransaction(async (client) => {
         const pledge = await capitalGoalCallService.editPledge(client, {
             pledgeId: parseInt(id),
@@ -62,6 +78,8 @@ const editPledge = asyncHandler(async (req, res) => {
 const rejectPledge = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { review_notes } = req.body;
+
+    await assertTrackingEnabled();
 
     await withTransaction(async (client) => {
         const pledge = await capitalGoalCallService.rejectPledge(client, {
@@ -82,6 +100,8 @@ const rejectPledge = asyncHandler(async (req, res) => {
 const approvePledgePayment = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { amount, account_id, paid_date, notes } = req.body;
+
+    await assertTrackingEnabled();
 
     await withTransaction(async (client) => {
         const result = await capitalGoalCallService.approvePledgePayment(client, {
@@ -272,7 +292,23 @@ const listMonthlyCallsForGoal = asyncHandler(async (req, res) => {
         GROUP  BY mc.id
         ORDER  BY mc.period
     `, [id]);
-    sendSuccess(res, result.rows);
+
+    // v1.51.0 — a historical (pre-effective-date) month never has
+    // anything in capital_goal_payment_applications (see
+    // capitalGoalCallService.getPeriodCollected); substitute the same
+    // read-only aggregate there so this table doesn't show every
+    // historical month as flatly 0 settled.
+    const goalResult = await query('SELECT effective_from, start_date, currency_id FROM capital_goals WHERE id = $1', [id]);
+    const goal = goalResult.rows[0];
+    const rows = goal && goal.effective_from
+        ? await Promise.all(result.rows.map(async (row) => {
+            if (!capitalGoalCallService.isHistoricalPeriod(row.period, goal)) return row;
+            const settled = await capitalGoalCallService.getHistoricalPeriodCollected({ query }, row.period, goal.currency_id);
+            return { ...row, settled, is_historical: true };
+        }))
+        : result.rows;
+
+    sendSuccess(res, rows);
 });
 
 // ============================================================
@@ -287,6 +323,7 @@ const getMonthlyCallById = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT mc.*, COALESCE(SUM(app.amount), 0) AS settled,
                g.id AS goal_id, g.title AS goal_title, g.goal_type, g.fiscal_year,
+               g.effective_from, g.start_date AS goal_start_date, g.currency_id AS goal_currency_id,
                cur.code AS currency_code, cur.symbol AS currency_symbol
         FROM   capital_goal_monthly_calls mc
         JOIN   capital_goals g ON g.id = mc.capital_goal_id
@@ -296,7 +333,21 @@ const getMonthlyCallById = asyncHandler(async (req, res) => {
         GROUP  BY mc.id, g.id, cur.id, cur.code, cur.symbol
     `, [id]);
     if (result.rows.length === 0) throw createError.notFound('Monthly call not found');
-    sendSuccess(res, result.rows[0]);
+    const row = result.rows[0];
+
+    // v1.51.0 — same historical-aggregate substitution as
+    // listMonthlyCallsForGoal above, for this single call's own detail
+    // view (status grid + approval queue header).
+    let isHistorical = false;
+    if (row.effective_from) {
+        const goal = { effective_from: row.effective_from, start_date: row.goal_start_date };
+        isHistorical = capitalGoalCallService.isHistoricalPeriod(row.period, goal);
+        if (isHistorical) {
+            row.settled = await capitalGoalCallService.getHistoricalPeriodCollected({ query }, row.period, row.goal_currency_id);
+        }
+    }
+
+    sendSuccess(res, { ...row, is_historical: isHistorical });
 });
 
 module.exports = {

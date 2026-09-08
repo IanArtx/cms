@@ -1,0 +1,50 @@
+flowchart TD
+    subgraph A["1. Dashboard — current quarter widget"]
+        A1["Any signed-in member\nopens the Dashboard"] --> A2["GET /settings/fiscal-quarters/current"]
+        A2 --> A3{"A configured fiscal\nquarter covers today?"}
+        A3 -->|Yes| A4["Show that quarter's\nown label"]
+        A3 -->|No| A5["Calendar-quarter\nfallback (Q3 2026, etc.)"]
+        A4 --> A6["Shown inline next to\ntoday's date"]
+        A5 --> A6
+    end
+
+    subgraph B["2. Mid-year goal adoption — effective_from"]
+        B1["Admin creates/activates a\nPRIMARY goal with an\nEffective Date of Adoption"] --> B2["generateMonthlyCallsForGoal\nsplits the full range as before"]
+        B2 --> B3{"Period before\neffective_from?"}
+        B3 -->|Yes: historical| B4["Generated already CLOSED\nno pledging, no iteration"]
+        B3 -->|No: live| B5["Generated ITERATION_1\nnormal pledging/fines apply"]
+        B4 --> B6["'Collected' = read-only\naggregate of real\nshareholder_contributions\nthat month"]
+        B6 --> B7["Never counted in\ncarry-forward backlog\n(no penalty for the past)"]
+    end
+
+    subgraph C["3. Direct contribution auto-attribution"]
+        C1["Ordinary contribution recorded\n(Record Contribution, or a\nCONTRIBUTION_ACKNOWLEDGEMENT\napproval)"] --> C2["creditShareholderContribution\nissues shares as normal"]
+        C2 --> C3{"skipCapitalGoalAuto\nAttribution?"}
+        C3 -->|"true (this IS a\ncapital-call settlement)"| C9["Skip — avoid\ndouble-attribution"]
+        C3 -->|false (default)| C4["attributeDirectContributionTo\nPrimaryGoal (lazy require)"]
+        C4 --> C5{"Tracking on? Live\nPRIMARY call exists\nfor this date?"}
+        C5 -->|No| C9
+        C5 -->|Yes| C6{"Contributor has an\nopen iteration-1 pledge\nfor this month?"}
+        C6 -->|Yes| C7["Settle into it first\n(grow if it falls short)"]
+        C6 -->|No| C8["Create a system-generated\npledge sized to the payment"]
+        C7 --> C10["settleApprovedContributionIntoPledge\n— same late-fine rules as a\nmanual approval, baseline\ncap skipped"]
+        C8 --> C10
+    end
+
+    subgraph D["4. Capital Goal Tracking on/off toggle"]
+        D1["Admin flips the toggle\nin Settings -> Capital Goals"] --> D2{"tracking_enabled?"}
+        D2 -->|TRUE — default| D3["Everything works exactly\nas before this version"]
+        D2 -->|FALSE — full pause| D4["Sidebar hides Capital Goals\nDashboards hide widgets"]
+        D4 --> D5["Daily cron sweep skipped\nentirely (scheduler.js)"]
+        D4 --> D6["Every write endpoint\nrejects: create/edit/cancel/\npledge/approve/etc."]
+        D4 --> D7["Reads + existing data\nleft completely untouched"]
+    end
+
+    style A6 fill:#ecfdf5,stroke:#059669
+    style B4 fill:#f3f4f6,stroke:#6b7280
+    style B5 fill:#ecfdf5,stroke:#059669
+    style C9 fill:#f3f4f6,stroke:#6b7280
+    style C10 fill:#ecfdf5,stroke:#059669
+    style D3 fill:#ecfdf5,stroke:#059669
+    style D6 fill:#fee2e2,stroke:#dc2626
+    style D7 fill:#ecfdf5,stroke:#059669

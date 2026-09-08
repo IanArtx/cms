@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI, sideFundAPI, capitalGoalCallsAPI } from '../../api/endpoints';
+import { reportsAPI, usersAPI, accountsAPI, eventsAPI, investmentsAPI, sharesAPI, sideFundAPI, capitalGoalCallsAPI, capitalGoalsAPI, settingsAPI } from '../../api/endpoints';
 import { formatDate, formatCurrency, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -167,6 +167,9 @@ const ShareholderDashboard = () => {
     const [sideFundOverdue, setSideFundOverdue]  = useState(null);
     const [sideFundCredit,  setSideFundCredit]   = useState(null);
     const [primaryOpenCall, setPrimaryOpenCall]  = useState(null);
+    const [currentQuarter, setCurrentQuarter]    = useState(null);
+    // v1.51.0 — hide the capital call widget while tracking is paused.
+    const [capitalGoalTrackingEnabled, setCapitalGoalTrackingEnabled] = useState(true);
     const [loading,      setLoading]      = useState(true);
     const [error,        setError]        = useState(null);
 
@@ -254,6 +257,20 @@ const ShareholderDashboard = () => {
             .catch(() => {});
     }, []);
 
+    // v1.51.0 — same "current quarter known to all members" widget as
+    // the staff-side DashboardPage.jsx; no permission gate needed.
+    useEffect(() => {
+        settingsAPI.getCurrentFiscalQuarter()
+            .then(res => setCurrentQuarter(res.data.data?.label || null))
+            .catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        capitalGoalsAPI.getTrackingSettings()
+            .then(res => setCapitalGoalTrackingEnabled(res.data.data.tracking_enabled))
+            .catch(() => {});
+    }, []);
+
     if (loading) return <LoadingSpinner fullPage text="Loading your dashboard..." />;
 
     const myShareholding = profile?.shareholding;
@@ -286,6 +303,7 @@ const ShareholderDashboard = () => {
                         month:   'long',
                         day:     'numeric',
                     })}
+                    {currentQuarter && ` • ${currentQuarter}`}
                 </p>
             </div>
 
@@ -443,8 +461,9 @@ const ShareholderDashboard = () => {
 
                 {/* Right Column */}
                 <div className="space-y-4">
-                    {/* Current open capital call (PRIMARY goal only) */}
-                    <CurrentCapitalCallCard call={primaryOpenCall} />
+                    {/* Current open capital call (PRIMARY goal only) — hidden
+                        while Capital Goal Tracking is paused (v1.51.0). */}
+                    {capitalGoalTrackingEnabled && <CurrentCapitalCallCard call={primaryOpenCall} />}
 
                     {/* Best/Worst Performing Investment */}
                     <PerformanceCard performance={performance} />

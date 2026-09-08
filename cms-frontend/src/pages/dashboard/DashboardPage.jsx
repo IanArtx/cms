@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI, capitalGoalsAPI, capitalGoalCallsAPI } from '../../api/endpoints';
+import { accountsAPI, eventsAPI, transactionsAPI, investmentsAPI, capitalGoalsAPI, capitalGoalCallsAPI, settingsAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/common/StatusBadge';
@@ -215,6 +215,12 @@ const DashboardPage = () => {
     const [performance,  setPerformance]  = useState(null);
     const [capitalGoal,  setCapitalGoal]  = useState(null);
     const [primaryOpenCall, setPrimaryOpenCall] = useState(null);
+    const [currentQuarter, setCurrentQuarter] = useState(null);
+    // v1.51.0 — Capital Goal Tracking can be paused company-wide;
+    // while off, hide these widgets entirely rather than showing a
+    // card whose "click to pledge" link would just hit a disabled-
+    // feature error. Defaults to true (shown) until this resolves.
+    const [capitalGoalTrackingEnabled, setCapitalGoalTrackingEnabled] = useState(true);
     const [loading,      setLoading]      = useState(true);
 
     // Determine if user is shareholder-only
@@ -283,6 +289,9 @@ const DashboardPage = () => {
         capitalGoalsAPI.getAll({ status: 'ACTIVE', limit: 1 })
             .then(res => setCapitalGoal((res.data.data || [])[0] || null))
             .catch(() => {});
+        capitalGoalsAPI.getTrackingSettings()
+            .then(res => setCapitalGoalTrackingEnabled(res.data.data.tracking_enabled))
+            .catch(() => {});
     }, [hasPermission]);
 
     // Current open call for the year's PRIMARY capital goal only (v1.50.0)
@@ -297,6 +306,17 @@ const DashboardPage = () => {
                 const openCalls = res.data.data?.open_calls || [];
                 setPrimaryOpenCall(openCalls.find(c => c.goal_type === 'PRIMARY') || null);
             })
+            .catch(() => {});
+    }, []);
+
+    // v1.51.0 — "let the current quarter be known to all members" —
+    // any authenticated member, no permission gate. Uses the same
+    // fiscal-quarter-with-calendar-fallback rule the Transactions/
+    // Transfers analytics already bucket by, so this always resolves
+    // to something even if no fiscal quarters have been configured.
+    useEffect(() => {
+        settingsAPI.getCurrentFiscalQuarter()
+            .then(res => setCurrentQuarter(res.data.data?.label || null))
             .catch(() => {});
     }, []);
 
@@ -326,7 +346,7 @@ const DashboardPage = () => {
                 subtitle={`${new Date().toLocaleDateString('en-GB', {
                     weekday: 'long', year: 'numeric',
                     month: 'long', day: 'numeric'
-                })}`}
+                })}${currentQuarter ? ` • ${currentQuarter}` : ''}`}
             />
 
             {/* Account Summary Cards */}
@@ -546,11 +566,12 @@ const DashboardPage = () => {
                         <PerformanceCard performance={performance} />
                     )}
 
-                    {/* Nearest active capital goal, if any (v1.29.0) */}
-                    <CapitalGoalCard goal={capitalGoal} />
+                    {/* Nearest active capital goal, if any (v1.29.0) — hidden
+                        while Capital Goal Tracking is paused (v1.51.0). */}
+                    {capitalGoalTrackingEnabled && <CapitalGoalCard goal={capitalGoal} />}
 
                     {/* Current open call for the PRIMARY goal, if any (v1.50.0) */}
-                    <CurrentCapitalCallCard call={primaryOpenCall} />
+                    {capitalGoalTrackingEnabled && <CurrentCapitalCallCard call={primaryOpenCall} />}
 
                     {/* Active Investments Summary */}
                     {hasPermission('INVESTMENT_VIEW') && investments.length > 0 && (

@@ -124,6 +124,11 @@ router.put('/stamp-requirements/:documentType',
 // ------------------------------------------------------------
 router.get('/fiscal-quarters', settingsController.getFiscalQuarters);
 
+// v1.51.0 — today's quarter, for the Dashboard's "what quarter is it"
+// widget, visible to every signed-in member. No :id route exists for
+// GET here, so there's no ordering conflict with the plain list above.
+router.get('/fiscal-quarters/current', settingsController.getCurrentFiscalQuarter);
+
 router.post('/fiscal-quarters',
     requireRoles(['Admin']),
     [

@@ -88,27 +88,137 @@ const getFineSettings = async (client) => {
 };
 
 // ============================================================
+// CAPITAL GOAL TRACKING ON/OFF (v1.51.0) — company-wide toggle. A
+// PRIMARY (or any) capital goal is not compulsory; an Admin can turn
+// the entire feature off without losing any existing data. Read live
+// (no caching), same reasoning as getFineSettings above.
+// ============================================================
+const DEFAULT_CAPITAL_GOAL_SETTINGS = { tracking_enabled: true };
+
+const getCapitalGoalSettings = async (client) => {
+    const result = await client.query('SELECT * FROM capital_goal_settings WHERE id = 1');
+    if (result.rows.length === 0) return DEFAULT_CAPITAL_GOAL_SETTINGS;
+    return { tracking_enabled: !!result.rows[0].tracking_enabled };
+};
+
+const isCapitalGoalTrackingEnabled = async (client) => {
+    const settings = await getCapitalGoalSettings(client);
+    return settings.tracking_enabled;
+};
+
+// ============================================================
+// EFFECTIVE-DATE / HISTORICAL-PERIOD HELPERS (v1.51.0) — a goal
+// adopted mid-year (an "effective date of adoption" not aligning with
+// its own start_date) still has monthly call rows generated all the
+// way back to start_date, exactly as before, but any period BEFORE
+// effective_from's own period is "historical": generated already
+// CLOSED (no pledging, no iteration, no fines — nothing to catch up),
+// its "collected" figure a read-only aggregate of the real
+// shareholder_contributions already recorded that month, converted
+// into the goal's own currency the same way a live payment tranche
+// already is. NULL effective_from means "same as start_date" — every
+// period is live, zero behaviour change from before this version.
+// ============================================================
+const effectivePeriodOf = (goal) => {
+    const effectiveFrom = goal.effective_from || goal.start_date;
+    return normalizeDateInput(effectiveFrom).slice(0, 7);
+};
+
+const isHistoricalPeriod = (period, goal) => period < effectivePeriodOf(goal);
+
+// Sums actual shareholder_contributions dated within one calendar
+// period, converted into the goal's own currency at each
+// contribution's own date — mirrors how a live pledge payment's
+// converted_amount_goal_currency is computed. A currency with no
+// configured exchange rate to the goal's currency is skipped rather
+// than thrown on — this is a best-effort historical/informational
+// figure, not a money-moving action, so one missing rate shouldn't
+// break the whole goal's progress display.
+const getHistoricalPeriodCollected = async (client, period, goalCurrencyId) => {
+    const result = await client.query(`
+        SELECT amount, currency_id, contribution_date
+        FROM   shareholder_contributions
+        WHERE  status = 'APPROVED'
+        AND    to_char(contribution_date, 'YYYY-MM') = $1
+    `, [period]);
+
+    let total = 0;
+    for (const row of result.rows) {
+        if (row.currency_id === goalCurrencyId) {
+            total += parseFloat(row.amount);
+            continue;
+        }
+        try {
+            const rate = await getExchangeRateOn(
+                client, row.currency_id, goalCurrencyId, normalizeDateInput(row.contribution_date)
+            );
+            total += parseFloat(row.amount) * rate;
+        } catch {
+            // No exchange rate on record for this pair/date — skip this
+            // row rather than fail the whole aggregate.
+        }
+    }
+    return total;
+};
+
+// Per-shareholder breakdown of the same historical aggregate, for
+// computeGoalContributionStats to merge alongside live pledge-payment
+// totals — "in consideration of the contribution party" per the
+// feature's own wording.
+const getHistoricalContributionsByUser = async (client, goal) => {
+    const effectivePeriod = effectivePeriodOf(goal);
+    const result = await client.query(`
+        SELECT user_id, amount, currency_id, contribution_date
+        FROM   shareholder_contributions
+        WHERE  status = 'APPROVED'
+        AND    to_char(contribution_date, 'YYYY-MM') < $1
+    `, [effectivePeriod]);
+
+    const byUser = {};
+    for (const row of result.rows) {
+        let converted = parseFloat(row.amount);
+        if (row.currency_id !== goal.currency_id) {
+            try {
+                const rate = await getExchangeRateOn(
+                    client, row.currency_id, goal.currency_id, normalizeDateInput(row.contribution_date)
+                );
+                converted = parseFloat(row.amount) * rate;
+            } catch {
+                continue; // unconvertible — skip, same reasoning as above
+            }
+        }
+        byUser[row.user_id] = (byUser[row.user_id] || 0) + converted;
+    }
+    return byUser;
+};
+
+// ============================================================
 // GENERATE THE FULL MONTHLY SCHEDULE FOR A GOAL — called once, right
 // after a capital_goals row (goal_type PRIMARY/SECONDARY) is created.
 // Every month gets a fixed, equal share of the target and its own
 // iteration-1 deadline (day `callDeadlineDay` of that same month).
+// v1.51.0 — any period before `effectiveFrom`'s own period (defaults
+// to startDate, i.e. every period live, when omitted) is generated
+// already CLOSED — see the module comment above.
 // ============================================================
 const generateMonthlyCallsForGoal = async (client, {
-    capitalGoalId, startDate, endDate, targetAmount, callDeadlineDay,
+    capitalGoalId, startDate, endDate, targetAmount, callDeadlineDay, effectiveFrom,
 }) => {
     const totalMonths = monthsBetweenInclusive(startDate, endDate);
     const monthlyTarget = parseFloat((parseFloat(targetAmount) / totalMonths).toFixed(4));
+    const effectivePeriod = normalizeDateInput(effectiveFrom || startDate).slice(0, 7);
 
     const created = [];
     for (let i = 0; i < totalMonths; i++) {
         const period = periodAtOffset(startDate, i);
         const iteration1Deadline = dateInPeriod(period, callDeadlineDay);
+        const isHistorical = period < effectivePeriod;
         const result = await client.query(`
             INSERT INTO capital_goal_monthly_calls (
-                capital_goal_id, period, monthly_target, iteration1_deadline
-            ) VALUES ($1, $2, $3, $4)
-            RETURNING id, period, monthly_target, iteration1_deadline
-        `, [capitalGoalId, period, monthlyTarget, iteration1Deadline]);
+                capital_goal_id, period, monthly_target, iteration1_deadline, status
+            ) VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, period, monthly_target, iteration1_deadline, status
+        `, [capitalGoalId, period, monthlyTarget, iteration1Deadline, isHistorical ? 'CLOSED' : 'ITERATION_1']);
         created.push(result.rows[0]);
     }
     return { totalMonths, monthlyTarget, monthlyCalls: created };
@@ -133,9 +243,12 @@ const getActiveShareholderCount = async (client) => {
 };
 
 // ============================================================
-// PERIOD SHORTFALL — how much of a monthly call's own target is
-// still uncovered, based purely on capital_goal_payment_applications
-// (never on pledge amounts, which may not have been paid at all).
+// PERIOD SETTLED — how much of a monthly call's own target has been
+// paid via the live pledge/payment machinery, based purely on
+// capital_goal_payment_applications (never on pledge amounts, which
+// may not have been paid at all). Only ever meaningful for a LIVE
+// (non-historical) period — a historical one is never written to
+// capital_goal_payment_applications at all (see getPeriodCollected).
 // ============================================================
 const getPeriodSettled = async (client, monthlyCallId) => {
     const result = await client.query(`
@@ -146,20 +259,55 @@ const getPeriodSettled = async (client, monthlyCallId) => {
     return parseFloat(result.rows[0].settled);
 };
 
+// ============================================================
+// PERIOD COLLECTED (v1.51.0) — the one place that decides which data
+// source a monthly call's "collected so far" figure comes from: the
+// live pledge/payment machinery (capital_goal_payment_applications)
+// for a normal period, or the read-only historical aggregate (actual
+// shareholder_contributions that month, converted into the goal's own
+// currency) for a period before the goal's effective_from. Fetches
+// the parent goal itself since a bare monthly-call row doesn't carry
+// effective_from/currency_id — a small extra query, but this is never
+// a hot per-request path (approval, cron sweep, one goal's own detail
+// page), so clarity wins over shaving one query.
+// ============================================================
+const getPeriodCollected = async (client, monthlyCall) => {
+    const goalResult = await client.query(
+        'SELECT id, currency_id, effective_from, start_date FROM capital_goals WHERE id = $1',
+        [monthlyCall.capital_goal_id]
+    );
+    const goal = goalResult.rows[0];
+    if (goal && isHistoricalPeriod(monthlyCall.period, goal)) {
+        return getHistoricalPeriodCollected(client, monthlyCall.period, goal.currency_id);
+    }
+    return getPeriodSettled(client, monthlyCall.id);
+};
+
 const getPeriodShortfall = async (client, monthlyCall) => {
-    const settled = await getPeriodSettled(client, monthlyCall.id);
+    const settled = await getPeriodCollected(client, monthlyCall);
     const target = parseFloat(monthlyCall.monthly_target);
     return { target, settled, shortfall: Math.max(0, target - settled) };
 };
 
 // ============================================================
 // CARRY-FORWARD BACKLOG — the accumulated, still-uncovered shortfall
-// of every EARLIER month of the same goal, however much of it has
-// already been chipped away by past iteration-2 payments (those are
-// reflected automatically since this sums the SAME live per-period
-// settled totals). Rolls forward indefinitely until fully covered.
+// of every EARLIER *live* month of the same goal, however much of it
+// has already been chipped away by past iteration-2 payments (those
+// are reflected automatically since this sums the SAME live per-
+// period settled totals). Rolls forward indefinitely until fully
+// covered. v1.51.0 — deliberately EXCLUDES any historical period
+// (before the goal's effective_from): "no penalty system applies" to
+// a historical month means its own shortfall (if the actual
+// contributions that month came up short of its auto-calculated
+// target) never becomes something live-period shareholders are asked
+// to make up via iteration 2 — it's purely informational.
 // ============================================================
 const getCarryForwardBacklog = async (client, capitalGoalId, beforePeriod) => {
+    const goalResult = await client.query(
+        'SELECT effective_from, start_date FROM capital_goals WHERE id = $1', [capitalGoalId]
+    );
+    const effectivePeriod = effectivePeriodOf(goalResult.rows[0]);
+
     const result = await client.query(`
         SELECT COALESCE(SUM(GREATEST(mc.monthly_target - COALESCE(app.settled, 0), 0)), 0) AS backlog
         FROM   capital_goal_monthly_calls mc
@@ -168,8 +316,8 @@ const getCarryForwardBacklog = async (client, capitalGoalId, beforePeriod) => {
             FROM   capital_goal_payment_applications
             GROUP  BY monthly_call_id
         ) app ON app.monthly_call_id = mc.id
-        WHERE  mc.capital_goal_id = $1 AND mc.period < $2
-    `, [capitalGoalId, beforePeriod]);
+        WHERE  mc.capital_goal_id = $1 AND mc.period < $2 AND mc.period >= $3
+    `, [capitalGoalId, beforePeriod, effectivePeriod]);
     return parseFloat(result.rows[0].backlog);
 };
 
@@ -364,49 +512,35 @@ const shouldCapToBaseline = async (client, monthlyCallId) => {
 };
 
 // ============================================================
-// APPROVE (= SETTLE) A PLEDGE PAYMENT — the single money-moving
-// action. Currency of the receiving account must match the pledge's
-// own currency (same hard-reject rule Fines already uses). Issues
-// real shares via the ordinary shareholder_contributions core.
-// Fines only ever apply to a late ITERATION 1 tranche — computed once,
-// right here, on just this tranche's own amount, never on iteration 2.
+// SETTLE AN ALREADY-RECORDED CONTRIBUTION AGAINST A PLEDGE (v1.51.0
+// extraction) — every step of "money has landed, now do the capital-
+// goal-call bookkeeping": lateness/fine (iteration 1 only), the
+// capital_goal_pledge_payments row, period allocation, and the
+// pledge's own running total/status. Deliberately does NOT create the
+// underlying transaction/shareholder_contribution itself — the caller
+// already has (or already created) those, via either a Treasurer's
+// manual approval (approvePledgePayment below) or an ordinary
+// contribution auto-settling the contributor's own open pledge
+// (attributeDirectContributionToPrimaryGoal below). Both callers
+// funnel through here so a late tranche is fined identically no
+// matter which screen the money came in through.
+//
+// `skipBaselineCap` — the manual approval flow always enforces the
+// baseline cap (a Treasurer approving a large iteration-1 pledge while
+// everyone else has already pledged at/above baseline). The direct-
+// contribution flow does NOT: that cap exists to keep PLEDGE amounts
+// (promises) fair while other members haven't paid yet — it makes no
+// sense to throttle how much of money ALREADY IN THE BANK gets
+// recognized against the call, and doing so would risk failing an
+// otherwise ordinary contribution over an unrelated pledge technicality.
 // ============================================================
-const approvePledgePayment = async (client, {
-    pledgeId, amount, accountId, approvedByUserId, paidDate, notes,
+const settleApprovedContributionIntoPledge = async (client, {
+    pledge, monthlyCall, capitalGoal, amount, transactionId, contributionId,
+    accountId, effectiveDate, approvedByUserId, notes, skipBaselineCap,
 }) => {
-    const pledgeResult = await client.query(
-        'SELECT * FROM capital_goal_pledges WHERE id = $1 FOR UPDATE', [pledgeId]
-    );
-    if (pledgeResult.rows.length === 0) throw createError.notFound('Pledge not found');
-    const pledge = pledgeResult.rows[0];
-
-    if (pledge.status === 'REJECTED') {
-        throw createError.badRequest('This pledge was rejected and cannot be settled');
-    }
-    if (pledge.status === 'FULFILLED') {
-        throw createError.badRequest('This pledge has already been fully settled');
-    }
-
-    const callResult = await client.query(
-        'SELECT * FROM capital_goal_monthly_calls WHERE id = $1 FOR UPDATE', [pledge.monthly_call_id]
-    );
-    const monthlyCall = callResult.rows[0];
-
-    const goalResult = await client.query('SELECT * FROM capital_goals WHERE id = $1', [monthlyCall.capital_goal_id]);
-    const capitalGoal = goalResult.rows[0];
-
-    const remainingOnPledge = parseFloat(pledge.pledged_amount) - parseFloat(pledge.amount_settled);
     const requestedAmount = parseFloat(amount);
-    if (requestedAmount <= 0) {
-        throw createError.badRequest('Amount must be greater than zero');
-    }
-    if (requestedAmount > remainingOnPledge + 0.0001) {
-        throw createError.badRequest(
-            `This would exceed what's left on the pledge (${remainingOnPledge} remaining).`
-        );
-    }
 
-    if (pledge.iteration === 1) {
+    if (pledge.iteration === 1 && !skipBaselineCap) {
         const capped = await shouldCapToBaseline(client, pledge.monthly_call_id);
         if (capped) {
             const cap = parseFloat(pledge.baseline_amount_snapshot);
@@ -421,49 +555,16 @@ const approvePledgePayment = async (client, {
         }
     }
 
-    // Account must exist, be active, and match the pledge's own currency.
-    const accountResult = await client.query(
-        'SELECT id, currency_id, account_type FROM accounts WHERE id = $1 AND is_active = TRUE',
-        [accountId]
-    );
-    if (accountResult.rows.length === 0) {
-        throw createError.notFound('Account not found or inactive');
-    }
-    const account = accountResult.rows[0];
-    if (account.currency_id !== pledge.currency_id) {
-        throw createError.badRequest(
-            'The receiving account must be in the same currency the pledge was made in.'
-        );
-    }
-
-    const effectiveDate = normalizeDateInput(paidDate) || new Date().toISOString().slice(0, 10);
-
     // Lateness — only ever meaningful (and only ever fined) for
-    // iteration 1, judged against that month's own deadline.
+    // iteration 1, judged against that month's own deadline. Same rule
+    // whether the payment arrived via manual approval or an ordinary
+    // contribution that happened to settle this pledge automatically.
     let isLate = false;
     let daysLate = null;
     if (pledge.iteration === 1) {
         daysLate = daysBetween(monthlyCall.iteration1_deadline, effectiveDate);
         isLate = daysLate > 0;
     }
-
-    const categoryId = await getOrCreateCategory(client, {
-        module: 'FINANCE',
-        name: 'Capital Goal Calls',
-        abbreviation: 'CGC',
-        description: 'Auto-provisioned category for capital goal call (call on shares) pledge settlements',
-        createdBy: approvedByUserId,
-    });
-
-    const contributionResult = await creditShareholderContribution(client, {
-        contributorId:     pledge.user_id,
-        amount:             requestedAmount,
-        contributionDate:  effectiveDate,
-        categoryId,
-        notes:              notes || `Capital goal call — ${monthlyCall.period} (iteration ${pledge.iteration})`,
-        recordedByUserId:  approvedByUserId,
-        accountId,
-    });
 
     const rate = await getExchangeRateOn(client, pledge.currency_id, capitalGoal.currency_id, effectiveDate);
     const convertedAmount = requestedAmount * rate;
@@ -476,7 +577,7 @@ const approvePledgePayment = async (client, {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
     `, [
-        pledgeId, requestedAmount, accountId, contributionResult.transactionId, contributionResult.contributionId,
+        pledge.id, requestedAmount, accountId, transactionId, contributionId,
         convertedAmount, rate, isLate, daysLate, approvedByUserId, notes || null,
     ]);
     const paymentId = paymentResult.rows[0].id;
@@ -541,7 +642,7 @@ const approvePledgePayment = async (client, {
         await allocateAcrossPeriodsOldestFirst(client, {
             paymentId, capitalGoalId: monthlyCall.capital_goal_id,
             uptoPeriod: monthlyCall.period, thisMonthlyCallId: monthlyCall.id,
-            amount: convertedAmount,
+            amount: convertedAmount, effectivePeriod: effectivePeriodOf(capitalGoal),
         });
     }
 
@@ -550,13 +651,13 @@ const approvePledgePayment = async (client, {
     const newStatus = newSettled >= parseFloat(pledge.pledged_amount) - 0.0001 ? 'FULFILLED' : 'PARTIAL';
     await client.query(
         'UPDATE capital_goal_pledges SET amount_settled = $1, status = $2 WHERE id = $3',
-        [newSettled, newStatus, pledgeId]
+        [newSettled, newStatus, pledge.id]
     );
 
     await logAction(approvedByUserId, ACTIONS.CAPITAL_GOAL_CALL_PAYMENT_APPROVED, MODULES.FINANCE, {
         recordType: 'capital_goal_pledge_payments',
         recordId:   paymentId,
-        description: `Capital goal call payment approved: pledge ${pledgeId}, ${requestedAmount} (${monthlyCall.period}, iteration ${pledge.iteration})${isLate ? ' — LATE' : ''}`,
+        description: `Capital goal call payment approved: pledge ${pledge.id}, ${requestedAmount} (${monthlyCall.period}, iteration ${pledge.iteration})${isLate ? ' — LATE' : ''}`,
         client,
     });
 
@@ -571,17 +672,249 @@ const approvePledgePayment = async (client, {
         recordId:   paymentId,
     });
 
+    return { paymentId, convertedAmount, rate, isLate, daysLate, fine, pledgeStatus: newStatus };
+};
+
+// ============================================================
+// APPROVE (= SETTLE) A PLEDGE PAYMENT — the single Treasurer-facing,
+// money-moving action. Currency of the receiving account must match
+// the pledge's own currency (same hard-reject rule Fines already
+// uses). Issues real shares via the ordinary shareholder_contributions
+// core, then runs the shared settlement bookkeeping above.
+// ============================================================
+const approvePledgePayment = async (client, {
+    pledgeId, amount, accountId, approvedByUserId, paidDate, notes,
+}) => {
+    const pledgeResult = await client.query(
+        'SELECT * FROM capital_goal_pledges WHERE id = $1 FOR UPDATE', [pledgeId]
+    );
+    if (pledgeResult.rows.length === 0) throw createError.notFound('Pledge not found');
+    const pledge = pledgeResult.rows[0];
+
+    if (pledge.status === 'REJECTED') {
+        throw createError.badRequest('This pledge was rejected and cannot be settled');
+    }
+    if (pledge.status === 'FULFILLED') {
+        throw createError.badRequest('This pledge has already been fully settled');
+    }
+
+    const callResult = await client.query(
+        'SELECT * FROM capital_goal_monthly_calls WHERE id = $1 FOR UPDATE', [pledge.monthly_call_id]
+    );
+    const monthlyCall = callResult.rows[0];
+
+    const goalResult = await client.query('SELECT * FROM capital_goals WHERE id = $1', [monthlyCall.capital_goal_id]);
+    const capitalGoal = goalResult.rows[0];
+
+    const remainingOnPledge = parseFloat(pledge.pledged_amount) - parseFloat(pledge.amount_settled);
+    const requestedAmount = parseFloat(amount);
+    if (requestedAmount <= 0) {
+        throw createError.badRequest('Amount must be greater than zero');
+    }
+    if (requestedAmount > remainingOnPledge + 0.0001) {
+        throw createError.badRequest(
+            `This would exceed what's left on the pledge (${remainingOnPledge} remaining).`
+        );
+    }
+
+    // Account must exist, be active, and match the pledge's own currency.
+    const accountResult = await client.query(
+        'SELECT id, currency_id, account_type FROM accounts WHERE id = $1 AND is_active = TRUE',
+        [accountId]
+    );
+    if (accountResult.rows.length === 0) {
+        throw createError.notFound('Account not found or inactive');
+    }
+    const account = accountResult.rows[0];
+    if (account.currency_id !== pledge.currency_id) {
+        throw createError.badRequest(
+            'The receiving account must be in the same currency the pledge was made in.'
+        );
+    }
+
+    const effectiveDate = normalizeDateInput(paidDate) || new Date().toISOString().slice(0, 10);
+
+    const categoryId = await getOrCreateCategory(client, {
+        module: 'FINANCE',
+        name: 'Capital Goal Calls',
+        abbreviation: 'CGC',
+        description: 'Auto-provisioned category for capital goal call (call on shares) pledge settlements',
+        createdBy: approvedByUserId,
+    });
+
+    const contributionResult = await creditShareholderContribution(client, {
+        contributorId:     pledge.user_id,
+        amount:             requestedAmount,
+        contributionDate:  effectiveDate,
+        categoryId,
+        notes:              notes || `Capital goal call — ${monthlyCall.period} (iteration ${pledge.iteration})`,
+        recordedByUserId:  approvedByUserId,
+        accountId,
+        // This IS the capital-goal-call settlement itself — must not
+        // re-trigger the ordinary-contribution auto-attribution path
+        // (see creditShareholderContribution's own comment), or the
+        // same money would be attributed twice.
+        skipCapitalGoalAutoAttribution: true,
+    });
+
+    const settleResult = await settleApprovedContributionIntoPledge(client, {
+        pledge, monthlyCall, capitalGoal, amount: requestedAmount,
+        transactionId: contributionResult.transactionId,
+        contributionId: contributionResult.contributionId,
+        accountId, effectiveDate, approvedByUserId, notes,
+        skipBaselineCap: false,
+    });
+
     return {
-        paymentId,
+        ...settleResult,
         transactionId: contributionResult.transactionId,
         referenceCode: contributionResult.referenceCode,
-        convertedAmount,
-        rate,
-        isLate,
-        daysLate,
-        fine,
-        pledgeStatus: newStatus,
     };
+};
+
+// ============================================================
+// ATTRIBUTE A DIRECT (NON-PLEDGE) CONTRIBUTION TO THE PRIMARY GOAL
+// (v1.51.0) — "any capital contribution recorded outside the pledges
+// also contributes to the capital goals (primary)". Called from
+// creditShareholderContribution's own core, right after an ORDINARY
+// contribution (Transactions -> Record Contribution, or a
+// CONTRIBUTION_ACKNOWLEDGEMENT requisition being approved — anything
+// that isn't itself a capital-call settlement) is recorded.
+//
+// If the contributor already has an open (non-rejected) iteration-1
+// pledge for the PRIMARY goal's monthly call covering this
+// contribution's own date, in the SAME currency the money actually
+// arrived in, the contribution auto-settles it first — same lateness/
+// fine rules as a manual Treasurer approval (no loophole for dodging a
+// fine by paying the "normal" way instead of approving a pledge). Any
+// amount beyond what that pledge needed (or the full amount, if there
+// was no open pledge to begin with, or its currency didn't match) is
+// recorded against a system-generated iteration-1 pledge sized to
+// exactly what's being attributed, so the existing "who has actually
+// paid" bookkeeping (capital_goal_pledge_payments / payment
+// applications) stays the single source of truth no matter which
+// screen the money came in through.
+//
+// Silently does nothing (returns null) when: tracking is disabled;
+// there's no ACTIVE, call-based PRIMARY goal covering this date; or
+// the date falls in a historical period (before the goal's own
+// effective_from) — those are handled entirely by the read-only
+// aggregate in getPeriodCollected, never by this pledge machinery.
+// Never throws — a capital-goal bookkeeping hiccup must never fail an
+// otherwise ordinary contribution (see creditShareholderContribution).
+// ============================================================
+const attributeDirectContributionToPrimaryGoal = async (client, {
+    contributorId, amount, contributionDate, accountId, accountCurrencyId,
+    transactionId, contributionId, approvedByUserId,
+}) => {
+    if (!(await isCapitalGoalTrackingEnabled(client))) return null;
+
+    const normalizedDate = normalizeDateInput(contributionDate);
+    const goalResult = await client.query(`
+        SELECT * FROM capital_goals
+        WHERE  goal_type = 'PRIMARY' AND status = 'ACTIVE'
+        AND    start_date <= $1 AND end_date >= $1
+        LIMIT  1
+    `, [normalizedDate]);
+    if (goalResult.rows.length === 0) return null;
+    const capitalGoal = goalResult.rows[0];
+
+    const period = normalizedDate.slice(0, 7);
+    if (isHistoricalPeriod(period, capitalGoal)) return null;
+
+    const callResult = await client.query(
+        'SELECT * FROM capital_goal_monthly_calls WHERE capital_goal_id = $1 AND period = $2 FOR UPDATE',
+        [capitalGoal.id, period]
+    );
+    if (callResult.rows.length === 0) return null; // no monthly call generated for this period — nothing to attach to
+    const monthlyCall = callResult.rows[0];
+
+    const requestedAmount = parseFloat(amount);
+    let remaining = requestedAmount;
+    const settlements = [];
+
+    // Prefer the contributor's own existing, non-rejected, same-
+    // currency iteration-1 pledge for this call, if any.
+    const existingResult = await client.query(`
+        SELECT * FROM capital_goal_pledges
+        WHERE  monthly_call_id = $1 AND user_id = $2 AND iteration = 1 AND status != 'REJECTED'
+        FOR UPDATE
+    `, [monthlyCall.id, contributorId]);
+
+    let pledge = existingResult.rows.length > 0 ? existingResult.rows[0] : null;
+    if (pledge && parseFloat(pledge.currency_id) !== parseFloat(accountCurrencyId)) {
+        // Currency mismatch — leave the existing pledge alone (a
+        // Treasurer can still approve it normally later) and treat this
+        // whole contribution as needing a fresh system-generated pledge.
+        pledge = null;
+    }
+
+    if (pledge) {
+        const remainingOnPledge = Math.max(0, parseFloat(pledge.pledged_amount) - parseFloat(pledge.amount_settled));
+        if (remainingOnPledge > 0.0001) {
+            const applyToExisting = Math.min(remaining, remainingOnPledge);
+            const settled = await settleApprovedContributionIntoPledge(client, {
+                pledge, monthlyCall, capitalGoal, amount: applyToExisting,
+                transactionId, contributionId, accountId,
+                effectiveDate: normalizedDate, approvedByUserId, notes: 'Auto-settled from a direct contribution',
+                skipBaselineCap: true,
+            });
+            settlements.push(settled);
+            remaining = parseFloat((remaining - applyToExisting).toFixed(4));
+            // Re-read after settlement so the "grow" step below (if any
+            // money is left) sees the up-to-date amount_settled.
+            pledge = (await client.query('SELECT * FROM capital_goal_pledges WHERE id = $1', [pledge.id])).rows[0];
+        }
+    }
+
+    if (remaining > 0.0001) {
+        if (pledge) {
+            // Their own pledge is fully settled but there's still money
+            // left over — grow the pledge to absorb it (this is a
+            // system-generated attribution, not a promise the member
+            // made, so there's nothing to protect by leaving it short).
+            const grownAmount = parseFloat(pledge.pledged_amount) + remaining;
+            await client.query(
+                'UPDATE capital_goal_pledges SET pledged_amount = $1 WHERE id = $2',
+                [grownAmount, pledge.id]
+            );
+            pledge = { ...pledge, pledged_amount: grownAmount };
+        } else {
+            // No pledge to attach to at all — create one sized exactly
+            // to what's being attributed, in the currency the money
+            // actually arrived in.
+            const baseline = await computeIteration1Baseline(client, monthlyCall);
+            const { referenceId, referenceCode } = await generateReference(
+                client, MODULE_CODES.CAPITAL_GOAL, 'CALL', 'capital_goal_pledges', contributorId
+            );
+            const inserted = await client.query(`
+                INSERT INTO capital_goal_pledges (
+                    reference_id, monthly_call_id, user_id, iteration, currency_id,
+                    pledged_amount, baseline_amount_snapshot, status
+                ) VALUES ($1, $2, $3, 1, $4, $5, $6, 'PENDING')
+                RETURNING *
+            `, [referenceId, monthlyCall.id, contributorId, accountCurrencyId, remaining, baseline]);
+            pledge = inserted.rows[0];
+            await linkReferenceToRecord(client, referenceId, pledge.id);
+            await logAction(approvedByUserId, ACTIONS.CAPITAL_GOAL_CALL_PLEDGE_SUBMITTED, MODULES.FINANCE, {
+                recordType: 'capital_goal_pledges',
+                recordId:   pledge.id,
+                newValues:  { monthlyCallId: monthlyCall.id, iteration: 1, pledgedAmount: remaining, baseline },
+                description: `System-generated pledge from a direct contribution: ${referenceCode} (${remaining})`,
+                client,
+            });
+        }
+
+        const settled = await settleApprovedContributionIntoPledge(client, {
+            pledge, monthlyCall, capitalGoal, amount: remaining,
+            transactionId, contributionId, accountId,
+            effectiveDate: normalizedDate, approvedByUserId, notes: 'Auto-settled from a direct contribution',
+            skipBaselineCap: true,
+        });
+        settlements.push(settled);
+    }
+
+    return { monthlyCallId: monthlyCall.id, period: monthlyCall.period, settlements };
 };
 
 // ============================================================
@@ -593,13 +926,21 @@ const approvePledgePayment = async (client, {
 // month — a deliberate, allowed overshoot.
 // ============================================================
 const allocateAcrossPeriodsOldestFirst = async (client, {
-    paymentId, capitalGoalId, uptoPeriod, thisMonthlyCallId, amount,
+    paymentId, capitalGoalId, uptoPeriod, thisMonthlyCallId, amount, effectivePeriod,
 }) => {
+    // Historical (pre-effective-date) periods are excluded — they were
+    // generated CLOSED with no real shortfall to speak of (their
+    // "collected" figure is a read-only aggregate, never backed by
+    // capital_goal_payment_applications), so without this filter every
+    // historical month would look infinitely short and silently soak
+    // up iteration-2 money that belongs to the live period it was
+    // actually paid against.
     const periods = await client.query(`
         SELECT id, period, monthly_target FROM capital_goal_monthly_calls
         WHERE  capital_goal_id = $1 AND period <= $2
+        ${effectivePeriod ? 'AND period >= $3' : ''}
         ORDER  BY period ASC
-    `, [capitalGoalId, uptoPeriod]);
+    `, effectivePeriod ? [capitalGoalId, uptoPeriod, effectivePeriod] : [capitalGoalId, uptoPeriod]);
 
     let remaining = amount;
     let appliedAny = false;
@@ -766,8 +1107,9 @@ const computeGoalContributionStats = async (client, capitalGoalId) => {
         GROUP  BY p.user_id
     `, [capitalGoalId]);
 
-    const goalResult = await client.query('SELECT target_amount FROM capital_goals WHERE id = $1', [capitalGoalId]);
-    const target = parseFloat(goalResult.rows[0]?.target_amount || 0);
+    const goalResult = await client.query('SELECT * FROM capital_goals WHERE id = $1', [capitalGoalId]);
+    const goal = goalResult.rows[0];
+    const target = parseFloat(goal?.target_amount || 0);
 
     const byUser = {};
     let top = null;
@@ -781,8 +1123,35 @@ const computeGoalContributionStats = async (client, capitalGoalId) => {
             smallest:      parseFloat(row.smallest),
             numPayments:   parseInt(row.num_payments),
         };
-        if (!top || total > top.total) {
-            top = { userId: row.user_id, total };
+    }
+
+    // v1.51.0 — fold in historical (pre-effective-date) contributions
+    // per shareholder, so a member's stats reflect what they put in
+    // before the goal formally started calling, same as the live
+    // pledge-payment total above ("in consideration of the
+    // contribution party / shareholder, are counted towards the
+    // months in the past").
+    if (goal) {
+        const historicalByUser = await getHistoricalContributionsByUser(client, goal);
+        for (const [userIdStr, historicalTotal] of Object.entries(historicalByUser)) {
+            const userId = parseInt(userIdStr, 10);
+            const existing = byUser[userId];
+            const combinedTotal = (existing?.total || 0) + historicalTotal;
+            byUser[userId] = {
+                userId,
+                total:          combinedTotal,
+                percentage:     target > 0 ? Math.round((combinedTotal / target) * 1000) / 10 : 0,
+                biggest:        existing?.biggest ?? historicalTotal,
+                smallest:       existing?.smallest ?? historicalTotal,
+                numPayments:    existing?.numPayments || 0,
+                historicalTotal,
+            };
+        }
+    }
+
+    for (const row of Object.values(byUser)) {
+        if (!top || row.total > top.total) {
+            top = { userId: row.userId, total: row.total };
         }
     }
 
@@ -812,11 +1181,21 @@ module.exports = {
     editPledge,
     rejectPledge,
     shouldCapToBaseline,
+    settleApprovedContributionIntoPledge,
     approvePledgePayment,
+    attributeDirectContributionToPrimaryGoal,
     processIteration1Deadline,
     processIteration2Deadline,
     catchUpMonthlyCalls,
     computeGoalContributionStats,
     getFineSettings,
+    getCapitalGoalSettings,
+    isCapitalGoalTrackingEnabled,
+    effectivePeriodOf,
+    isHistoricalPeriod,
+    getPeriodCollected,
+    getHistoricalPeriodCollected,
+    getHistoricalContributionsByUser,
     DEFAULT_FINE_SETTINGS,
+    DEFAULT_CAPITAL_GOAL_SETTINGS,
 };

@@ -1607,17 +1607,31 @@ const CapitalCallFinesTab = () => {
     const [error, setError] = useState(null);
     const [success, setSuccess] = useState(null);
 
+    // v1.51.0 — company-wide Capital Goal Tracking on/off toggle. A
+    // primary capital goal is no longer compulsory — this is the
+    // "full pause" switch: off hides the feature's UI elsewhere, stops
+    // the daily deadline sweep, and every write endpoint rejects.
+    // Existing goals/calls/pledges/payments are left completely
+    // untouched either way.
+    const [trackingEnabled, setTrackingEnabled] = useState(true);
+    const [trackingSaving, setTrackingSaving] = useState(false);
+    const [trackingError, setTrackingError] = useState(null);
+
     const load = useCallback(async () => {
         try {
             setLoading(true);
-            const res = await capitalGoalsAPI.getFineSettings();
-            const data = res.data.data;
+            const [fineRes, trackingRes] = await Promise.all([
+                capitalGoalsAPI.getFineSettings(),
+                capitalGoalsAPI.getTrackingSettings(),
+            ]);
+            const data = fineRes.data.data;
             setForm({
                 grace_days: data.grace_days ?? 7,
                 fine_percentage_within_grace: data.fine_percentage_within_grace ?? 5,
                 fine_percentage_after_grace: data.fine_percentage_after_grace ?? 10,
                 iteration2_window_days: data.iteration2_window_days ?? 7,
             });
+            setTrackingEnabled(trackingRes.data.data.tracking_enabled);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -1626,6 +1640,26 @@ const CapitalCallFinesTab = () => {
     }, []);
 
     useEffect(() => { load(); }, [load]);
+
+    const handleToggleTracking = async () => {
+        const next = !trackingEnabled;
+        if (!next && !window.confirm(
+            'Turn off Capital Goal Tracking? This hides capital goals from the rest of the system, stops the daily ' +
+            'deadline sweep, and blocks new pledges/approvals — existing goals, calls, pledges and payments are ' +
+            'kept exactly as they are and reappear once this is switched back on.'
+        )) return;
+
+        setTrackingSaving(true);
+        setTrackingError(null);
+        try {
+            await capitalGoalsAPI.updateTrackingSettings({ tracking_enabled: next });
+            setTrackingEnabled(next);
+        } catch (err) {
+            setTrackingError(getErrorMessage(err));
+        } finally {
+            setTrackingSaving(false);
+        }
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -1651,6 +1685,34 @@ const CapitalCallFinesTab = () => {
 
     return (
         <div className="p-6 max-w-2xl">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Capital Goal Tracking</h3>
+            <p className="text-sm text-gray-500 mb-4">
+                Capital goals (targets, monthly calls, pledges and fines) are optional — not every company needs
+                one. Turning this off is a full pause: it hides the feature everywhere, stops the daily deadline
+                sweep, and blocks new pledges/approvals, without touching any existing data.
+            </p>
+            {trackingError && <div className="mb-4"><ErrorMessage message={trackingError} onDismiss={() => setTrackingError(null)} /></div>}
+            <div className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 mb-8">
+                <div>
+                    <p className="text-sm font-medium text-gray-900">
+                        Capital Goal Tracking is currently {trackingEnabled ? 'ON' : 'OFF'}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                        {trackingEnabled
+                            ? 'Shareholders can see and pledge into capital goals as normal.'
+                            : 'Capital goals are hidden and paused — existing data is untouched.'}
+                    </p>
+                </div>
+                <button type="button" onClick={handleToggleTracking} disabled={trackingSaving}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        trackingEnabled ? 'bg-primary-700' : 'bg-gray-300'
+                    }`}>
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        trackingEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`} />
+                </button>
+            </div>
+
             <h3 className="text-lg font-semibold text-gray-900 mb-1">Capital Call Fines</h3>
             <p className="text-sm text-gray-500 mb-6">
                 Controls the automatic fine assigned when a shareholder settles their monthly
@@ -1819,7 +1881,7 @@ const SettingsPage = () => {
         { key: 'signatories', label: 'Signatories', icon: DocumentCheckIcon },
         { key: 'stamps',      label: 'Stamps',      icon: CheckBadgeIcon },
         { key: 'fiscal-quarters', label: 'Fiscal Quarters', icon: CalendarDaysIcon },
-        { key: 'capital-call-fines', label: 'Capital Call Fines', icon: ScaleIcon },
+        { key: 'capital-call-fines', label: 'Capital Goals', icon: ScaleIcon },
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
     ];
 

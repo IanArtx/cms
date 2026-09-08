@@ -168,7 +168,7 @@ const EditGoalModal = ({ isOpen, onClose, onSuccess, goal, currencies }) => {
 // ============================================================
 const ActivateCallScheduleModal = ({ isOpen, onClose, onSuccess, goal }) => {
     const isLegacy = goal && goal.goal_type == null;
-    const [form, setForm] = useState({ goal_type: 'PRIMARY', fiscal_year: '', call_deadline_day: '20' });
+    const [form, setForm] = useState({ goal_type: 'PRIMARY', fiscal_year: '', call_deadline_day: '20', effective_from: '' });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [result, setResult] = useState(null);
@@ -179,6 +179,7 @@ const ActivateCallScheduleModal = ({ isOpen, onClose, onSuccess, goal }) => {
                 goal_type: 'PRIMARY',
                 fiscal_year: String(new Date(goal.start_date).getUTCFullYear()),
                 call_deadline_day: '20',
+                effective_from: '',
             });
             setResult(null);
             setError(null);
@@ -192,11 +193,14 @@ const ActivateCallScheduleModal = ({ isOpen, onClose, onSuccess, goal }) => {
         setLoading(true);
         setError(null);
         try {
-            const res = await capitalGoalsAPI.activateCallSchedule(goal.id, isLegacy ? {
-                goal_type: form.goal_type,
-                fiscal_year: parseInt(form.fiscal_year),
-                call_deadline_day: parseInt(form.call_deadline_day),
-            } : {});
+            const res = await capitalGoalsAPI.activateCallSchedule(goal.id, {
+                ...(isLegacy ? {
+                    goal_type: form.goal_type,
+                    fiscal_year: parseInt(form.fiscal_year),
+                    call_deadline_day: parseInt(form.call_deadline_day),
+                } : {}),
+                effective_from: form.effective_from || undefined,
+            });
             setResult(res.data);
             onSuccess();
         } catch (err) {
@@ -256,6 +260,19 @@ const ActivateCallScheduleModal = ({ isOpen, onClose, onSuccess, goal }) => {
                                     </div>
                                 </>
                             )}
+                            <div>
+                                <label className="label">Effective Date of Adoption</label>
+                                <input type="date" className="input" value={form.effective_from}
+                                    min={goal.start_date.slice(0, 10)}
+                                    max={goal.end_date.slice(0, 10)}
+                                    onChange={e => setForm(p => ({ ...p, effective_from: e.target.value }))} />
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Optional — leave blank to make every month live. If pledging should only start
+                                    partway through (adopting mid-year), set this to the 1st of that month. Earlier
+                                    months are shown read-only using contributions already recorded — no pledging,
+                                    no fines.
+                                </p>
+                            </div>
                             <div className="flex justify-end gap-3 pt-2">
                                 <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                                 <button type="submit" disabled={loading} className="btn-primary">
@@ -598,8 +615,16 @@ const CapitalGoalDetailPage = () => {
                         </thead>
                         <tbody className="divide-y divide-gray-50">
                             {(goal.months || []).map(m => (
-                                <tr key={m.month}>
-                                    <td className="py-2 pr-4 text-gray-700">{m.month}</td>
+                                <tr key={m.month} className={m.is_historical ? 'bg-gray-50' : undefined}>
+                                    <td className="py-2 pr-4 text-gray-700">
+                                        {m.month}
+                                        {m.is_historical && (
+                                            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 font-medium align-middle"
+                                                title="Before this goal's effective date of adoption — read-only, no pledging or fines">
+                                                Historical
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="py-2 pr-4 text-gray-500">{fmt(m.expected_monthly)}</td>
                                     <td className={`py-2 pr-4 font-medium ${
                                         m.actual_monthly >= m.expected_monthly ? 'text-green-600' : 'text-gray-700'
@@ -635,8 +660,16 @@ const CapitalGoalDetailPage = () => {
                             </thead>
                             <tbody className="divide-y divide-gray-50">
                                 {monthlyCalls.map(mc => (
-                                    <tr key={mc.id}>
-                                        <td className="py-2 pr-4 text-gray-900 font-medium">{mc.period}</td>
+                                    <tr key={mc.id} className={mc.is_historical ? 'bg-gray-50' : undefined}>
+                                        <td className="py-2 pr-4 text-gray-900 font-medium">
+                                            {mc.period}
+                                            {mc.is_historical && (
+                                                <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 font-medium align-middle"
+                                                    title="Before this goal's effective date of adoption — read-only aggregate, no pledging or fines">
+                                                    Historical
+                                                </span>
+                                            )}
+                                        </td>
                                         <td className="py-2 pr-4 text-gray-700">{fmt(mc.monthly_target)}</td>
                                         <td className={`py-2 pr-4 font-medium ${
                                             parseFloat(mc.settled) >= parseFloat(mc.monthly_target) ? 'text-green-600' : 'text-gray-700'
@@ -647,10 +680,14 @@ const CapitalGoalDetailPage = () => {
                                         </td>
                                         <td className="py-2 pr-4"><StatusBadge status={mc.status} /></td>
                                         <td className="py-2">
-                                            <Link to={`/capital-goals/monthly-calls/${mc.id}`}
-                                                className="text-xs text-primary-700 hover:text-primary-800 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50 transition-colors">
-                                                View
-                                            </Link>
+                                            {mc.is_historical ? (
+                                                <span className="text-xs text-gray-300">—</span>
+                                            ) : (
+                                                <Link to={`/capital-goals/monthly-calls/${mc.id}`}
+                                                    className="text-xs text-primary-700 hover:text-primary-800 font-medium px-2 py-1 rounded border border-primary-200 hover:bg-primary-50 transition-colors">
+                                                    View
+                                                </Link>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}

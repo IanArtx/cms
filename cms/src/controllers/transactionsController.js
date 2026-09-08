@@ -333,6 +333,14 @@ const creditShareholderContribution = async (client, {
     // share price itself is denominated in, as of this contribution's
     // own date — this is what makes contributing through a
     // different-currency account meaningful rather than a mismatch.
+    // v1.51.0 — "any capital contribution recorded outside the pledges
+    // also contributes to the capital goals (primary)": every ordinary
+    // contribution recorded through here auto-attributes into the
+    // contributor's PRIMARY-goal capital call for this month, UNLESS
+    // it's already the settlement of one (capitalGoalCallService's own
+    // approvePledgePayment passes this as true to avoid double-counting
+    // the exact same money it's already attributing itself).
+    skipCapitalGoalAutoAttribution = false,
 }) => {
     // Get the contributor's details
     const contributorResult = await client.query(`
@@ -461,6 +469,38 @@ const creditShareholderContribution = async (client, {
     // the current shareholder_contributions ledger — see
     // recalculateShareholding() below for the full explanation.
     await recalculateShareholding(client, { recordedByUserId });
+
+    // --------------------------------------------------------
+    // AUTO-ATTRIBUTE TO THE PRIMARY CAPITAL GOAL (v1.51.0)
+    // Lazy require — capitalGoalCallService.js itself top-level-
+    // requires this file (for creditShareholderContribution), so a
+    // top-level require here would create a circular require and risk
+    // capitalGoalCallService resolving to an incomplete module
+    // depending on load order. Requiring it lazily, inside the
+    // function body, sidesteps that entirely since by the time this
+    // line actually runs both modules have long since finished
+    // loading. Wrapped in try/catch — a capital-goal bookkeeping
+    // hiccup must never fail or roll back an otherwise ordinary,
+    // already-recorded contribution.
+    // --------------------------------------------------------
+    if (!skipCapitalGoalAutoAttribution) {
+        try {
+            const capitalGoalCallService = require('../services/capitalGoalCallService');
+            await capitalGoalCallService.attributeDirectContributionToPrimaryGoal(client, {
+                contributorId,
+                amount,
+                contributionDate,
+                accountId: account.id,
+                accountCurrencyId: account.currency_id,
+                transactionId,
+                contributionId,
+                approvedByUserId: recordedByUserId,
+            });
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Capital goal auto-attribution failed (contribution itself still recorded):', err);
+        }
+    }
 
     // --------------------------------------------------------
     // NOTIFY THE CONTRIBUTOR

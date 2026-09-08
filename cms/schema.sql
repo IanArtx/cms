@@ -2119,6 +2119,31 @@ INSERT INTO capital_call_fine_settings (id)
 VALUES (1)
 ON CONFLICT (id) DO NOTHING;
 
+-- ============================================================
+-- CAPITAL GOAL TRACKING TOGGLE (v1.51.0) — company-wide on/off switch
+-- for the entire Capital Goal Calls feature (goals, monthly calls,
+-- pledges, fines, the Dashboard widgets). Having a PRIMARY goal (or
+-- any capital goal at all) is not compulsory for a company — this row
+-- is how an Admin opts out of the feature entirely: the UI hides,
+-- the daily deadline-sweep cron skips this company's goals, and the
+-- write endpoints (create/activate/pledge/edit/reject/approve) reject
+-- with a clear "feature disabled" error. Existing data is untouched
+-- either way, so re-enabling resumes cleanly. Defaults to TRUE so
+-- every existing deployment keeps working exactly as before until an
+-- Admin deliberately switches it off.
+-- ============================================================
+CREATE TABLE capital_goal_settings (
+    id               INTEGER     PRIMARY KEY DEFAULT 1,
+    tracking_enabled BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_by       INTEGER REFERENCES users(id),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT single_row_only_capital_goal_settings CHECK (id = 1)
+);
+
+INSERT INTO capital_goal_settings (id)
+VALUES (1)
+ON CONFLICT (id) DO NOTHING;
+
 -- Side fund starts inactive with no parent account/currency until an
 -- Admin/Treasurer activates it from Settings.
 INSERT INTO side_fund_config (id, is_active, monthly_amount, current_balance)
@@ -2918,8 +2943,19 @@ CREATE TABLE capital_goals (
     fiscal_year        INTEGER,
     call_deadline_day  SMALLINT
                        CHECK (call_deadline_day IS NULL OR (call_deadline_day BETWEEN 1 AND 28)),
+    -- v1.51.0 — the date pledging/iteration/fine machinery actually
+    -- starts. NULL means "same as start_date" (zero-behaviour-change
+    -- default). Any month whose period is BEFORE effective_from's own
+    -- period is "historical": generated already CLOSED, no pledging/
+    -- fines, its collected figure a read-only aggregate of actual
+    -- shareholder_contributions already recorded in that month. Lets a
+    -- PRIMARY goal be adopted mid-year without penalizing (or trying to
+    -- retroactively force pledges into) months that already happened.
+    effective_from     DATE,
     CONSTRAINT positive_goal_target CHECK (target_amount > 0),
-    CONSTRAINT valid_goal_range CHECK (end_date >= start_date)
+    CONSTRAINT valid_goal_range CHECK (end_date >= start_date),
+    CONSTRAINT capital_goal_effective_from_first_of_month
+        CHECK (effective_from IS NULL OR EXTRACT(DAY FROM effective_from) = 1)
 );
 
 CREATE INDEX idx_capital_goals_status ON capital_goals (status);

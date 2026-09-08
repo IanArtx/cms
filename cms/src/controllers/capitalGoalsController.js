@@ -24,7 +24,47 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
-const { generateMonthlyCallsForGoal, catchUpMonthlyCalls, getFineSettings } = require('../services/capitalGoalCallService');
+const {
+    generateMonthlyCallsForGoal, catchUpMonthlyCalls, getFineSettings,
+    isHistoricalPeriod, getHistoricalPeriodCollected,
+    isCapitalGoalTrackingEnabled, getCapitalGoalSettings,
+} = require('../services/capitalGoalCallService');
+
+// ============================================================
+// EFFECTIVE-DATE VALIDATION (v1.51.0) — shared by createGoal and
+// activateCallSchedule. Must be the 1st of a month (matches the
+// database's own CHECK constraint — validated here too so a bad value
+// fails with a clear message instead of a raw constraint error) and,
+// when supplied, fall within [start_date, end_date] — an effective
+// date outside the goal's own range wouldn't correspond to any
+// generated monthly call at all.
+// ============================================================
+const validateEffectiveFrom = (effectiveFrom, startDate, endDate) => {
+    if (!effectiveFrom) return null;
+    const d = new Date(effectiveFrom);
+    if (isNaN(d.getTime())) {
+        throw createError.badRequest('effective_from is not a valid date');
+    }
+    if (d.getUTCDate() !== 1) {
+        throw createError.badRequest('effective_from must be the 1st day of a month');
+    }
+    if (new Date(effectiveFrom) < new Date(startDate) || new Date(effectiveFrom) > new Date(endDate)) {
+        throw createError.badRequest('effective_from must fall within the goal\'s start and end dates');
+    }
+    return effectiveFrom;
+};
+
+// Guard used by every write-endpoint below — capital goal tracking is
+// not compulsory (per the feature request) and an Admin can pause the
+// entire feature; existing data stays untouched and reads keep
+// working, but nothing new can be written while paused.
+const assertTrackingEnabled = async () => {
+    if (!(await isCapitalGoalTrackingEnabled({ query }))) {
+        throw createError.badRequest(
+            'Capital Goal Tracking is currently turned off for this company. An Admin can re-enable it in Settings.'
+        );
+    }
+};
 
 // ============================================================
 // INTERNAL HELPER — compute the expected-vs-actual breakdown for one
@@ -86,6 +126,22 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
             ORDER  BY m.month_start
         `, [goal.currency_id, goal.start_date, goal.end_date]);
 
+    // v1.51.0 — a historical (pre-effective-date) monthly call was
+    // generated already CLOSED with nothing ever written to
+    // capital_goal_payment_applications (see capitalGoalCallService's
+    // own getPeriodCollected) — so its raw actual_amount above is
+    // always 0. Substitute the same read-only aggregate of real
+    // shareholder_contributions that getPeriodCollected itself would
+    // return, so the goal's own progress view isn't misleadingly blank
+    // for every month before the goal formally started calling.
+    if (isCallBased && goal.effective_from) {
+        for (const row of monthly.rows) {
+            if (isHistoricalPeriod(row.period_label, goal)) {
+                row.actual_amount = await getHistoricalPeriodCollected({ query }, row.period_label, goal.currency_id);
+            }
+        }
+    }
+
     const totalMonths = monthly.rows.length;
     const expectedMonthly = totalMonths > 0 ? target / totalMonths : target;
 
@@ -109,6 +165,11 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
                 call_status: row.call_status,
                 iteration1_deadline: row.iteration1_deadline,
                 iteration2_deadline: row.iteration2_deadline,
+                // v1.51.0 — lets the frontend show this month read-only
+                // (no pledge UI) with its aggregate figure, rather than
+                // implying pledging is possible on a period that will
+                // never receive one.
+                is_historical: goal.effective_from ? isHistoricalPeriod(row.period_label, goal) : false,
             } : {}),
         };
     });
@@ -174,8 +235,11 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
 const createGoal = asyncHandler(async (req, res) => {
     const {
         title, description, target_amount, currency_id, start_date, end_date,
-        goal_type, fiscal_year, call_deadline_day,
+        goal_type, fiscal_year, call_deadline_day, effective_from,
     } = req.body;
+
+    await assertTrackingEnabled();
+    const validatedEffectiveFrom = validateEffectiveFrom(effective_from, start_date, end_date);
 
     await withTransaction(async (client) => {
         const currency = await client.query(
@@ -205,13 +269,13 @@ const createGoal = asyncHandler(async (req, res) => {
             INSERT INTO capital_goals (
                 reference_id, title, description, target_amount,
                 currency_id, start_date, end_date, status, created_by,
-                goal_type, fiscal_year, call_deadline_day
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $9, $10, $11)
+                goal_type, fiscal_year, call_deadline_day, effective_from
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8, $9, $10, $11, $12)
             RETURNING id
         `, [
             referenceId, title.trim(), description || null, target_amount,
             currency_id, start_date, end_date, req.user.id,
-            goal_type, fiscal_year, call_deadline_day,
+            goal_type, fiscal_year, call_deadline_day, validatedEffectiveFrom,
         ]);
 
         const goalId = result.rows[0].id;
@@ -220,14 +284,15 @@ const createGoal = asyncHandler(async (req, res) => {
         const { totalMonths, monthlyTarget } = await generateMonthlyCallsForGoal(client, {
             capitalGoalId: goalId, startDate: start_date, endDate: end_date,
             targetAmount: target_amount, callDeadlineDay: call_deadline_day,
+            effectiveFrom: validatedEffectiveFrom,
         });
 
         await logAction(req.user.id, ACTIONS.CAPITAL_GOAL_CREATED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'capital_goals',
             recordId:    goalId,
-            newValues:   { referenceCode, title, target_amount, currency_id, start_date, end_date, goal_type, fiscal_year, call_deadline_day, totalMonths, monthlyTarget },
-            description: `Capital goal created: ${referenceCode} — ${title} (${target_amount}, ${goal_type} for ${fiscal_year}, ${totalMonths} monthly call(s) of ${monthlyTarget} each)`,
+            newValues:   { referenceCode, title, target_amount, currency_id, start_date, end_date, goal_type, fiscal_year, call_deadline_day, effective_from: validatedEffectiveFrom, totalMonths, monthlyTarget },
+            description: `Capital goal created: ${referenceCode} — ${title} (${target_amount}, ${goal_type} for ${fiscal_year}, ${totalMonths} monthly call(s) of ${monthlyTarget} each${validatedEffectiveFrom ? `, effective from ${validatedEffectiveFrom}` : ''})`,
             client,
         });
 
@@ -243,6 +308,8 @@ const createGoal = asyncHandler(async (req, res) => {
 const updateGoal = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { title, description, target_amount, currency_id, start_date, end_date } = req.body;
+
+    await assertTrackingEnabled();
 
     await withTransaction(async (client) => {
         const existing = await client.query(
@@ -328,6 +395,8 @@ const cancelGoal = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
 
+    await assertTrackingEnabled();
+
     const result = await query(`
         UPDATE capital_goals
         SET    status = 'CANCELLED', updated_at = NOW()
@@ -359,6 +428,8 @@ const cancelGoal = asyncHandler(async (req, res) => {
 // ============================================================
 const completeGoal = asyncHandler(async (req, res) => {
     const { id } = req.params;
+
+    await assertTrackingEnabled();
 
     const result = await query(`
         UPDATE capital_goals
@@ -407,7 +478,7 @@ const getAllGoals = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT
             g.id, g.title, g.description, g.target_amount, g.start_date, g.end_date,
-            g.status, g.created_at, g.goal_type,
+            g.status, g.created_at, g.goal_type, g.currency_id, g.effective_from,
             r.reference_code, r.public_id,
             c.code AS currency_code, c.symbol AS currency_symbol,
             u.first_name || ' ' || u.last_name AS created_by_name
@@ -495,7 +566,9 @@ const getGoalById = asyncHandler(async (req, res) => {
 // ============================================================
 const activateCallSchedule = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { goal_type, fiscal_year, call_deadline_day } = req.body;
+    const { goal_type, fiscal_year, call_deadline_day, effective_from } = req.body;
+
+    await assertTrackingEnabled();
 
     await withTransaction(async (client) => {
         const existing = await client.query(
@@ -558,9 +631,15 @@ const activateCallSchedule = asyncHandler(async (req, res) => {
         // reuse whatever goal_type/fiscal_year/call_deadline_day it
         // already has; nothing to update.
 
+        const validatedEffectiveFrom = validateEffectiveFrom(effective_from, goal.start_date, goal.end_date);
+        if (validatedEffectiveFrom) {
+            await client.query('UPDATE capital_goals SET effective_from = $1 WHERE id = $2', [validatedEffectiveFrom, id]);
+        }
+
         const { totalMonths, monthlyTarget } = await generateMonthlyCallsForGoal(client, {
             capitalGoalId: id, startDate: goal.start_date, endDate: goal.end_date,
             targetAmount: goal.target_amount, callDeadlineDay: effectiveDeadlineDay,
+            effectiveFrom: validatedEffectiveFrom,
         });
 
         const { iteration1Processed, iteration2Processed } = await catchUpMonthlyCalls(client, id);
@@ -668,6 +747,48 @@ const updateFineSettings = asyncHandler(async (req, res) => {
     sendSuccess(res, result.rows[0], 'Capital call fine settings updated');
 });
 
+// ============================================================
+// GET / UPDATE CAPITAL GOAL TRACKING TOGGLE (v1.51.0)
+// GET  /api/capital-goals/settings/tracking — CAPITAL_GOAL_VIEW (any
+//      Shareholder can see whether the feature is currently on, same
+//      transparency-by-default treatment as the fine settings above).
+// PATCH /api/capital-goals/settings/tracking — CAPITAL_GOAL_MANAGE
+//      only. Turning tracking off is a "full pause": the UI hides
+//      itself, the daily cron sweep skips entirely, and every write
+//      endpoint above rejects with a clear error — existing goals,
+//      calls, pledges, and payments are left completely untouched and
+//      reappear exactly as they were the moment it's switched back on.
+// ============================================================
+const getCapitalGoalTrackingSettingsHandler = asyncHandler(async (req, res) => {
+    const settings = await getCapitalGoalSettings({ query });
+    sendSuccess(res, settings);
+});
+
+const updateCapitalGoalTrackingSettings = asyncHandler(async (req, res) => {
+    const { tracking_enabled } = req.body;
+    if (typeof tracking_enabled !== 'boolean') {
+        throw createError.badRequest('tracking_enabled must be true or false');
+    }
+
+    const result = await query(`
+        INSERT INTO capital_goal_settings (id, tracking_enabled, updated_by, updated_at)
+        VALUES (1, $1, $2, NOW())
+        ON CONFLICT (id) DO UPDATE
+        SET tracking_enabled = $1, updated_by = $2, updated_at = NOW()
+        RETURNING *
+    `, [tracking_enabled, req.user.id]);
+
+    await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.FINANCE, {
+        ipAddress:   req.ip,
+        recordType:  'capital_goal_settings',
+        recordId:    1,
+        newValues:   result.rows[0],
+        description: `Capital Goal Tracking turned ${tracking_enabled ? 'ON' : 'OFF'}`,
+    });
+
+    sendSuccess(res, result.rows[0], `Capital Goal Tracking turned ${tracking_enabled ? 'on' : 'off'}`);
+});
+
 module.exports = {
     createGoal,
     updateGoal,
@@ -678,4 +799,6 @@ module.exports = {
     activateCallSchedule,
     getFineSettingsHandler,
     updateFineSettings,
+    getCapitalGoalTrackingSettingsHandler,
+    updateCapitalGoalTrackingSettings,
 };

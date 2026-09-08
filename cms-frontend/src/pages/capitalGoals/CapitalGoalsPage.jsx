@@ -26,6 +26,10 @@ const BLANK_FORM = {
     title: '', description: '', target_amount: '',
     currency_id: '', start_date: '', end_date: '',
     goal_type: 'PRIMARY', fiscal_year: String(currentFiscalYear()), call_deadline_day: '20',
+    // v1.51.0 — left blank by default (defaults to start_date on the
+    // server, i.e. every month live — no behaviour change unless
+    // explicitly set).
+    effective_from: '',
 };
 
 // ============================================================
@@ -53,6 +57,7 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                 goal_type: form.goal_type,
                 fiscal_year: parseInt(form.fiscal_year),
                 call_deadline_day: parseInt(form.call_deadline_day),
+                effective_from: form.effective_from || undefined,
             });
             onSuccess();
             onClose();
@@ -169,6 +174,20 @@ const CreateGoalModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                                 The day of each month pledges are due by (1–28, so it applies safely to every
                                 month including February). A shareholder who settles their pledge late is fined
                                 5% if within 7 days of this deadline, 10% after that.
+                            </p>
+                        </div>
+                        <div>
+                            <label className="label">Effective Date of Adoption</label>
+                            <input type="date" className="input" value={form.effective_from}
+                                min={form.start_date || undefined}
+                                max={form.end_date || undefined}
+                                onChange={e => setForm(p => ({ ...p, effective_from: e.target.value }))} />
+                            <p className="text-xs text-gray-400 mt-1">
+                                Optional — leave blank if pledging should start right at the beginning (Start Date
+                                above). If this goal is being adopted mid-year, set this to the 1st of the month
+                                pledging actually starts. Every month before it is still shown for reference, using
+                                a read-only total of contributions already recorded that month — nobody pledges or
+                                gets fined for those earlier months.
                             </p>
                         </div>
                         {monthlyPreview && (

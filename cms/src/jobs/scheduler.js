@@ -30,7 +30,7 @@ const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateDuesForPeriod } = require('../services/sideFundService');
-const { processIteration1Deadline, processIteration2Deadline } = require('../services/capitalGoalCallService');
+const { processIteration1Deadline, processIteration2Deadline, isCapitalGoalTrackingEnabled } = require('../services/capitalGoalCallService');
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -724,6 +724,17 @@ const scheduleAuditAccessExpiryReminders = () => {
 // ============================================================
 const scheduleCapitalGoalCallDeadlines = () => {
     cron.schedule('30 0 * * *', async () => {
+        // v1.51.0 — Capital Goal Tracking is an admin-toggleable
+        // feature, not compulsory. When switched off, the sweep skips
+        // entirely (part of the "full pause" — no iteration/deadline
+        // processing happens while it's off, matching the write
+        // endpoints, which all reject too) rather than just quietly
+        // finding nothing to do — existing data is left exactly as-is.
+        if (!(await isCapitalGoalTrackingEnabled({ query }))) {
+            logger.info('Capital goal call deadline sweep skipped — Capital Goal Tracking is turned off.');
+            return;
+        }
+
         logger.info('Starting capital goal call deadline sweep...');
         const today = new Date().toISOString().slice(0, 10);
         let iteration1Processed = 0;

@@ -485,6 +485,25 @@ const getFiscalQuarters = asyncHandler(async (req, res) => {
 });
 
 // ------------------------------------------------------------
+// GET /api/settings/fiscal-quarters/current (v1.51.0)
+// Today's quarter, for the Dashboard's "everyone should know what
+// quarter we're in" widget — any authenticated member, same openness
+// as the plain list above. Reuses quarterAnalyticsService's own
+// fiscal-quarter-with-calendar-fallback matching (the same rule
+// Transactions/Transfers analytics already bucket by) rather than a
+// bare fiscalService lookup, since that has no calendar fallback and
+// would return nothing for a company that hasn't configured fiscal
+// quarters (or hasn't configured one covering today) at all.
+// ------------------------------------------------------------
+const getCurrentFiscalQuarter = asyncHandler(async (req, res) => {
+    const { loadFiscalQuarters, quarterForDate } = require('../services/quarterAnalyticsService');
+    const today = new Date().toISOString().slice(0, 10);
+    const fiscalQuarters = await loadFiscalQuarters();
+    const { label } = quarterForDate(today, fiscalQuarters);
+    sendSuccess(res, { date: today, label });
+});
+
+// ------------------------------------------------------------
 // CREATE A FISCAL QUARTER — Admin
 // POST /api/settings/fiscal-quarters
 // ------------------------------------------------------------
@@ -587,6 +606,7 @@ module.exports = {
     getStampRequirements,
     setStampRequirements,
     getFiscalQuarters,
+    getCurrentFiscalQuarter,
     createFiscalQuarter,
     updateFiscalQuarter,
     deleteFiscalQuarter,

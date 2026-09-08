@@ -211,6 +211,9 @@ export const capitalGoalsAPI = {
     // replacing what used to be hardcoded constants.
     getFineSettings:    ()     => api.get('/capital-goals/fine-settings'),
     updateFineSettings: (data) => api.patch('/capital-goals/fine-settings', data),
+    // v1.51.0 — company-wide Capital Goal Tracking on/off toggle.
+    getTrackingSettings:    ()     => api.get('/capital-goals/settings/tracking'),
+    updateTrackingSettings: (data) => api.patch('/capital-goals/settings/tracking', data),
 };
 
 // ============================================================
@@ -388,6 +391,8 @@ export const settingsAPI = {
     createFiscalQuarter: (data)   => api.post('/settings/fiscal-quarters', data),
     updateFiscalQuarter: (id, data) => api.put(`/settings/fiscal-quarters/${id}`, data),
     deleteFiscalQuarter: (id)     => api.delete(`/settings/fiscal-quarters/${id}`),
+    // v1.51.0 — today's quarter, for the Dashboard widget.
+    getCurrentFiscalQuarter: () => api.get('/settings/fiscal-quarters/current'),
 };
 
 // ============================================================

@@ -13,6 +13,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     ArrowLeftIcon,
     ArrowTrendingUpIcon,
@@ -1245,6 +1246,7 @@ const InvestmentDetailPage = () => {
     const { id } = useParams();
     const navigate = useNavigate();
     const { hasPermission, user } = useAuth();
+    const theme = useChartTheme();
 
     const [investment, setInvestment] = useState(null);
     const [categories, setCategories] = useState([]);
@@ -1314,8 +1316,8 @@ const InvestmentDetailPage = () => {
             { name: 'Remaining', value: remaining },
           ];
     const BUDGET_COLORS = isOverBudget
-        ? ['#dc2626']
-        : ['#dc2626', '#2563eb'];
+        ? [theme.danger]
+        : [theme.danger, theme.primary];
 
     // ---- Returns over time ----
     const returnsChartData = returns.map(r => ({
@@ -1605,15 +1607,18 @@ const InvestmentDetailPage = () => {
                             <PieChart>
                                 <Pie data={budgetPieData} cx="50%" cy="50%"
                                     innerRadius={50} outerRadius={80}
+                                    paddingAngle={2}
                                     dataKey="value">
                                     {budgetPieData.map((entry, index) => (
-                                        <Cell key={index} fill={BUDGET_COLORS[index]} />
+                                        <Cell key={index} fill={BUDGET_COLORS[index]}
+                                            stroke={theme.cardStroke} strokeWidth={2} />
                                     ))}
                                 </Pie>
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
                                 />
-                                <Legend />
+                                <Legend {...theme.legendProps} />
                             </PieChart>
                         </ResponsiveContainer>
                     ) : (
@@ -1630,19 +1635,20 @@ const InvestmentDetailPage = () => {
                     {returnsChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={returnsChartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="date" tick={{ fontSize: 11 }}
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }}
                                     tickLine={false} />
-                                <YAxis tick={{ fontSize: 11 }} tickLine={false}
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
                                     tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v, n, p) => [
                                         `${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                         p.payload.type?.replace(/_/g, ' '),
                                     ]}
                                 />
-                                <Bar dataKey="amount" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="amount" fill={theme.success} radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     ) : (
@@ -1661,17 +1667,18 @@ const InvestmentDetailPage = () => {
                     <ResponsiveContainer width="100%" height={Math.max(220, projects.length * 50)}>
                         <BarChart data={projectChartData} layout="vertical"
                             margin={{ left: 20 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                            <XAxis type="number" tick={{ fontSize: 11 }}
+                            <CartesianGrid {...theme.gridProps} horizontal={false} vertical />
+                            <XAxis type="number" tick={{ fontSize: 11, ...theme.axisTick }}
                                 tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
-                            <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }}
+                            <YAxis type="category" dataKey="name" tick={{ fontSize: 11, ...theme.axisTick }}
                                 width={110} />
                             <Tooltip
+                                {...theme.tooltipProps}
                                 formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
                             />
-                            <Legend />
-                            <Bar dataKey="Budget" fill="#93c5fd" radius={[0, 4, 4, 0]} />
-                            <Bar dataKey="Spent" fill="#dc2626" radius={[0, 4, 4, 0]} />
+                            <Legend {...theme.legendProps} />
+                            <Bar dataKey="Budget" fill={theme.primary} fillOpacity={0.35} radius={[0, 4, 4, 0]} />
+                            <Bar dataKey="Spent" fill={theme.danger} radius={[0, 4, 4, 0]} />
                         </BarChart>
                     </ResponsiveContainer>
                 </div>

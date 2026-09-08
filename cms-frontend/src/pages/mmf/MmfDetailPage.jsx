@@ -15,6 +15,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     ArrowUpCircleIcon,
     ArrowDownCircleIcon,
@@ -270,6 +271,7 @@ const ENTRY_META = {
 const MmfDetailPage = () => {
     const { id } = useParams();
     const { hasPermission } = useAuth();
+    const theme = useChartTheme();
 
     const [mmf,        setMmf]        = useState(null);
     const [categories, setCategories] = useState([]);
@@ -445,14 +447,15 @@ const MmfDetailPage = () => {
                     {balanceChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <LineChart data={balanceChartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} />
-                                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
                                 />
-                                <Line type="monotone" dataKey="balance" stroke="#2563eb" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
                             </LineChart>
                         </ResponsiveContainer>
                     ) : (
@@ -467,16 +470,17 @@ const MmfDetailPage = () => {
                     {returnChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={returnChartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="month" tick={{ fontSize: 11 }} tickLine={false} />
-                                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
                                 />
-                                <Legend />
-                                <Bar dataKey="Interest" fill="#16a34a" radius={[4, 4, 0, 0]} />
-                                <Bar dataKey="Fees" fill="#dc2626" radius={[4, 4, 0, 0]} />
+                                <Legend {...theme.legendProps} />
+                                <Bar dataKey="Interest" fill={theme.success} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="Fees" fill={theme.danger} radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     ) : (

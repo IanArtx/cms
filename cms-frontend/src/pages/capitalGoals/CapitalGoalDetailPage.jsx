@@ -15,6 +15,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     PencilIcon, XMarkIcon, FlagIcon, TrophyIcon, BoltIcon, HandRaisedIcon,
 } from '@heroicons/react/24/outline';
@@ -290,6 +291,7 @@ const CapitalGoalDetailPage = () => {
     const { id } = useParams();
     const { hasPermission } = useAuth();
     const canManage = hasPermission('CAPITAL_GOAL_MANAGE');
+    const theme = useChartTheme();
 
     const [goal, setGoal] = useState(null);
     const [currencies, setCurrencies] = useState([]);
@@ -555,21 +557,22 @@ const CapitalGoalDetailPage = () => {
                 {goal.months && goal.months.length > 0 ? (
                     <ResponsiveContainer width="100%" height={280}>
                         <LineChart data={goal.months}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                            <XAxis dataKey="month" tick={{ fontSize: 11 }} tickLine={false} />
-                            <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                            <CartesianGrid {...theme.gridProps} />
+                            <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                            <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                 tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
                             <Tooltip
+                                {...theme.tooltipProps}
                                 formatter={(v, name) => [
                                     `${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                     name,
                                 ]}
                             />
-                            <Legend />
+                            <Legend {...theme.legendProps} />
                             <Line type="monotone" dataKey="expected_cumulative" name="Expected"
-                                stroke="#9ca3af" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2 }} />
+                                stroke={theme.neutral} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2, fill: theme.neutral }} />
                             <Line type="monotone" dataKey="actual_cumulative" name="Actual"
-                                stroke="#2563eb" strokeWidth={2} dot={{ r: 3 }} />
+                                stroke={theme.primary} strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
                         </LineChart>
                     </ResponsiveContainer>
                 ) : (

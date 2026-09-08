@@ -12,6 +12,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     PlusIcon,
     BuildingLibraryIcon,
@@ -591,6 +592,7 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
 };
 
 const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTransactions, onTransactionRecorded }) => {
+    const theme = useChartTheme();
     const [transactions, setTransactions] = useState([]);
     const [loading,      setLoading]      = useState(true);
     const [page,         setPage]         = useState(1);
@@ -638,7 +640,7 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
         { name: 'Inflows',  value: totalInflow  },
         { name: 'Outflows', value: totalOutflow  },
     ];
-    const PIE_COLORS = ['#16a34a', '#dc2626'];
+    const PIE_COLORS = [theme.success, theme.danger];
 
     const isPrimary = account.account_type === 'PRIMARY';
     const isSavings = account.account_type === 'SAVINGS';
@@ -800,27 +802,27 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
                                 <defs>
                                     <linearGradient id="balanceGrad"
                                         x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="5%" stopColor="#1e3a5f"
-                                            stopOpacity={0.15} />
-                                        <stop offset="95%" stopColor="#1e3a5f"
+                                        <stop offset="5%" stopColor={theme.primary}
+                                            stopOpacity={0.35} />
+                                        <stop offset="95%" stopColor={theme.primary}
                                             stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
-                                <CartesianGrid strokeDasharray="3 3"
-                                    stroke="#f0f0f0" />
-                                <XAxis dataKey="date" tick={{ fontSize: 11 }}
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }}
                                     tickLine={false} />
-                                <YAxis tick={{ fontSize: 11 }} tickLine={false}
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
                                     tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [
                                         `${account.currency_code} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                         'Balance'
                                     ]}
                                 />
                                 <Area type="monotone" dataKey="balance"
-                                    stroke="#1e3a5f" strokeWidth={2}
+                                    stroke={theme.primary} strokeWidth={2}
                                     fill="url(#balanceGrad)" />
                             </AreaChart>
                         </ResponsiveContainer>
@@ -834,18 +836,21 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
                                 <PieChart>
                                     <Pie data={pieData} cx="50%" cy="50%"
                                         innerRadius={50} outerRadius={80}
+                                        paddingAngle={2}
                                         dataKey="value">
                                         {pieData.map((entry, index) => (
                                             <Cell key={index}
-                                                fill={PIE_COLORS[index]} />
+                                                fill={PIE_COLORS[index]}
+                                                stroke={theme.cardStroke} strokeWidth={2} />
                                         ))}
                                     </Pie>
                                     <Tooltip
+                                        {...theme.tooltipProps}
                                         formatter={(v) => [
                                             `${account.currency_code} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                         ]}
                                     />
-                                    <Legend />
+                                    <Legend {...theme.legendProps} />
                                 </PieChart>
                             </ResponsiveContainer>
                         ) : (

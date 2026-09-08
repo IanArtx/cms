@@ -16,6 +16,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import { RepaymentModal } from './LoansPage';
 import {
     ArrowLeftIcon,
@@ -123,6 +124,7 @@ const LoanDetailPage = ({ loanType }) => {
     const { id } = useParams();
     const navigate = useNavigate();
     const { hasPermission, hasRole } = useAuth();
+    const theme = useChartTheme();
 
     const [loan,    setLoan]    = useState(null);
     const [loading, setLoading] = useState(true);
@@ -193,7 +195,7 @@ const LoanDetailPage = ({ loanType }) => {
         { name: 'Repaid',      value: repaidPrincipal },
         { name: 'Outstanding', value: outstandingPrincipal },
     ];
-    const PRINCIPAL_COLORS = ['#16a34a', '#dc2626'];
+    const PRINCIPAL_COLORS = [theme.success, theme.danger];
 
     // ---- Repayments over time ----
     const repaymentsChartData = repayments.map(r => ({
@@ -329,15 +331,18 @@ const LoanDetailPage = ({ loanType }) => {
                             <PieChart>
                                 <Pie data={principalPieData} cx="50%" cy="50%"
                                     innerRadius={50} outerRadius={80}
+                                    paddingAngle={2}
                                     dataKey="value">
                                     {principalPieData.map((entry, index) => (
-                                        <Cell key={index} fill={PRINCIPAL_COLORS[index]} />
+                                        <Cell key={index} fill={PRINCIPAL_COLORS[index]}
+                                            stroke={theme.cardStroke} strokeWidth={2} />
                                     ))}
                                 </Pie>
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
                                 />
-                                <Legend />
+                                <Legend {...theme.legendProps} />
                             </PieChart>
                         </ResponsiveContainer>
                     ) : (
@@ -353,14 +358,15 @@ const LoanDetailPage = ({ loanType }) => {
                     {repaymentsChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={repaymentsChartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} />
-                                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
                                 <Tooltip
+                                    {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Repayment']}
                                 />
-                                <Bar dataKey="amount" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="amount" fill={theme.success} radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     ) : (
@@ -376,14 +382,15 @@ const LoanDetailPage = ({ loanType }) => {
                 <h3 className="section-title mb-4">Outstanding Principal Balance Over Time</h3>
                 <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={balanceChartData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} />
-                        <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                        <CartesianGrid {...theme.gridProps} />
+                        <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                        <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                             tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
                         <Tooltip
+                            {...theme.tooltipProps}
                             formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
                         />
-                        <Line type="monotone" dataKey="balance" stroke="#1d4ed8" strokeWidth={2} dot={{ r: 3 }} />
+                        <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
                     </LineChart>
                 </ResponsiveContainer>
             </div>

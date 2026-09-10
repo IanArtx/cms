@@ -107,6 +107,7 @@ export const getStatusBadgeClass = (status) => {
         ITERATION_2:          'badge-yellow',
 
         // Red — negative/failed
+        UNPAID:      'badge-red',
         OVERDUE:     'badge-red',
         REJECTED:    'badge-red',
         CANCELLED:   'badge-red',

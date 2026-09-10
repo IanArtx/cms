@@ -18,6 +18,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { serviceFeesAPI, accountsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -25,6 +26,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import useChartTheme from '../../hooks/useChartTheme';
 import { PlusIcon, CheckIcon, XMarkIcon, BanknotesIcon, ArrowDownTrayIcon, PencilIcon, NoSymbolIcon } from '@heroicons/react/24/outline';
 
 const SERVICE_FEE_CATEGORY_HINT = 'Service Fees';
@@ -46,7 +48,7 @@ export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accoun
     const isEdit = !!editingAgreement;
     const [form, setForm] = useState({
         user_id: '', monthly_amount: '', account_id: '',
-        category_id: '', start_date: '', notes: '',
+        category_id: '', start_date: '', notes: '', payment_day: '',
         reason: '', effective_from: '',
     });
     const [loading, setLoading] = useState(false);
@@ -61,10 +63,11 @@ export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accoun
                 category_id: String(editingAgreement.category_id || ''),
                 start_date: editingAgreement.start_date ? editingAgreement.start_date.slice(0, 10) : '',
                 notes: editingAgreement.notes || '',
+                payment_day: String(editingAgreement.payment_day || ''),
                 reason: '', effective_from: '',
             });
         } else {
-            setForm({ user_id: '', monthly_amount: '', account_id: '', category_id: '', start_date: '', notes: '', reason: '', effective_from: '' });
+            setForm({ user_id: '', monthly_amount: '', account_id: '', category_id: '', start_date: '', notes: '', payment_day: '', reason: '', effective_from: '' });
         }
     }, [editingAgreement, isOpen]);
 
@@ -88,6 +91,7 @@ export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accoun
                     account_id: parseInt(form.account_id),
                     category_id: parseInt(form.category_id),
                     notes: form.notes,
+                    payment_day: form.payment_day ? parseInt(form.payment_day) : undefined,
                     ...(amountIsChanging ? { reason: form.reason, effective_from: form.effective_from } : {}),
                 });
             } else {
@@ -98,6 +102,7 @@ export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accoun
                     category_id: parseInt(form.category_id),
                     start_date: form.start_date,
                     notes: form.notes,
+                    payment_day: form.payment_day ? parseInt(form.payment_day) : undefined,
                 });
             }
             onSuccess();
@@ -188,18 +193,29 @@ export const CreateAgreementModal = ({ isOpen, onClose, onSuccess, users, accoun
                                 </select>
                             </div>
                         </div>
-                        {isEdit ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {isEdit ? (
+                                <div>
+                                    <label className="label">Start Date</label>
+                                    <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2">{formatDate(editingAgreement.start_date)}</p>
+                                </div>
+                            ) : (
+                                <div>
+                                    <label className="label">Start Date *</label>
+                                    <input type="date" className="input" value={form.start_date}
+                                        onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} required />
+                                </div>
+                            )}
                             <div>
-                                <label className="label">Start Date</label>
-                                <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2">{formatDate(editingAgreement.start_date)}</p>
+                                <label className="label">Payment Day of Month</label>
+                                <input type="number" className="input" min="1" max="28" placeholder="e.g. 5"
+                                    value={form.payment_day}
+                                    onChange={e => setForm(p => ({ ...p, payment_day: e.target.value }))} />
+                                <p className="text-xs text-gray-400 mt-1">
+                                    When each month's fee is due (1-28). Defaults to the start date's own day if left blank.
+                                </p>
                             </div>
-                        ) : (
-                            <div>
-                                <label className="label">Start Date *</label>
-                                <input type="date" className="input" value={form.start_date}
-                                    onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} required />
-                            </div>
-                        )}
+                        </div>
                         <div>
                             <label className="label">Notes</label>
                             <textarea className="input" rows={2} value={form.notes}
@@ -390,6 +406,243 @@ export const RecordPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) =>
                             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading} className="btn-primary">
                                 {loading ? 'Recording...' : 'Record Payment'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// SETTLE PAST MONTHS MODAL (Treasurer/Admin, v1.52.0)
+// "issue to settle all past months" — a single lump-sum payment
+// across every outstanding month, auto-filled per the agreement's own
+// outstanding balance for each, but editable before submitting (per
+// the confirmed answer: auto-filled, editable, not a black box).
+// ============================================================
+export const SettlePastMonthsModal = ({ isOpen, agreement, onClose, onSuccess }) => {
+    const [periods, setPeriods] = useState([]);
+    const [amounts, setAmounts] = useState({});
+    const [loadingPeriods, setLoadingPeriods] = useState(false);
+    const [form, setForm] = useState({
+        payment_date: '', notes: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '',
+    });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && agreement) {
+            setError(null);
+            setForm({ payment_date: '', notes: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '' });
+            setLoadingPeriods(true);
+            serviceFeesAPI.getOutstandingPeriods(agreement.id)
+                .then(res => {
+                    const rows = res.data.data || [];
+                    setPeriods(rows);
+                    const initial = {};
+                    rows.forEach(r => { initial[r.period_id] = String(parseFloat(r.amount_remaining).toFixed(2)); });
+                    setAmounts(initial);
+                })
+                .catch(err => setError(getErrorMessage(err)))
+                .finally(() => setLoadingPeriods(false));
+        }
+    }, [isOpen, agreement]);
+
+    if (!isOpen || !agreement) return null;
+
+    const total = Object.values(amounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const breakdown = periods
+            .map(p => ({ period_id: p.period_id, period: p.period, amount: parseFloat(amounts[p.period_id] || 0) }))
+            .filter(l => l.amount > 0);
+        if (breakdown.length === 0) {
+            setError('At least one month with a positive amount is required');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.settlePastMonths(agreement.id, {
+                breakdown,
+                payment_date: form.payment_date || undefined,
+                notes: form.notes || undefined,
+                payment_method: form.payment_method,
+                mobile_money_provider: form.payment_method === 'MOBILE_MONEY' ? form.mobile_money_provider : undefined,
+                external_reference: form.payment_method !== 'CASH' ? form.external_reference : undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 max-h-screen overflow-y-auto">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Settle Past Months</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {agreement.user_name} — one payment covering every month below. Each figure is auto-filled from
+                        what's still owed for that month, but you can edit any of them before submitting.
+                    </p>
+                    <p className="text-xs text-amber-600 mb-4">
+                        This creates a pending entry — {agreement.user_name} must confirm receipt before it posts as a real transaction.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    {loadingPeriods ? (
+                        <p className="text-sm text-gray-400 text-center py-6">Loading outstanding months...</p>
+                    ) : periods.length === 0 ? (
+                        <p className="text-sm text-gray-400 text-center py-6">No outstanding months — everything is fully paid.</p>
+                    ) : (
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="space-y-2 max-h-56 overflow-y-auto border border-gray-100 rounded-lg p-3">
+                                {periods.map(p => (
+                                    <div key={p.period_id} className="flex items-center justify-between gap-3 text-sm">
+                                        <div>
+                                            <p className="font-medium text-gray-900">{p.period}</p>
+                                            <p className="text-xs text-gray-400">Due {formatDate(p.due_date)} · owed {parseFloat(p.amount_remaining).toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+                                        </div>
+                                        <input type="number" className="input w-28 text-right" min="0" step="0.01"
+                                            value={amounts[p.period_id] ?? ''}
+                                            onChange={e => setAmounts(prev => ({ ...prev, [p.period_id]: e.target.value }))} />
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex justify-between items-center text-sm font-semibold text-gray-900 border-t border-gray-100 pt-3">
+                                <span>Total</span>
+                                <span>{total.toLocaleString('en-US', { maximumFractionDigits: 2 })} {agreement.currency_code}</span>
+                            </div>
+                            <div>
+                                <label className="label">Payment Date</label>
+                                <input type="date" className="input" value={form.payment_date}
+                                    max={new Date().toISOString().slice(0, 10)}
+                                    onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="label">How was it paid? *</label>
+                                <div className="flex gap-2">
+                                    {['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY'].map(m => (
+                                        <button key={m} type="button"
+                                            onClick={() => setForm(p => ({ ...p, payment_method: m, mobile_money_provider: '', external_reference: '' }))}
+                                            className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                                                form.payment_method === m ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                                            }`}>
+                                            {m === 'CASH' ? 'Cash' : m === 'BANK_TRANSFER' ? 'Bank Transfer' : 'Mobile Money'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            {form.payment_method === 'MOBILE_MONEY' && (
+                                <div>
+                                    <label className="label">Provider *</label>
+                                    <select className="input" value={form.mobile_money_provider}
+                                        onChange={e => setForm(p => ({ ...p, mobile_money_provider: e.target.value }))} required>
+                                        <option value="">Select provider...</option>
+                                        <option value="MTN">MTN</option>
+                                        <option value="AIRTEL">Airtel</option>
+                                        <option value="OTHER">Other</option>
+                                    </select>
+                                </div>
+                            )}
+                            {form.payment_method !== 'CASH' && (
+                                <div>
+                                    <label className="label">Transaction ID *</label>
+                                    <input type="text" className="input" value={form.external_reference}
+                                        onChange={e => setForm(p => ({ ...p, external_reference: e.target.value }))}
+                                        placeholder="The reference/transaction ID from the transfer or mobile money receipt" required />
+                                </div>
+                            )}
+                            <div>
+                                <label className="label">Notes</label>
+                                <textarea className="input" rows={2} value={form.notes}
+                                    onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                <button type="submit" disabled={loading || total <= 0} className="btn-primary">
+                                    {loading ? 'Submitting...' : 'Settle These Months'}
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// OVERRIDE PERIOD MODAL (Treasurer/Admin, v1.52.0)
+// Changes ONE historical month's amount_due — deliberately separate
+// from Amend Agreement (which is a going-forward change to the
+// ongoing monthly_amount).
+// ============================================================
+export const OverridePeriodModal = ({ isOpen, agreement, period, onClose, onSuccess }) => {
+    const [amountDue, setAmountDue] = useState('');
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && period) {
+            setAmountDue(String(period.amount_due ?? ''));
+            setReason('');
+            setError(null);
+        }
+    }, [isOpen, period]);
+
+    if (!isOpen || !agreement || !period) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.overridePeriod(agreement.id, period.id, {
+                amount_due: parseFloat(amountDue), reason,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Override {period.period}</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Changes what's owed for {period.period} only — the agreement's ongoing monthly amount is untouched.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Amount Due *</label>
+                            <input type="number" className="input" min="0" step="0.01"
+                                value={amountDue} onChange={e => setAmountDue(e.target.value)} required />
+                        </div>
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={2} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Saving...' : 'Save Override'}
                             </button>
                         </div>
                     </form>
@@ -622,6 +875,136 @@ const RejectReimbursementModal = ({ isOpen, reimbursement, onClose, onSuccess })
 };
 
 // ============================================================
+// PERSONAL SERVICE FEE CHART (v1.52.0) — "My Service Fee" tab.
+// Shows this person's own monthly paid/outstanding breakdown and a
+// small stats summary (paid/unpaid months, most/least paid, total
+// earned), fed by getMyAgreement's periods/stats.
+// ============================================================
+const ServiceFeePersonalChart = ({ agreement }) => {
+    const theme = useChartTheme();
+    const periods = agreement?.periods || [];
+    const stats = agreement?.stats || null;
+    if (periods.length === 0) return null;
+
+    const chartData = periods.map(p => ({
+        period: p.period,
+        paid: parseFloat(p.amount_paid || 0),
+        outstanding: Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+    }));
+
+    return (
+        <div className="mt-4">
+            {stats && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                    <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">Paid Months</p>
+                        <p className="text-lg font-bold text-green-600 mt-0.5">{stats.paid_months}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">Unpaid / Partial</p>
+                        <p className="text-lg font-bold text-red-500 mt-0.5">{stats.unpaid_months + stats.partial_months}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">Most Paid Month</p>
+                        <p className="text-sm font-semibold text-gray-900 mt-0.5">
+                            {stats.most_paid_month ? stats.most_paid_month.period : '—'}
+                        </p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">Total Earned</p>
+                        <p className="text-lg font-bold text-primary-700 mt-0.5">
+                            {stats.total_earned.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        </p>
+                    </div>
+                </div>
+            )}
+            <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData}>
+                        <CartesianGrid {...theme.gridProps} />
+                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                        <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
+                        <Tooltip {...theme.tooltipProps} />
+                        <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} />
+                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// TREASURY OVERVIEW (v1.52.0) — treasury-wide aggregate across every
+// agreement, for SERVICE_FEE_VIEW holders.
+// ============================================================
+const TreasuryOverview = () => {
+    const theme = useChartTheme();
+    const [stats, setStats] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        serviceFeesAPI.getTreasuryStats()
+            .then(res => setStats(res.data.data))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setLoading(false));
+    }, []);
+
+    if (loading) return <p className="text-sm text-gray-400 text-center py-6">Loading treasury overview...</p>;
+    if (error) return <ErrorMessage message={error} />;
+    if (!stats) return null;
+
+    const { totals, per_agreement: perAgreement } = stats;
+    const chartData = (perAgreement || []).map(a => ({
+        name: `${a.first_name} ${a.last_name}`,
+        paid: parseFloat(a.total_paid || 0),
+        outstanding: parseFloat(a.total_outstanding || 0),
+    }));
+
+    return (
+        <div className="space-y-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="card py-3">
+                    <p className="text-xs text-gray-400">Paid Periods</p>
+                    <p className="text-lg font-bold text-green-600 mt-0.5">{totals.paid_periods}</p>
+                </div>
+                <div className="card py-3">
+                    <p className="text-xs text-gray-400">Partial / Unpaid Periods</p>
+                    <p className="text-lg font-bold text-red-500 mt-0.5">{parseInt(totals.partial_periods) + parseInt(totals.unpaid_periods)}</p>
+                </div>
+                <div className="card py-3">
+                    <p className="text-xs text-gray-400">Total Paid</p>
+                    <p className="text-lg font-bold text-primary-700 mt-0.5">{parseFloat(totals.total_paid).toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+                </div>
+                <div className="card py-3">
+                    <p className="text-xs text-gray-400">Total Outstanding</p>
+                    <p className="text-lg font-bold text-red-500 mt-0.5">{parseFloat(totals.total_outstanding).toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+                </div>
+            </div>
+
+            {chartData.length > 0 && (
+                <div className="card">
+                    <h3 className="section-title mb-4">Paid vs Outstanding by Person</h3>
+                    <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={chartData} layout="vertical" margin={{ left: 24 }}>
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis type="number" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} width={120} />
+                                <Tooltip {...theme.tooltipProps} />
+                                <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} />
+                                <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN SERVICE FEES PAGE
 // ============================================================
 const ServiceFeesPage = () => {
@@ -840,6 +1223,14 @@ const ServiceFeesPage = () => {
                         Agreements
                     </button>
                 )}
+                {canViewAgreements && (
+                    <button onClick={() => setActiveTab('treasury')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            activeTab === 'treasury' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}>
+                        Treasury Overview
+                    </button>
+                )}
                 {canViewReimbursements && (
                     <button onClick={() => setActiveTab('reimbursements')}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -868,6 +1259,7 @@ const ServiceFeesPage = () => {
                                 <p className="text-xs text-gray-400 mt-1">
                                     Since {formatDate(myAgreement.start_date)} · <StatusBadge status={myAgreement.status} />
                                 </p>
+                                <ServiceFeePersonalChart agreement={myAgreement} />
                                 {myAgreement.payments?.length > 0 && (
                                     <div className="mt-4">
                                         <p className="text-xs font-semibold text-gray-500 mb-2">Payment History</p>
@@ -909,6 +1301,8 @@ const ServiceFeesPage = () => {
                     searchPlaceholder="Search agreements..."
                 />
             )}
+
+            {activeTab === 'treasury' && canViewAgreements && <TreasuryOverview />}
 
             {activeTab === 'reimbursements' && canViewReimbursements && (
                 <DataTable

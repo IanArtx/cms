@@ -43,6 +43,7 @@ const { wrapEmail } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 const { createServiceFeePaymentConfirmation } = require('./paymentConfirmationsController');
+const serviceFeeService = require('../services/serviceFeeService');
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
 
@@ -75,7 +76,7 @@ const getTreasurers = async () => {
 // separately pick a currency was both redundant and a way to end up
 // with a mismatch between account_id and currency_id.
 const createAgreement = asyncHandler(async (req, res) => {
-    const { user_id, monthly_amount, account_id, category_id, start_date, notes } = req.body;
+    const { user_id, monthly_amount, account_id, category_id, start_date, notes, payment_day } = req.body;
 
     const existing = await query(
         `SELECT 1 FROM service_fee_agreements WHERE user_id = $1 AND status = 'ACTIVE'`,
@@ -94,20 +95,39 @@ const createAgreement = asyncHandler(async (req, res) => {
     }
     const currency_id = accountResult.rows[0].currency_id;
 
-    const result = await query(`
-        INSERT INTO service_fee_agreements
-            (user_id, monthly_amount, currency_id, account_id, category_id, start_date, notes, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id
-    `, [user_id, monthly_amount, currency_id, account_id, category_id, start_date, notes || null, req.user.id]);
+    // v1.52.0 — payment_day drives the monthly period generator below
+    // and the due-date reminder job; falls back to the day of the
+    // month the agreement itself starts on if not explicitly given,
+    // clamped to 28 (mirrors capital_goals.call_deadline_day) so every
+    // month can resolve a real calendar due date.
+    const resolvedPaymentDay = payment_day
+        ? parseInt(payment_day)
+        : Math.min(new Date(`${start_date}T00:00:00Z`).getUTCDate(), 28);
 
-    const agreementId = result.rows[0].id;
+    const agreementId = await withTransaction(async (client) => {
+        const result = await client.query(`
+            INSERT INTO service_fee_agreements
+                (user_id, monthly_amount, currency_id, account_id, category_id, start_date, notes, payment_day, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+        `, [user_id, monthly_amount, currency_id, account_id, category_id, start_date, notes || null, resolvedPaymentDay, req.user.id]);
+
+        const agreement = result.rows[0];
+
+        // v1.52.0 — every agreement immediately gets its full run of
+        // monthly periods from start_date through the current month,
+        // so the breakdown table has something to show from the
+        // moment the agreement is created, not just going forward.
+        await serviceFeeService.generateMonthlyPeriodsForAgreement(client, agreement);
+
+        return agreement.id;
+    });
 
     await logAction(req.user.id, ACTIONS.SERVICE_FEE_AGREEMENT_CREATED, MODULES.STAFF, {
         ipAddress:   req.ip,
         recordType:  'service_fee_agreements',
         recordId:    agreementId,
-        newValues:   { user_id, monthly_amount, start_date },
+        newValues:   { user_id, monthly_amount, start_date, payment_day: resolvedPaymentDay },
         description: `Service fee agreement created for user ID ${user_id}: ${monthly_amount}/month`,
     });
 
@@ -124,11 +144,12 @@ const listAgreements = asyncHandler(async (req, res) => {
 
     const result = await query(`
         SELECT a.id, a.user_id, a.monthly_amount, a.currency_id, a.account_id,
-               a.start_date, a.end_date, a.status, a.notes, a.created_at,
+               a.start_date, a.end_date, a.status, a.notes, a.payment_day, a.created_at,
                u.first_name || ' ' || u.last_name AS user_name,
                c.code AS currency_code,
                acc.name AS account_name,
-               (SELECT MAX(payment_date) FROM service_fee_payments WHERE agreement_id = a.id) AS last_paid_date
+               (SELECT MAX(payment_date) FROM service_fee_payments WHERE agreement_id = a.id) AS last_paid_date,
+               (SELECT COUNT(*) FROM service_fee_monthly_periods WHERE agreement_id = a.id AND status != 'PAID') AS unpaid_period_count
         FROM   service_fee_agreements a
         JOIN   users u        ON u.id = a.user_id
         JOIN   currencies c    ON c.id = a.currency_id
@@ -184,11 +205,36 @@ const getAgreementById = asyncHandler(async (req, res) => {
         ORDER BY am.effective_from DESC, am.created_at DESC
     `, [id]);
 
+    // v1.52.0 — full monthly breakdown (paid/partial/unpaid, due date,
+    // any per-month override) for the agreement detail page's new
+    // breakdown table, plus the stats this specific person's chart
+    // needs (paid/unpaid months, most/least paid, total earned).
+    const { periods, summary } = await serviceFeeService.computeAgreementStats(id);
+
     sendSuccess(res, {
         ...agreementResult.rows[0],
         payments: paymentsResult.rows,
         amendments: amendmentsResult.rows,
+        periods,
+        stats: summary,
     });
+});
+
+// GET /api/service-fees/agreements/:id/outstanding-periods
+// Read-only preview (no row locking) of every UNPAID/PARTIAL period,
+// oldest first, with its own remaining balance — this is what
+// pre-fills the "Settle Past Months" modal's editable breakdown
+// before the Treasurer submits it.
+const getOutstandingPeriods = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const result = await query(`
+        SELECT id AS period_id, period, amount_due, amount_paid,
+               (amount_due - amount_paid) AS amount_remaining, status, due_date
+        FROM   service_fee_monthly_periods
+        WHERE  agreement_id = $1 AND status IN ('UNPAID', 'PARTIAL')
+        ORDER  BY period ASC
+    `, [id]);
+    sendSuccess(res, result.rows);
 });
 
 // PATCH /api/service-fees/agreements/:id
@@ -207,7 +253,7 @@ const getAgreementById = asyncHandler(async (req, res) => {
 // loan_received_rate_amendments tracks penalty-rate changes.
 const updateAgreement = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { monthly_amount, account_id, category_id, notes, status, end_date, reason, effective_from } = req.body;
+    const { monthly_amount, account_id, category_id, notes, status, end_date, reason, effective_from, payment_day } = req.body;
 
     const existing = await query('SELECT * FROM service_fee_agreements WHERE id = $1', [id]);
     if (existing.rows.length === 0) throw createError.notFound('Service fee agreement not found');
@@ -244,11 +290,13 @@ const updateAgreement = asyncHandler(async (req, res) => {
                    category_id    = COALESCE($4, category_id),
                    notes          = COALESCE($5, notes),
                    status         = COALESCE($6, status),
-                   end_date       = COALESCE($7, end_date)
-            WHERE  id = $8
+                   end_date       = COALESCE($7, end_date),
+                   payment_day    = COALESCE($8, payment_day)
+            WHERE  id = $9
             RETURNING *
         `, [monthly_amount || null, account_id || null, currency_id, category_id || null,
-            notes !== undefined ? notes : null, status || null, end_date || null, id]);
+            notes !== undefined ? notes : null, status || null, end_date || null,
+            payment_day ? parseInt(payment_day) : null, id]);
 
         if (isAmountChanging) {
             await client.query(`
@@ -256,7 +304,24 @@ const updateAgreement = asyncHandler(async (req, res) => {
                     (agreement_id, previous_amount, new_amount, reason, effective_from, amended_by)
                 VALUES ($1, $2, $3, $4, $5, $6)
             `, [id, existing.rows[0].monthly_amount, monthly_amount, reason.trim(), effective_from, req.user.id]);
+
+            // v1.52.0 — a going-forward amendment updates every future
+            // period's amount_due (any period an Treasurer has already
+            // individually overridden is left untouched — see
+            // applyAmendmentToFuturePeriods).
+            await serviceFeeService.applyAmendmentToFuturePeriods(client, {
+                agreementId: parseInt(id),
+                newAmount: monthly_amount,
+                effectiveFrom: effective_from,
+            });
         }
+
+        // v1.52.0 — if the agreement is ending, or if this update is
+        // simply arriving in a new calendar month, this call also
+        // backfills any month between the last-generated period and
+        // now/end_date that doesn't exist yet — same idempotent
+        // ON CONFLICT DO NOTHING generator used at creation time.
+        await serviceFeeService.generateMonthlyPeriodsForAgreement(client, result.rows[0]);
 
         return result.rows[0];
     });
@@ -306,6 +371,24 @@ const recordPayment = asyncHandler(async (req, res) => {
         const payAmount = parseFloat(amount || agreement.monthly_amount);
         const entryDate = payment_date || new Date().toISOString().split('T')[0];
 
+        // Make sure this month's own period exists before cascading —
+        // normally kept current by the daily sweep (jobs/scheduler.js)
+        // and by updateAgreement, but a payment can arrive in between
+        // those, so this call (idempotent, ON CONFLICT DO NOTHING)
+        // guards against cascading into a month that hasn't been
+        // generated yet.
+        await serviceFeeService.generateMonthlyPeriodsForAgreement(client, agreement);
+
+        // v1.52.0 — oldest-unpaid-period-first cascade (per the
+        // Treasurer's confirmed answer: NOT matched to the payment's
+        // own calendar month). A single recordPayment call always
+        // settles whichever month(s) have been outstanding longest;
+        // a specific historical month is instead handled via the
+        // per-month override endpoint, and settling several months at
+        // once via the bulk settlePastMonths endpoint below.
+        const outstandingPeriods = await serviceFeeService.getOutstandingPeriodsForUpdate(client, agreement.id);
+        const { breakdown } = serviceFeeService.cascadeAmountAcrossPeriods(outstandingPeriods, payAmount);
+
         const { id: confirmationId, referenceCode } = await createServiceFeePaymentConfirmation(client, {
             agreement,
             amount:               payAmount,
@@ -315,6 +398,7 @@ const recordPayment = asyncHandler(async (req, res) => {
             externalReference:    external_reference,
             purpose:              `Monthly service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
             payerId:              req.user.id,
+            periodBreakdown:      breakdown,
         });
 
         await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_RECORDED, MODULES.STAFF, {
@@ -332,6 +416,131 @@ const recordPayment = asyncHandler(async (req, res) => {
             status: 'PENDING_CONFIRMATION',
         }, `Service fee payment entry created for ${agreement.first_name} ${agreement.last_name} — awaiting their confirmation. Reference: ${referenceCode}`);
     });
+});
+
+// POST /api/service-fees/agreements/:id/settle
+//
+// v1.52.0 — "issue to settle all past months" (the Treasurer's own
+// wording from the feature request): one lump-sum payment covering
+// several outstanding periods at once. breakdown is the auto-filled,
+// per-month figure the Treasurer can edit before submitting (each
+// period's own amount_due - amount_paid) — the client is expected to
+// have started from GET .../outstanding-periods and may adjust any
+// line before posting here. The total (sum of breakdown) is what
+// becomes the single payment_confirmations entry the recipient
+// reviews; per-period application only happens once they confirm it
+// (same two-step flow as a normal single-month recordPayment).
+const settlePastMonths = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { breakdown, payment_date, notes, payment_method, mobile_money_provider, external_reference } = req.body;
+
+    if (!Array.isArray(breakdown) || breakdown.length === 0) {
+        throw createError.badRequest('At least one month to settle is required');
+    }
+    for (const line of breakdown) {
+        if (!line.period_id || !(parseFloat(line.amount) > 0)) {
+            throw createError.badRequest('Each month in the breakdown needs a valid period and a positive amount');
+        }
+    }
+
+    await withTransaction(async (client) => {
+        const agreementResult = await client.query(`
+            SELECT a.*, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1 FOR UPDATE
+        `, [id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreement = agreementResult.rows[0];
+
+        await serviceFeeService.generateMonthlyPeriodsForAgreement(client, agreement);
+
+        // Confirm every period referenced actually belongs to this
+        // agreement — guards against a stale/tampered client payload
+        // pointing at someone else's period.
+        const periodIds = breakdown.map(l => parseInt(l.period_id));
+        const ownedPeriods = await client.query(
+            `SELECT id FROM service_fee_monthly_periods WHERE id = ANY($1::int[]) AND agreement_id = $2`,
+            [periodIds, id]
+        );
+        if (ownedPeriods.rows.length !== new Set(periodIds).size) {
+            throw createError.badRequest('One or more selected months do not belong to this agreement');
+        }
+
+        const totalAmount = breakdown.reduce((sum, l) => sum + parseFloat(l.amount), 0);
+        const entryDate = payment_date || new Date().toISOString().split('T')[0];
+        const monthLabels = breakdown.map(l => l.period).filter(Boolean).join(', ');
+
+        const { id: confirmationId, referenceCode } = await createServiceFeePaymentConfirmation(client, {
+            agreement,
+            amount:               totalAmount,
+            entryDate,
+            paymentMethod:        payment_method,
+            mobileMoneyProvider:  mobile_money_provider,
+            externalReference:    external_reference,
+            purpose:              `Service fee settlement (${monthLabels || breakdown.length + ' month(s)'}) — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+            payerId:              req.user.id,
+            periodBreakdown:      breakdown.map(l => ({ period_id: parseInt(l.period_id), amount: parseFloat(l.amount) })),
+        });
+
+        await logAction(req.user.id, ACTIONS.SERVICE_FEE_MONTHS_SETTLED, MODULES.STAFF, {
+            ipAddress:   req.ip,
+            recordType:  'payment_confirmations',
+            recordId:    confirmationId,
+            newValues:   { referenceCode, totalAmount, months: breakdown.map(l => l.period) },
+            description: `Bulk service fee settlement created, awaiting confirmation: ${referenceCode} — ${agreement.first_name} ${agreement.last_name}: ${totalAmount} across ${breakdown.length} month(s)`,
+            client,
+        });
+
+        sendCreated(res, {
+            confirmation_id: confirmationId,
+            reference: referenceCode,
+            status: 'PENDING_CONFIRMATION',
+            total_amount: totalAmount,
+        }, `Settlement entry created for ${agreement.first_name} ${agreement.last_name} — awaiting their confirmation. Reference: ${referenceCode}`);
+    });
+});
+
+// PATCH /api/service-fees/agreements/:id/periods/:periodId/override
+//
+// v1.52.0 — changes ONE historical month's amount_due without
+// touching the agreement's ongoing monthly_amount (that's what
+// amending the agreement, above, is for — a going-forward change).
+// Requires a reason, same convention as amendments and disputes
+// elsewhere in this codebase.
+const overridePeriod = asyncHandler(async (req, res) => {
+    const { id, periodId } = req.params;
+    const { amount_due, reason } = req.body;
+
+    if (!(parseFloat(amount_due) >= 0)) {
+        throw createError.badRequest('A valid amount is required');
+    }
+    if (!reason || !reason.trim()) {
+        throw createError.badRequest('A reason is required to override a month\'s amount');
+    }
+
+    const updated = await withTransaction(async (client) => {
+        return serviceFeeService.setPeriodOverride(client, {
+            periodId:    parseInt(periodId),
+            agreementId: parseInt(id),
+            newAmountDue: parseFloat(amount_due),
+            reason:      reason.trim(),
+            overrideBy:  req.user.id,
+        });
+    });
+
+    if (!updated) throw createError.notFound('That month was not found on this agreement');
+
+    sendSuccess(res, updated, `${updated.period} amount overridden to ${amount_due}`);
+});
+
+// GET /api/service-fees/stats
+// Treasury-wide aggregate — every agreement's paid/partial/unpaid
+// period counts and totals, for the treasury-side chart section
+// (SERVICE_FEE_VIEW, route-level).
+const getTreasuryStats = asyncHandler(async (req, res) => {
+    const stats = await serviceFeeService.computeTreasuryAggregateStats();
+    sendSuccess(res, stats);
 });
 
 // ============================================================================
@@ -364,7 +573,12 @@ const getMyAgreement = asyncHandler(async (req, res) => {
         ORDER BY p.payment_date DESC
     `, [agreement.id]);
 
-    sendSuccess(res, { ...agreement, payments: paymentsResult.rows });
+    // v1.52.0 — this person's own monthly breakdown + stats (paid/
+    // unpaid months, most/least paid, total earned) for their "My
+    // Service Fee" chart tab.
+    const { periods, summary } = await serviceFeeService.computeAgreementStats(agreement.id);
+
+    sendSuccess(res, { ...agreement, payments: paymentsResult.rows, periods, stats: summary });
 });
 
 // ============================================================================
@@ -648,6 +862,10 @@ module.exports = {
     getAgreementById,
     updateAgreement,
     recordPayment,
+    getOutstandingPeriods,
+    settlePastMonths,
+    overridePeriod,
+    getTreasuryStats,
     getMyAgreement,
     requestReimbursement,
     getMyReimbursements,
@@ -655,4 +873,5 @@ module.exports = {
     previewReceipt,
     approveReimbursement,
     rejectReimbursement,
+    getTreasurers,
 };

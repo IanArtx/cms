@@ -22,6 +22,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { serviceFeesAPI, accountsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import { printDocument, serviceFeeAgreementTemplate } from '../../utils/exportUtils';
@@ -29,11 +30,13 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import useChartTheme from '../../hooks/useChartTheme';
 import {
     CreateAgreementModal, TerminateAgreementModal, RecordPaymentModal,
+    SettlePastMonthsModal, OverridePeriodModal,
 } from './ServiceFeesPage';
 import {
-    ArrowLeftIcon, BanknotesIcon, PencilIcon, NoSymbolIcon, ArrowDownTrayIcon,
+    ArrowLeftIcon, BanknotesIcon, PencilIcon, NoSymbolIcon, ArrowDownTrayIcon, CalendarDaysIcon,
 } from '@heroicons/react/24/outline';
 
 const ServiceFeeAgreementDetailPage = () => {
@@ -53,6 +56,9 @@ const ServiceFeeAgreementDetailPage = () => {
     const [showAmend, setShowAmend] = useState(false);
     const [showTerminate, setShowTerminate] = useState(false);
     const [showPay, setShowPay] = useState(false);
+    const [showSettle, setShowSettle] = useState(false);
+    const [overridingPeriod, setOverridingPeriod] = useState(null);
+    const theme = useChartTheme();
 
     const loadAgreement = useCallback(async () => {
         try {
@@ -99,7 +105,15 @@ const ServiceFeeAgreementDetailPage = () => {
 
     const payments = agreement.payments || [];
     const amendments = agreement.amendments || [];
+    const periods = agreement.periods || [];
+    const stats = agreement.stats || null;
     const totalPaid = payments.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+    const hasOutstanding = periods.some(p => p.status !== 'PAID');
+    const chartData = periods.map(p => ({
+        period: p.period,
+        paid: parseFloat(p.amount_paid || 0),
+        outstanding: Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+    }));
 
     const handleDownload = () => {
         printDocument(
@@ -167,6 +181,11 @@ const ServiceFeeAgreementDetailPage = () => {
                         <BanknotesIcon className="h-4 w-4" /> Record Payment
                     </button>
                 )}
+                {canManage && hasOutstanding && (
+                    <button onClick={() => setShowSettle(true)} className="btn-secondary flex items-center gap-2">
+                        <CalendarDaysIcon className="h-4 w-4" /> Settle Past Months
+                    </button>
+                )}
                 {canManage && (
                     <button onClick={() => setShowAmend(true)} className="btn-secondary flex items-center gap-2">
                         <PencilIcon className="h-4 w-4" /> Amend Agreement
@@ -185,6 +204,98 @@ const ServiceFeeAgreementDetailPage = () => {
                     <ArrowDownTrayIcon className="h-4 w-4" /> Download Summary
                 </button>
             </div>
+
+            {/* Monthly Breakdown (v1.52.0) — which months are paid, partial,
+                or unpaid, with a per-month override action. */}
+            <div className="card mb-6">
+                <h3 className="section-title mb-1">Monthly Breakdown</h3>
+                <p className="text-xs text-gray-400 mb-4">
+                    Payment day: {agreement.payment_day || '—'} of each month.
+                    {' '}Payments settle the oldest unpaid month first, regardless of which month a payment is recorded against.
+                </p>
+                {periods.length === 0 ? (
+                    <p className="text-sm text-gray-400 text-center py-6">No months tracked yet</p>
+                ) : (
+                    <>
+                        {chartData.length > 0 && (
+                            <div className="h-56 mb-4">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={chartData}>
+                                        <CartesianGrid {...theme.gridProps} />
+                                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                        <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
+                                        <Tooltip {...theme.tooltipProps} />
+                                        <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} radius={[0, 0, 0, 0]} />
+                                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        )}
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
+                                        <th className="pb-2 font-medium">Month</th>
+                                        <th className="pb-2 font-medium">Due Date</th>
+                                        <th className="pb-2 font-medium text-right">Amount Due</th>
+                                        <th className="pb-2 font-medium text-right">Amount Paid</th>
+                                        <th className="pb-2 font-medium">Status</th>
+                                        {canManage && <th className="pb-2 font-medium text-right">Action</th>}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {periods.map(p => (
+                                        <tr key={p.id} className="border-b border-gray-50 last:border-0">
+                                            <td className="py-2 font-medium text-gray-900">{p.period}</td>
+                                            <td className="py-2 text-gray-500">{formatDate(p.due_date)}</td>
+                                            <td className="py-2 text-right text-gray-900">
+                                                {parseFloat(p.amount_due).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                                {p.amount_override != null && <span className="text-amber-500 ml-1" title={p.override_reason}>*</span>}
+                                            </td>
+                                            <td className="py-2 text-right text-gray-500">{parseFloat(p.amount_paid).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
+                                            <td className="py-2"><StatusBadge status={p.status} /></td>
+                                            {canManage && (
+                                                <td className="py-2 text-right">
+                                                    <button onClick={() => setOverridingPeriod(p)}
+                                                        className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
+                                                        Override
+                                                    </button>
+                                                </td>
+                                            )}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
+                )}
+            </div>
+
+            {/* Personal stats summary (v1.52.0) */}
+            {stats && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                    <div className="card py-3">
+                        <p className="text-xs text-gray-400">Paid Months</p>
+                        <p className="text-lg font-bold text-green-600 mt-0.5">{stats.paid_months}</p>
+                    </div>
+                    <div className="card py-3">
+                        <p className="text-xs text-gray-400">Unpaid / Partial</p>
+                        <p className="text-lg font-bold text-red-500 mt-0.5">{stats.unpaid_months + stats.partial_months}</p>
+                    </div>
+                    <div className="card py-3">
+                        <p className="text-xs text-gray-400">Most Paid Month</p>
+                        <p className="text-sm font-semibold text-gray-900 mt-0.5">
+                            {stats.most_paid_month ? `${stats.most_paid_month.period} (${stats.most_paid_month.amount.toLocaleString('en-US', { maximumFractionDigits: 2 })})` : '—'}
+                        </p>
+                    </div>
+                    <div className="card py-3">
+                        <p className="text-xs text-gray-400">Total Earned</p>
+                        <p className="text-lg font-bold text-primary-700 mt-0.5">
+                            {stats.total_earned.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        </p>
+                    </div>
+                </div>
+            )}
 
             {/* Payment History */}
             <div className="card mb-6">
@@ -291,6 +402,19 @@ const ServiceFeeAgreementDetailPage = () => {
                 isOpen={showPay}
                 agreement={agreement}
                 onClose={() => setShowPay(false)}
+                onSuccess={loadAgreement}
+            />
+            <SettlePastMonthsModal
+                isOpen={showSettle}
+                agreement={agreement}
+                onClose={() => setShowSettle(false)}
+                onSuccess={loadAgreement}
+            />
+            <OverridePeriodModal
+                isOpen={!!overridingPeriod}
+                agreement={agreement}
+                period={overridingPeriod}
+                onClose={() => setOverridingPeriod(null)}
                 onSuccess={loadAgreement}
             />
         </div>

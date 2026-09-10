@@ -14,6 +14,8 @@
 //   7. Side fund due generation    — 1st of every month at 00:15
 //   8. Side fund default check     — 1st of every month at 00:20
 //   9. Capital goal call deadlines — every day at 00:30
+//  10. Service fee monthly period generation — every day at 00:35
+//  11. Service fee due-date reminders — every day at 08:45
 // ============================================================
 
 const cron = require('node-cron');
@@ -31,6 +33,7 @@ const { wrapEmail } = require('../services/emailTemplates');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateDuesForPeriod } = require('../services/sideFundService');
 const { processIteration1Deadline, processIteration2Deadline, isCapitalGoalTrackingEnabled } = require('../services/capitalGoalCallService');
+const serviceFeeService = require('../services/serviceFeeService');
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -787,6 +790,131 @@ const scheduleCapitalGoalCallDeadlines = () => {
 };
 
 // ============================================================
+// JOB 10: SERVICE FEE — MONTHLY PERIOD GENERATION (v1.52.0)
+// Runs daily at 00:35 (after the capital goal call sweep). Ensures
+// every ACTIVE service fee agreement has a service_fee_monthly_periods
+// row for the current calendar month — generateMonthlyPeriodsForAgreement
+// is idempotent (ON CONFLICT DO NOTHING per agreement+period), so this
+// is safe to run daily rather than only on the 1st: an agreement
+// created partway through a month, or a month that gets skipped by a
+// missed run, self-heals the next time this job fires. Each agreement
+// is processed in its own transaction so one failure can't block the
+// rest of the sweep.
+// ============================================================
+const scheduleServiceFeePeriodGeneration = () => {
+    cron.schedule('35 0 * * *', async () => {
+        logger.info('Starting service fee monthly period generation job...');
+        try {
+            const agreements = await query(`
+                SELECT * FROM service_fee_agreements WHERE status = 'ACTIVE'
+            `);
+
+            let created = 0;
+            for (const agreement of agreements.rows) {
+                try {
+                    await withTransaction(async (client) => {
+                        const result = await serviceFeeService.generateMonthlyPeriodsForAgreement(client, agreement);
+                        created += result.created;
+                    });
+                } catch (err) {
+                    logger.error(`Service fee period generation failed for agreement ${agreement.id}`, { error: err.message });
+                }
+            }
+
+            logger.info(`Service fee monthly period generation completed — ${created} new period(s) created across ${agreements.rows.length} agreement(s)`);
+        } catch (err) {
+            logger.error('Service fee monthly period generation job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Service fee monthly period generation scheduled: 35 0 * * *');
+};
+
+// ============================================================
+// JOB 11: SERVICE FEE — DUE-DATE REMINDERS (v1.52.0)
+// Runs daily at 08:45. For every UNPAID/PARTIAL period whose due_date
+// has arrived (<= today), notifies every Treasurer/Assistant
+// Treasurer that this specific agreement/month needs payment.
+// Repeats daily for as long as the period stays unsettled — dedup is
+// per calendar day (service_fee_due_reminders_sent, UNIQUE agreement_id
+// + period_id + sent_date), the same insert-and-detect-conflict idiom
+// as the audit access-expiry reminders above, so a re-run on the same
+// day never double-notifies, but a still-unpaid month keeps surfacing
+// on each new day until it's settled. (The exact "remind once, then
+// daily until paid" cadence wasn't separately specified in the
+// original request — this mirrors the codebase's existing "daily
+// until resolved" reminder pattern rather than a one-time notice.)
+// ============================================================
+const scheduleServiceFeeDueReminders = () => {
+    cron.schedule('45 8 * * *', async () => {
+        logger.info('Starting service fee due-date reminder job...');
+        const today = new Date().toISOString().split('T')[0];
+
+        try {
+            const duePeriods = await query(`
+                SELECT smp.id AS period_id, smp.period, smp.due_date, smp.amount_due, smp.amount_paid,
+                       sfa.id AS agreement_id, u.first_name, u.last_name
+                FROM   service_fee_monthly_periods smp
+                JOIN   service_fee_agreements sfa ON sfa.id = smp.agreement_id
+                JOIN   users u ON u.id = sfa.user_id
+                WHERE  smp.status IN ('UNPAID', 'PARTIAL')
+                AND    smp.due_date <= $1
+                AND    sfa.status = 'ACTIVE'
+            `, [today]);
+
+            const treasurers = await serviceFeeService.getTreasurers();
+            let sentCount = 0;
+
+            for (const p of duePeriods.rows) {
+                let dedupOk = true;
+                try {
+                    const inserted = await query(`
+                        INSERT INTO service_fee_due_reminders_sent (agreement_id, period_id, sent_date)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (agreement_id, period_id, sent_date) DO NOTHING
+                        RETURNING id
+                    `, [p.agreement_id, p.period_id, today]);
+                    dedupOk = inserted.rows.length > 0;
+                } catch (err) {
+                    logger.error('Service fee due reminder dedup insert failed', { error: err.message });
+                    continue;
+                }
+                if (!dedupOk) continue;
+
+                const remaining = parseFloat(p.amount_due) - parseFloat(p.amount_paid);
+                await notifyMany(treasurers, 'SERVICE_FEE_PAYMENT_DUE', () => ({
+                    title: `Service fee payment due — ${p.first_name} ${p.last_name}`,
+                    body:  `${p.first_name} ${p.last_name}'s service fee for ${p.period} was due ${p.due_date} ` +
+                           `and still has ${remaining.toLocaleString('en-US', { maximumFractionDigits: 2 })} outstanding.`,
+                    link:       '/service-fees',
+                    module:     'STAFF',
+                    recordType: 'service_fee_monthly_periods',
+                    recordId:   p.period_id,
+                })).catch(() => {});
+
+                await logAction(null, ACTIONS.SERVICE_FEE_DUE_REMINDER_SENT, MODULES.STAFF, {
+                    recordType:  'service_fee_monthly_periods',
+                    recordId:    p.period_id,
+                    description: `Due-date reminder sent for ${p.period} (agreement ${p.agreement_id}) — ${p.first_name} ${p.last_name}`,
+                }).catch(() => {});
+
+                sentCount++;
+            }
+
+            logger.info(`Service fee due-date reminder job completed — ${sentCount} reminder(s) sent across ${duePeriods.rows.length} overdue period(s)`);
+        } catch (err) {
+            logger.error('Service fee due-date reminder job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+
+    logger.info('Service fee due-date reminders scheduled: 45 8 * * *');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -800,6 +928,8 @@ const startAllJobs = () => {
     scheduleSideFundDueGeneration();
     scheduleSideFundDefaultCheck();
     scheduleCapitalGoalCallDeadlines();
+    scheduleServiceFeePeriodGeneration();
+    scheduleServiceFeeDueReminders();
     scheduleMonthlyShareCertificates();
     scheduleAnnualShareCertificates();
     scheduleCertificateSigningReminders();

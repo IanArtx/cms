@@ -1,0 +1,49 @@
+flowchart TD
+    subgraph A["1. Agreement creation — periods generated up front"]
+        A1["Treasurer creates a Service Fee\nagreement with a Payment Day"] --> A2["generateMonthlyPeriodsForAgreement"]
+        A2 --> A3["One service_fee_monthly_periods row\nper month, start_date -> current month"]
+        A3 --> A4["Each period: amount_due =\nmonthly_amount, status UNPAID"]
+    end
+
+    subgraph B["2. recordPayment — oldest-unpaid-first cascade"]
+        B1["Treasurer records a single\npayment (defaults to monthly_amount)"] --> B2["getOutstandingPeriodsForUpdate\n(oldest period first)"]
+        B2 --> B3["cascadeAmountAcrossPeriods\nsplits the amount across as many\noldest months as it covers"]
+        B3 --> B4["createServiceFeePaymentConfirmation\n+ breakdown saved to\nservice_fee_payment_confirmation_periods"]
+        B4 --> B5["payment_confirmations row:\nPENDING_CONFIRMATION"]
+        B5 --> B6{"Recipient confirms?"}
+        B6 -->|No| B7["Nothing applied —\nperiods stay untouched"]
+        B6 -->|Yes| B8["confirmPayment: real\nservice_fee_payments row created"]
+        B8 --> B9["applyPaymentToPeriods reads the\nsaved breakdown, updates each\nperiod's amount_paid/status"]
+        B9 --> B10["service_fee_payment_applications:\nappend-only record of what\nwent where"]
+    end
+
+    subgraph C["3. Settle Past Months — bulk settlement"]
+        C1["Treasurer opens Settle Past Months"] --> C2["GET outstanding-periods:\nauto-filled, editable breakdown\n(each month's own remaining balance)"]
+        C2 --> C3["Treasurer edits any figure,\nsubmits one lump sum"]
+        C3 --> C4["Same two-step confirm flow\nas a single payment (B4-B10)"]
+    end
+
+    subgraph D["4. Per-month override vs. going-forward amendment"]
+        D1{"What needs to change?"}
+        D1 -->|"One historical month's\namount_due"| D2["PATCH .../periods/:id/override\nsetPeriodOverride — status\nrecomputed, amount_override set"]
+        D1 -->|"The agreement's ongoing\nmonthly_amount, going forward"| D3["Amend Agreement\nservice_fee_agreement_amendments\nrow + applyAmendmentToFuturePeriods"]
+        D3 --> D4["Updates every period from\neffective_from onward —\nEXCEPT any already overridden\n(amount_override IS NOT NULL)"]
+        D2 -.->|"never touched by\na later amendment"| D4
+    end
+
+    subgraph E["5. Due-date reminders + charts"]
+        E1["Daily 00:35 sweep\n(scheduler.js)"] --> E2["Generates the new month's\nperiod for every ACTIVE agreement"]
+        E3["Daily 08:45 sweep"] --> E4{"Period UNPAID/PARTIAL\nand due_date <= today?"}
+        E4 -->|Yes| E5["Notify Treasurers\n(dedup: 1x per period per day)"]
+        E6["computeAgreementStats"] --> E7["'My Service Fee' tab:\npaid/unpaid months, most/\nleast paid, total earned"]
+        E8["computeTreasuryAggregateStats"] --> E9["Treasury Overview tab:\npaid vs outstanding, all agreements"]
+    end
+
+    style A4 fill:#ecfdf5,stroke:#059669
+    style B7 fill:#f3f4f6,stroke:#6b7280
+    style B10 fill:#ecfdf5,stroke:#059669
+    style D2 fill:#fef3c7,stroke:#d97706
+    style D4 fill:#ecfdf5,stroke:#059669
+    style E5 fill:#fee2e2,stroke:#dc2626
+    style E7 fill:#ecfdf5,stroke:#059669
+    style E9 fill:#ecfdf5,stroke:#059669

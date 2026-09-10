@@ -37,6 +37,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
+const { applyPaymentToPeriods } = require('../services/serviceFeeService');
 
 const SOURCE_LABELS = {
     GENERAL_PAYMENT:     'General Payment',
@@ -162,15 +163,26 @@ const createPaymentConfirmation = asyncHandler(async (req, res) => {
 // category/currency are all derived from the agreement, never chosen
 // again here.
 // Params: { client, agreement, amount, entryDate, paymentMethod,
-//           mobileMoneyProvider, externalReference, purpose, payerId }
+//           mobileMoneyProvider, externalReference, purpose, payerId,
+//           periodBreakdown }
+// periodBreakdown (v1.52.0) — optional array of { period_id, amount },
+// the monthly-period(s) this payment is meant to settle (recordPayment's
+// oldest-first cascade for a normal single payment, or an edited
+// bulk "settle past months" breakdown). Persisted to
+// service_fee_payment_confirmation_periods so confirmPayment can
+// apply the real service_fee_payments row across the right period(s)
+// once the recipient actually confirms — payment_confirmations itself
+// has no column to carry this (only a single source_id, the
+// agreement, not a period).
 // Returns { id, referenceCode }.
 // ============================================================
 const createServiceFeePaymentConfirmation = async (client, {
     agreement, amount, entryDate, paymentMethod, mobileMoneyProvider, externalReference, purpose, payerId,
+    periodBreakdown,
 }) => {
     validatePaymentMethod(paymentMethod, mobileMoneyProvider, externalReference);
 
-    return createPaymentConfirmationRow(client, {
+    const { id, referenceCode } = await createPaymentConfirmationRow(client, {
         sourceType:  'SERVICE_FEE_PAYMENT',
         sourceId:    agreement.id,
         accountId:   agreement.account_id,
@@ -185,6 +197,17 @@ const createServiceFeePaymentConfirmation = async (client, {
         purpose,
         entryDate,
     });
+
+    if (periodBreakdown && periodBreakdown.length > 0) {
+        for (const line of periodBreakdown) {
+            await client.query(`
+                INSERT INTO service_fee_payment_confirmation_periods (confirmation_id, period_id, amount)
+                VALUES ($1, $2, $3)
+            `, [id, line.period_id, line.amount]);
+        }
+    }
+
+    return { id, referenceCode };
 };
 
 // ============================================================
@@ -404,10 +427,28 @@ const confirmPayment = asyncHandler(async (req, res) => {
         `, [transactionId, note || null, id]);
 
         if (pc.source_type === 'SERVICE_FEE_PAYMENT') {
-            await client.query(`
+            const paymentResult = await client.query(`
                 INSERT INTO service_fee_payments (agreement_id, amount, payment_date, transaction_id, notes, paid_by)
                 VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
             `, [pc.source_id, pc.amount, pc.entry_date, transactionId, note || null, pc.payer_id]);
+            const serviceFeePaymentId = paymentResult.rows[0].id;
+
+            // v1.52.0 — apply this now-confirmed payment across
+            // whichever monthly period(s) were decided when the
+            // confirmation was created (recordPayment's oldest-first
+            // cascade, or a bulk settle-past-months breakdown),
+            // updating each period's cached amount_paid/status and
+            // writing the append-only service_fee_payment_applications
+            // trail. Pre-v1.52.0 confirmations have no breakdown rows
+            // and are simply skipped — no periods existed for them.
+            const breakdownResult = await client.query(
+                `SELECT period_id, amount FROM service_fee_payment_confirmation_periods WHERE confirmation_id = $1`,
+                [pc.id]
+            );
+            if (breakdownResult.rows.length > 0) {
+                await applyPaymentToPeriods(client, { paymentId: serviceFeePaymentId, breakdown: breakdownResult.rows });
+            }
         }
 
         await logAction(req.user.id, ACTIONS.PAYMENT_CONFIRMATION_CONFIRMED, MODULES.FINANCE, {

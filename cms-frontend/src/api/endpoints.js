@@ -547,6 +547,12 @@ export const serviceFeesAPI = {
     updateAgreement:  (id, data) => api.patch(`/service-fees/agreements/${id}`, data),
     recordPayment:    (id, data) => api.post(`/service-fees/agreements/${id}/pay`, data),
 
+    // v1.52.0 — monthly period tracking
+    getOutstandingPeriods: (id) => api.get(`/service-fees/agreements/${id}/outstanding-periods`),
+    settlePastMonths:      (id, data) => api.post(`/service-fees/agreements/${id}/settle`, data),
+    overridePeriod:        (id, periodId, data) => api.patch(`/service-fees/agreements/${id}/periods/${periodId}/override`, data),
+    getTreasuryStats:      () => api.get('/service-fees/stats'),
+
     // Self-service
     getMyAgreement:   ()       => api.get('/service-fees/my-agreement'),
     getMyReimbursements: ()    => api.get('/service-fees/my-reimbursements'),

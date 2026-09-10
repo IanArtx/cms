@@ -2438,6 +2438,13 @@ CREATE TABLE service_fee_agreements (
     status         VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
                    CHECK (status IN ('ACTIVE', 'ENDED')),
     notes          TEXT,
+    -- v1.52.0 — day of the month each period is due; mirrors
+    -- capital_goals.call_deadline_day (1-28, so dateInPeriod() always
+    -- resolves to a real calendar date, never a month-end overflow).
+    -- Drives the monthly period generator (serviceFeeService.js) and
+    -- the due-date reminder cron job.
+    payment_day    SMALLINT NOT NULL
+                   CHECK (payment_day BETWEEN 1 AND 28),
     created_by     INTEGER NOT NULL REFERENCES users(id),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT positive_monthly_amount CHECK (monthly_amount > 0),
@@ -2475,6 +2482,93 @@ CREATE TABLE service_fee_agreement_amendments (
         CHECK (previous_amount > 0 AND new_amount > 0)
 );
 
+-- v1.52.0 — one row per agreement per calendar month, from the
+-- agreement's start_date through the current month. amount_due/
+-- amount_paid/status are CACHED columns (kept current by
+-- serviceFeeService.js whenever a payment is applied or an override
+-- is set) — mirrors side_fund_dues, the closer structural analog
+-- here (a flat recurring amount, no pledge/iteration/fine layer that
+-- would make a cached column drift-prone), not the live-computed
+-- style capital_goal_calls uses.
+-- amount_override/override_reason/override_by/override_at let the
+-- Treasurer change a SINGLE historical month's amount_due without
+-- touching the agreement's ongoing monthly_amount — that's what
+-- service_fee_agreement_amendments (above) is for, a going-forward
+-- change, the wrong tool for a one-off month. Audited via logAction
+-- rather than a dedicated history table.
+CREATE TABLE service_fee_monthly_periods (
+    id               SERIAL PRIMARY KEY,
+    agreement_id     INTEGER       NOT NULL REFERENCES service_fee_agreements(id),
+    period           CHAR(7)       NOT NULL,  -- 'YYYY-MM'
+    amount_due       NUMERIC(20,4) NOT NULL,
+    amount_paid      NUMERIC(20,4) NOT NULL DEFAULT 0,
+    status           VARCHAR(20)   NOT NULL DEFAULT 'UNPAID'
+                     CHECK (status IN ('UNPAID', 'PARTIAL', 'PAID')),
+    due_date         DATE          NOT NULL,
+    amount_override  NUMERIC(20,4),
+    override_reason  TEXT,
+    override_by      INTEGER REFERENCES users(id),
+    override_at      TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT non_negative_service_fee_period_due      CHECK (amount_due >= 0),
+    CONSTRAINT non_negative_service_fee_period_paid     CHECK (amount_paid >= 0),
+    CONSTRAINT non_negative_service_fee_period_override CHECK (amount_override IS NULL OR amount_override >= 0),
+    UNIQUE (agreement_id, period)
+);
+
+-- v1.52.0 — append-only record of exactly which period(s) a real,
+-- CONFIRMED service_fee_payments row settled, and how much went to
+-- each. Mirrors side_fund_payment_applications. Needed because one
+-- payment (e.g. a bulk "settle all past months" action) can span
+-- several periods, and a single period can be paid across more than
+-- one payment (partial payments).
+CREATE TABLE service_fee_payment_applications (
+    id             SERIAL PRIMARY KEY,
+    payment_id     INTEGER       NOT NULL REFERENCES service_fee_payments(id),
+    period_id      INTEGER       NOT NULL REFERENCES service_fee_monthly_periods(id),
+    amount         NUMERIC(20,4) NOT NULL CHECK (amount > 0),
+    created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (payment_id, period_id)
+);
+
+-- v1.52.0 — the PENDING version of the above. payment_confirmations
+-- has no JSON/metadata column and only a single source_id (the
+-- agreement, not a period), so there's nowhere on that table to
+-- carry a per-period breakdown while a bulk settlement sits in
+-- PENDING_CONFIRMATION awaiting the recipient. Written when the
+-- confirmation is created (one row for a single-month payment,
+-- several for a bulk settlement); read by confirmPayment() once the
+-- real service_fee_payments row exists, to populate the table above.
+-- confirmation_id's FK to payment_confirmations is added further down
+-- via ALTER TABLE (same "forward-reference FK" pattern used for
+-- share_certificates -> certificate_signing_rounds elsewhere in this
+-- file) — payment_confirmations itself isn't defined until much later
+-- in this file, so an inline REFERENCES here would fail on a fresh
+-- install.
+CREATE TABLE service_fee_payment_confirmation_periods (
+    id               SERIAL PRIMARY KEY,
+    confirmation_id  INTEGER       NOT NULL,
+    period_id        INTEGER       NOT NULL REFERENCES service_fee_monthly_periods(id),
+    amount           NUMERIC(20,4) NOT NULL CHECK (amount > 0),
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (confirmation_id, period_id)
+);
+
+-- v1.52.0 — dedup table for the due-date reminder cron job, mirrors
+-- the audit engagement reminder pattern (scheduler.js): ON CONFLICT
+-- DO NOTHING guarantees at most one reminder per (agreement, period,
+-- calendar day), so a daily-until-settled sweep never double-notifies
+-- within the same day even if it's retried.
+CREATE TABLE service_fee_due_reminders_sent (
+    id            SERIAL PRIMARY KEY,
+    agreement_id  INTEGER     NOT NULL REFERENCES service_fee_agreements(id),
+    period_id     INTEGER     NOT NULL REFERENCES service_fee_monthly_periods(id),
+    sent_date     DATE        NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (agreement_id, period_id, sent_date)
+);
+
 -- Ad hoc expense reimbursement requests from a contracted person —
 -- structurally similar to a Requisitions EXPENSE request, kept
 -- separate since Requisitions' other request type
@@ -2507,6 +2601,11 @@ CREATE INDEX idx_staff_document_grants_doc              ON staff_document_grants
 CREATE INDEX idx_service_fee_agreements_user            ON service_fee_agreements (user_id);
 CREATE INDEX idx_service_fee_payments_agreement         ON service_fee_payments (agreement_id);
 CREATE INDEX idx_service_fee_amendments_agreement       ON service_fee_agreement_amendments (agreement_id);
+CREATE INDEX idx_service_fee_periods_agreement          ON service_fee_monthly_periods (agreement_id);
+CREATE INDEX idx_service_fee_periods_due_date           ON service_fee_monthly_periods (due_date);
+CREATE INDEX idx_service_fee_applications_payment       ON service_fee_payment_applications (payment_id);
+CREATE INDEX idx_service_fee_applications_period        ON service_fee_payment_applications (period_id);
+CREATE INDEX idx_service_fee_confirmation_periods        ON service_fee_payment_confirmation_periods (confirmation_id);
 CREATE INDEX idx_service_reimbursement_requests_user    ON service_reimbursement_requests (user_id);
 
 
@@ -3523,6 +3622,13 @@ CREATE TABLE payment_confirmations (
 CREATE INDEX idx_payment_confirmations_recipient ON payment_confirmations (recipient_id);
 CREATE INDEX idx_payment_confirmations_status    ON payment_confirmations (status);
 CREATE INDEX idx_payment_confirmations_source    ON payment_confirmations (source_type, source_id);
+
+-- Forward-reference FK — service_fee_payment_confirmation_periods
+-- (v1.52.0) is defined earlier in this file than payment_confirmations,
+-- same pattern as share_certificates -> certificate_signing_rounds.
+ALTER TABLE service_fee_payment_confirmation_periods
+    ADD CONSTRAINT fk_service_fee_confirmation_periods_confirmation
+    FOREIGN KEY (confirmation_id) REFERENCES payment_confirmations(id);
 
 DO $$
 DECLARE

@@ -61,6 +61,10 @@ router.post('/agreements',
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
         body('start_date').isISO8601().withMessage('A valid start date is required'),
         body('notes').optional().trim(),
+        // v1.52.0 — the day of the month this agreement's fee is due;
+        // falls back to start_date's own day-of-month if omitted (see
+        // createAgreement).
+        body('payment_day').optional().isInt({ min: 1, max: 28 }).withMessage('Payment day must be between 1 and 28'),
     ],
     validateRequest,
     serviceFeesController.createAgreement
@@ -82,6 +86,7 @@ router.patch('/agreements/:id',
         // PATCH that doesn't touch the amount isn't forced to send them.
         body('reason').optional().trim(),
         body('effective_from').optional().isISO8601().withMessage('Invalid effective date'),
+        body('payment_day').optional().isInt({ min: 1, max: 28 }).withMessage('Payment day must be between 1 and 28'),
     ],
     validateRequest,
     serviceFeesController.updateAgreement
@@ -101,6 +106,56 @@ router.post('/agreements/:id/pay',
     ],
     validateRequest,
     serviceFeesController.recordPayment
+);
+
+// v1.52.0 — read-only preview of outstanding months, used to
+// pre-fill the "Settle Past Months" modal.
+router.get('/agreements/:id/outstanding-periods',
+    requirePermissions(['SERVICE_FEE_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    serviceFeesController.getOutstandingPeriods
+);
+
+// v1.52.0 — "issue to settle all past months": one lump-sum payment
+// across an editable, auto-filled per-month breakdown.
+router.post('/agreements/:id/settle',
+    requirePermissions(['SERVICE_FEE_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('breakdown').isArray({ min: 1 }).withMessage('At least one month to settle is required'),
+        body('breakdown.*.period_id').isInt({ min: 1 }),
+        body('breakdown.*.amount').isFloat({ gt: 0 }),
+        body('payment_date').optional().isISO8601().custom(notFutureDate),
+        body('notes').optional().trim(),
+        body('payment_method').isIn(['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY'])
+            .withMessage('payment_method must be CASH, BANK_TRANSFER, or MOBILE_MONEY'),
+        body('mobile_money_provider').optional().isIn(['MTN', 'AIRTEL', 'OTHER']),
+        body('external_reference').optional().trim().isLength({ max: 100 }),
+    ],
+    validateRequest,
+    serviceFeesController.settlePastMonths
+);
+
+// v1.52.0 — per-month override, a single historical month's
+// amount_due changed without touching the agreement's ongoing
+// monthly_amount.
+router.patch('/agreements/:id/periods/:periodId/override',
+    requirePermissions(['SERVICE_FEE_MANAGE']),
+    validators.idParam('id'),
+    validators.idParam('periodId'),
+    [
+        body('amount_due').isFloat({ min: 0 }).withMessage('A valid amount is required'),
+        body('reason').trim().notEmpty().withMessage('A reason is required'),
+    ],
+    validateRequest,
+    serviceFeesController.overridePeriod
+);
+
+// v1.52.0 — treasury-wide chart/summary data, across every agreement.
+router.get('/stats',
+    requirePermissions(['SERVICE_FEE_VIEW']),
+    serviceFeesController.getTreasuryStats
 );
 
 // ============================================================

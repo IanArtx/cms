@@ -704,11 +704,112 @@ const getShareholding = asyncHandler(async (req, res) => {
     sendSuccess(res, result.rows);
 });
 
+// ============================================================
+// MY PAYMENT LEDGER — every kind of payment this member has made
+// GET /api/users/me/payment-ledger?limit=5
+// v1.56.0 — feeds the bottom of the Shareholder Dashboard. Unions
+// the four ways a member pays money INTO the company (as opposed to
+// portfolioService.getPaymentsReceivedSection, which is the reverse
+// direction — money paid OUT to them):
+//   - shareholder_contributions (APPROVED only — a PENDING/REJECTED
+//     contribution was never actually paid in)
+//   - side_fund_dues, once amount_paid > 0 — currency is read off the
+//     linked transaction, since side_fund_dues itself has no
+//     currency_id (it's always the side fund's own parent account
+//     currency, set once via that transaction)
+//   - fines, once status = PAID
+//   - capital_goal_pledge_payments — the per-tranche payment record
+//     (not capital_goal_pledges.amount_settled, which is a running
+//     total, not individual payments), so a pledge paid across two
+//     tranches shows as two ledger lines with their own real dates
+// Deliberately NOT the same "contributed_by OR created_by OR
+// approved_by" query portfolioService.js uses for its Member
+// Portfolio page — that one also matches transactions a Treasurer
+// merely posted or approved for someone else, which would show up
+// as "payments this person made" when they never paid anything.
+// ============================================================
+const getMyPaymentLedger = asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 50);
+
+    const result = await query(`
+        SELECT * FROM (
+            SELECT
+                'CONTRIBUTION'          AS payment_type,
+                sc.contribution_date    AS payment_date,
+                sc.amount               AS amount,
+                c.code                  AS currency_code,
+                r.reference_code        AS reference_code,
+                'Shareholder contribution' AS description
+            FROM   shareholder_contributions sc
+            JOIN   currencies c ON c.id = sc.currency_id
+            JOIN   references_registry r ON r.id = sc.reference_id
+            WHERE  sc.user_id = $1 AND sc.status = 'APPROVED'
+
+            UNION ALL
+
+            SELECT
+                'SIDE_FUND_DUE',
+                sfd.paid_date,
+                sfd.amount_paid,
+                cur.code,
+                NULL,
+                'Side Fund dues — ' || sfd.period
+            FROM   side_fund_dues sfd
+            LEFT JOIN transactions t   ON t.id = sfd.transaction_id
+            LEFT JOIN currencies   cur ON cur.id = t.currency_id
+            WHERE  sfd.user_id = $1 AND sfd.amount_paid > 0
+
+            UNION ALL
+
+            SELECT
+                'FINE_PAYMENT',
+                f.paid_date,
+                f.amount,
+                c.code,
+                rr.reference_code,
+                'Fine cleared — ' || f.reason
+            FROM   fines f
+            JOIN   currencies c ON c.id = f.currency_id
+            JOIN   references_registry rr ON rr.id = f.reference_id
+            WHERE  f.user_id = $1 AND f.status = 'PAID'
+
+            UNION ALL
+
+            SELECT
+                'CAPITAL_PLEDGE',
+                pp.approved_at::date,
+                pp.amount,
+                cur.code,
+                rr.reference_code,
+                'Capital pledge — ' || g.title
+            FROM   capital_goal_pledge_payments pp
+            JOIN   capital_goal_pledges p ON p.id = pp.pledge_id
+            JOIN   currencies cur ON cur.id = p.currency_id
+            JOIN   references_registry rr ON rr.id = p.reference_id
+            JOIN   capital_goal_monthly_calls mc ON mc.id = p.monthly_call_id
+            JOIN   capital_goals g ON g.id = mc.capital_goal_id
+            WHERE  p.user_id = $1
+        ) combined
+        WHERE  payment_date IS NOT NULL
+        ORDER  BY payment_date DESC
+        LIMIT  $2
+    `, [req.user.id, limit]);
+
+    sendSuccess(res, result.rows.map(r => ({
+        paymentType:   r.payment_type,
+        paymentDate:   r.payment_date,
+        amount:        parseFloat(r.amount),
+        currencyCode:  r.currency_code,
+        referenceCode: r.reference_code,
+        description:   r.description,
+    })));
+});
+
 module.exports = {
     getMyProfile, updateMyProfile, updateProfilePhoto,
     getAllUsers, getUserById, getMemberPortfolio, deactivateUser,
     getDeletionCheck, deleteUserPermanently,
     assignRole, revokeRole, getRoleRequests, getMyRoleRequest,
-    getAllRoles, getShareholding,
+    getAllRoles, getShareholding, getMyPaymentLedger,
     updateSignature, getMembershipAgreement, giveConsent,
 };

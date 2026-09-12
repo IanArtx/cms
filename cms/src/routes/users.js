@@ -46,6 +46,12 @@ router.patch('/me/signature',
 // rather than opened up to everyone.
 router.get('/shareholding',         requireAssignedRole, requireConsent, blockFinanceRestricted, usersController.getShareholding);
 
+// This member's own unified payment ledger (v1.56.0) — every kind of
+// payment they've personally made into the company. Self-scoped (no
+// :id, always req.user.id), but still gated the same as the rest of
+// this file's financial data since it's money information.
+router.get('/me/payment-ledger',    requireAssignedRole, requireConsent, blockFinanceRestricted, usersController.getMyPaymentLedger);
+
 router.patch('/me',
     [
         body('first_name').optional().trim().notEmpty().isLength({ max: 100 }),

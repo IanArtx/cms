@@ -212,6 +212,37 @@ const getPledgesForMonthlyCall = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// PENDING PLEDGES — company-wide review queue (v1.56.1)
+// GET /api/capital-goals/pending-pledges
+// Every PENDING or PARTIAL pledge across every monthly call, not
+// scoped to one call — feeds the General Dashboard's Pending
+// Approvals feed. getPledgesForMonthlyCall above already exists but
+// requires knowing which call to look at first; a Treasurer/Director
+// opening the dashboard wants "what's waiting on me across the whole
+// system" without picking a call first.
+// ============================================================
+const getPendingPledges = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT p.id, p.pledged_amount, p.amount_settled, p.status, p.iteration,
+               p.submitted_at, rr.reference_code,
+               u.first_name || ' ' || u.last_name AS member_name,
+               cur.code AS currency_code, cur.symbol AS currency_symbol,
+               mc.id AS monthly_call_id, mc.period,
+               g.id AS goal_id, g.title AS goal_title, g.goal_type
+        FROM   capital_goal_pledges p
+        JOIN   references_registry rr        ON rr.id = p.reference_id
+        JOIN   users u                        ON u.id = p.user_id
+        JOIN   currencies cur                 ON cur.id = p.currency_id
+        JOIN   capital_goal_monthly_calls mc  ON mc.id = p.monthly_call_id
+        JOIN   capital_goals g                ON g.id = mc.capital_goal_id
+        WHERE  p.status IN ('PENDING', 'PARTIAL')
+        ORDER  BY p.submitted_at ASC
+        LIMIT  50
+    `);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================
 // ANONYMOUS STATUS PAGE — one colored cell per shareholder, no names,
 // no amounts. Every active shareholder appears exactly once, even if
 // they haven't pledged at all yet (status NOT_RESPONDED).
@@ -357,6 +388,7 @@ module.exports = {
     approvePledgePayment,
     getMyPledges,
     getPledgesForMonthlyCall,
+    getPendingPledges,
     getMonthlyCallStatus,
     getGoalContributionStats,
     listMonthlyCallsForGoal,

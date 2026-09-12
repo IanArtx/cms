@@ -1,0 +1,73 @@
+flowchart TD
+    subgraph A["1. The request — 8 sections, ShareholderDashboard.jsx only"]
+        A1["Double-line inflow/outflow chart\n(Primary + all Secondary accounts)"]
+        A2["Shareholding % — kept as-is"]
+        A3["Upcoming events tile —\ncount + next event's own details"]
+        A4["Primary Goal tile — status,\nclickable through to current pledge"]
+        A5["Outstanding balances —\nfines + Side Fund + pledges, up to 5"]
+        A6["Top banner — pledge made,\nunpaid, due date before fines"]
+        A7["Investment Performance +\nnew input-vs-return chart"]
+        A8["Bottom ledger — every kind of\npayment made, up to 5"]
+    end
+
+    subgraph B["2. Three new backend endpoints (only what didn't already exist)"]
+        B1["GET /accounts/inflow-outflow-trend\nFINANCE_VIEW_ALL, same gate as /accounts/summary\nmonthly CREDIT/DEBIT, Primary's own currency only"]
+        B2["GET /investments/input-vs-return\nINVESTMENT_VIEW, same UNION-with-MMF\npattern as performance-summary"]
+        B3["GET /users/me/payment-ledger\nself-scoped, same gate as /users/shareholding\nUNIONs contributions + side fund + fines + pledge payments"]
+    end
+
+    subgraph C["3. Reused existing endpoints — no backend change needed"]
+        C1["capitalGoalCallsAPI.getMyPledges()\n-> my_pledges + open_calls"]
+        C2["capitalGoalsAPI.getFineSettings()\n-> grace_days"]
+        C3["finesAPI.getMine()"]
+        C4["sideFundAPI.getMyDues()"]
+        C5["capitalGoalsAPI.getAll({status:'ACTIVE'})\nfiltered client-side to goal_type='PRIMARY'"]
+    end
+
+    subgraph D["4. Client-side composition (no server round-trip)"]
+        D1["Pending Pledge Banner =\nnearest PENDING/PARTIAL pledge's\niteration deadline + grace_days"]
+        D2["Outstanding Balances =\nfines(OUTSTANDING) + dues(PENDING/PARTIAL/DEFAULTED)\n+ pledges(PENDING/PARTIAL), sorted, capped at 5"]
+        D3["Primary Goal Card =\ngoal.progress_status + percent_of_target\n+ link to /capital-goals/my-calls"]
+    end
+
+    subgraph E["5. Rendered dashboard (ShareholderDashboard.jsx)"]
+        E1["PendingPledgeBanner — top of page"]
+        E2["Stat tiles — incl. next-event subtitle"]
+        E3["InflowOutflowChart — full width"]
+        E4["PrimaryGoalCard — right column\n(replaces old open-call-only card)"]
+        E5["PerformanceCard + input-vs-return bar chart"]
+        E6["OutstandingBalancesCard — right column"]
+        E7["PaymentLedgerCard — bottom, full width"]
+    end
+
+    A1 --> B1 --> E3
+    A7 --> B2 --> E5
+    A8 --> B3 --> E7
+    A3 --> E2
+    A2 --> E2
+
+    A6 --> C1
+    A6 --> C2
+    C1 --> D1
+    C2 --> D1
+    D1 --> E1
+
+    A5 --> C1
+    A5 --> C3
+    A5 --> C4
+    C1 --> D2
+    C3 --> D2
+    C4 --> D2
+    D2 --> E6
+
+    A4 --> C5
+    C5 --> D3
+    D3 --> E4
+
+    style B1 fill:#dbeafe,stroke:#2563eb
+    style B2 fill:#dbeafe,stroke:#2563eb
+    style B3 fill:#dbeafe,stroke:#2563eb
+    style D1 fill:#fef3c7,stroke:#d97706
+    style D2 fill:#fef3c7,stroke:#d97706
+    style D3 fill:#fef3c7,stroke:#d97706
+    style E1 fill:#fee2e2,stroke:#dc2626

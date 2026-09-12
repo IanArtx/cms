@@ -1,0 +1,64 @@
+flowchart TD
+    subgraph A["1. Who sees which dashboard (DashboardPage.jsx)"]
+        A1["User's roles"] --> A2{"Holds Shareholder role?"}
+        A2 -- "No" --> A3["General Dashboard only\n(no toggle)"]
+        A2 -- "Yes" --> A4{"Holds another role too?\n(Admin/Director/Treasurer/etc)"}
+        A4 -- "No" --> A5["Shareholder Dashboard only\n(no toggle)"]
+        A4 -- "Yes" --> A6["Shareholder Dashboard BY DEFAULT\n+ toggle to General Dashboard"]
+    end
+
+    subgraph B["2. Chart restyle — both dashboards"]
+        B1["Old: LineChart, dotted,\ndot markers"] --> B2["New: AreaChart, gradient fill,\nno dot markers"]
+        B2 --> B3["Matches AccountsPage.jsx's\n'Balance Over Time' chart exactly"]
+    end
+
+    subgraph C["3. General Dashboard — full rework"]
+        C1["Kept, restyled: account balances,\nrecent transactions, upcoming events"]
+        C2["NEW: Company-wide inflow/outflow\n(reuses accountsAPI.getInflowOutflowTrend)"]
+        C3["NEW: Pending Approvals feed"]
+        C4["NEW: Capital Goals overview\n(every ACTIVE goal, not just nearest)"]
+        C5["NEW: Money Owed To/By\nthe Company snapshot"]
+    end
+
+    subgraph D["4. Pending Approvals — sources (each gated by its OWN permission)"]
+        D1["Role requests\nROLE_ASSIGN"]
+        D2["Investments pending\nINVESTMENT_APPROVE"]
+        D3["Grants pending\nGRANT_APPROVE"]
+        D4["Loans received/given pending\nLOAN_APPROVE"]
+        D5["Service Fee payment requests\n+ advances — SERVICE_FEE_MANAGE"]
+        D6["Document/certificate signatures\nself-scoped, no extra gate"]
+        D7["NEW ENDPOINT:\nGET /capital-goals/pending-pledges\nCAPITAL_GOAL_MANAGE"]
+    end
+
+    subgraph E["5. Money Owed — sources (each its own currency, never blended)"]
+        E1["Side Fund arrears\nSIDE_FUND_VIEW"]
+        E2["Fines outstanding\nFINE_VIEW"]
+        E3["Service Fee arrears\nSERVICE_FEE_VIEW"]
+        E4["Loans outstanding_principal\nLOAN_VIEW"]
+        E5["Grants amount_remaining\nGRANT_VIEW"]
+    end
+
+    F["6. Local dev version display fix\ncms-frontend/.env now sets\nREACT_APP_VERSION=1.56.1\n(was silently falling back to\nSidebar.jsx's hardcoded '1.9.0')"]
+
+    A6 --> B2
+    A3 --> B2
+    B3 --> C2
+    C2 --> C3
+    C3 --> D1
+    C3 --> D2
+    C3 --> D3
+    C3 --> D4
+    C3 --> D5
+    C3 --> D6
+    C3 --> D7
+    C3 --> C4
+    C4 --> C5
+    C5 --> E1
+    C5 --> E2
+    C5 --> E3
+    C5 --> E4
+    C5 --> E5
+
+    style D7 fill:#dbeafe,stroke:#2563eb
+    style F fill:#fef3c7,stroke:#d97706
+    style A6 fill:#ecfdf5,stroke:#059669

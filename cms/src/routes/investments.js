@@ -88,6 +88,13 @@ router.get('/performance-summary',
     investmentsController.getPerformanceSummary
 );
 
+// Input-vs-return chart data (v1.56.0) — must also stay declared
+// before GET /:id for the same reason as performance-summary above.
+router.get('/input-vs-return',
+    requireFinancialAccess('INVESTMENT_VIEW'),
+    investmentsController.getInputVsReturn
+);
+
 // ============================================================
 // GET SINGLE INVESTMENT
 // GET /api/investments/:id

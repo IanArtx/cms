@@ -1300,6 +1300,52 @@ const getPerformanceSummary = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// INPUT vs RETURN — per-investment chart data
+// GET /api/investments/input-vs-return
+// v1.56.0 — feeds the Shareholder Dashboard's "Investment
+// Performance" section addition: a bar chart of amount invested vs
+// amount returned, per investment (and per MMF sub-account, same
+// UNION pattern as getPerformanceSummary above). Same
+// ACTIVE/COMPLETED + funded-only filter as performance-summary, so
+// the two sections always agree on which investments are "live"
+// enough to chart. Ordered by amount invested, largest first, and
+// capped at 10 so the chart stays readable.
+// ============================================================
+const getInputVsReturn = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT id, name, investment_type, invested, returned FROM (
+            SELECT
+                i.id, i.name, 'INVESTMENT' AS investment_type,
+                i.actual_expenditure AS invested,
+                i.total_returns      AS returned
+            FROM investments i
+            WHERE i.status IN ('ACTIVE', 'COMPLETED')
+            AND   i.actual_expenditure > 0
+
+            UNION ALL
+
+            SELECT
+                m.id, m.name, 'MMF' AS investment_type,
+                m.total_principal_in AS invested,
+                (m.total_interest - m.total_management_fees) AS returned
+            FROM mmf_accounts m
+            WHERE m.status IN ('ACTIVE', 'CLOSED')
+            AND   m.total_principal_in > 0
+        ) combined
+        ORDER BY invested DESC
+        LIMIT 10
+    `);
+
+    sendSuccess(res, result.rows.map(r => ({
+        id:              r.id,
+        name:            r.name,
+        investmentType:  r.investment_type,
+        invested:        parseFloat(r.invested),
+        returned:        parseFloat(r.returned),
+    })));
+});
+
+// ============================================================
 // GET SINGLE INVESTMENT WITH FULL DETAILS
 // GET /api/investments/:id
 // ============================================================
@@ -2288,5 +2334,6 @@ module.exports = {
     getAllInvestments,
     getInvestmentById,
     getPerformanceSummary,
+    getInputVsReturn,
     getProjectById,
 };

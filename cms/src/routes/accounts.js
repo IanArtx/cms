@@ -100,6 +100,12 @@ router.patch('/currencies/:id',
 // financial data (see requireFinancialAccess's own doc comment).
 router.get('/summary', requireFinancialAccess('FINANCE_VIEW_ALL'), accountsController.getAccountSummary);
 
+// Monthly inflow/outflow trend for Primary + Secondary accounts —
+// v1.56.0, feeds the Shareholder Dashboard's double-line chart. Same
+// permission as /summary since it's the same class of whole-company
+// balance information.
+router.get('/inflow-outflow-trend', requireFinancialAccess('FINANCE_VIEW_ALL'), accountsController.getInflowOutflowTrend);
+
 // ============================================================
 // PRIMARY ACCOUNT SETUP (one-time)
 // ============================================================

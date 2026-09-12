@@ -656,6 +656,61 @@ const getAccountSummary = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// INFLOW / OUTFLOW MONTHLY TREND — Primary + Secondary accounts
+// GET /api/accounts/inflow-outflow-trend?months=12
+// Powers the Shareholder Dashboard's double-line inflow/outflow
+// chart (v1.56.0). Only counts transactions posted in the same
+// currency as the Primary account — summing across different
+// currencies without conversion would misstate the totals, and
+// every other whole-company figure already shown on this dashboard
+// (total contributions, account overview) makes the same single-
+// base-currency assumption. REVERSAL_CREDIT/REVERSAL_DEBIT are
+// folded into the opposite side of what they reverse, so a reversed
+// transaction nets back out instead of being double-counted.
+// ============================================================
+const getInflowOutflowTrend = asyncHandler(async (req, res) => {
+    const months = Math.min(Math.max(parseInt(req.query.months) || 12, 1), 36);
+
+    const currencyResult = await query(`
+        SELECT a.currency_id, c.code AS currency_code
+        FROM   accounts a
+        JOIN   currencies c ON c.id = a.currency_id
+        WHERE  a.account_type = 'PRIMARY' AND a.is_active = TRUE
+        LIMIT  1
+    `);
+    const baseCurrency = currencyResult.rows[0] || null;
+
+    if (!baseCurrency) {
+        return sendSuccess(res, { currencyCode: null, trend: [] });
+    }
+
+    const result = await query(`
+        SELECT
+            TO_CHAR(t.value_date, 'YYYY-MM') AS period,
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('CREDIT', 'REVERSAL_DEBIT')
+                THEN t.amount ELSE 0 END), 0) AS inflow,
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('DEBIT', 'REVERSAL_CREDIT')
+                THEN t.amount ELSE 0 END), 0) AS outflow
+        FROM   transactions t
+        JOIN   accounts a ON a.id = t.account_id
+        WHERE  a.account_type IN ('PRIMARY', 'SECONDARY')
+        AND    t.currency_id = $1
+        AND    t.value_date >= (CURRENT_DATE - ($2 || ' months')::INTERVAL)
+        GROUP  BY period
+        ORDER  BY period ASC
+    `, [baseCurrency.currency_id, months]);
+
+    sendSuccess(res, {
+        currencyCode: baseCurrency.currency_code,
+        trend: result.rows.map(r => ({
+            period:  r.period,
+            inflow:  parseFloat(r.inflow),
+            outflow: parseFloat(r.outflow),
+        })),
+    });
+});
+
+// ============================================================
 // GET ALL CURRENCIES
 // GET /api/accounts/currencies
 // ============================================================
@@ -750,6 +805,7 @@ module.exports = {
     createSavingsAccount,
     updateFloorLimit,
     getAccountSummary,
+    getInflowOutflowTrend,
     getCurrencies,
     addCurrency,
     updateCurrency,

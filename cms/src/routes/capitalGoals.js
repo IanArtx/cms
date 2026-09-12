@@ -196,6 +196,19 @@ router.patch('/settings/tracking',
 );
 
 // ============================================================
+// PENDING PLEDGES — company-wide review queue (v1.56.1)
+// GET /api/capital-goals/pending-pledges
+// Feeds the General Dashboard's Pending Approvals section. Must stay
+// declared before GET /:id below, for the same reason /fine-settings
+// and /settings/tracking above do — otherwise Express would treat
+// "pending-pledges" as an :id value.
+// ============================================================
+router.get('/pending-pledges',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    capitalGoalCallsController.getPendingPledges
+);
+
+// ============================================================
 // GET SINGLE CAPITAL GOAL WITH FULL PROGRESS BREAKDOWN
 // GET /api/capital-goals/:id
 // ============================================================

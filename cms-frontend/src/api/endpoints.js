@@ -46,6 +46,7 @@ export const usersAPI = {
     getMyRoleRequest: ()        => api.get('/users/me/role-request'),
     getAllRoles:      ()         => api.get('/users/roles'),
     getShareholding: ()         => api.get('/users/shareholding'),
+    getMyPaymentLedger: (limit) => api.get('/users/me/payment-ledger', { params: { limit } }), // v1.56.0
     getShareholders:  ()       => api.get('/users/shareholders'),
     // v1.23.0 — digital consent + signature (Section 4.29)
     updateSignature:         (dataUrl) => api.patch('/users/me/signature', { signature_data_url: dataUrl }),
@@ -68,6 +69,8 @@ export const categoriesAPI = {
 export const accountsAPI = {
     getAll:           ()         => api.get('/accounts'),
     getSummary:       ()         => api.get('/accounts/summary'),
+    // v1.56.0 — Shareholder Dashboard inflow/outflow chart
+    getInflowOutflowTrend: (months) => api.get('/accounts/inflow-outflow-trend', { params: { months } }),
     getById:          (id)       => api.get(`/accounts/${id}`),
     createPrimary:    (data)     => api.post('/accounts/primary', data),
     createSecondary:  (data)     => api.post('/accounts', data),
@@ -168,6 +171,7 @@ export const investmentsAPI = {
         api.patch(`/investments/${id}/coupons/${couponId}/pay`, data),
     recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
+    getInputVsReturn:      () => api.get('/investments/input-vs-return'), // v1.56.0
     // v1.40.0
     updateCouponSchedule:     (id, data) => api.patch(`/investments/${id}/coupon-schedule`, data),
     requestTermination:       (id, data) => api.post(`/investments/${id}/terminate/request`, data),
@@ -232,6 +236,7 @@ export const capitalGoalCallsAPI = {
     getMonthlyCallStatus:     (monthlyCallId)  => api.get(`/capital-goals/monthly-calls/${monthlyCallId}/status`),
     listMonthlyCallsForGoal:  (goalId)         => api.get(`/capital-goals/${goalId}/monthly-calls`),
     getGoalContributionStats: (goalId)         => api.get(`/capital-goals/${goalId}/stats`),
+    getPendingPledges:        ()               => api.get('/capital-goals/pending-pledges'), // v1.56.1
 };
 
 // ============================================================

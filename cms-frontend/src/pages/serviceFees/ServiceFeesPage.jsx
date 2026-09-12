@@ -27,7 +27,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import useChartTheme from '../../hooks/useChartTheme';
-import { PlusIcon, CheckIcon, XMarkIcon, BanknotesIcon, ArrowDownTrayIcon, PencilIcon, NoSymbolIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, CheckIcon, XMarkIcon, BanknotesIcon, ArrowDownTrayIcon, PencilIcon, NoSymbolIcon, HandRaisedIcon, ClockIcon } from '@heroicons/react/24/outline';
 
 const SERVICE_FEE_CATEGORY_HINT = 'Service Fees';
 
@@ -653,6 +653,132 @@ export const OverridePeriodModal = ({ isOpen, agreement, period, onClose, onSucc
 };
 
 // ============================================================
+// EXCLUDE MONTH MODAL (Treasurer/Admin, v1.54.0)
+// Cancels a month's obligation entirely — separate from
+// OverridePeriodModal above, which changes what a month is WORTH.
+// An excluded month is never counted as outstanding/overdue, but is
+// also deliberately never shown as PAID, since no money moved.
+// Notifies the agreement holder once submitted.
+// ============================================================
+export const ExcludePeriodModal = ({ isOpen, agreement, period, onClose, onSuccess }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen) { setReason(''); setError(null); }
+    }, [isOpen]);
+
+    if (!isOpen || !agreement || !period) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.excludePeriod(agreement.id, period.id, { reason });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Exclude {period.period}</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {agreement.user_name} won't owe anything for {period.period}, and it won't count toward their
+                        outstanding balance or overdue reminders — but it also won't show as paid, since no money
+                        actually moved. They'll be notified. This can be reversed later.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={3} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Excluding...' : 'Exclude Month'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// INCLUDE (UN-EXCLUDE) MONTH MODAL (Treasurer/Admin, v1.54.0)
+// Reverses ExcludePeriodModal above — restores a previously excluded
+// month to a normal obligation. Also notifies the agreement holder.
+// ============================================================
+export const IncludePeriodModal = ({ isOpen, agreement, period, onClose, onSuccess }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen) { setReason(''); setError(null); }
+    }, [isOpen]);
+
+    if (!isOpen || !agreement || !period) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.includePeriod(agreement.id, period.id, { reason });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Restore {period.period}</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {period.period} will go back to counting toward {agreement.user_name}'s obligations
+                        (its exact status will be recomputed from what's already been paid for it). They'll be notified.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={3} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Restoring...' : 'Restore Month'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // REQUEST REIMBURSEMENT MODAL (self-service)
 // ============================================================
 const RequestReimbursementModal = ({ isOpen, onClose, onSuccess, currencies, categories }) => {
@@ -875,6 +1001,561 @@ const RejectReimbursementModal = ({ isOpen, reimbursement, onClose, onSuccess })
 };
 
 // ============================================================
+// REQUEST PAYMENT MODAL (self-service, v1.53.0)
+// "request payment for any unpaid month or a couple of months unpaid
+// in a lumpsum" — the person picks which of their own outstanding
+// months to request, always for that month's own full remaining
+// balance (never an arbitrary figure — that's still the Treasurer's
+// call at approval). Uses the periods already loaded onto the
+// agreement itself (from getMyAgreement) rather than the Treasurer-only
+// outstanding-periods endpoint, since a plain staffer without
+// SERVICE_FEE_VIEW can't call that one.
+// ============================================================
+const RequestPaymentModal = ({ isOpen, agreement, onClose, onSuccess }) => {
+    const [selected, setSelected] = useState({});
+    const [notes, setNotes] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const outstanding = (agreement?.periods || []).filter(p => p.status === 'UNPAID' || p.status === 'PARTIAL');
+
+    useEffect(() => {
+        if (isOpen) { setSelected({}); setNotes(''); setError(null); }
+    }, [isOpen]);
+
+    if (!isOpen || !agreement) return null;
+
+    const toggle = (periodId) => setSelected(prev => ({ ...prev, [periodId]: !prev[periodId] }));
+    const selectedIds = Object.keys(selected).filter(id => selected[id]);
+    const total = outstanding
+        .filter(p => selected[p.id])
+        .reduce((s, p) => s + Math.max(0, parseFloat(p.amount_due) - parseFloat(p.amount_paid)), 0);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (selectedIds.length === 0) {
+            setError('Select at least one month to request payment for');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.requestPayment(agreement.id, {
+                period_ids: selectedIds.map(id => parseInt(id)),
+                notes: notes || undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 max-h-screen overflow-y-auto">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Request Payment</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Pick one or more unpaid months — a Treasurer will review and approve before it's paid out.
+                        Selecting several months requests them together as one lump sum.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    {outstanding.length === 0 ? (
+                        <p className="text-sm text-gray-400 text-center py-6">You have no unpaid or partially paid months.</p>
+                    ) : (
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="space-y-2 max-h-56 overflow-y-auto border border-gray-100 rounded-lg p-3">
+                                {outstanding.map(p => {
+                                    const remaining = Math.max(0, parseFloat(p.amount_due) - parseFloat(p.amount_paid));
+                                    return (
+                                        <label key={p.id} className="flex items-center justify-between gap-3 text-sm cursor-pointer">
+                                            <span className="flex items-center gap-2">
+                                                <input type="checkbox" checked={!!selected[p.id]} onChange={() => toggle(p.id)} />
+                                                <span>
+                                                    <span className="font-medium text-gray-900">{p.period}</span>
+                                                    <span className="text-xs text-gray-400 block">{p.status === 'PARTIAL' ? 'Partially paid' : 'Unpaid'}</span>
+                                                </span>
+                                            </span>
+                                            <span className="font-medium text-gray-700">{remaining.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            <div className="flex justify-between items-center text-sm font-semibold text-gray-900 border-t border-gray-100 pt-3">
+                                <span>Total Requested</span>
+                                <span>{total.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div>
+                                <label className="label">Notes <span className="text-gray-400 font-normal">(optional)</span></label>
+                                <textarea className="input" rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                <button type="submit" disabled={loading || selectedIds.length === 0} className="btn-primary">
+                                    {loading ? 'Submitting...' : 'Submit Request'}
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// REQUEST ADVANCE MODAL (self-service, v1.53.0)
+// Once approved and its disbursement confirmed received, this is
+// recovered in full from the very next unpaid month(s), automatically
+// — the recovery breakdown is decided (and still editable) by the
+// Treasurer at approval time, not by the person requesting it.
+// ============================================================
+const RequestAdvanceModal = ({ isOpen, agreement, onClose, onSuccess }) => {
+    const [amount, setAmount] = useState('');
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen) { setAmount(''); setReason(''); setError(null); }
+    }, [isOpen]);
+
+    if (!isOpen || !agreement) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.requestAdvance(agreement.id, { amount: parseFloat(amount), reason });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Request Advance</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        If approved and you confirm receiving it, this amount is automatically recovered from your
+                        next month(s) of service fee — you'll see exactly which months when it's approved.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Amount *</label>
+                            <input type="number" className="input" min="0.01" step="0.01"
+                                value={amount} onChange={e => setAmount(e.target.value)} required />
+                        </div>
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={3} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Submitting...' : 'Submit Request'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// SHARED — HOW WAS/WILL THIS BE PAID picker, factored out of
+// RecordPaymentModal/SettlePastMonthsModal so the two new Treasurer
+// approval modals below (payment requests, advances) don't repeat it
+// a third and fourth time.
+// ============================================================
+const PaymentMethodFields = ({ form, setForm }) => (
+    <>
+        <div>
+            <label className="label">How was it paid? *</label>
+            <div className="flex gap-2">
+                {['CASH', 'BANK_TRANSFER', 'MOBILE_MONEY'].map(m => (
+                    <button key={m} type="button"
+                        onClick={() => setForm(p => ({ ...p, payment_method: m, mobile_money_provider: '', external_reference: '' }))}
+                        className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                            form.payment_method === m ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                        }`}>
+                        {m === 'CASH' ? 'Cash' : m === 'BANK_TRANSFER' ? 'Bank Transfer' : 'Mobile Money'}
+                    </button>
+                ))}
+            </div>
+        </div>
+        {form.payment_method === 'MOBILE_MONEY' && (
+            <div>
+                <label className="label">Provider *</label>
+                <select className="input" value={form.mobile_money_provider}
+                    onChange={e => setForm(p => ({ ...p, mobile_money_provider: e.target.value }))} required>
+                    <option value="">Select provider...</option>
+                    <option value="MTN">MTN</option>
+                    <option value="AIRTEL">Airtel</option>
+                    <option value="OTHER">Other</option>
+                </select>
+            </div>
+        )}
+        {form.payment_method !== 'CASH' && (
+            <div>
+                <label className="label">Transaction ID *</label>
+                <input type="text" className="input" value={form.external_reference}
+                    onChange={e => setForm(p => ({ ...p, external_reference: e.target.value }))}
+                    placeholder="The reference/transaction ID from the transfer or mobile money receipt" required />
+            </div>
+        )}
+    </>
+);
+
+// ============================================================
+// APPROVE PAYMENT REQUEST MODAL (Treasurer, v1.53.0)
+// breakdown is auto-filled from the request's own periods (each
+// month's own requested amount) but editable before submitting — same
+// convention as Settle Past Months.
+// ============================================================
+export const ApprovePaymentRequestModal = ({ isOpen, request, onClose, onSuccess }) => {
+    const [amounts, setAmounts] = useState({});
+    const [form, setForm] = useState({
+        payment_date: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '',
+    });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && request) {
+            setError(null);
+            setForm({ payment_date: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '' });
+            const initial = {};
+            (request.periods || []).forEach(p => { initial[p.period_id] = String(parseFloat(p.amount).toFixed(2)); });
+            setAmounts(initial);
+        }
+    }, [isOpen, request]);
+
+    if (!isOpen || !request) return null;
+
+    const total = Object.values(amounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const breakdown = (request.periods || [])
+            .map(p => ({ period_id: p.period_id, amount: parseFloat(amounts[p.period_id] || 0) }))
+            .filter(l => l.amount > 0);
+        if (breakdown.length === 0) {
+            setError('At least one month with a positive amount is required');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.approvePaymentRequest(request.id, {
+                breakdown,
+                payment_date: form.payment_date || undefined,
+                payment_method: form.payment_method,
+                mobile_money_provider: form.payment_method === 'MOBILE_MONEY' ? form.mobile_money_provider : undefined,
+                external_reference: form.payment_method !== 'CASH' ? form.external_reference : undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 max-h-screen overflow-y-auto">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Approve Payment Request</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        {request.user_name} — each month is auto-filled from what they requested, but you can edit any of them before approving.
+                    </p>
+                    <p className="text-xs text-amber-600 mb-4">
+                        This creates a pending entry — {request.user_name} must confirm receipt before it posts as a real transaction.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="space-y-2 max-h-56 overflow-y-auto border border-gray-100 rounded-lg p-3">
+                            {(request.periods || []).map(p => (
+                                <div key={p.period_id} className="flex items-center justify-between gap-3 text-sm">
+                                    <span className="font-medium text-gray-900">{p.period}</span>
+                                    <input type="number" className="input w-28 text-right" min="0" step="0.01"
+                                        value={amounts[p.period_id] ?? ''}
+                                        onChange={e => setAmounts(prev => ({ ...prev, [p.period_id]: e.target.value }))} />
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex justify-between items-center text-sm font-semibold text-gray-900 border-t border-gray-100 pt-3">
+                            <span>Total</span>
+                            <span>{total.toLocaleString('en-US', { maximumFractionDigits: 2 })} {request.currency_code}</span>
+                        </div>
+                        <div>
+                            <label className="label">Payment Date</label>
+                            <input type="date" className="input" value={form.payment_date}
+                                max={new Date().toISOString().slice(0, 10)}
+                                onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))} />
+                        </div>
+                        <PaymentMethodFields form={form} setForm={setForm} />
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading || total <= 0} className="btn-primary">
+                                {loading ? 'Approving...' : 'Approve'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// APPROVE ADVANCE MODAL (Treasurer, v1.53.0)
+// Fetches the auto-computed recovery schedule (oldest-future-first)
+// on open, shows it fully editable before approving — same "auto-
+// filled, editable" convention used throughout this module.
+// ============================================================
+export const ApproveAdvanceModal = ({ isOpen, advance, onClose, onSuccess }) => {
+    const [schedule, setSchedule] = useState([]);
+    const [amounts, setAmounts] = useState({});
+    const [loadingSchedule, setLoadingSchedule] = useState(false);
+    const [form, setForm] = useState({
+        payment_date: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '',
+    });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (isOpen && advance) {
+            setError(null);
+            setForm({ payment_date: '', payment_method: 'CASH', mobile_money_provider: '', external_reference: '' });
+            setLoadingSchedule(true);
+            serviceFeesAPI.getAdvanceRecoveryPreview(advance.id)
+                .then(res => {
+                    const rows = res.data.data?.breakdown || [];
+                    setSchedule(rows);
+                    const initial = {};
+                    rows.forEach(r => { initial[r.period_id] = String(parseFloat(r.amount).toFixed(2)); });
+                    setAmounts(initial);
+                })
+                .catch(err => setError(getErrorMessage(err)))
+                .finally(() => setLoadingSchedule(false));
+        }
+    }, [isOpen, advance]);
+
+    if (!isOpen || !advance) return null;
+
+    const total = Object.values(amounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const recovery_breakdown = schedule
+            .map(p => ({ period_id: p.period_id, amount: parseFloat(amounts[p.period_id] || 0) }))
+            .filter(l => l.amount > 0);
+        if (recovery_breakdown.length === 0) {
+            setError('At least one recovery month with a positive amount is required');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.approveAdvance(advance.id, {
+                recovery_breakdown,
+                payment_date: form.payment_date || undefined,
+                payment_method: form.payment_method,
+                mobile_money_provider: form.payment_method === 'MOBILE_MONEY' ? form.mobile_money_provider : undefined,
+                external_reference: form.payment_method !== 'CASH' ? form.external_reference : undefined,
+            });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 max-h-screen overflow-y-auto">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Approve Advance</h2>
+                    <div className="bg-gray-50 rounded-lg p-3 mb-4">
+                        <p className="text-sm font-medium text-gray-900">{advance.user_name}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">{advance.reason}</p>
+                        <p className="text-sm font-bold text-primary-700 mt-2">
+                            {parseFloat(advance.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                        </p>
+                    </div>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Recovered automatically from the month(s) below, oldest first, once {advance.user_name} confirms
+                        receiving this advance — auto-computed, but you can edit any month before approving.
+                    </p>
+                    <p className="text-xs text-amber-600 mb-4">
+                        This creates a pending entry — {advance.user_name} must confirm receipt before it posts as a real transaction.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    {loadingSchedule ? (
+                        <p className="text-sm text-gray-400 text-center py-6">Computing recovery schedule...</p>
+                    ) : (
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="space-y-2 max-h-56 overflow-y-auto border border-gray-100 rounded-lg p-3">
+                                {schedule.map(p => (
+                                    <div key={p.period_id} className="flex items-center justify-between gap-3 text-sm">
+                                        <span className="font-medium text-gray-900">{p.period}</span>
+                                        <input type="number" className="input w-28 text-right" min="0" step="0.01"
+                                            value={amounts[p.period_id] ?? ''}
+                                            onChange={e => setAmounts(prev => ({ ...prev, [p.period_id]: e.target.value }))} />
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex justify-between items-center text-sm font-semibold text-gray-900 border-t border-gray-100 pt-3">
+                                <span>Total To Recover</span>
+                                <span>{total.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div>
+                                <label className="label">Payment Date</label>
+                                <input type="date" className="input" value={form.payment_date}
+                                    max={new Date().toISOString().slice(0, 10)}
+                                    onChange={e => setForm(p => ({ ...p, payment_date: e.target.value }))} />
+                            </div>
+                            <PaymentMethodFields form={form} setForm={setForm} />
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                                <button type="submit" disabled={loading} className="btn-primary">
+                                    {loading ? 'Approving...' : 'Approve'}
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// REJECT PAYMENT REQUEST / REJECT ADVANCE MODALS (Treasurer, v1.53.0)
+// Same reason-only shape as RejectReimbursementModal above; kept as
+// two thin components (rather than one generic one) so each calls its
+// own distinct API endpoint without an extra "which kind" prop.
+// ============================================================
+export const RejectPaymentRequestModal = ({ isOpen, request, onClose, onSuccess }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen || !request) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.rejectPaymentRequest(request.id, { review_notes: reason });
+            onSuccess();
+            onClose();
+            setReason('');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">Reject Payment Request</h2>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={3} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-danger">
+                                {loading ? 'Rejecting...' : 'Reject'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export const RejectAdvanceModal = ({ isOpen, advance, onClose, onSuccess }) => {
+    const [reason, setReason] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen || !advance) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await serviceFeesAPI.rejectAdvance(advance.id, { review_notes: reason });
+            onSuccess();
+            onClose();
+            setReason('');
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">Reject Advance Request</h2>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Reason *</label>
+                            <textarea className="input" rows={3} value={reason}
+                                onChange={e => setReason(e.target.value)} required />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-danger">
+                                {loading ? 'Rejecting...' : 'Reject'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // PERSONAL SERVICE FEE CHART (v1.52.0) — "My Service Fee" tab.
 // Shows this person's own monthly paid/outstanding breakdown and a
 // small stats summary (paid/unpaid months, most/least paid, total
@@ -886,16 +1567,21 @@ const ServiceFeePersonalChart = ({ agreement }) => {
     const stats = agreement?.stats || null;
     if (periods.length === 0) return null;
 
+    // v1.54.0 — an EXCLUDED month must never show as "outstanding"
+    // (nothing is owed for it), so its bar is a distinct neutral
+    // segment instead of red — and, being excluded, it also never
+    // shows a "paid" segment, since no money actually moved.
     const chartData = periods.map(p => ({
         period: p.period,
-        paid: parseFloat(p.amount_paid || 0),
-        outstanding: Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+        paid: p.status === 'EXCLUDED' ? 0 : parseFloat(p.amount_paid || 0),
+        outstanding: p.status === 'EXCLUDED' ? 0 : Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+        excluded: p.status === 'EXCLUDED' ? parseFloat(p.amount_due || 0) : 0,
     }));
 
     return (
         <div className="mt-4">
             {stats && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
                     <div className="bg-gray-50 rounded-lg p-3">
                         <p className="text-xs text-gray-400">Paid Months</p>
                         <p className="text-lg font-bold text-green-600 mt-0.5">{stats.paid_months}</p>
@@ -903,6 +1589,10 @@ const ServiceFeePersonalChart = ({ agreement }) => {
                     <div className="bg-gray-50 rounded-lg p-3">
                         <p className="text-xs text-gray-400">Unpaid / Partial</p>
                         <p className="text-lg font-bold text-red-500 mt-0.5">{stats.unpaid_months + stats.partial_months}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">Excluded Months</p>
+                        <p className="text-lg font-bold text-blue-500 mt-0.5">{stats.excluded_months || 0}</p>
                     </div>
                     <div className="bg-gray-50 rounded-lg p-3">
                         <p className="text-xs text-gray-400">Most Paid Month</p>
@@ -926,7 +1616,8 @@ const ServiceFeePersonalChart = ({ agreement }) => {
                         <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
                         <Tooltip {...theme.tooltipProps} />
                         <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} />
-                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
+                        <Bar dataKey="excluded" stackId="a" name="Excluded" fill={theme.neutral} radius={[4, 4, 0, 0]} />
                     </BarChart>
                 </ResponsiveContainer>
             </div>
@@ -964,7 +1655,7 @@ const TreasuryOverview = () => {
 
     return (
         <div className="space-y-6">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                 <div className="card py-3">
                     <p className="text-xs text-gray-400">Paid Periods</p>
                     <p className="text-lg font-bold text-green-600 mt-0.5">{totals.paid_periods}</p>
@@ -972,6 +1663,10 @@ const TreasuryOverview = () => {
                 <div className="card py-3">
                     <p className="text-xs text-gray-400">Partial / Unpaid Periods</p>
                     <p className="text-lg font-bold text-red-500 mt-0.5">{parseInt(totals.partial_periods) + parseInt(totals.unpaid_periods)}</p>
+                </div>
+                <div className="card py-3">
+                    <p className="text-xs text-gray-400">Excluded Periods</p>
+                    <p className="text-lg font-bold text-blue-500 mt-0.5">{totals.excluded_periods || 0}</p>
                 </div>
                 <div className="card py-3">
                     <p className="text-xs text-gray-400">Total Paid</p>
@@ -1026,8 +1721,12 @@ const ServiceFeesPage = () => {
     const [activeTab, setActiveTab] = useState('mine');
     const [myAgreement, setMyAgreement] = useState(null);
     const [myReimbursements, setMyReimbursements] = useState([]);
+    const [myPaymentRequests, setMyPaymentRequests] = useState([]);
+    const [myAdvances, setMyAdvances] = useState([]);
     const [agreements, setAgreements] = useState([]);
     const [reimbursements, setReimbursements] = useState([]);
+    const [paymentRequests, setPaymentRequests] = useState([]);
+    const [advances, setAdvances] = useState([]);
     const [users, setUsers] = useState([]);
     const [accounts, setAccounts] = useState([]);
     const [currencies, setCurrencies] = useState([]);
@@ -1043,15 +1742,27 @@ const ServiceFeesPage = () => {
     const [approvingReimbursement, setApprovingReimbursement] = useState(null);
     const [rejectingReimbursement, setRejectingReimbursement] = useState(null);
 
+    // v1.53.0 — self-service request modals + Treasurer approval modals
+    const [showRequestPayment, setShowRequestPayment] = useState(false);
+    const [showRequestAdvance, setShowRequestAdvance] = useState(false);
+    const [approvingPaymentRequest, setApprovingPaymentRequest] = useState(null);
+    const [rejectingPaymentRequest, setRejectingPaymentRequest] = useState(null);
+    const [approvingAdvance, setApprovingAdvance] = useState(null);
+    const [rejectingAdvance, setRejectingAdvance] = useState(null);
+
     const loadMine = useCallback(async () => {
         try {
             setLoading(true);
-            const [agRes, reimbRes] = await Promise.all([
+            const [agRes, reimbRes, reqRes, advRes] = await Promise.all([
                 serviceFeesAPI.getMyAgreement(),
                 serviceFeesAPI.getMyReimbursements(),
+                serviceFeesAPI.getMyPaymentRequests(),
+                serviceFeesAPI.getMyAdvances(),
             ]);
             setMyAgreement(agRes.data.data);
             setMyReimbursements(reimbRes.data.data || []);
+            setMyPaymentRequests(reqRes.data.data || []);
+            setMyAdvances(advRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -1079,25 +1790,104 @@ const ServiceFeesPage = () => {
         }
     }, [canViewReimbursements]);
 
+    // v1.53.0 — Treasurer-side "Requests" tab data (payment requests +
+    // advances awaiting review, mirroring loadReimbursements above).
+    const loadRequests = useCallback(async () => {
+        if (!canViewAgreements) return;
+        try {
+            const [reqRes, advRes] = await Promise.all([
+                serviceFeesAPI.listPaymentRequests(),
+                serviceFeesAPI.listAdvances(),
+            ]);
+            setPaymentRequests(reqRes.data.data || []);
+            setAdvances(advRes.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    }, [canViewAgreements]);
+
     useEffect(() => {
         loadMine();
         loadAgreements();
         loadReimbursements();
+        loadRequests();
         accountsAPI.getAll().then(r => setAccounts(r.data.data || [])).catch(() => {});
         accountsAPI.getCurrencies().then(r => setCurrencies(r.data.data || [])).catch(() => {});
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         if (canManageAgreements) {
             usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setUsers(r.data.data || [])).catch(() => {});
         }
-    }, [loadMine, loadAgreements, loadReimbursements, canManageAgreements]);
+    }, [loadMine, loadAgreements, loadReimbursements, loadRequests, canManageAgreements]);
 
     const handleSuccess = () => {
         loadMine();
         loadAgreements();
         loadReimbursements();
+        loadRequests();
     };
 
     const pendingReimbCount = reimbursements.filter(r => r.status === 'PENDING').length;
+    const pendingRequestsCount = paymentRequests.filter(r => r.status === 'PENDING').length
+        + advances.filter(a => a.status === 'PENDING').length;
+
+    const myPaymentRequestColumns = [
+        { header: 'Month(s)', render: row => <span className="text-sm text-gray-700">{(row.periods || []).map(p => p.period).join(', ') || '—'}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{(row.periods || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.confirmation_status === 'PENDING_CONFIRMATION' ? 'AWAITING CONFIRMATION' : row.status} /> },
+        { header: 'Notes', render: row => <span className="text-xs text-gray-500">{row.review_notes || row.notes || '—'}</span> },
+    ];
+
+    const myAdvanceColumns = [
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{parseFloat(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span> },
+        { header: 'Reason', render: row => <span className="text-sm text-gray-700">{row.reason}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.confirmation_status === 'PENDING_CONFIRMATION' ? 'AWAITING CONFIRMATION' : row.status} /> },
+        { header: 'Outstanding', render: row => <span className="text-sm text-gray-500">{row.disbursed_at ? parseFloat(row.outstanding_balance).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</span> },
+        { header: 'Notes', render: row => <span className="text-xs text-gray-500">{row.review_notes || '—'}</span> },
+    ];
+
+    const paymentRequestColumns = [
+        { header: 'Person', render: row => <span className="text-sm font-medium text-gray-900">{row.user_name}</span> },
+        { header: 'Month(s)', render: row => <span className="text-sm text-gray-700">{(row.periods || []).map(p => p.period).join(', ') || '—'}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{(row.periods || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} {row.currency_code}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        {
+            header: 'Actions',
+            render: row => row.status === 'PENDING' && canManageAgreements && (
+                <div className="flex gap-2">
+                    <button onClick={() => setApprovingPaymentRequest(row)}
+                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
+                        <CheckIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => setRejectingPaymentRequest(row)}
+                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
+                        <XMarkIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            ),
+        },
+    ];
+
+    const advanceColumns = [
+        { header: 'Person', render: row => <span className="text-sm font-medium text-gray-900">{row.user_name}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{parseFloat(row.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} {row.currency_code}</span> },
+        { header: 'Reason', render: row => <span className="text-sm text-gray-700">{row.reason}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        {
+            header: 'Actions',
+            render: row => row.status === 'PENDING' && canManageAgreements && (
+                <div className="flex gap-2">
+                    <button onClick={() => setApprovingAdvance(row)}
+                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
+                        <CheckIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => setRejectingAdvance(row)}
+                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
+                        <XMarkIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            ),
+        },
+    ];
 
     const myReimbColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs">{row.reference_code}</span> },
@@ -1244,12 +2034,39 @@ const ServiceFeesPage = () => {
                         )}
                     </button>
                 )}
+                {canViewAgreements && (
+                    <button onClick={() => setActiveTab('requests')}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            activeTab === 'requests' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}>
+                        Payment &amp; Advance Requests
+                        {pendingRequestsCount > 0 && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
+                                activeTab === 'requests' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
+                            }`}>{pendingRequestsCount}</span>
+                        )}
+                    </button>
+                )}
             </div>
 
             {activeTab === 'mine' && (
                 <div className="space-y-6">
                     <div className="card">
-                        <h3 className="text-sm font-semibold text-gray-900 mb-3">My Service Fee Agreement</h3>
+                        <div className="flex items-start justify-between gap-3 mb-3">
+                            <h3 className="text-sm font-semibold text-gray-900">My Service Fee Agreement</h3>
+                            {myAgreement && myAgreement.status === 'ACTIVE' && (
+                                <div className="flex gap-2 shrink-0">
+                                    <button onClick={() => setShowRequestPayment(true)}
+                                        className="btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5">
+                                        <BanknotesIcon className="h-3.5 w-3.5" /> Request Payment
+                                    </button>
+                                    <button onClick={() => setShowRequestAdvance(true)}
+                                        className="btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5">
+                                        <HandRaisedIcon className="h-3.5 w-3.5" /> Request Advance
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                         {myAgreement ? (
                             <div>
                                 <p className="text-2xl font-bold text-primary-700">
@@ -1278,6 +2095,33 @@ const ServiceFeesPage = () => {
                             <p className="text-sm text-gray-400">No service fee agreement is set up for your account.</p>
                         )}
                     </div>
+
+                    {myAgreement && (myPaymentRequests.length > 0 || myAdvances.length > 0) && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div>
+                                <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
+                                    <ClockIcon className="h-4 w-4 text-gray-400" /> My Payment Requests
+                                </h3>
+                                <DataTable
+                                    columns={myPaymentRequestColumns}
+                                    data={myPaymentRequests}
+                                    loading={loading}
+                                    emptyMessage="You have no payment requests yet"
+                                />
+                            </div>
+                            <div>
+                                <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
+                                    <HandRaisedIcon className="h-4 w-4 text-gray-400" /> My Advances
+                                </h3>
+                                <DataTable
+                                    columns={myAdvanceColumns}
+                                    data={myAdvances}
+                                    loading={loading}
+                                    emptyMessage="You have no advance requests yet"
+                                />
+                            </div>
+                        </div>
+                    )}
 
                     <div>
                         <h3 className="text-sm font-semibold text-gray-900 mb-3">My Reimbursement Requests</h3>
@@ -1313,6 +2157,33 @@ const ServiceFeesPage = () => {
                     searchable
                     searchPlaceholder="Search reimbursement requests..."
                 />
+            )}
+
+            {activeTab === 'requests' && canViewAgreements && (
+                <div className="space-y-8">
+                    <div>
+                        <h3 className="section-title mb-3">Payment Requests</h3>
+                        <DataTable
+                            columns={paymentRequestColumns}
+                            data={paymentRequests}
+                            loading={loading}
+                            emptyMessage="No payment requests found"
+                            searchable
+                            searchPlaceholder="Search payment requests..."
+                        />
+                    </div>
+                    <div>
+                        <h3 className="section-title mb-3">Advance Requests</h3>
+                        <DataTable
+                            columns={advanceColumns}
+                            data={advances}
+                            loading={loading}
+                            emptyMessage="No advance requests found"
+                            searchable
+                            searchPlaceholder="Search advance requests..."
+                        />
+                    </div>
+                </div>
             )}
 
             <CreateAgreementModal
@@ -1351,6 +2222,42 @@ const ServiceFeesPage = () => {
                 isOpen={!!rejectingReimbursement}
                 reimbursement={rejectingReimbursement}
                 onClose={() => setRejectingReimbursement(null)}
+                onSuccess={handleSuccess}
+            />
+            <RequestPaymentModal
+                isOpen={showRequestPayment}
+                agreement={myAgreement}
+                onClose={() => setShowRequestPayment(false)}
+                onSuccess={handleSuccess}
+            />
+            <RequestAdvanceModal
+                isOpen={showRequestAdvance}
+                agreement={myAgreement}
+                onClose={() => setShowRequestAdvance(false)}
+                onSuccess={handleSuccess}
+            />
+            <ApprovePaymentRequestModal
+                isOpen={!!approvingPaymentRequest}
+                request={approvingPaymentRequest}
+                onClose={() => setApprovingPaymentRequest(null)}
+                onSuccess={handleSuccess}
+            />
+            <RejectPaymentRequestModal
+                isOpen={!!rejectingPaymentRequest}
+                request={rejectingPaymentRequest}
+                onClose={() => setRejectingPaymentRequest(null)}
+                onSuccess={handleSuccess}
+            />
+            <ApproveAdvanceModal
+                isOpen={!!approvingAdvance}
+                advance={approvingAdvance}
+                onClose={() => setApprovingAdvance(null)}
+                onSuccess={handleSuccess}
+            />
+            <RejectAdvanceModal
+                isOpen={!!rejectingAdvance}
+                advance={rejectingAdvance}
+                onClose={() => setRejectingAdvance(null)}
                 onSuccess={handleSuccess}
             />
         </div>

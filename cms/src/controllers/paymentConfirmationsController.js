@@ -19,7 +19,7 @@
 // cancels the entry and reissues a corrected one — there is no
 // "reopen" step, since nothing was ever posted to undo.
 //
-// Two source types today:
+// Three source types today:
 //   - GENERAL_PAYMENT — Treasury pays anyone, ad hoc (createPaymentConfirmation,
 //     a real route, PAYMENT_ACK_MANAGE).
 //   - SERVICE_FEE_PAYMENT — an internal helper (createServiceFeePaymentConfirmation,
@@ -28,6 +28,14 @@
 //     service_fee_payments row is inserted at that point too — exactly
 //     what recordPayment used to do immediately, now deferred until
 //     the fee recipient actually confirms they were paid.
+//   - SERVICE_FEE_ADVANCE (v1.53.0) — an internal helper
+//     (createServiceFeeAdvanceConfirmation, NOT a route), called from
+//     serviceFeesController.approveAdvance once a self-service advance
+//     request is approved and its recovery breakdown finalised. On
+//     confirm, the stored (unapplied) service_fee_advance_recoveries
+//     rows are applied as an internal offset against future periods'
+//     amount_paid — no separate transaction for the recovery itself,
+//     since the cash already moved once, at disbursement.
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
@@ -37,11 +45,16 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
-const { applyPaymentToPeriods } = require('../services/serviceFeeService');
+const {
+    applyPaymentToPeriods,
+    getAdvanceRecoverySchedule,
+    applyAdvanceRecovery,
+} = require('../services/serviceFeeService');
 
 const SOURCE_LABELS = {
     GENERAL_PAYMENT:     'General Payment',
     SERVICE_FEE_PAYMENT: 'Service Fee Payment',
+    SERVICE_FEE_ADVANCE: 'Service Fee Advance',
 };
 
 const PAYMENT_METHOD_LABELS = {
@@ -211,6 +224,67 @@ const createServiceFeePaymentConfirmation = async (client, {
 };
 
 // ============================================================
+// INTERNAL — SERVICE FEE ADVANCE CONFIRMATION (not a route, v1.53.0)
+// Called from serviceFeesController.approveAdvance, inside that same
+// withTransaction block, once the Treasurer has approved a
+// self-service advance request and finalised its (editable) recovery
+// breakdown. Mirrors createServiceFeePaymentConfirmation, but the
+// eventual real transaction represents money going OUT as an advance
+// (SERVICE_FEE_ADVANCE_OUT), not a settlement of already-earned
+// periods — recovery of that advance happens separately, later, as
+// an internal offset against future periods' amount_paid once this
+// confirmation is actually confirmed received (see confirmPayment's
+// SERVICE_FEE_ADVANCE branch below), never at approval time.
+// Params: { client, agreement, amount, entryDate, paymentMethod,
+//           mobileMoneyProvider, externalReference, purpose, payerId,
+//           advanceId, recoveryBreakdown }
+// recoveryBreakdown — array of { period_id, amount }, the future
+// month(s) that will absorb this advance once confirmed. Persisted to
+// service_fee_advance_recoveries (unapplied — applied_at stays NULL
+// until confirmPayment runs applyAdvanceRecovery).
+// Returns { id, referenceCode }.
+// ============================================================
+const createServiceFeeAdvanceConfirmation = async (client, {
+    agreement, amount, entryDate, paymentMethod, mobileMoneyProvider, externalReference, purpose, payerId,
+    advanceId, recoveryBreakdown,
+}) => {
+    validatePaymentMethod(paymentMethod, mobileMoneyProvider, externalReference);
+
+    const { id, referenceCode } = await createPaymentConfirmationRow(client, {
+        sourceType:  'SERVICE_FEE_ADVANCE',
+        sourceId:    advanceId,
+        accountId:   agreement.account_id,
+        categoryId:  agreement.category_id,
+        payerId,
+        recipientId: agreement.user_id,
+        amount,
+        currencyId:  agreement.currency_id,
+        paymentMethod,
+        mobileMoneyProvider: mobileMoneyProvider || null,
+        externalReference:   externalReference || null,
+        purpose,
+        entryDate,
+    });
+
+    await client.query(
+        'UPDATE service_fee_advances SET confirmation_id = $1 WHERE id = $2',
+        [id, advanceId]
+    );
+
+    if (recoveryBreakdown && recoveryBreakdown.length > 0) {
+        for (const line of recoveryBreakdown) {
+            await client.query(`
+                INSERT INTO service_fee_advance_recoveries (advance_id, period_id, amount)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (advance_id, period_id) DO UPDATE SET amount = EXCLUDED.amount
+            `, [advanceId, line.period_id, line.amount]);
+        }
+    }
+
+    return { id, referenceCode };
+};
+
+// ============================================================
 // SHARED ROW-INSERT CORE (internal — not exported as a route)
 // Generates the confirmation's OWN reference (separate from whatever
 // reference the eventual transaction gets once confirmed, exactly the
@@ -224,8 +298,11 @@ const createPaymentConfirmationRow = async (client, {
     sourceType, sourceId, accountId, categoryId, payerId, recipientId,
     amount, currencyId, paymentMethod, mobileMoneyProvider, externalReference, purpose, entryDate,
 }) => {
+    const categoryAbbrev = sourceType === 'SERVICE_FEE_PAYMENT' ? 'SVC'
+        : sourceType === 'SERVICE_FEE_ADVANCE' ? 'ADV'
+        : 'GEN';
     const { referenceId, referenceCode } = await generateReference(
-        client, MODULE_CODES.PAYMENT_ACK, sourceType === 'SERVICE_FEE_PAYMENT' ? 'SVC' : 'GEN',
+        client, MODULE_CODES.PAYMENT_ACK, categoryAbbrev,
         'PAYMENT_CONFIRMATION', payerId
     );
 
@@ -402,14 +479,21 @@ const confirmPayment = asyncHandler(async (req, res) => {
             ? 'Cash'
             : `${PAYMENT_METHOD_LABELS[pc.payment_method]} (${pc.payment_method === 'MOBILE_MONEY' ? pc.mobile_money_provider + ', ' : ''}ref ${pc.external_reference})`;
 
+        const txCategoryAbbrev = pc.source_type === 'SERVICE_FEE_PAYMENT' ? 'SVC'
+            : pc.source_type === 'SERVICE_FEE_ADVANCE' ? 'ADV'
+            : 'GEN';
+        const txInflowType = pc.source_type === 'SERVICE_FEE_PAYMENT' ? 'SERVICE_FEE_OUT'
+            : pc.source_type === 'SERVICE_FEE_ADVANCE' ? 'SERVICE_FEE_ADVANCE_OUT'
+            : 'GENERAL_PAYMENT_OUT';
+
         const { referenceId: txRefId, referenceCode: txRefCode } = await generateReference(
-            client, resolveModuleCode(account), pc.source_type === 'SERVICE_FEE_PAYMENT' ? 'SVC' : 'GEN', 'TRANSACTION', pc.payer_id
+            client, resolveModuleCode(account), txCategoryAbbrev, 'TRANSACTION', pc.payer_id
         );
 
         const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
             accountId:       account.id,
             transactionType: 'DEBIT',
-            inflowType:      pc.source_type === 'SERVICE_FEE_PAYMENT' ? 'SERVICE_FEE_OUT' : 'GENERAL_PAYMENT_OUT',
+            inflowType:      txInflowType,
             amount:          parseFloat(pc.amount),
             currencyId:      pc.currency_id,
             categoryId:      pc.category_id,
@@ -449,6 +533,26 @@ const confirmPayment = asyncHandler(async (req, res) => {
             if (breakdownResult.rows.length > 0) {
                 await applyPaymentToPeriods(client, { paymentId: serviceFeePaymentId, breakdown: breakdownResult.rows });
             }
+        } else if (pc.source_type === 'SERVICE_FEE_ADVANCE') {
+            // v1.53.0 — the advance is only actually "disbursed" once the
+            // recipient confirms receipt here, mirroring SERVICE_FEE_PAYMENT
+            // above. The recovery schedule (which future period(s) will
+            // absorb it) was already decided and stored, unapplied, when
+            // the Treasurer approved the advance — apply it now as an
+            // internal offset (each period's amount_paid incremented, no
+            // separate transaction, since the cash already moved via the
+            // transaction just posted above).
+            const recoverySchedule = await getAdvanceRecoverySchedule(pc.source_id);
+            if (recoverySchedule.length > 0) {
+                await applyAdvanceRecovery(client, { advanceId: pc.source_id, breakdown: recoverySchedule });
+            }
+            const totalRecovery = recoverySchedule.reduce((sum, r) => sum + parseFloat(r.amount), 0);
+            await client.query(`
+                UPDATE service_fee_advances
+                SET    disbursed_at = NOW(), transaction_id = $1,
+                       outstanding_balance = $2
+                WHERE  id = $3
+            `, [transactionId, totalRecovery, pc.source_id]);
         }
 
         await logAction(req.user.id, ACTIONS.PAYMENT_CONFIRMATION_CONFIRMED, MODULES.FINANCE, {
@@ -576,6 +680,7 @@ module.exports = {
     PAYMENT_METHOD_LABELS,
     createPaymentConfirmation,
     createServiceFeePaymentConfirmation,
+    createServiceFeeAdvanceConfirmation,
     getMyPaymentConfirmations,
     getAllPaymentConfirmations,
     getPaymentConfirmationById,

@@ -408,6 +408,15 @@ export const reportsAPI = {
     sendBroadcast:     (data)   => api.post('/reports/broadcast', data),
     getLog:            (params) => api.get('/reports/log', { params }),
     getAuditLog:       (params) => api.get('/reports/audit', { params }),
+
+    // General Ledger suite (v1.55.0)
+    getGLAccounts:        ()               => api.get('/reports/gl-accounts'),
+    updateGLMapping:      (inflowType, data) => api.patch(`/reports/gl-accounts/mapping/${inflowType}`, data),
+    getTrialBalance:      (params)         => api.get('/reports/trial-balance', { params }),
+    getGeneralLedger:     (params)         => api.get('/reports/general-ledger', { params }),
+    getBalanceSheet:      (params)         => api.get('/reports/balance-sheet', { params }),
+    getIncomeStatement:   (params)         => api.get('/reports/income-statement', { params }),
+    getCashFlowStatement: (params)         => api.get('/reports/cash-flow-statement', { params }),
 };
 
 // ============================================================
@@ -551,6 +560,11 @@ export const serviceFeesAPI = {
     getOutstandingPeriods: (id) => api.get(`/service-fees/agreements/${id}/outstanding-periods`),
     settlePastMonths:      (id, data) => api.post(`/service-fees/agreements/${id}/settle`, data),
     overridePeriod:        (id, periodId, data) => api.patch(`/service-fees/agreements/${id}/periods/${periodId}/override`, data),
+    // v1.54.0 — exclude/include a month (cancels the obligation
+    // entirely, distinct from overridePeriod above which just changes
+    // the amount owed)
+    excludePeriod:         (id, periodId, data) => api.patch(`/service-fees/agreements/${id}/periods/${periodId}/exclude`, data),
+    includePeriod:         (id, periodId, data) => api.patch(`/service-fees/agreements/${id}/periods/${periodId}/include`, data),
     getTreasuryStats:      () => api.get('/service-fees/stats'),
 
     // Self-service
@@ -565,6 +579,27 @@ export const serviceFeesAPI = {
     approveReimbursement: (id, data) => api.post(`/service-fees/reimbursements/${id}/approve`, data),
     rejectReimbursement:  (id, data) => api.post(`/service-fees/reimbursements/${id}/reject`, data),
     downloadReceipt:      (id) => api.get(`/service-fees/reimbursements/${id}/receipt`, { responseType: 'blob' }),
+
+    // v1.53.0 — self-service payment requests (request payment for
+    // any unpaid month(s), a lump sum if more than one)
+    requestPayment:        (agreementId, data) => api.post(`/service-fees/agreements/${agreementId}/payment-requests`, data),
+    getMyPaymentRequests:  () => api.get('/service-fees/my-payment-requests'),
+
+    // v1.53.0 — Treasurer review of payment requests
+    listPaymentRequests:   (params) => api.get('/service-fees/payment-requests', { params }),
+    approvePaymentRequest: (id, data) => api.post(`/service-fees/payment-requests/${id}/approve`, data),
+    rejectPaymentRequest:  (id, data) => api.post(`/service-fees/payment-requests/${id}/reject`, data),
+
+    // v1.53.0 — self-service advances (recovered automatically from
+    // future month(s) once confirmed received)
+    requestAdvance:  (agreementId, data) => api.post(`/service-fees/agreements/${agreementId}/advances`, data),
+    getMyAdvances:   () => api.get('/service-fees/my-advances'),
+
+    // v1.53.0 — Treasurer review of advances
+    listAdvances:              (params) => api.get('/service-fees/advances', { params }),
+    getAdvanceRecoveryPreview: (id) => api.get(`/service-fees/advances/${id}/recovery-preview`),
+    approveAdvance:            (id, data) => api.post(`/service-fees/advances/${id}/approve`, data),
+    rejectAdvance:             (id, data) => api.post(`/service-fees/advances/${id}/reject`, data),
 };
 
 // ============================================================

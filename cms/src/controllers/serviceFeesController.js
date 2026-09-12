@@ -42,7 +42,7 @@ const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
-const { createServiceFeePaymentConfirmation } = require('./paymentConfirmationsController');
+const { createServiceFeePaymentConfirmation, createServiceFeeAdvanceConfirmation } = require('./paymentConfirmationsController');
 const serviceFeeService = require('../services/serviceFeeService');
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
@@ -149,7 +149,7 @@ const listAgreements = asyncHandler(async (req, res) => {
                c.code AS currency_code,
                acc.name AS account_name,
                (SELECT MAX(payment_date) FROM service_fee_payments WHERE agreement_id = a.id) AS last_paid_date,
-               (SELECT COUNT(*) FROM service_fee_monthly_periods WHERE agreement_id = a.id AND status != 'PAID') AS unpaid_period_count
+               (SELECT COUNT(*) FROM service_fee_monthly_periods WHERE agreement_id = a.id AND status NOT IN ('PAID', 'EXCLUDED')) AS unpaid_period_count
         FROM   service_fee_agreements a
         JOIN   users u        ON u.id = a.user_id
         JOIN   currencies c    ON c.id = a.currency_id
@@ -211,12 +211,37 @@ const getAgreementById = asyncHandler(async (req, res) => {
     // needs (paid/unpaid months, most/least paid, total earned).
     const { periods, summary } = await serviceFeeService.computeAgreementStats(id);
 
+    // v1.53.0 — this agreement's own payment-request and advance
+    // history, for the detail page's transparency section.
+    const paymentRequestsResult = await query(`
+        SELECT pr.id, pr.status, pr.notes, pr.reviewed_at, pr.review_notes, pr.created_at,
+               COALESCE(
+                   json_agg(json_build_object('period', p.period, 'amount', prp.amount) ORDER BY p.period)
+                   FILTER (WHERE p.id IS NOT NULL), '[]'
+               ) AS periods
+        FROM   service_fee_payment_requests pr
+        LEFT JOIN service_fee_payment_request_periods prp ON prp.request_id = pr.id
+        LEFT JOIN service_fee_monthly_periods p ON p.id = prp.period_id
+        WHERE  pr.agreement_id = $1
+        GROUP  BY pr.id
+        ORDER  BY pr.created_at DESC
+    `, [id]);
+
+    const advancesResult = await query(`
+        SELECT id, amount, reason, status, reviewed_at, review_notes, outstanding_balance, disbursed_at, created_at
+        FROM   service_fee_advances
+        WHERE  agreement_id = $1
+        ORDER  BY created_at DESC
+    `, [id]);
+
     sendSuccess(res, {
         ...agreementResult.rows[0],
         payments: paymentsResult.rows,
         amendments: amendmentsResult.rows,
         periods,
         stats: summary,
+        payment_requests: paymentRequestsResult.rows,
+        advances: advancesResult.rows,
     });
 });
 
@@ -389,6 +414,13 @@ const recordPayment = asyncHandler(async (req, res) => {
         const outstandingPeriods = await serviceFeeService.getOutstandingPeriodsForUpdate(client, agreement.id);
         const { breakdown } = serviceFeeService.cascadeAmountAcrossPeriods(outstandingPeriods, payAmount);
 
+        // v1.53.0 — transparency: name which month(s) this payment
+        // actually covers and that it was Treasurer-initiated (as
+        // opposed to approvePaymentRequest's self-service-originated
+        // wording below), since purpose flows straight into the
+        // eventual transaction's description once confirmed.
+        const monthLabels = breakdown.map(b => b.period).filter(Boolean).join(', ');
+
         const { id: confirmationId, referenceCode } = await createServiceFeePaymentConfirmation(client, {
             agreement,
             amount:               payAmount,
@@ -396,7 +428,7 @@ const recordPayment = asyncHandler(async (req, res) => {
             paymentMethod:        payment_method,
             mobileMoneyProvider:  mobile_money_provider,
             externalReference:    external_reference,
-            purpose:              `Monthly service fee — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+            purpose:              `Monthly service fee (Treasurer-initiated) — ${agreement.first_name} ${agreement.last_name}: ${monthLabels || 'current month'} (agreement ID ${id})`,
             payerId:              req.user.id,
             periodBreakdown:      breakdown,
         });
@@ -478,7 +510,7 @@ const settlePastMonths = asyncHandler(async (req, res) => {
             paymentMethod:        payment_method,
             mobileMoneyProvider:  mobile_money_provider,
             externalReference:    external_reference,
-            purpose:              `Service fee settlement (${monthLabels || breakdown.length + ' month(s)'}) — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
+            purpose:              `Service fee settlement (Treasurer-initiated; ${monthLabels || breakdown.length + ' month(s)'}) — ${agreement.first_name} ${agreement.last_name} (agreement ID ${id})`,
             payerId:              req.user.id,
             periodBreakdown:      breakdown.map(l => ({ period_id: parseInt(l.period_id), amount: parseFloat(l.amount) })),
         });
@@ -534,6 +566,109 @@ const overridePeriod = asyncHandler(async (req, res) => {
     sendSuccess(res, updated, `${updated.period} amount overridden to ${amount_due}`);
 });
 
+// PATCH /api/service-fees/agreements/:id/periods/:periodId/exclude
+//
+// v1.54.0 — cancels a month's obligation entirely: pulled out of every
+// outstanding/overdue calculation, but never counted as PAID either,
+// since no money actually moved. Deliberately separate from override
+// above (which changes what a month is WORTH, not whether it's owed
+// at all). Requires a reason, and notifies the agreement holder —
+// unlike override, which was a silent Treasurer-side action, an
+// exclusion changes what the contracted person is owed, so they need
+// to know about it.
+const excludePeriod = asyncHandler(async (req, res) => {
+    const { id, periodId } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) {
+        throw createError.badRequest('A reason is required to exclude a month');
+    }
+
+    const { updated, agreement } = await withTransaction(async (client) => {
+        const agreementResult = await client.query(`
+            SELECT a.id, a.user_id, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1
+        `, [id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreementRow = agreementResult.rows[0];
+
+        const result = await serviceFeeService.excludePeriod(client, {
+            periodId:    parseInt(periodId),
+            agreementId: parseInt(id),
+            reason:      reason.trim(),
+            excludedBy:  req.user.id,
+        });
+        if (!result) throw createError.notFound('That month was not found on this agreement');
+
+        return { updated: result, agreement: agreementRow };
+    });
+
+    notify({
+        userId: agreement.user_id,
+        type:   'SERVICE_FEE_PERIOD_EXCLUDED',
+        title:  'A month on your service fee agreement was excluded',
+        body:   `${updated.period} has been excluded from your service fee obligations — it will not count as outstanding or overdue. Reason: ${reason.trim()}`,
+        link:       '/service-fees',
+        module:     'STAFF',
+        recordType: 'service_fee_monthly_periods',
+        recordId:   updated.id,
+    }).catch(() => {});
+
+    sendSuccess(res, updated, `${updated.period} excluded from ${agreement.first_name} ${agreement.last_name}'s obligations`);
+});
+
+// PATCH /api/service-fees/agreements/:id/periods/:periodId/include
+//
+// v1.54.0 — reverses excludePeriod above: restores a previously
+// excluded month to a normal obligation (its status is simply
+// recomputed from the amount_due/amount_paid that exclusion left
+// untouched). Also requires a reason and notifies the agreement
+// holder, for the same transparency reason as exclusion itself.
+const includePeriod = asyncHandler(async (req, res) => {
+    const { id, periodId } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) {
+        throw createError.badRequest('A reason is required to restore an excluded month');
+    }
+
+    const { updated, agreement } = await withTransaction(async (client) => {
+        const agreementResult = await client.query(`
+            SELECT a.id, a.user_id, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1
+        `, [id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreementRow = agreementResult.rows[0];
+
+        const result = await serviceFeeService.includePeriod(client, {
+            periodId:    parseInt(periodId),
+            agreementId: parseInt(id),
+            reason:      reason.trim(),
+            includedBy:  req.user.id,
+        });
+        if (!result) throw createError.notFound('That month was not found on this agreement');
+
+        return { updated: result, agreement: agreementRow };
+    });
+
+    notify({
+        userId: agreement.user_id,
+        type:   'SERVICE_FEE_PERIOD_INCLUDED',
+        title:  'A previously excluded month was restored',
+        body:   `${updated.period} is no longer excluded and is back to counting toward your service fee obligations. Reason: ${reason.trim()}`,
+        link:       '/service-fees',
+        module:     'STAFF',
+        recordType: 'service_fee_monthly_periods',
+        recordId:   updated.id,
+    }).catch(() => {});
+
+    sendSuccess(res, updated, `${updated.period} restored to ${agreement.first_name} ${agreement.last_name}'s obligations`);
+});
+
 // GET /api/service-fees/stats
 // Treasury-wide aggregate — every agreement's paid/partial/unpaid
 // period counts and totals, for the treasury-side chart section
@@ -541,6 +676,574 @@ const overridePeriod = asyncHandler(async (req, res) => {
 const getTreasuryStats = asyncHandler(async (req, res) => {
     const stats = await serviceFeeService.computeTreasuryAggregateStats();
     sendSuccess(res, stats);
+});
+
+// ============================================================================
+// SELF-SERVICE — PAYMENT REQUESTS (v1.53.0)
+// The contracted person's own button to ask to be paid for any of
+// their unpaid/partial months, a lump sum if more than one is picked.
+// Always requests each picked month's own full outstanding balance —
+// this is a request to be paid what's owed, not a chance to name an
+// arbitrary figure (that's still the Treasurer's call, at approval).
+// ============================================================================
+
+// POST /api/service-fees/agreements/:id/payment-requests
+const requestPayment = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { period_ids, notes } = req.body;
+
+    if (!Array.isArray(period_ids) || period_ids.length === 0) {
+        throw createError.badRequest('Select at least one unpaid month to request payment for');
+    }
+
+    await withTransaction(async (client) => {
+        const agreementResult = await client.query(`
+            SELECT a.*, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1
+        `, [id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreement = agreementResult.rows[0];
+
+        if (agreement.user_id !== req.user.id) {
+            throw createError.forbidden('You can only request payment on your own service fee agreement');
+        }
+        if (agreement.status !== 'ACTIVE') {
+            throw createError.badRequest('This agreement is no longer active');
+        }
+
+        const ids = period_ids.map(p => parseInt(p));
+        const periodsResult = await client.query(`
+            SELECT id, period, amount_due, amount_paid
+            FROM   service_fee_monthly_periods
+            WHERE  id = ANY($1::int[]) AND agreement_id = $2 AND status IN ('UNPAID', 'PARTIAL')
+        `, [ids, id]);
+        if (periodsResult.rows.length !== new Set(ids).size) {
+            throw createError.badRequest('One or more selected months are not outstanding on this agreement');
+        }
+
+        const reqResult = await client.query(`
+            INSERT INTO service_fee_payment_requests (agreement_id, requested_by, notes)
+            VALUES ($1, $2, $3)
+            RETURNING id
+        `, [id, req.user.id, notes || null]);
+        const requestId = reqResult.rows[0].id;
+
+        let totalAmount = 0;
+        for (const p of periodsResult.rows) {
+            const amount = parseFloat((parseFloat(p.amount_due) - parseFloat(p.amount_paid)).toFixed(4));
+            totalAmount += amount;
+            await client.query(`
+                INSERT INTO service_fee_payment_request_periods (request_id, period_id, amount)
+                VALUES ($1, $2, $3)
+            `, [requestId, p.id, amount]);
+        }
+
+        const monthLabels = periodsResult.rows.map(p => p.period).join(', ');
+
+        await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_REQUESTED, MODULES.STAFF, {
+            ipAddress:   req.ip,
+            recordType:  'service_fee_payment_requests',
+            recordId:    requestId,
+            newValues:   { agreement_id: parseInt(id), months: periodsResult.rows.map(p => p.period), totalAmount },
+            description: `Service fee payment requested by ${agreement.first_name} ${agreement.last_name}: ${monthLabels} (${totalAmount}), agreement ID ${id}`,
+            client,
+        });
+
+        const treasurers = await getTreasurers();
+        notifyMany(treasurers, 'SERVICE_FEE_PAYMENT_REQUESTED', () => ({
+            title: 'Service fee payment requested',
+            body:  `${agreement.first_name} ${agreement.last_name} requested payment for ${monthLabels} (${totalAmount}).`,
+            link:       '/service-fees',
+            module:     'STAFF',
+            recordType: 'service_fee_payment_requests',
+            recordId:   requestId,
+        })).catch(() => {});
+
+        sendCreated(res, {
+            request_id: requestId,
+            status: 'PENDING',
+            months: periodsResult.rows.map(p => p.period),
+            total_amount: totalAmount,
+        }, `Payment request submitted for ${monthLabels} — awaiting Treasurer approval`);
+    });
+});
+
+// GET /api/service-fees/my-payment-requests
+const getMyPaymentRequests = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT pr.id, pr.status, pr.notes, pr.reviewed_at, pr.review_notes, pr.created_at,
+               pc.status AS confirmation_status,
+               COALESCE(
+                   json_agg(json_build_object('period', p.period, 'amount', prp.amount) ORDER BY p.period)
+                   FILTER (WHERE p.id IS NOT NULL), '[]'
+               ) AS periods
+        FROM   service_fee_payment_requests pr
+        JOIN   service_fee_agreements a ON a.id = pr.agreement_id
+        LEFT JOIN service_fee_payment_request_periods prp ON prp.request_id = pr.id
+        LEFT JOIN service_fee_monthly_periods p ON p.id = prp.period_id
+        LEFT JOIN payment_confirmations pc ON pc.id = pr.confirmation_id
+        WHERE  a.user_id = $1
+        GROUP  BY pr.id, pc.status
+        ORDER  BY pr.created_at DESC
+    `, [req.user.id]);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================================
+// TREASURY — PAYMENT REQUEST APPROVAL (v1.53.0)
+// ============================================================================
+
+// GET /api/service-fees/payment-requests?status=
+const listPaymentRequests = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const conditions = [];
+    const params = [];
+    if (status) { params.push(status.toUpperCase()); conditions.push(`pr.status = $${params.length}`); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const result = await query(`
+        SELECT pr.id, pr.agreement_id, pr.status, pr.notes, pr.reviewed_at, pr.review_notes, pr.created_at,
+               u.first_name || ' ' || u.last_name AS user_name,
+               c.code AS currency_code,
+               COALESCE(
+                   json_agg(json_build_object('period_id', p.id, 'period', p.period, 'amount', prp.amount) ORDER BY p.period)
+                   FILTER (WHERE p.id IS NOT NULL), '[]'
+               ) AS periods
+        FROM   service_fee_payment_requests pr
+        JOIN   service_fee_agreements a ON a.id = pr.agreement_id
+        JOIN   users u ON u.id = a.user_id
+        JOIN   currencies c ON c.id = a.currency_id
+        LEFT JOIN service_fee_payment_request_periods prp ON prp.request_id = pr.id
+        LEFT JOIN service_fee_monthly_periods p ON p.id = prp.period_id
+        ${where}
+        GROUP  BY pr.id, u.first_name, u.last_name, c.code
+        ORDER  BY pr.created_at DESC
+    `, params);
+    sendSuccess(res, result.rows);
+});
+
+// POST /api/service-fees/payment-requests/:id/approve
+// breakdown is auto-filled from the request's own period rows on the
+// client but fully editable here first — same "auto-filled, editable"
+// convention as settlePastMonths — then goes through the identical
+// payment_confirmations two-step flow a Treasurer-initiated payment
+// already uses.
+const approvePaymentRequest = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { breakdown, payment_date, payment_method, mobile_money_provider, external_reference, review_notes } = req.body;
+
+    if (!Array.isArray(breakdown) || breakdown.length === 0) {
+        throw createError.badRequest('At least one month is required to approve this request');
+    }
+    for (const line of breakdown) {
+        if (!line.period_id || !(parseFloat(line.amount) > 0)) {
+            throw createError.badRequest('Each month in the breakdown needs a valid period and a positive amount');
+        }
+    }
+
+    await withTransaction(async (client) => {
+        const prResult = await client.query(`
+            SELECT * FROM service_fee_payment_requests WHERE id = $1 FOR UPDATE
+        `, [id]);
+        if (prResult.rows.length === 0) throw createError.notFound('Payment request not found');
+        const pr = prResult.rows[0];
+        if (pr.status !== 'PENDING') {
+            throw createError.badRequest(`This request is already ${pr.status.toLowerCase()}`);
+        }
+
+        const agreementResult = await client.query(`
+            SELECT a.*, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1 FOR UPDATE
+        `, [pr.agreement_id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreement = agreementResult.rows[0];
+
+        const periodIds = breakdown.map(l => parseInt(l.period_id));
+        const ownedPeriods = await client.query(
+            `SELECT id, period FROM service_fee_monthly_periods WHERE id = ANY($1::int[]) AND agreement_id = $2`,
+            [periodIds, pr.agreement_id]
+        );
+        if (ownedPeriods.rows.length !== new Set(periodIds).size) {
+            throw createError.badRequest('One or more selected months do not belong to this agreement');
+        }
+        const periodLabelById = Object.fromEntries(ownedPeriods.rows.map(p => [p.id, p.period]));
+        const monthLabels = periodIds.map(pid => periodLabelById[pid]).filter(Boolean).join(', ');
+
+        const totalAmount = breakdown.reduce((sum, l) => sum + parseFloat(l.amount), 0);
+        const entryDate = payment_date || new Date().toISOString().split('T')[0];
+
+        const { id: confirmationId, referenceCode } = await createServiceFeePaymentConfirmation(client, {
+            agreement,
+            amount:               totalAmount,
+            entryDate,
+            paymentMethod:        payment_method,
+            mobileMoneyProvider:  mobile_money_provider,
+            externalReference:    external_reference,
+            purpose:              `Service fee payment (self-service request by ${agreement.first_name} ${agreement.last_name}): ${monthLabels} (agreement ID ${pr.agreement_id})`,
+            payerId:              req.user.id,
+            periodBreakdown:      breakdown.map(l => ({ period_id: parseInt(l.period_id), amount: parseFloat(l.amount) })),
+        });
+
+        await client.query(`
+            UPDATE service_fee_payment_requests
+            SET    status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2, confirmation_id = $3
+            WHERE  id = $4
+        `, [req.user.id, review_notes || null, confirmationId, id]);
+
+        await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_REQUEST_APPROVED, MODULES.STAFF, {
+            ipAddress:   req.ip,
+            recordType:  'service_fee_payment_requests',
+            recordId:    parseInt(id),
+            newValues:   { confirmationId, referenceCode, totalAmount, months: periodIds.map(pid => periodLabelById[pid]) },
+            description: `Payment request ID ${id} approved: ${referenceCode} — ${agreement.first_name} ${agreement.last_name}: ${totalAmount} (${monthLabels})`,
+            client,
+        });
+
+        notify({
+            userId: agreement.user_id,
+            type:   'SERVICE_FEE_PAYMENT_REQUEST_APPROVED',
+            title:  'Your payment request was approved',
+            body:   `Your request for ${monthLabels} (${totalAmount}) was approved and is awaiting your confirmation. Reference: ${referenceCode}.`,
+            link:       '/service-fees',
+            module:     'STAFF',
+            recordType: 'service_fee_payment_requests',
+            recordId:   parseInt(id),
+        }).catch(() => {});
+
+        sendSuccess(res, {
+            status: 'APPROVED',
+            confirmation_id: confirmationId,
+            reference: referenceCode,
+        }, `Payment request approved — awaiting ${agreement.first_name}'s confirmation. Reference: ${referenceCode}`);
+    });
+});
+
+// POST /api/service-fees/payment-requests/:id/reject
+const rejectPaymentRequest = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { review_notes } = req.body;
+    if (!review_notes || !review_notes.trim()) {
+        throw createError.badRequest('A reason is required to reject a payment request');
+    }
+
+    const result = await query(`
+        UPDATE service_fee_payment_requests
+        SET    status = 'REJECTED', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+        WHERE  id = $3 AND status = 'PENDING'
+        RETURNING id, agreement_id
+    `, [req.user.id, review_notes.trim(), id]);
+
+    if (result.rows.length === 0) {
+        throw createError.badRequest('Payment request not found or already reviewed');
+    }
+    const rejected = result.rows[0];
+
+    const agreementResult = await query('SELECT user_id FROM service_fee_agreements WHERE id = $1', [rejected.agreement_id]);
+    const recipientId = agreementResult.rows.length > 0 ? agreementResult.rows[0].user_id : null;
+
+    await logAction(req.user.id, ACTIONS.SERVICE_FEE_PAYMENT_REQUEST_REJECTED, MODULES.STAFF, {
+        ipAddress:   req.ip,
+        recordType:  'service_fee_payment_requests',
+        recordId:    parseInt(id),
+        description: `Payment request ID ${id} rejected: ${review_notes.trim()}`,
+    });
+
+    if (recipientId) {
+        notify({
+            userId: recipientId,
+            type:   'SERVICE_FEE_PAYMENT_REQUEST_REJECTED',
+            title:  'Your payment request was declined',
+            body:   `Your service fee payment request was not approved. Reason: ${review_notes.trim()}`,
+            link:       '/service-fees',
+            module:     'STAFF',
+            recordType: 'service_fee_payment_requests',
+            recordId:   parseInt(id),
+        }).catch(() => {});
+    }
+
+    sendSuccess(res, null, 'Payment request rejected');
+});
+
+// ============================================================================
+// SELF-SERVICE — ADVANCES (v1.53.0)
+// An advance against future service fee earnings. Once approved AND
+// its disbursement confirmed received, it's recovered in full from the
+// very next unpaid month(s), oldest-future-first, as an internal
+// accounting offset — never applied while merely "approved" but not
+// yet confirmed.
+// ============================================================================
+
+// POST /api/service-fees/agreements/:id/advances
+const requestAdvance = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { amount, reason } = req.body;
+
+    if (!(parseFloat(amount) > 0)) {
+        throw createError.badRequest('A valid advance amount is required');
+    }
+    if (!reason || !reason.trim()) {
+        throw createError.badRequest('A reason is required to request an advance');
+    }
+
+    const agreementResult = await query(`
+        SELECT a.*, u.first_name, u.last_name
+        FROM   service_fee_agreements a
+        JOIN   users u ON u.id = a.user_id
+        WHERE  a.id = $1
+    `, [id]);
+    if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+    const agreement = agreementResult.rows[0];
+
+    if (agreement.user_id !== req.user.id) {
+        throw createError.forbidden('You can only request an advance on your own service fee agreement');
+    }
+    if (agreement.status !== 'ACTIVE') {
+        throw createError.badRequest('This agreement is no longer active');
+    }
+
+    const result = await query(`
+        INSERT INTO service_fee_advances (agreement_id, amount, reason, requested_by)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+    `, [id, parseFloat(amount), reason.trim(), req.user.id]);
+    const advanceId = result.rows[0].id;
+
+    await logAction(req.user.id, ACTIONS.SERVICE_FEE_ADVANCE_REQUESTED, MODULES.STAFF, {
+        ipAddress:   req.ip,
+        recordType:  'service_fee_advances',
+        recordId:    advanceId,
+        newValues:   { agreement_id: parseInt(id), amount: parseFloat(amount), reason: reason.trim() },
+        description: `Service fee advance requested by ${agreement.first_name} ${agreement.last_name}: ${amount} — ${reason.trim()}`,
+    });
+
+    const treasurers = await getTreasurers();
+    notifyMany(treasurers, 'SERVICE_FEE_ADVANCE_REQUESTED', () => ({
+        title: 'Service fee advance requested',
+        body:  `${agreement.first_name} ${agreement.last_name} requested an advance of ${amount}: ${reason.trim()}`,
+        link:       '/service-fees',
+        module:     'STAFF',
+        recordType: 'service_fee_advances',
+        recordId:   advanceId,
+    })).catch(() => {});
+
+    sendCreated(res, {
+        advance_id: advanceId,
+        status: 'PENDING',
+    }, 'Advance request submitted — awaiting Treasurer approval');
+});
+
+// GET /api/service-fees/my-advances
+const getMyAdvances = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT adv.id, adv.amount, adv.reason, adv.status, adv.reviewed_at, adv.review_notes,
+               adv.outstanding_balance, adv.disbursed_at, adv.created_at,
+               pc.status AS confirmation_status
+        FROM   service_fee_advances adv
+        JOIN   service_fee_agreements a ON a.id = adv.agreement_id
+        LEFT JOIN payment_confirmations pc ON pc.id = adv.confirmation_id
+        WHERE  a.user_id = $1
+        ORDER  BY adv.created_at DESC
+    `, [req.user.id]);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================================
+// TREASURY — ADVANCE APPROVAL (v1.53.0)
+// ============================================================================
+
+// GET /api/service-fees/advances?status=
+const listAdvances = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const conditions = [];
+    const params = [];
+    if (status) { params.push(status.toUpperCase()); conditions.push(`adv.status = $${params.length}`); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const result = await query(`
+        SELECT adv.id, adv.agreement_id, adv.amount, adv.reason, adv.status,
+               adv.reviewed_at, adv.review_notes, adv.outstanding_balance, adv.disbursed_at, adv.created_at,
+               u.first_name || ' ' || u.last_name AS user_name,
+               c.code AS currency_code
+        FROM   service_fee_advances adv
+        JOIN   service_fee_agreements a ON a.id = adv.agreement_id
+        JOIN   users u ON u.id = a.user_id
+        JOIN   currencies c ON c.id = a.currency_id
+        ${where}
+        ORDER  BY adv.created_at DESC
+    `, params);
+    sendSuccess(res, result.rows);
+});
+
+// GET /api/service-fees/advances/:id/recovery-preview
+// Pre-fills the editable recovery breakdown the Treasurer sees before
+// approving — computed the same way approveAdvance itself will, via
+// computeAdvanceRecoverySchedule (oldest-future-first, generating
+// additional future periods first if the existing ones can't fully
+// absorb the amount).
+const getAdvanceRecoveryPreview = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const breakdown = await withTransaction(async (client) => {
+        const advResult = await client.query('SELECT * FROM service_fee_advances WHERE id = $1', [id]);
+        if (advResult.rows.length === 0) throw createError.notFound('Advance not found');
+        const advance = advResult.rows[0];
+
+        const agreementResult = await client.query('SELECT * FROM service_fee_agreements WHERE id = $1', [advance.agreement_id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreement = agreementResult.rows[0];
+
+        const { breakdown: schedule } = await serviceFeeService.computeAdvanceRecoverySchedule(client, agreement, advance.amount);
+        return schedule;
+    });
+
+    sendSuccess(res, { breakdown });
+});
+
+// POST /api/service-fees/advances/:id/approve
+// recovery_breakdown is whatever the Treasurer submits back after
+// reviewing/editing the recovery-preview breakdown above. Approving
+// creates a real payment_confirmations entry (SERVICE_FEE_ADVANCE)
+// through the same two-step confirm flow every other payment already
+// uses — the recovery itself is only actually applied once the
+// recipient confirms they received the advance.
+const approveAdvance = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { recovery_breakdown, payment_date, payment_method, mobile_money_provider, external_reference, review_notes } = req.body;
+
+    if (!Array.isArray(recovery_breakdown) || recovery_breakdown.length === 0) {
+        throw createError.badRequest('A recovery breakdown across at least one future month is required');
+    }
+    for (const line of recovery_breakdown) {
+        if (!line.period_id || !(parseFloat(line.amount) > 0)) {
+            throw createError.badRequest('Each month in the recovery breakdown needs a valid period and a positive amount');
+        }
+    }
+
+    await withTransaction(async (client) => {
+        const advResult = await client.query('SELECT * FROM service_fee_advances WHERE id = $1 FOR UPDATE', [id]);
+        if (advResult.rows.length === 0) throw createError.notFound('Advance not found');
+        const advance = advResult.rows[0];
+        if (advance.status !== 'PENDING') {
+            throw createError.badRequest(`This advance is already ${advance.status.toLowerCase()}`);
+        }
+
+        const agreementResult = await client.query(`
+            SELECT a.*, u.first_name, u.last_name
+            FROM   service_fee_agreements a
+            JOIN   users u ON u.id = a.user_id
+            WHERE  a.id = $1 FOR UPDATE
+        `, [advance.agreement_id]);
+        if (agreementResult.rows.length === 0) throw createError.notFound('Service fee agreement not found');
+        const agreement = agreementResult.rows[0];
+
+        const periodIds = recovery_breakdown.map(l => parseInt(l.period_id));
+        const ownedPeriods = await client.query(
+            `SELECT id, period FROM service_fee_monthly_periods WHERE id = ANY($1::int[]) AND agreement_id = $2`,
+            [periodIds, advance.agreement_id]
+        );
+        if (ownedPeriods.rows.length !== new Set(periodIds).size) {
+            throw createError.badRequest('One or more selected recovery months do not belong to this agreement');
+        }
+        const periodLabelById = Object.fromEntries(ownedPeriods.rows.map(p => [p.id, p.period]));
+        const monthLabels = periodIds.map(pid => periodLabelById[pid]).filter(Boolean).join(', ');
+
+        const entryDate = payment_date || new Date().toISOString().split('T')[0];
+
+        const { id: confirmationId, referenceCode } = await createServiceFeeAdvanceConfirmation(client, {
+            agreement,
+            amount:               parseFloat(advance.amount),
+            entryDate,
+            paymentMethod:        payment_method,
+            mobileMoneyProvider:  mobile_money_provider,
+            externalReference:    external_reference,
+            purpose:              `Service fee advance — ${agreement.first_name} ${agreement.last_name}: ${advance.amount}, to be recovered from ${monthLabels} (agreement ID ${advance.agreement_id})`,
+            payerId:              req.user.id,
+            advanceId:            advance.id,
+            recoveryBreakdown:    recovery_breakdown.map(l => ({ period_id: parseInt(l.period_id), amount: parseFloat(l.amount) })),
+        });
+
+        await client.query(`
+            UPDATE service_fee_advances
+            SET    status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+            WHERE  id = $3
+        `, [req.user.id, review_notes || null, id]);
+
+        await logAction(req.user.id, ACTIONS.SERVICE_FEE_ADVANCE_APPROVED, MODULES.STAFF, {
+            ipAddress:   req.ip,
+            recordType:  'service_fee_advances',
+            recordId:    parseInt(id),
+            newValues:   { confirmationId, referenceCode, amount: advance.amount, recoveryMonths: periodIds.map(pid => periodLabelById[pid]) },
+            description: `Advance ID ${id} approved: ${referenceCode} — ${agreement.first_name} ${agreement.last_name}: ${advance.amount}, recovered from ${monthLabels}`,
+            client,
+        });
+
+        notify({
+            userId: agreement.user_id,
+            type:   'SERVICE_FEE_ADVANCE_APPROVED',
+            title:  'Your advance request was approved',
+            body:   `Your advance of ${advance.amount} was approved and is awaiting your confirmation. It will be recovered from ${monthLabels}. Reference: ${referenceCode}.`,
+            link:       '/service-fees',
+            module:     'STAFF',
+            recordType: 'service_fee_advances',
+            recordId:   parseInt(id),
+        }).catch(() => {});
+
+        sendSuccess(res, {
+            status: 'APPROVED',
+            confirmation_id: confirmationId,
+            reference: referenceCode,
+        }, `Advance approved — awaiting ${agreement.first_name}'s confirmation. Reference: ${referenceCode}`);
+    });
+});
+
+// POST /api/service-fees/advances/:id/reject
+const rejectAdvance = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { review_notes } = req.body;
+    if (!review_notes || !review_notes.trim()) {
+        throw createError.badRequest('A reason is required to reject an advance request');
+    }
+
+    const result = await query(`
+        UPDATE service_fee_advances
+        SET    status = 'REJECTED', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+        WHERE  id = $3 AND status = 'PENDING'
+        RETURNING id, agreement_id, amount
+    `, [req.user.id, review_notes.trim(), id]);
+
+    if (result.rows.length === 0) {
+        throw createError.badRequest('Advance request not found or already reviewed');
+    }
+    const rejected = result.rows[0];
+
+    const agreementResult = await query('SELECT user_id FROM service_fee_agreements WHERE id = $1', [rejected.agreement_id]);
+    const recipientId = agreementResult.rows.length > 0 ? agreementResult.rows[0].user_id : null;
+
+    await logAction(req.user.id, ACTIONS.SERVICE_FEE_ADVANCE_REJECTED, MODULES.STAFF, {
+        ipAddress:   req.ip,
+        recordType:  'service_fee_advances',
+        recordId:    parseInt(id),
+        description: `Advance ID ${id} rejected: ${review_notes.trim()}`,
+    });
+
+    if (recipientId) {
+        notify({
+            userId: recipientId,
+            type:   'SERVICE_FEE_ADVANCE_REJECTED',
+            title:  'Your advance request was declined',
+            body:   `Your advance request for ${rejected.amount} was not approved. Reason: ${review_notes.trim()}`,
+            link:       '/service-fees',
+            module:     'STAFF',
+            recordType: 'service_fee_advances',
+            recordId:   parseInt(id),
+        }).catch(() => {});
+    }
+
+    sendSuccess(res, null, 'Advance request rejected');
 });
 
 // ============================================================================
@@ -578,7 +1281,43 @@ const getMyAgreement = asyncHandler(async (req, res) => {
     // Service Fee" chart tab.
     const { periods, summary } = await serviceFeeService.computeAgreementStats(agreement.id);
 
-    sendSuccess(res, { ...agreement, payments: paymentsResult.rows, periods, stats: summary });
+    // v1.53.0 — this person's own payment-request and advance history,
+    // for the "My Service Fee" tab's Request Payment/Request Advance
+    // sections (status of anything pending/past).
+    const paymentRequestsResult = await query(`
+        SELECT pr.id, pr.status, pr.notes, pr.reviewed_at, pr.review_notes, pr.created_at,
+               pc.status AS confirmation_status,
+               COALESCE(
+                   json_agg(json_build_object('period', p.period, 'amount', prp.amount) ORDER BY p.period)
+                   FILTER (WHERE p.id IS NOT NULL), '[]'
+               ) AS periods
+        FROM   service_fee_payment_requests pr
+        LEFT JOIN service_fee_payment_request_periods prp ON prp.request_id = pr.id
+        LEFT JOIN service_fee_monthly_periods p ON p.id = prp.period_id
+        LEFT JOIN payment_confirmations pc ON pc.id = pr.confirmation_id
+        WHERE  pr.agreement_id = $1
+        GROUP  BY pr.id, pc.status
+        ORDER  BY pr.created_at DESC
+    `, [agreement.id]);
+
+    const advancesResult = await query(`
+        SELECT adv.id, adv.amount, adv.reason, adv.status, adv.reviewed_at, adv.review_notes,
+               adv.outstanding_balance, adv.disbursed_at, adv.created_at,
+               pc.status AS confirmation_status
+        FROM   service_fee_advances adv
+        LEFT JOIN payment_confirmations pc ON pc.id = adv.confirmation_id
+        WHERE  adv.agreement_id = $1
+        ORDER  BY adv.created_at DESC
+    `, [agreement.id]);
+
+    sendSuccess(res, {
+        ...agreement,
+        payments: paymentsResult.rows,
+        periods,
+        stats: summary,
+        payment_requests: paymentRequestsResult.rows,
+        advances: advancesResult.rows,
+    });
 });
 
 // ============================================================================
@@ -865,7 +1604,20 @@ module.exports = {
     getOutstandingPeriods,
     settlePastMonths,
     overridePeriod,
+    excludePeriod,
+    includePeriod,
     getTreasuryStats,
+    requestPayment,
+    getMyPaymentRequests,
+    listPaymentRequests,
+    approvePaymentRequest,
+    rejectPaymentRequest,
+    requestAdvance,
+    getMyAdvances,
+    listAdvances,
+    getAdvanceRecoveryPreview,
+    approveAdvance,
+    rejectAdvance,
     getMyAgreement,
     requestReimbursement,
     getMyReimbursements,

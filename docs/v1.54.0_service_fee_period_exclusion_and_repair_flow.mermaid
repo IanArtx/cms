@@ -1,0 +1,52 @@
+flowchart TD
+    subgraph A["1. Bug — a confirmed payment with zero periods touched"]
+        A1["recordPayment creates\npayment_confirmations row"] --> A2["getOutstandingPeriodsForUpdate\nruns AT THAT EXACT MOMENT"]
+        A2 --> A3{"Any outstanding\nperiod found?"}
+        A3 -->|No — likely, if periods\nhadn't caught up yet| A4["cascadeAmountAcrossPeriods\nreturns EMPTY breakdown"]
+        A4 --> A5["createServiceFeePaymentConfirmation:\nperiodBreakdown.length === 0,\nno confirmation_periods rows written"]
+        A5 --> A6["Recipient confirms later"]
+        A6 --> A7["confirmPayment: nothing stored\nto read, applyPaymentToPeriods\nNEVER CALLED"]
+        A7 --> A8["Transaction + service_fee_payments\nrow post correctly\n(visible in Payment History)"]
+        A7 --> A9["Every monthly period stays\nUNPAID — orphaned payment"]
+    end
+
+    subgraph B["2. Repair script — system-wide, safe to re-run"]
+        B1["node backfill_v1.54.0_orphaned_service_fee_payments.js\n(run manually against live DB)"] --> B2["Find every payment where\namount - SUM(applications.amount)\n> epsilon"]
+        B2 --> B3["For each, oldest payment_date first\nper agreement:"]
+        B3 --> B4["generateMonthlyPeriodsForAgreement\n(idempotent, catches up to today)"]
+        B4 --> B5["getOutstandingPeriodsForUpdate\n+ cascadeAmountAcrossPeriods\non the UNAPPLIED remainder"]
+        B5 --> B6{"Any outstanding\nperiod now exists?"}
+        B6 -->|Yes| B7["applyPaymentToPeriods —\nsame function live payments use"]
+        B6 -->|No, e.g. all PAID/EXCLUDED| B8["Left as-is, reported\nfor manual review"]
+        B7 --> B9["Periods now correctly\nreflect the real payment"]
+    end
+
+    subgraph C["3. Exclude a month (new)"]
+        C1["Treasurer opens Monthly Breakdown,\nclicks 'Exclude' on a non-PAID month"] --> C2["Reason required (textarea)"]
+        C2 --> C3["PATCH .../periods/:periodId/exclude"]
+        C3 --> C4["excludePeriod: status -> EXCLUDED\n+ excluded_reason/by/at\namount_due & amount_paid UNTOUCHED"]
+        C4 --> C5["Agreement holder notified:\nSERVICE_FEE_PERIOD_EXCLUDED"]
+    end
+
+    subgraph D["4. Restore an excluded month (reversal)"]
+        D1["Treasurer clicks 'Restore'\non an EXCLUDED month"] --> D2["Reason required (textarea)"]
+        D2 --> D3["PATCH .../periods/:periodId/include"]
+        D3 --> D4["includePeriod: status recomputed via\nstatusForAmounts(amount_due, amount_paid)\n— pure recompute, no data to restore"]
+        D4 --> D5["Agreement holder notified:\nSERVICE_FEE_PERIOD_INCLUDED"]
+    end
+
+    subgraph E["5. Every outstanding/overdue/recovery query fixed"]
+        E1["computeTreasuryAggregateStats:\ntotal_outstanding now filters\nWHERE status != 'EXCLUDED'"] --> E5["Treasury Overview no longer\noverstates outstanding balances"]
+        E2["computeAgreementStats:\nnew excluded_months/total_excluded"] --> E5
+        E3["listAgreements unpaid_period_count:\nstatus NOT IN (PAID, EXCLUDED)"] --> E5
+        E4["computeAdvanceRecoverySchedule\nfuture periods: status NOT IN\n(PAID, EXCLUDED)"] --> E6["An excluded future month can\nnever silently absorb an\nadvance recovery"]
+    end
+
+    style A9 fill:#fee2e2,stroke:#dc2626
+    style B7 fill:#ecfdf5,stroke:#059669
+    style B9 fill:#ecfdf5,stroke:#059669
+    style B8 fill:#fef3c7,stroke:#d97706
+    style C4 fill:#dbeafe,stroke:#2563eb
+    style D4 fill:#dbeafe,stroke:#2563eb
+    style E5 fill:#ecfdf5,stroke:#059669
+    style E6 fill:#ecfdf5,stroke:#059669

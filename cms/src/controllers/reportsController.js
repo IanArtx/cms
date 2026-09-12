@@ -24,6 +24,7 @@ const {
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { getQuarterForDate } = require('../services/fiscalService');
+const glService = require('../services/glService');
 
 // ============================================================
 // ATTACH THE CONFIGURED FISCAL QUARTER (v1.25.0) a report's period
@@ -465,6 +466,142 @@ const getAuditLog = asyncHandler(async (req, res) => {
     sendPaginated(res, result.rows, total, page, limit);
 });
 
+// ============================================================
+// GENERAL LEDGER SUITE (v1.55.0)
+//
+// A professional accounting reports layer built on top of the
+// existing single-leg `transactions` ledger — see glService.js's own
+// header comment for the full derivation rules. Named "GL Accounts"
+// throughout (not "Chart of Accounts") to avoid colliding with the
+// pre-existing getChartOfAccounts above, which is a completely
+// different, older feature (a live snapshot of every money pool).
+//
+// Every report here defaults its date range/as-of date to the
+// current fiscal year if not given, and is gated the same way every
+// other report in this module already is (FINANCE_VIEW_ALL to view)
+// — except the GL account mapping itself, which is an accounting-
+// policy setting, not a report, and is gated SYSTEM_CONFIG to view
+// or edit (matching Accounts/Currencies configuration elsewhere).
+// ============================================================
+
+const todayIsoDate = () => new Date().toISOString().split('T')[0];
+const startOfYearIsoDate = (dateStr) => `${new Date(dateStr).getFullYear()}-01-01`;
+
+// GET /api/reports/gl-accounts
+const getGLAccounts = asyncHandler(async (req, res) => {
+    const chartOfAccounts = await glService.getChartOfAccounts();
+    sendSuccess(res, chartOfAccounts);
+});
+
+// PATCH /api/reports/gl-accounts/mapping/:inflowType
+const updateGLAccountMapping = asyncHandler(async (req, res) => {
+    const { inflowType } = req.params;
+    const { gl_account_id, notes } = req.body;
+
+    if (!gl_account_id || !(parseInt(gl_account_id) > 0)) {
+        throw createError.badRequest('A valid GL account is required');
+    }
+
+    const updated = await glService.updateInflowTypeMapping({
+        inflowType, glAccountId: parseInt(gl_account_id), notes, updatedBy: req.user.id,
+    });
+    if (!updated) throw createError.notFound(`No GL mapping exists for inflow type '${inflowType}'`);
+
+    await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        recordType:  'gl_inflow_type_mapping',
+        recordId:    updated.id,
+        newValues:   { inflowType, glAccountId: updated.gl_account_id },
+        description: `GL classification changed: '${inflowType}' now maps to GL account #${updated.gl_account_id}`,
+    });
+
+    sendSuccess(res, updated, `'${inflowType}' reclassified`);
+});
+
+// GET /api/reports/trial-balance?account_id=&as_of_date=
+const getTrialBalance = asyncHandler(async (req, res) => {
+    const { account_id, as_of_date } = req.query;
+    const asOfDate = as_of_date || todayIsoDate();
+
+    const report = await glService.computeTrialBalance({
+        accountId: account_id ? parseInt(account_id) : null,
+        asOfDate,
+    });
+
+    await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
+        ipAddress: req.ip, description: `Trial Balance generated as of ${asOfDate}`,
+    });
+    sendSuccess(res, report, `Trial Balance as of ${asOfDate}`);
+});
+
+// GET /api/reports/general-ledger?gl_account_id=&account_id=&from_date=&to_date=
+const getGeneralLedger = asyncHandler(async (req, res) => {
+    const { gl_account_id, account_id, from_date, to_date } = req.query;
+    const toDate = to_date || todayIsoDate();
+    const fromDate = from_date || startOfYearIsoDate(toDate);
+
+    const report = await glService.computeGeneralLedger({
+        glAccountId: gl_account_id ? parseInt(gl_account_id) : null,
+        accountId:   account_id ? parseInt(account_id) : null,
+        fromDate, toDate,
+    });
+
+    await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
+        ipAddress: req.ip, description: `General Ledger generated for ${fromDate} to ${toDate}`,
+    });
+    sendSuccess(res, report, `General Ledger, ${fromDate} to ${toDate}`);
+});
+
+// GET /api/reports/balance-sheet?account_id=&as_of_date=
+const getBalanceSheet = asyncHandler(async (req, res) => {
+    const { account_id, as_of_date } = req.query;
+    const asOfDate = as_of_date || todayIsoDate();
+
+    const report = await glService.computeBalanceSheet({
+        accountId: account_id ? parseInt(account_id) : null,
+        asOfDate,
+    });
+
+    await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
+        ipAddress: req.ip, description: `Balance Sheet generated as of ${asOfDate}`,
+    });
+    sendSuccess(res, report, `Balance Sheet as of ${asOfDate}`);
+});
+
+// GET /api/reports/income-statement?account_id=&from_date=&to_date=
+const getIncomeStatement = asyncHandler(async (req, res) => {
+    const { account_id, from_date, to_date } = req.query;
+    const toDate = to_date || todayIsoDate();
+    const fromDate = from_date || startOfYearIsoDate(toDate);
+
+    const report = await glService.computeIncomeStatement({
+        accountId: account_id ? parseInt(account_id) : null,
+        fromDate, toDate,
+    });
+
+    await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
+        ipAddress: req.ip, description: `Income Statement generated for ${fromDate} to ${toDate}`,
+    });
+    sendSuccess(res, report, `Income Statement, ${fromDate} to ${toDate}`);
+});
+
+// GET /api/reports/cash-flow-statement?account_id=&from_date=&to_date=
+const getCashFlowStatement = asyncHandler(async (req, res) => {
+    const { account_id, from_date, to_date } = req.query;
+    const toDate = to_date || todayIsoDate();
+    const fromDate = from_date || startOfYearIsoDate(toDate);
+
+    const report = await glService.computeCashFlowStatement({
+        accountId: account_id ? parseInt(account_id) : null,
+        fromDate, toDate,
+    });
+
+    await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
+        ipAddress: req.ip, description: `Cash Flow Statement generated for ${fromDate} to ${toDate}`,
+    });
+    sendSuccess(res, report, `Cash Flow Statement, ${fromDate} to ${toDate}`);
+});
+
 module.exports = {
     getChartOfAccounts,
     getGeneralReport,
@@ -474,4 +611,11 @@ module.exports = {
     sendBroadcastAnnouncement,
     getReportLog,
     getAuditLog,
+    getGLAccounts,
+    updateGLAccountMapping,
+    getTrialBalance,
+    getGeneralLedger,
+    getBalanceSheet,
+    getIncomeStatement,
+    getCashFlowStatement,
 };

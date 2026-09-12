@@ -131,4 +131,91 @@ router.post('/broadcast',
     reportsController.sendBroadcastAnnouncement
 );
 
+// ============================================================
+// GENERAL LEDGER SUITE (v1.55.0)
+// Prefix stays /api/reports — "GL Accounts" deliberately, not
+// "chart-of-accounts", which the older /chart-of-accounts route
+// above already uses for a different, unrelated snapshot report.
+// ============================================================
+
+// GET /api/reports/gl-accounts — the chart of accounts + every
+// inflow_type's current classification. Gated SYSTEM_CONFIG (an
+// accounting-policy setting, not a day-to-day finance report).
+router.get('/gl-accounts',
+    requirePermissions(['SYSTEM_CONFIG']),
+    reportsController.getGLAccounts
+);
+
+// PATCH /api/reports/gl-accounts/mapping/:inflowType — reclassify
+// one inflow_type to a different GL account.
+router.patch('/gl-accounts/mapping/:inflowType',
+    requirePermissions(['SYSTEM_CONFIG']),
+    [
+        param('inflowType').trim().notEmpty(),
+        body('gl_account_id').isInt({ min: 1 }).withMessage('A valid GL account is required'),
+        body('notes').optional({ checkFalsy: true }).isString(),
+    ],
+    validateRequest,
+    reportsController.updateGLAccountMapping
+);
+
+// GET /api/reports/trial-balance?account_id=&as_of_date=
+router.get('/trial-balance',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('as_of_date').optional().isISO8601().withMessage('Invalid date'),
+    ],
+    validateRequest,
+    reportsController.getTrialBalance
+);
+
+// GET /api/reports/general-ledger?gl_account_id=&account_id=&from_date=&to_date=
+router.get('/general-ledger',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('gl_account_id').optional().isInt({ min: 1 }),
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('Invalid from date'),
+        query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+    ],
+    validateRequest,
+    reportsController.getGeneralLedger
+);
+
+// GET /api/reports/balance-sheet?account_id=&as_of_date=
+router.get('/balance-sheet',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('as_of_date').optional().isISO8601().withMessage('Invalid date'),
+    ],
+    validateRequest,
+    reportsController.getBalanceSheet
+);
+
+// GET /api/reports/income-statement?account_id=&from_date=&to_date=
+router.get('/income-statement',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('Invalid from date'),
+        query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+    ],
+    validateRequest,
+    reportsController.getIncomeStatement
+);
+
+// GET /api/reports/cash-flow-statement?account_id=&from_date=&to_date=
+router.get('/cash-flow-statement',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    [
+        query('account_id').optional().isInt({ min: 1 }),
+        query('from_date').optional().isISO8601().withMessage('Invalid from date'),
+        query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+    ],
+    validateRequest,
+    reportsController.getCashFlowStatement
+);
+
 module.exports = router;

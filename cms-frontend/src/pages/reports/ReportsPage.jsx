@@ -468,10 +468,16 @@ const ReportsPage = () => {
                 subtitle="Financial reports — general company and personal"
                 actions={
                     hasPermission('FINANCE_VIEW_ALL') && (
-                        <Link to="/reports/chart-of-accounts" className="btn-secondary flex items-center gap-2">
-                            <TableCellsIcon className="h-4 w-4" />
-                            Chart of Accounts
-                        </Link>
+                        <div className="flex gap-2">
+                            <Link to="/reports/chart-of-accounts" className="btn-secondary flex items-center gap-2">
+                                <TableCellsIcon className="h-4 w-4" />
+                                Chart of Accounts
+                            </Link>
+                            <Link to="/reports/general-ledger" className="btn-secondary flex items-center gap-2">
+                                <TableCellsIcon className="h-4 w-4" />
+                                Financial Statements
+                            </Link>
+                        </div>
                     )
                 }
             />

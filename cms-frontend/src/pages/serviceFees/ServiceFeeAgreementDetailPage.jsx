@@ -34,9 +34,13 @@ import useChartTheme from '../../hooks/useChartTheme';
 import {
     CreateAgreementModal, TerminateAgreementModal, RecordPaymentModal,
     SettlePastMonthsModal, OverridePeriodModal,
+    ApprovePaymentRequestModal, RejectPaymentRequestModal,
+    ApproveAdvanceModal, RejectAdvanceModal,
+    ExcludePeriodModal, IncludePeriodModal,
 } from './ServiceFeesPage';
 import {
     ArrowLeftIcon, BanknotesIcon, PencilIcon, NoSymbolIcon, ArrowDownTrayIcon, CalendarDaysIcon,
+    CheckIcon, XMarkIcon,
 } from '@heroicons/react/24/outline';
 
 const ServiceFeeAgreementDetailPage = () => {
@@ -58,6 +62,12 @@ const ServiceFeeAgreementDetailPage = () => {
     const [showPay, setShowPay] = useState(false);
     const [showSettle, setShowSettle] = useState(false);
     const [overridingPeriod, setOverridingPeriod] = useState(null);
+    const [excludingPeriod, setExcludingPeriod] = useState(null);
+    const [includingPeriod, setIncludingPeriod] = useState(null);
+    const [approvingPaymentRequest, setApprovingPaymentRequest] = useState(null);
+    const [rejectingPaymentRequest, setRejectingPaymentRequest] = useState(null);
+    const [approvingAdvance, setApprovingAdvance] = useState(null);
+    const [rejectingAdvance, setRejectingAdvance] = useState(null);
     const theme = useChartTheme();
 
     const loadAgreement = useCallback(async () => {
@@ -105,14 +115,21 @@ const ServiceFeeAgreementDetailPage = () => {
 
     const payments = agreement.payments || [];
     const amendments = agreement.amendments || [];
+    const paymentRequests = agreement.payment_requests || [];
+    const advances = agreement.advances || [];
     const periods = agreement.periods || [];
     const stats = agreement.stats || null;
     const totalPaid = payments.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
-    const hasOutstanding = periods.some(p => p.status !== 'PAID');
+    // v1.54.0 — an EXCLUDED month is neither PAID nor genuinely
+    // outstanding (it was deliberately waived), so it must be left out
+    // of both hasOutstanding (which drives whether "Settle Past
+    // Months" shows) and the chart's "outstanding" segment.
+    const hasOutstanding = periods.some(p => p.status !== 'PAID' && p.status !== 'EXCLUDED');
     const chartData = periods.map(p => ({
         period: p.period,
-        paid: parseFloat(p.amount_paid || 0),
-        outstanding: Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+        paid: p.status === 'EXCLUDED' ? 0 : parseFloat(p.amount_paid || 0),
+        outstanding: p.status === 'EXCLUDED' ? 0 : Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
+        excluded: p.status === 'EXCLUDED' ? parseFloat(p.amount_due || 0) : 0,
     }));
 
     const handleDownload = () => {
@@ -226,7 +243,8 @@ const ServiceFeeAgreementDetailPage = () => {
                                         <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
                                         <Tooltip {...theme.tooltipProps} />
                                         <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} radius={[0, 0, 0, 0]} />
-                                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
+                                        <Bar dataKey="excluded" stackId="a" name="Excluded" fill={theme.neutral} radius={[4, 4, 0, 0]} />
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>
@@ -255,11 +273,29 @@ const ServiceFeeAgreementDetailPage = () => {
                                             <td className="py-2 text-right text-gray-500">{parseFloat(p.amount_paid).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
                                             <td className="py-2"><StatusBadge status={p.status} /></td>
                                             {canManage && (
-                                                <td className="py-2 text-right">
-                                                    <button onClick={() => setOverridingPeriod(p)}
-                                                        className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
-                                                        Override
-                                                    </button>
+                                                <td className="py-2 text-right space-x-3 whitespace-nowrap">
+                                                    {p.status === 'EXCLUDED' ? (
+                                                        <button onClick={() => setIncludingPeriod(p)}
+                                                            className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
+                                                            Restore
+                                                        </button>
+                                                    ) : p.status !== 'PAID' ? (
+                                                        <>
+                                                            <button onClick={() => setOverridingPeriod(p)}
+                                                                className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
+                                                                Override
+                                                            </button>
+                                                            <button onClick={() => setExcludingPeriod(p)}
+                                                                className="text-xs text-gray-500 hover:text-gray-700 hover:underline">
+                                                                Exclude
+                                                            </button>
+                                                        </>
+                                                    ) : (
+                                                        <button onClick={() => setOverridingPeriod(p)}
+                                                            className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
+                                                            Override
+                                                        </button>
+                                                    )}
                                                 </td>
                                             )}
                                         </tr>
@@ -273,7 +309,7 @@ const ServiceFeeAgreementDetailPage = () => {
 
             {/* Personal stats summary (v1.52.0) */}
             {stats && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
                     <div className="card py-3">
                         <p className="text-xs text-gray-400">Paid Months</p>
                         <p className="text-lg font-bold text-green-600 mt-0.5">{stats.paid_months}</p>
@@ -281,6 +317,10 @@ const ServiceFeeAgreementDetailPage = () => {
                     <div className="card py-3">
                         <p className="text-xs text-gray-400">Unpaid / Partial</p>
                         <p className="text-lg font-bold text-red-500 mt-0.5">{stats.unpaid_months + stats.partial_months}</p>
+                    </div>
+                    <div className="card py-3">
+                        <p className="text-xs text-gray-400">Excluded Months</p>
+                        <p className="text-lg font-bold text-blue-500 mt-0.5">{stats.excluded_months || 0}</p>
                     </div>
                     <div className="card py-3">
                         <p className="text-xs text-gray-400">Most Paid Month</p>
@@ -362,6 +402,80 @@ const ServiceFeeAgreementDetailPage = () => {
                 )}
             </div>
 
+            {/* Payment Requests & Advances (v1.53.0) — this agreement's
+                own self-service history, with Approve/Reject actions
+                right here for anything still PENDING. */}
+            {(paymentRequests.length > 0 || advances.length > 0) && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                    <div className="card">
+                        <h3 className="section-title mb-4">Payment Requests</h3>
+                        {paymentRequests.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-6">No payment requests yet</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {paymentRequests.map(r => (
+                                    <div key={r.id} className="flex items-center justify-between text-sm py-2 border-b border-gray-100 last:border-0">
+                                        <div>
+                                            <p className="text-gray-900">{(r.periods || []).map(p => p.period).join(', ') || '—'}</p>
+                                            <p className="text-xs text-gray-400">
+                                                {(r.periods || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <StatusBadge status={r.status} />
+                                            {r.status === 'PENDING' && canManage && (
+                                                <>
+                                                    <button onClick={() => setApprovingPaymentRequest({ ...r, user_name: agreement.user_name, currency_code: agreement.currency_code })}
+                                                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
+                                                        <CheckIcon className="h-4 w-4" />
+                                                    </button>
+                                                    <button onClick={() => setRejectingPaymentRequest(r)}
+                                                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
+                                                        <XMarkIcon className="h-4 w-4" />
+                                                    </button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="card">
+                        <h3 className="section-title mb-4">Advances</h3>
+                        {advances.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-6">No advance requests yet</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {advances.map(a => (
+                                    <div key={a.id} className="flex items-center justify-between text-sm py-2 border-b border-gray-100 last:border-0">
+                                        <div>
+                                            <p className="text-gray-900">{parseFloat(a.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+                                            <p className="text-xs text-gray-400">{a.reason}</p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <StatusBadge status={a.status} />
+                                            {a.status === 'PENDING' && canManage && (
+                                                <>
+                                                    <button onClick={() => setApprovingAdvance({ ...a, user_name: agreement.user_name, currency_code: agreement.currency_code })}
+                                                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Approve">
+                                                        <CheckIcon className="h-4 w-4" />
+                                                    </button>
+                                                    <button onClick={() => setRejectingAdvance(a)}
+                                                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Reject">
+                                                        <XMarkIcon className="h-4 w-4" />
+                                                    </button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
             {/* Details Footer */}
             <div className="card">
                 <h3 className="section-title mb-4">Agreement Details</h3>
@@ -415,6 +529,44 @@ const ServiceFeeAgreementDetailPage = () => {
                 agreement={agreement}
                 period={overridingPeriod}
                 onClose={() => setOverridingPeriod(null)}
+                onSuccess={loadAgreement}
+            />
+            <ExcludePeriodModal
+                isOpen={!!excludingPeriod}
+                agreement={agreement}
+                period={excludingPeriod}
+                onClose={() => setExcludingPeriod(null)}
+                onSuccess={loadAgreement}
+            />
+            <IncludePeriodModal
+                isOpen={!!includingPeriod}
+                agreement={agreement}
+                period={includingPeriod}
+                onClose={() => setIncludingPeriod(null)}
+                onSuccess={loadAgreement}
+            />
+            <ApprovePaymentRequestModal
+                isOpen={!!approvingPaymentRequest}
+                request={approvingPaymentRequest}
+                onClose={() => setApprovingPaymentRequest(null)}
+                onSuccess={loadAgreement}
+            />
+            <RejectPaymentRequestModal
+                isOpen={!!rejectingPaymentRequest}
+                request={rejectingPaymentRequest}
+                onClose={() => setRejectingPaymentRequest(null)}
+                onSuccess={loadAgreement}
+            />
+            <ApproveAdvanceModal
+                isOpen={!!approvingAdvance}
+                advance={approvingAdvance}
+                onClose={() => setApprovingAdvance(null)}
+                onSuccess={loadAgreement}
+            />
+            <RejectAdvanceModal
+                isOpen={!!rejectingAdvance}
+                advance={rejectingAdvance}
+                onClose={() => setRejectingAdvance(null)}
                 onSuccess={loadAgreement}
             />
         </div>

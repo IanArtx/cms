@@ -34,6 +34,7 @@ import MyCapitalCallsPage from './pages/capitalGoals/MyCapitalCallsPage';
 import CapitalCallDetailPage from './pages/capitalGoals/CapitalCallDetailPage';
 import PaymentAcknowledgementsPage from './pages/paymentAcknowledgements/PaymentAcknowledgementsPage';
 import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
+import GeneralLedgerPage from './pages/reports/GeneralLedgerPage';
 import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
 import ReportsPage from './pages/reports/ReportsPage';
@@ -148,6 +149,7 @@ function App() {
                             <Route path="documents" element={<DocumentsPage />} />
                             <Route path="reports" element={<ReportsPage />} />
                             <Route path="reports/chart-of-accounts" element={<ChartOfAccountsPage />} />
+                            <Route path="reports/general-ledger" element={<GeneralLedgerPage />} />
                             <Route path="users" element={<UsersPage />} />
                             <Route path="users/:id/portfolio" element={<MemberPortfolioPage />} />
                             <Route path="portfolio" element={<MemberPortfolioPage />} />

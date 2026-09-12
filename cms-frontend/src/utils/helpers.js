@@ -124,6 +124,10 @@ export const getStatusBadgeClass = (status) => {
         CLOSED:       'badge-blue',
         ACKNOWLEDGED: 'badge-blue',
         TERMINATED:   'badge-blue',
+        // Service Fees (v1.54.0) — a month waived out of the agreement
+        // entirely: deliberately blue/informational rather than red
+        // (not a failure to pay) or green (nothing was actually paid).
+        EXCLUDED:     'badge-blue',
         // Capital Goal Calls (v1.43.0) — a shareholder hasn't pledged
         // anything yet (deliberately neutral, not red — not pledging at
         // all is never fined and shouldn't visually read as a failure).

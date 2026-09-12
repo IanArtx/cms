@@ -1,0 +1,58 @@
+flowchart TD
+    subgraph A["1. Self-service Payment Request"]
+        A1["Staffer opens 'Request Payment'\non My Service Fee tab"] --> A2["Picks one or more of their own\nUNPAID/PARTIAL months\n(own periods, no VIEW permission needed)"]
+        A2 --> A3["POST .../payment-requests\nfull remaining balance per month,\nnever an arbitrary figure"]
+        A3 --> A4["service_fee_payment_requests: PENDING\n+ service_fee_payment_request_periods"]
+        A4 --> A5["Treasurer notified"]
+    end
+
+    subgraph B["2. Treasurer approves/rejects the request"]
+        B1["Treasurer opens\nPayment & Advance Requests tab"] --> B2["Breakdown auto-filled from the\nrequest's own periods, editable\n(same convention as Settle Past Months)"]
+        B2 --> B3{"Approve or Reject?"}
+        B3 -->|Reject| B4["service_fee_payment_requests:\nREJECTED + reason, staffer notified"]
+        B3 -->|Approve| B5["createServiceFeePaymentConfirmation\npurpose names months + 'self-service request'"]
+        B5 --> B6["payment_confirmations row:\nPENDING_CONFIRMATION\nservice_fee_payment_requests: APPROVED"]
+        B6 --> B7{"Staffer confirms\nreceipt?"}
+        B7 -->|Yes| B8["confirmPayment: real transaction posts,\nservice_fee_payments row created,\nperiods updated via applyPaymentToPeriods\n(identical to a Treasurer-initiated payment)"]
+    end
+
+    subgraph C["3. Self-service Advance Request"]
+        C1["Staffer opens 'Request Advance'\n(amount + reason)"] --> C2["POST .../advances"]
+        C2 --> C3["service_fee_advances: PENDING"]
+        C3 --> C4["Treasurer notified"]
+    end
+
+    subgraph D["4. Treasurer approves/rejects the advance"]
+        D1["Treasurer opens the advance\nin Payment & Advance Requests tab"] --> D2["GET recovery-preview:\ncomputeAdvanceRecoverySchedule\noldest-future-first (period >= this month)"]
+        D2 --> D3{"Existing future periods\ncover the full amount?"}
+        D3 -->|No| D4["extendPeriodsByCount generates\nadditional future periods first"]
+        D3 -->|Yes| D5["Schedule shown, fully editable"]
+        D4 --> D5
+        D5 --> D6{"Approve or Reject?"}
+        D6 -->|Reject| D7["service_fee_advances: REJECTED\n+ reason, staffer notified"]
+        D6 -->|Approve| D8["createServiceFeeAdvanceConfirmation\npurpose names which future month(s)\nwill absorb the recovery"]
+        D8 --> D9["payment_confirmations row:\nsource_type = SERVICE_FEE_ADVANCE\nservice_fee_advance_recoveries: unapplied\nservice_fee_advances: APPROVED"]
+    end
+
+    subgraph E["5. Advance disbursement confirmed — recovery applied"]
+        E1["Staffer confirms receiving\nthe advance"] --> E2["confirmPayment: SERVICE_FEE_ADVANCE branch\nposts the transaction\n(SERVICE_FEE_ADVANCE_OUT)"]
+        E2 --> E3["getAdvanceRecoverySchedule reads\nthe stored (unapplied) breakdown"]
+        E3 --> E4["applyAdvanceRecovery: each named\nfuture period's amount_paid incremented\ndirectly — NO separate transaction\n(cash already moved once, at disbursement)"]
+        E4 --> E5["service_fee_advances: disbursed_at set,\noutstanding_balance = total scheduled"]
+    end
+
+    subgraph F["6. Transparency — Payment Confirmations only"]
+        F1["Every purpose that reaches\ntransactions.description now states:"] --> F2["Which month(s) are covered"]
+        F1 --> F3["Treasurer-initiated vs.\nself-service-request-originated"]
+        F1 --> F4["For an advance: which future\nmonth(s) will absorb the recovery"]
+        F5["Scope: General Payments +\nService Fee Payments/Advances only\n(not extended system-wide yet)"]
+    end
+
+    style A4 fill:#fef3c7,stroke:#d97706
+    style B4 fill:#fee2e2,stroke:#dc2626
+    style B8 fill:#ecfdf5,stroke:#059669
+    style C3 fill:#fef3c7,stroke:#d97706
+    style D7 fill:#fee2e2,stroke:#dc2626
+    style D9 fill:#fef3c7,stroke:#d97706
+    style E4 fill:#ecfdf5,stroke:#059669
+    style E5 fill:#ecfdf5,stroke:#059669

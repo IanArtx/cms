@@ -95,6 +95,13 @@ router.get('/input-vs-return',
     investmentsController.getInputVsReturn
 );
 
+// Portfolio Overview headline figures + status breakdown (v1.57.0) —
+// same routing-order reasoning as the two routes above.
+router.get('/portfolio-summary',
+    requireFinancialAccess('INVESTMENT_VIEW'),
+    investmentsController.getPortfolioSummary
+);
+
 // ============================================================
 // GET SINGLE INVESTMENT
 // GET /api/investments/:id

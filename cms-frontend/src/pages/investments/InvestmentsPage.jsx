@@ -12,7 +12,151 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { PlusIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import {
+    PlusIcon, CheckIcon, PencilIcon, BanknotesIcon,
+    ArrowTrendingUpIcon, TrophyIcon, ChartPieIcon,
+} from '@heroicons/react/24/outline';
+import {
+    ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
+    XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+} from 'recharts';
+
+// ============================================================
+// PORTFOLIO OVERVIEW (v1.57.0) — a casual, at-a-glance summary
+// dropped above the formal Investments table: headline figures plus
+// two charts (input vs return, and a status breakdown). Requested
+// directly: "lets also have the investment page transformed to a
+// more casual look on the first page. There should be a couple
+// charts and important figures outlined on it." Both charts are
+// fed by endpoints that already exist from the Shareholder Dashboard
+// rework (investmentsAPI.getInputVsReturn) and a small new company-
+// wide aggregate (investmentsAPI.getPortfolioSummary) — see
+// investmentsController.getPortfolioSummary for why the headline
+// figures are scoped to the Primary account's own currency.
+// ============================================================
+const OverviewTile = ({ title, value, subtitle, icon: Icon, color }) => {
+    const colors = {
+        blue:   'bg-gradient-to-br from-blue-500 to-indigo-600 text-white',
+        green:  'bg-gradient-to-br from-emerald-500 to-teal-600 text-white',
+        purple: 'bg-gradient-to-br from-purple-500 to-fuchsia-600 text-white',
+        yellow: 'bg-gradient-to-br from-amber-400 to-orange-500 text-white',
+    };
+    return (
+        <div className="card">
+            <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-500">{title}</p>
+                    <p className="mt-2 text-2xl font-bold text-gray-900 truncate">{value}</p>
+                    {subtitle && <p className="mt-1 text-xs text-gray-400">{subtitle}</p>}
+                </div>
+                <div className={`p-3 rounded-xl shadow-sm flex-shrink-0 ${colors[color]}`}>
+                    <Icon className="h-6 w-6" />
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const STATUS_COLOR_KEYS = ['primary', 'success', 'warning', 'accent', 'danger', 'neutral'];
+
+const PortfolioOverview = ({ summary, inputVsReturn }) => {
+    const theme = useChartTheme();
+
+    if (!summary) return null;
+
+    const hasChartData = inputVsReturn && inputVsReturn.length > 0;
+    const hasStatusData = summary.byStatus && summary.byStatus.length > 0;
+    const currency = summary.currencyCode || '';
+
+    return (
+        <div className="mb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <OverviewTile
+                    title="Total Invested"
+                    value={`${currency} ${summary.totalActualExpenditure.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                    subtitle={`Planned: ${currency} ${summary.totalPlannedBudget.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                    icon={BanknotesIcon}
+                    color="blue"
+                />
+                <OverviewTile
+                    title="Total Returns"
+                    value={`${currency} ${summary.totalReturns.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                    subtitle="Across the whole portfolio"
+                    icon={ArrowTrendingUpIcon}
+                    color="green"
+                />
+                <OverviewTile
+                    title="Overall ROI"
+                    value={`${summary.overallRoiPercentage}%`}
+                    subtitle={summary.overallRoiPercentage >= 0 ? 'In the green' : 'In the red'}
+                    icon={TrophyIcon}
+                    color={summary.overallRoiPercentage >= 0 ? 'green' : 'yellow'}
+                />
+                <OverviewTile
+                    title="Active Investments"
+                    value={summary.activeCount}
+                    subtitle={`${summary.totalCount} total, ${summary.bondCount} bond${summary.bondCount === 1 ? '' : 's'}`}
+                    icon={ChartPieIcon}
+                    color="purple"
+                />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="card lg:col-span-2">
+                    <h3 className="section-title mb-4">Input vs Return</h3>
+                    {hasChartData ? (
+                        <ResponsiveContainer width="100%" height={240}>
+                            <BarChart data={inputVsReturn}>
+                                <CartesianGrid {...theme.gridProps} />
+                                <XAxis dataKey="name" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false}
+                                    interval={0} angle={-15} textAnchor="end" height={45} />
+                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
+                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                <Tooltip
+                                    {...theme.tooltipProps}
+                                    formatter={(v, name) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }), name]}
+                                />
+                                <Legend {...theme.legendProps} />
+                                <Bar dataKey="invested" name="Invested" fill={theme.neutral} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="returned" name="Returned" fill={theme.success} radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="flex items-center justify-center h-48 text-gray-300 text-sm">
+                            Nothing funded yet
+                        </div>
+                    )}
+                </div>
+
+                <div className="card">
+                    <h3 className="section-title mb-4">By Status</h3>
+                    {hasStatusData ? (
+                        <ResponsiveContainer width="100%" height={220}>
+                            <PieChart>
+                                <Pie data={summary.byStatus} cx="50%" cy="50%"
+                                    innerRadius={45} outerRadius={75}
+                                    paddingAngle={2} dataKey="count" nameKey="status">
+                                    {summary.byStatus.map((entry, index) => (
+                                        <Cell key={entry.status}
+                                            fill={theme[STATUS_COLOR_KEYS[index % STATUS_COLOR_KEYS.length]]}
+                                            stroke={theme.cardStroke} strokeWidth={2} />
+                                    ))}
+                                </Pie>
+                                <Tooltip {...theme.tooltipProps} formatter={(v, n, p) => [v, p.payload.status]} />
+                                <Legend {...theme.legendProps} formatter={(value, entry) => entry.payload.status} />
+                            </PieChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="flex items-center justify-center h-48 text-gray-300 text-sm">
+                            No investments yet
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // ============================================================
 // CREATE INVESTMENT MODAL
@@ -324,6 +468,8 @@ const InvestmentsPage = () => {
     const [accounts,    setAccounts]    = useState([]);
     const [categories,  setCategories]  = useState([]);
     const [pagination,  setPagination]  = useState(null);
+    const [portfolioSummary, setPortfolioSummary] = useState(null);
+    const [inputVsReturn,    setInputVsReturn]    = useState([]);
     const [loading,     setLoading]     = useState(true);
     const [error,       setError]       = useState(null);
     const [page,        setPage]        = useState(1);
@@ -368,6 +514,18 @@ const InvestmentsPage = () => {
         accountsAPI.getAll().then(r => setAccounts(r.data.data)).catch(() => {});
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data)).catch(() => {});
     }, [loadInvestments]);
+
+    // v1.57.0 — Portfolio Overview data (headline figures + the two
+    // charts). Independent of the paginated table load above, and of
+    // each other, so a failure in one never blocks the rest of the page.
+    useEffect(() => {
+        investmentsAPI.getPortfolioSummary()
+            .then(res => setPortfolioSummary(res.data.data))
+            .catch(() => {});
+        investmentsAPI.getInputVsReturn()
+            .then(res => setInputVsReturn(res.data.data || []))
+            .catch(() => {});
+    }, []);
 
     const handleApprove = async (id) => {
         setActionLoading(id);
@@ -514,7 +672,7 @@ const InvestmentsPage = () => {
         <div>
             <PageHeader
                 title="Investments"
-                subtitle="Investment portfolio, projects and returns tracking"
+                subtitle="Here's how the portfolio is doing, and everything in it"
                 actions={
                     hasPermission('INVESTMENT_CREATE') && (
                         <button
@@ -533,6 +691,8 @@ const InvestmentsPage = () => {
                     <ErrorMessage message={error} onDismiss={() => setError(null)} />
                 </div>
             )}
+
+            <PortfolioOverview summary={portfolioSummary} inputVsReturn={inputVsReturn} />
 
             <DataTable
                 columns={columns}

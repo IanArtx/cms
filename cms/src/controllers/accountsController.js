@@ -658,24 +658,36 @@ const getAccountSummary = asyncHandler(async (req, res) => {
 // ============================================================
 // INFLOW / OUTFLOW MONTHLY TREND — Primary + Secondary accounts
 // GET /api/accounts/inflow-outflow-trend?months=12
-// Powers the Shareholder Dashboard's double-line inflow/outflow
-// chart (v1.56.0). Only counts transactions posted in the same
-// currency as the Primary account — summing across different
-// currencies without conversion would misstate the totals, and
-// every other whole-company figure already shown on this dashboard
-// (total contributions, account overview) makes the same single-
-// base-currency assumption. REVERSAL_CREDIT/REVERSAL_DEBIT are
-// folded into the opposite side of what they reverse, so a reversed
-// transaction nets back out instead of being double-counted.
+// Powers the double-line inflow/outflow chart on both dashboards
+// (v1.56.0). Only counts transactions posted in ONE currency —
+// summing across different currencies without conversion would
+// misstate the totals.
+//
+// v1.57.1 fix: this originally used the PRIMARY account's own
+// currency as "the" company currency. That's wrong whenever a
+// Secondary/Operations account runs in a different currency than
+// Primary (exactly the setup found while fixing the same mistake in
+// investmentsController.getPortfolioSummary) — every transaction in
+// that other-currency account was silently excluded, understating
+// the trend rather than erroring. Fixed to instead pick whichever
+// currency has the largest transaction volume across Primary +
+// Secondary accounts, so the chart reflects wherever the money
+// actually is rather than an arbitrary account's currency. A company
+// genuinely running large volumes in two currencies at once will
+// still only see its dominant one here — a documented simplification,
+// not a silent zero.
 // ============================================================
 const getInflowOutflowTrend = asyncHandler(async (req, res) => {
     const months = Math.min(Math.max(parseInt(req.query.months) || 12, 1), 36);
 
     const currencyResult = await query(`
-        SELECT a.currency_id, c.code AS currency_code
-        FROM   accounts a
-        JOIN   currencies c ON c.id = a.currency_id
-        WHERE  a.account_type = 'PRIMARY' AND a.is_active = TRUE
+        SELECT t.currency_id, cur.code AS currency_code
+        FROM   transactions t
+        JOIN   accounts a   ON a.id = t.account_id
+        JOIN   currencies cur ON cur.id = t.currency_id
+        WHERE  a.account_type IN ('PRIMARY', 'SECONDARY')
+        GROUP  BY t.currency_id, cur.code
+        ORDER  BY SUM(t.amount) DESC
         LIMIT  1
     `);
     const baseCurrency = currencyResult.rows[0] || null;

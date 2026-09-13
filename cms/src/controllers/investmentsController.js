@@ -1346,6 +1346,102 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// PORTFOLIO SUMMARY — headline figures + status breakdown (v1.57.0,
+// currency fix in v1.57.1)
+// GET /api/investments/portfolio-summary
+// Feeds the new "Portfolio Overview" section at the top of the
+// Investments page: total planned budget/spent/returns, overall
+// ROI%, and a count per status for the donut chart.
+//
+// v1.57.1 fix: this originally scoped the money totals to the
+// PRIMARY account's own currency, copying the convention used by
+// accountsController.getInflowOutflowTrend and
+// usersController.getMyPaymentLedger. That assumption doesn't hold
+// here — an investment's funding_account can be ANY account, not
+// necessarily the Primary one, and in the reported case every real
+// investment was funded through a UGX account while the Primary
+// account itself was EUR, so filtering by "the Primary account's
+// currency" matched zero rows and every headline figure silently
+// showed EUR 0 despite real investments existing. Fixed by picking
+// the currency the portfolio's own money is actually IN — whichever
+// currency has the largest total actual_expenditure across
+// investments — rather than an unrelated account's currency. The
+// three plain COUNTS (total/active/bond) and the status breakdown
+// are also no longer currency-filtered at all, since a count doesn't
+// need a common currency to be meaningful the way a money sum does —
+// only the three money totals (planned budget/spent/returns) and the
+// ROI% derived from them stay scoped to the one dominant currency —
+// a portfolio genuinely spanning a second currency in real volume
+// will have that portion excluded from the money totals, a known,
+// documented simplification (same class of limitation as every other
+// single-base-currency summary this session), not a silent zero.
+// ============================================================
+const getPortfolioSummary = asyncHandler(async (req, res) => {
+    const countsResult = await query(`
+        SELECT
+            COUNT(*) AS total_count,
+            COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_count,
+            COUNT(*) FILTER (WHERE investment_type = 'BOND') AS bond_count
+        FROM investments
+    `);
+    const c = countsResult.rows[0];
+
+    const byStatusResult = await query(`
+        SELECT status, COUNT(*) AS count
+        FROM   investments
+        GROUP  BY status
+        ORDER  BY count DESC
+    `);
+
+    // Whichever currency the portfolio's money is actually denominated
+    // in, by total amount spent — not an unrelated account's currency.
+    const dominantCurrencyResult = await query(`
+        SELECT i.currency_id, cur.code AS currency_code
+        FROM   investments i
+        JOIN   currencies cur ON cur.id = i.currency_id
+        GROUP  BY i.currency_id, cur.code
+        ORDER  BY SUM(i.actual_expenditure) DESC
+        LIMIT  1
+    `);
+    const dominantCurrency = dominantCurrencyResult.rows[0] || null;
+
+    let totalPlannedBudget = 0, totalActualExpenditure = 0, totalReturns = 0;
+    if (dominantCurrency) {
+        const totalsResult = await query(`
+            SELECT
+                COALESCE(SUM(planned_budget), 0)     AS total_planned_budget,
+                COALESCE(SUM(actual_expenditure), 0) AS total_actual_expenditure,
+                COALESCE(SUM(total_returns), 0)      AS total_returns
+            FROM   investments
+            WHERE  currency_id = $1
+        `, [dominantCurrency.currency_id]);
+        const t = totalsResult.rows[0];
+        totalPlannedBudget     = parseFloat(t.total_planned_budget);
+        totalActualExpenditure = parseFloat(t.total_actual_expenditure);
+        totalReturns            = parseFloat(t.total_returns);
+    }
+
+    const overallRoi = totalActualExpenditure > 0
+        ? Math.round(((totalReturns - totalActualExpenditure) / totalActualExpenditure) * 1000) / 10
+        : 0;
+
+    sendSuccess(res, {
+        currencyCode:           dominantCurrency?.currency_code || null,
+        totalCount:             parseInt(c.total_count),
+        activeCount:            parseInt(c.active_count),
+        bondCount:              parseInt(c.bond_count),
+        totalPlannedBudget,
+        totalActualExpenditure,
+        totalReturns,
+        overallRoiPercentage:   overallRoi,
+        byStatus: byStatusResult.rows.map(r => ({
+            status: r.status,
+            count:  parseInt(r.count),
+        })),
+    });
+});
+
+// ============================================================
 // GET SINGLE INVESTMENT WITH FULL DETAILS
 // GET /api/investments/:id
 // ============================================================
@@ -2335,5 +2431,6 @@ module.exports = {
     getInvestmentById,
     getPerformanceSummary,
     getInputVsReturn,
+    getPortfolioSummary,
     getProjectById,
 };

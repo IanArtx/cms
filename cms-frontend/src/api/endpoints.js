@@ -172,6 +172,7 @@ export const investmentsAPI = {
     recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
     getInputVsReturn:      () => api.get('/investments/input-vs-return'), // v1.56.0
+    getPortfolioSummary:   () => api.get('/investments/portfolio-summary'), // v1.57.0
     // v1.40.0
     updateCouponSchedule:     (id, data) => api.patch(`/investments/${id}/coupon-schedule`, data),
     requestTermination:       (id, data) => api.post(`/investments/${id}/terminate/request`, data),

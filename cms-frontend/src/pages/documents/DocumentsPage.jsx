@@ -99,11 +99,26 @@ const openDocument = async (doc, { forceDownload }) => {
                 'This document type can\'t be reconstructed for preview/download.'
             );
         }
+        // v1.57.2 — fetch the live signature slots (role/name/status/
+        // signature image/signed date) so the re-rendered preview/
+        // download prints an actual signature and date once someone
+        // has signed, instead of always showing blank lines
+        // regardless of signing status (exportUtils.js's
+        // signatureBlock() does the matching/rendering). Best-effort:
+        // a document type with no signature requirement configured
+        // just gets an empty array back, which signatureBlock()
+        // already treats the same as "not signed yet".
+        let templateData = payload.template_data;
+        try {
+            const sigRes = await documentsAPI.getSignatures(doc.id);
+            templateData = { ...templateData, signatures: sigRes.data.data || [] };
+        } catch {
+            // Best-effort — a signature-lookup failure shouldn't block preview/download
+        }
         // v1.24.0 — once fully approved/signed, fetch whichever
         // company stamp(s) were baked onto this document (Section
         // 4.30) so the re-rendered preview/download shows it. A
         // draft (not yet fully_signed) never carries a stamp.
-        let templateData = payload.template_data;
         if (doc.fully_signed) {
             try {
                 const stampRes = await documentsAPI.getStamps(doc.id);
@@ -563,7 +578,7 @@ const CompanyArchive = ({ categories }) => {
 // table server-side.
 // ============================================================
 const SignaturesModal = ({ isOpen, target, onClose, onSigned }) => {
-    const { hasRole } = useAuth();
+    const { hasRole, user } = useAuth();
     const [signatures, setSignatures] = useState([]);
     const [stamps, setStamps] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -598,7 +613,17 @@ const SignaturesModal = ({ isOpen, target, onClose, onSigned }) => {
 
     if (!isOpen || !target) return null;
 
-    const myPendingSlot = signatures.find(s => s.status === 'PENDING' && hasRole(s.role_name));
+    // A PENDING slot is "mine" one of two ways: it's a role-based
+    // slot and I hold that role (hasRole), OR — v1.45.0's
+    // person-specific signatories (e.g. a named Chairman/Secretary on
+    // a Meeting Minutes/Agenda/Resolution) — it names ME directly via
+    // required_user_id, regardless of my system roles. The old check
+    // only handled the role-based case, so a person-specific slot
+    // like "Chairman" (never a real system role) could never show a
+    // Sign button for its designated signer even though the backend
+    // (signatureService.signSlot) has always allowed it.
+    const myPendingSlot = signatures.find(s => s.status === 'PENDING' &&
+        (s.required_user_id ? s.required_user_id === user?.id : hasRole(s.role_name)));
     const allSigned = signatures.length > 0 && signatures.every(s => s.status === 'SIGNED');
 
     const handleSign = async () => {

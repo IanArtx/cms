@@ -1,0 +1,48 @@
+%% v1.57.2 — Document Signature Bugfixes
+%% Three bugs, reported together from one Documents-page screenshot pair:
+%%  1. No Sign button for a named signatory (e.g. Chairman)
+%%  2. "Invalid Date" next to "Prepared By" on every generated document
+%%  3. Saved signatures/dates never printed on the document itself
+flowchart TD
+
+    subgraph BUG1["Bug 1 — No Sign button for a named signatory"]
+        A1[User opens Signatures modal\non a Resolution/Minutes/Agenda] --> A2[SignaturesModal loads slots via\ndocumentsAPI.getSignatures]
+        A2 --> A3{Is this PENDING slot mine?}
+        A3 -->|Old logic: hasRole(s.role_name) only| A4[["Chairman" is a position_title,\nnever a real system role\n→ hasRole() always false"]]
+        A4 --> A5[No Sign button shown\neven for the correct signer]
+        A3 -->|New logic| A6{s.required_user_id set?}
+        A6 -->|Yes person-based slot| A7[Match against\nmy own user.id]
+        A6 -->|No role-based slot| A8[Fall back to\nhasRole(s.role_name)]
+        A7 --> A9[Sign button now shows\nfor the designated signer]
+        A8 --> A9
+        A9 --> A10[Backend signSlot already allowed\nrequired_user_id = $userId\n— only the button visibility was broken]
+    end
+
+    subgraph BUG2["Bug 2 — Invalid Date on Prepared By"]
+        B1[GenerateDocumentPage /\nMemberPortfolioPage build\ntemplateData for preview/print] --> B2["generated_date =\nnew Date().toLocaleDateString('en-GB')\n→ already-localised string e.g. '16/09/2026'"]
+        B2 --> B3[documentTrail() in exportUtils.js\ncalls fmt.date(e.date)]
+        B3 --> B4["fmt.date does new Date(d) again\nnew Date('16/09/2026') is invalid\n(day=16 rules out MM/DD/YYYY reading too)"]
+        B4 --> B5[Prints 'Invalid Date'\nnext to Prepared By]
+        B2 -.fix.-> B6["generated_date =\nnew Date().toISOString()"]
+        B6 --> B7[Round-trips correctly through\nJSON and a second new Date() parse]
+        B7 --> B8[Prepared By date renders correctly]
+    end
+
+    subgraph BUG3["Bug 3 — Signatures/dates never printed"]
+        C1[Someone signs via\nSignaturesModal → documentsAPI.sign] --> C2["Backend signSlot():\nsnapshots signature image to\nsignature_snapshot_path, stamps signed_at"]
+        C2 --> C3[getSignatureStatus already returns\nsignature_url + signed_at per slot\n— but nothing ever read them for printing]
+        C3 --> C4[User previews/downloads the document\nDocumentsPage.openDocument]
+        C4 --> C5{Old: hardcoded blank lines}
+        C5 --> C6["Signature: _______________\nDate: _______________\nalways, regardless of signing status"]
+        C4 -.fix.-> C7[openDocument now also fetches\ndocumentsAPI.getSignatures(doc.id)\nand merges into templateData.signatures]
+        C7 --> C8["exportUtils.js signatureBlock(data, label, name, positionTitle)\nmatches data.signatures[].role_name === positionTitle\n('Chairman'/'Secretary')"]
+        C8 --> C9{Slot status === SIGNED?}
+        C9 -->|Yes| C10[Print actual signature image\n+ formatted signed_at date]
+        C9 -->|No| C11[Keep original blank lines]
+        C10 --> C12[Wired into meetingAgendaTemplate,\nmeetingMinutesTemplate, resolutionTemplate]
+        C11 --> C12
+    end
+
+    A10 --> D[v1.57.2 shipped:\nversion bump + CMS_BIBLE entry\n+ this flowchart + manual review]
+    B8 --> D
+    C12 --> D

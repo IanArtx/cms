@@ -80,7 +80,16 @@ const MemberPortfolioPage = () => {
         const templateData = {
             ...portfolio,
             prepared_by:    authUser ? `${authUser.first_name} ${authUser.last_name}` : '',
-            generated_date: new Date().toLocaleDateString('en-GB'),
+            // v1.45.0's documentTrail() re-parses this with
+            // `new Date(d)` before formatting it (fmt.date in
+            // exportUtils.js) — an already-localised DD/MM/YYYY string
+            // like "16/09/2026" isn't valid input to the Date
+            // constructor (day > 12 rules out the MM/DD/YYYY reading
+            // too), so it silently produced "Invalid Date" next to
+            // "Prepared By" on every generated document. An ISO
+            // string round-trips through both JSON and `new Date()`
+            // correctly.
+            generated_date: new Date().toISOString(),
         };
         printDocument(
             memberPortfolioTemplate(templateData),

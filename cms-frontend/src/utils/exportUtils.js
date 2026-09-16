@@ -410,6 +410,39 @@ const stampOverlay = (data) => {
 // ============================================================
 const personName = (data, key) => data[`${key}_name`] || data[key] || '';
 
+// ============================================================
+// SIGNATURE BLOCK HELPER (v1.57.2)
+// Previously every printed "Signature: ___ / Date: ___" pair was a
+// hardcoded blank line, regardless of whether that person had
+// actually signed — the saved signature image and signed date were
+// never wired in. `data.signatures` — when present — is the array
+// GET /documents/:id/signatures returns (signatureService.
+// getSignatureStatus), attached by DocumentsPage.openDocument()
+// before re-rendering a saved document; it's simply absent while
+// previewing an unsaved draft (GenerateDocumentPage.handlePreview),
+// which is exactly when there's nothing to show yet anyway.
+// A slot is matched to a printed name by `positionTitle` (e.g.
+// 'Chairman'/'Secretary') against that row's `role_name` — for a
+// person-specific signatory, role_name IS the position_title (see
+// getSignatureStatus), so this lines up directly with
+// PERSON_SIGNATORY_FIELDS on the backend (documentsController.js).
+// Falls back to the original blank lines whenever there's no match.
+// ============================================================
+const signatureBlock = (data, label, name, positionTitle) => {
+    const slot = (data.signatures || []).find(s => s.role_name === positionTitle);
+    const signed = slot?.status === 'SIGNED';
+    const signatureLine = signed && slot.signature_url
+        ? `<img src="${slot.signature_url}" alt="Signature" style="height:32px;display:block;margin-top:2px;" />`
+        : '_______________';
+    const dateLine = signed && slot.signed_at ? fmt.date(slot.signed_at) : '_______________';
+    return `
+        <div class="signature-block">
+            ${label}: ${name || '_______________'}<br>
+            Signature: ${signatureLine}<br>
+            Date: ${dateLine}
+        </div>`;
+};
+
 const personListNames = (value) => {
     if (Array.isArray(value)) {
         return value
@@ -1423,16 +1456,8 @@ export const meetingAgendaTemplate = (data) => `<!DOCTYPE html>
     ])}
 
     <div class="signature-section">
-        <div class="signature-block">
-            Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
-        <div class="signature-block">
-            Secretary: ${personName(data, 'secretary') || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
+        ${signatureBlock(data, 'Chairperson', personName(data, 'chairperson'), 'Chairman')}
+        ${signatureBlock(data, 'Secretary', personName(data, 'secretary'), 'Secretary')}
     </div>
 
     ${footer(`${COMPANY_NAME} | ${data.meeting_title || ''}`)}
@@ -1541,16 +1566,8 @@ export const meetingMinutesTemplate = (data) => `<!DOCTYPE html>
     ])}
 
     <div class="signature-section">
-        <div class="signature-block">
-            Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
-        <div class="signature-block">
-            Secretary: ${personName(data, 'secretary') || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
+        ${signatureBlock(data, 'Chairperson', personName(data, 'chairperson'), 'Chairman')}
+        ${signatureBlock(data, 'Secretary', personName(data, 'secretary'), 'Secretary')}
     </div>
 
     ${footer()}
@@ -1804,16 +1821,8 @@ export const resolutionTemplate = (data) => `<!DOCTYPE html>
 
     <div class="stamp-overlay-wrap">
         <div class="signature-section">
-            <div class="signature-block">
-                Chairperson: ${personName(data, 'chairperson') || '_______________'}<br>
-                Signature: _______________<br>
-                Date: _______________
-            </div>
-            <div class="signature-block">
-                Secretary: ${personName(data, 'secretary') || '_______________'}<br>
-                Signature: _______________<br>
-                Date: _______________
-            </div>
+            ${signatureBlock(data, 'Chairperson', personName(data, 'chairperson'), 'Chairman')}
+            ${signatureBlock(data, 'Secretary', personName(data, 'secretary'), 'Secretary')}
         </div>
         ${stampOverlay(data)}
     </div>

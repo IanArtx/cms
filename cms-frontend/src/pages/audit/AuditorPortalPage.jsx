@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { auditAPI, usersAPI } from '../../api/endpoints';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { formatDate, formatNumber, formatFileSize, getErrorMessage } from '../../utils/helpers';
 import {
     meetingAgendaTemplate, meetingMinutesTemplate, receiptTemplate, resolutionTemplate,
@@ -40,6 +41,7 @@ const isProfileComplete = (user) =>
 
 const AuditorPortalPage = () => {
     const { user, refreshUser } = useAuth();
+    const confirm = useConfirm();
 
     const [engagements, setEngagements] = useState([]);
     const [engagementId, setEngagementId] = useState(null);
@@ -168,9 +170,12 @@ const AuditorPortalPage = () => {
     const stagedFileCount    = reportFiles.filter(f => !f.submission_id).length;
 
     const handleFinishAudit = async () => {
-        if (!window.confirm(
-            `Submit ${stagedCommentCount} comment(s) and ${stagedFileCount} file(s) for Director/Secretary approval? You won't be able to add more until it's reviewed.`
-        )) return;
+        const ok = await confirm({
+            title: 'Finish Audit',
+            message: `Submit ${stagedCommentCount} comment(s) and ${stagedFileCount} file(s) for Director/Secretary approval? You won't be able to add more until it's reviewed.`,
+            confirmLabel: 'Submit',
+        });
+        if (!ok) return;
         setError(null);
         setFinishing(true);
         try {

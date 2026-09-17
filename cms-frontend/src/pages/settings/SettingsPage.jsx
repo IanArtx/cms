@@ -12,6 +12,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import { useAuth } from '../../contexts/AuthContext';
 import { useBranding } from '../../contexts/BrandingContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import api from '../../api/axios';
 import {
     PlusIcon,
@@ -1119,6 +1120,7 @@ const STAMPABLE_TYPES = [
 ];
 
 const StampsTab = () => {
+    const confirm = useConfirm();
     const [stamps, setStamps] = useState([]);
     const [requirements, setRequirements] = useState({}); // { RESOLUTION: Set(stampId), ... }
     const [loading, setLoading] = useState(true);
@@ -1203,7 +1205,13 @@ const StampsTab = () => {
     };
 
     const handleDeactivate = async (id, name) => {
-        if (!window.confirm(`Deactivate the "${name}" stamp? It will stop being assigned to any document type, but already-stamped documents keep it.`)) return;
+        const ok = await confirm({
+            title: 'Deactivate Stamp',
+            message: `Deactivate the "${name}" stamp? It will stop being assigned to any document type, but already-stamped documents keep it.`,
+            confirmLabel: 'Deactivate',
+            danger: true,
+        });
+        if (!ok) return;
         setError(null);
         try {
             await settingsAPI.deactivateStamp(id);
@@ -1403,6 +1411,7 @@ const StampsTab = () => {
 // normal calendar month/year. It never changes any actual figures.
 // ============================================================
 const FiscalQuartersTab = () => {
+    const confirm = useConfirm();
     const [quarters, setQuarters] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -1473,7 +1482,13 @@ const FiscalQuartersTab = () => {
     };
 
     const handleDelete = async (q) => {
-        if (!window.confirm(`Delete the fiscal quarter "${q.label}"? Reports already generated keep showing it — only future reports stop matching this range.`)) return;
+        const ok = await confirm({
+            title: 'Delete Fiscal Quarter',
+            message: `Delete the fiscal quarter "${q.label}"? Reports already generated keep showing it — only future reports stop matching this range.`,
+            confirmLabel: 'Delete',
+            danger: true,
+        });
+        if (!ok) return;
         setError(null);
         try {
             await settingsAPI.deleteFiscalQuarter(q.id);
@@ -1596,6 +1611,7 @@ const FiscalQuartersTab = () => {
 // load/save shape as CompanyTab above.
 // ============================================================
 const CapitalCallFinesTab = () => {
+    const confirm = useConfirm();
     const [form, setForm] = useState({
         grace_days: 7,
         fine_percentage_within_grace: 5,
@@ -1643,11 +1659,18 @@ const CapitalCallFinesTab = () => {
 
     const handleToggleTracking = async () => {
         const next = !trackingEnabled;
-        if (!next && !window.confirm(
-            'Turn off Capital Goal Tracking? This hides capital goals from the rest of the system, stops the daily ' +
-            'deadline sweep, and blocks new pledges/approvals — existing goals, calls, pledges and payments are ' +
-            'kept exactly as they are and reappear once this is switched back on.'
-        )) return;
+        if (!next) {
+            const ok = await confirm({
+                title: 'Turn Off Capital Goal Tracking',
+                message:
+                    'Turn off Capital Goal Tracking? This hides capital goals from the rest of the system, stops the daily ' +
+                    'deadline sweep, and blocks new pledges/approvals — existing goals, calls, pledges and payments are ' +
+                    'kept exactly as they are and reappear once this is switched back on.',
+                confirmLabel: 'Turn Off',
+                danger: true,
+            });
+            if (!ok) return;
+        }
 
         setTrackingSaving(true);
         setTrackingError(null);

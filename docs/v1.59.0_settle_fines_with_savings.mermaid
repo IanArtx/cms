@@ -1,0 +1,48 @@
+%% v1.59.0 — Settle Fines With Savings
+%% Two entry points (Treasurer-direct / member-request) funnel into one
+%% shared review-and-settle core, mirroring v1.58.0's Savings-to-Capital
+%% Conversion. Nothing moves until the non-initiating party reviews it.
+flowchart TD
+
+    A1[Treasurer / Assistant Treasurer\nopens 'Settle With Savings'\npicks a member] --> B[Sees member's live savings balance\nSelects individual OUTSTANDING fines\nRunning deduction total updates live]
+    A2[Member opens\n'Settle With My Savings'\non their own outstanding-fines banner] --> B
+
+    B --> C{"POST /fines/settlements (Treasurer)\nor /fines/settlements/request (member)"}
+    C --> D[prepareSettlement:\nfines belong to this member?\nall still OUTSTANDING?]
+    D -->|No| D1[Rejected]
+    D -->|Yes| E{Every selected fine's currency\n== Savings account currency?}
+    E -->|No| E1["Rejected: no automatic FX conversion\n(same rule as v1.57.1 / v1.58.0)"]
+    E -->|Yes| F{Selected total <= member's\nsavings principal_balance?}
+    F -->|No| F1[Rejected: cannot settle\nmore than they have saved]
+    F -->|Yes| G{Who initiated?}
+
+    G -->|Treasurer entered it| H1[savings_fine_settlements row\nsource=TREASURY_DIRECT\nstatus=PENDING_CONFIRMATION\nNOTHING has moved yet]
+    G -->|Member requested it| H2[savings_fine_settlements row\nsource=MEMBER_REQUEST\nstatus=PENDING_APPROVAL\nNOTHING has moved yet]
+
+    H1 --> I1[Member notified:\nconfirm or reject]
+    H2 --> I2[Treasurer/Assistant Treasurer\nnotified: approve or deny]
+
+    I1 --> J1{Member's decision}
+    J1 -->|Reject| K1["PATCH .../reject\nstatus=REJECTED\nTreasurer notified — nothing ever moved"]
+    J1 -->|Confirm| L["PATCH .../confirm or .../approve\n(ownership / permission re-checked)"]
+
+    I2 --> J2{Treasurer's decision}
+    J2 -->|Deny| K2["PATCH .../deny\nstatus=REJECTED\nMember notified — nothing ever moved"]
+    J2 -->|Approve| L
+
+    L --> M[settleFineSettlement — re-checks\nfine status + savings balance\nagain, at settle time]
+    M -->|Fine no longer outstanding,\nor balance since dropped| M1[Rejected]
+    M -->|Still valid| N["Leg 1 — one SAVINGS DEBIT for\nthe combined total\ninflow_type: SAVINGS_FINE_SETTLEMENT_OUT (GL 2100)"]
+    N --> O[savings_balances.principal_balance\ndecremented once]
+    O --> P["Leg 2 — clearFine() reused,\nonce per selected fine\n(same core as Clear Fine / FINE_PAYMENT ack)"]
+    P --> Q[Each fine: status=PAID\nits own FINE_PAYMENT_IN credit transaction]
+    Q --> R[savings_fine_settlements row\nstatus=SETTLED\nlinks the savings debit + every fine credit]
+    R --> S[Whoever did NOT just act\nnotified: settlement posted]
+
+    style D1 fill:#fee2e2
+    style E1 fill:#fee2e2
+    style F1 fill:#fee2e2
+    style M1 fill:#fee2e2
+    style K1 fill:#fef9c3
+    style K2 fill:#fef9c3
+    style R fill:#dcfce7

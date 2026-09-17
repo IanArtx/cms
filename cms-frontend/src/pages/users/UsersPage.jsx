@@ -14,6 +14,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import Avatar from '../../components/common/Avatar';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { UserPlusIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -113,6 +114,7 @@ const AssignRoleModal = ({ isOpen, user, onClose, onSuccess, roles }) => {
 // Shows all current roles with option to remove each
 // ============================================================
 const ManageRolesModal = ({ isOpen, user, onClose, onSuccess, roles }) => {
+    const confirm = useConfirm();
     const [loading,    setLoading]    = useState(false);
     const [error,      setError]      = useState(null);
     const [showAssign, setShowAssign] = useState(false);
@@ -129,7 +131,8 @@ const ManageRolesModal = ({ isOpen, user, onClose, onSuccess, roles }) => {
     const availableRoles = roles.filter(r => !userRoleIds.includes(r.id));
 
     const handleRemoveRole = async (roleId) => {
-        if (!window.confirm('Remove this role from the member?')) return;
+        const ok = await confirm({ title: 'Remove Role', message: 'Remove this role from the member?', confirmLabel: 'Remove', danger: true });
+        if (!ok) return;
         setLoading(true);
         setError(null);
         try {
@@ -443,6 +446,7 @@ const DeletePermanentlyModal = ({ isOpen, user, onClose, onSuccess }) => {
 
 const UsersPage = () => {
     const { hasPermission, user } = useAuth();
+    const confirm = useConfirm();
     const [users,        setUsers]        = useState([]);
     const [roles,        setRoles]        = useState([]);
     const [roleRequests, setRoleRequests] = useState([]);
@@ -512,7 +516,13 @@ const UsersPage = () => {
     };
 
     const handleDeactivate = async (id) => {
-        if (!window.confirm('Deactivate this user account?')) return;
+        const ok = await confirm({
+            title: 'Deactivate User',
+            message: 'Deactivate this user account?',
+            confirmLabel: 'Deactivate',
+            danger: true,
+        });
+        if (!ok) return;
         try {
             await usersAPI.deactivateUser(id);
             loadUsers();

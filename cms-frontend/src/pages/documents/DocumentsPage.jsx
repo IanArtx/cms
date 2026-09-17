@@ -17,6 +17,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import {
     PlusIcon,
     CheckIcon,
@@ -321,6 +322,7 @@ const UploadModal = ({ isOpen, onClose, onSuccess, categories, isArchive = false
 // ============================================================
 const CompanyArchive = ({ categories }) => {
     const { hasPermission } = useAuth();
+    const confirm = useConfirm();
     const [documents,   setDocuments]   = useState([]);
     const [loading,     setLoading]     = useState(true);
     const [error,       setError]       = useState(null);
@@ -354,7 +356,13 @@ const CompanyArchive = ({ categories }) => {
     // (see deleteDocument in documentsController.js) — the document
     // just disappears from every list, including this one.
     const handleRemove = async (doc) => {
-        if (!window.confirm(`Remove "${doc.title}" from the archive? This can't be undone from here.`)) return;
+        const ok = await confirm({
+            title: 'Remove Document',
+            message: `Remove "${doc.title}" from the archive? This can't be undone from here.`,
+            confirmLabel: 'Remove',
+            danger: true,
+        });
+        if (!ok) return;
         setActionLoading(doc.id);
         try {
             await documentsAPI.remove(doc.id);
@@ -835,6 +843,7 @@ const GrantAccessModal = ({ isOpen, document, onClose }) => {
 // ============================================================
 const DocumentsPage = () => {
     const { hasPermission, hasRole } = useAuth();
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [documents,  setDocuments]  = useState([]);
     const [categories, setCategories] = useState([]);
@@ -933,7 +942,13 @@ const DocumentsPage = () => {
     // that's already ARCHIVED. Soft removal (see deleteDocument in
     // documentsController.js) — it just disappears from every list.
     const handleRemove = async (id, title) => {
-        if (!window.confirm(`Remove "${title}" from the archive? This can't be undone from here.`)) return;
+        const ok = await confirm({
+            title: 'Remove Document',
+            message: `Remove "${title}" from the archive? This can't be undone from here.`,
+            confirmLabel: 'Remove',
+            danger: true,
+        });
+        if (!ok) return;
         setActionLoading(id);
         try {
             await documentsAPI.remove(id);

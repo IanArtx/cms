@@ -12,6 +12,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChartTheme } from '../../hooks/useChartTheme';
 import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, FunnelIcon } from '@heroicons/react/24/outline';
 import { transferTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
@@ -409,6 +410,7 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
 // ============================================================
 const TransfersPage = () => {
     const { hasPermission, hasRole, user } = useAuth();
+    const confirm = useConfirm();
     const [transfers,  setTransfers]  = useState([]);
     const [accounts,   setAccounts]   = useState([]);
     const [categories, setCategories] = useState([]);
@@ -520,7 +522,13 @@ const TransfersPage = () => {
     };
 
     const handleReject = async (id) => {
-        const reason = window.prompt('Enter reason for rejection:');
+        const reason = await confirm({
+            title: 'Reject Transfer',
+            message: 'Enter reason for rejection:',
+            requireInput: true,
+            confirmLabel: 'Reject',
+            danger: true,
+        });
         if (!reason) return;
         setActionLoading(id);
         try {

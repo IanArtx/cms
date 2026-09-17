@@ -15,6 +15,7 @@ const {
     blockFinanceRestricted, requirePermissions,
 } = require('../middleware/auth');
 const finesController = require('../controllers/finesController');
+const savingsFineSettlementController = require('../controllers/savingsFineSettlementController');
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -74,6 +75,88 @@ router.patch('/:id/clear',
     ],
     validateRequest,
     finesController.clearFineDirect
+);
+
+// ============================================================
+// SETTLE FINES WITH SAVINGS (v1.59.0)
+// Pay one or more of a member's own OUTSTANDING fines straight out of
+// their savings principal. Two entry points funnelling into the same
+// review flow — see savingsFineSettlementController.js's header
+// comment for the full breakdown of who may call what. Static paths
+// declared before any /:id-shaped route in this section (this file
+// has no bare /:id route, only /:id/clear, so there's no collision
+// risk either way — kept in this order for clarity, matching the
+// convention used everywhere else in this codebase).
+// ============================================================
+router.get('/settlements/me', savingsFineSettlementController.getMySettlements);
+
+router.get('/settlements',
+    requirePermissions(['FINE_VIEW']),
+    savingsFineSettlementController.getAllSettlements
+);
+
+// Treasurer/Assistant Treasurer enters it directly on a member's
+// behalf — sits PENDING_CONFIRMATION until the member confirms.
+router.post('/settlements',
+    requirePermissions(['FINE_MANAGE']),
+    [
+        body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
+        body('fine_ids').isArray({ min: 1 }).withMessage('Select at least one outstanding fine'),
+        body('fine_ids.*').isInt({ min: 1 }),
+        body('settlement_date').isISO8601().withMessage('A valid settlement date is required'),
+        body('destination_account_id').optional().isInt({ min: 1 }),
+        body('notes').optional().trim(),
+    ],
+    validateRequest,
+    savingsFineSettlementController.createSettlement
+);
+
+// A member requests it themselves, for their own fines/savings — sits
+// PENDING_APPROVAL until a Treasurer/Assistant Treasurer approves it.
+router.post('/settlements/request',
+    [
+        body('fine_ids').isArray({ min: 1 }).withMessage('Select at least one outstanding fine'),
+        body('fine_ids.*').isInt({ min: 1 }),
+        body('settlement_date').isISO8601().withMessage('A valid settlement date is required'),
+        body('destination_account_id').optional().isInt({ min: 1 }),
+        body('notes').optional().trim(),
+    ],
+    validateRequest,
+    savingsFineSettlementController.requestSettlement
+);
+
+router.get('/settlements/:id/items',
+    [ param('id').isInt({ min: 1 }) ],
+    validateRequest,
+    savingsFineSettlementController.getSettlementItems
+);
+
+// Member-side review of a Treasury-direct entry (ownership checked in
+// controller — no permission gate here, same as Savings Handout
+// confirm/reject).
+router.patch('/settlements/:id/confirm',
+    [ param('id').isInt({ min: 1 }) ],
+    validateRequest,
+    savingsFineSettlementController.confirmSettlement
+);
+router.patch('/settlements/:id/reject',
+    [ param('id').isInt({ min: 1 }), body('reason').optional().trim() ],
+    validateRequest,
+    savingsFineSettlementController.rejectSettlement
+);
+
+// Treasurer-side review of a member's own request.
+router.patch('/settlements/:id/approve',
+    requirePermissions(['FINE_MANAGE']),
+    [ param('id').isInt({ min: 1 }) ],
+    validateRequest,
+    savingsFineSettlementController.approveSettlement
+);
+router.patch('/settlements/:id/deny',
+    requirePermissions(['FINE_MANAGE']),
+    [ param('id').isInt({ min: 1 }), body('reason').optional().trim() ],
+    validateRequest,
+    savingsFineSettlementController.denySettlement
 );
 
 module.exports = router;

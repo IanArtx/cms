@@ -12,6 +12,7 @@ import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import {
     ChartBarIcon,
     UserIcon,
@@ -324,6 +325,7 @@ const ExpenseRow = ({ item }) => (
 // ============================================================
 const ReportsPage = () => {
     const { user, hasPermission } = useAuth();
+    const confirm = useConfirm();
     const currentDate = new Date();
 
     const [year,  setYear]  = useState(currentDate.getFullYear());
@@ -382,9 +384,12 @@ const ReportsPage = () => {
     // SEND MONTHLY REPORTS
     // --------------------------------------------------------
     const sendMonthlyReports = async () => {
-        if (!window.confirm(
-            `Send monthly reports for ${month}/${year} to all members?`
-        )) return;
+        const ok = await confirm({
+            title: 'Send Monthly Reports',
+            message: `Send monthly reports for ${month}/${year} to all members?`,
+            confirmLabel: 'Send',
+        });
+        if (!ok) return;
 
         setSending(true);
         setError(null);
@@ -410,9 +415,12 @@ const ReportsPage = () => {
     // --------------------------------------------------------
     const issueCertificatesNow = async (certificateType) => {
         const label = certificateType === 'ANNUAL' ? 'annual' : 'monthly';
-        if (!window.confirm(
-            `Issue and email a ${label} Certificate of Shares to every active shareholder now?`
-        )) return;
+        const ok = await confirm({
+            title: 'Issue Certificates',
+            message: `Issue and email a ${label} Certificate of Shares to every active shareholder now?`,
+            confirmLabel: 'Issue',
+        });
+        if (!ok) return;
 
         setIssuingCert(certificateType);
         setError(null);

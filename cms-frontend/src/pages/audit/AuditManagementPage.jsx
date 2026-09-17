@@ -16,6 +16,7 @@ import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, TrashIcon, NoSymbolIcon, PencilIcon } from '@heroicons/react/24/outline';
 
 const emptyForm = {
@@ -29,6 +30,7 @@ const emptyForm = {
 const toDateInputValue = (value) => value ? value.slice(0, 10) : '';
 
 const AuditManagementPage = () => {
+    const confirm = useConfirm();
     const [engagements, setEngagements] = useState([]);
     const [accounts, setAccounts]       = useState([]);
     const [loading, setLoading]         = useState(true);
@@ -175,7 +177,12 @@ const AuditManagementPage = () => {
     };
 
     const handleRevoke = async (id) => {
-        if (!window.confirm('Revoke this engagement? The auditor(s) attached to it will immediately lose access.')) return;
+        const ok = await confirm({
+            title: 'Revoke Engagement',
+            message: 'Revoke this engagement? The auditor(s) attached to it will immediately lose access.',
+            confirmLabel: 'Revoke', danger: true,
+        });
+        if (!ok) return;
         setError(null);
         try {
             await auditAPI.revokeEngagement(id);

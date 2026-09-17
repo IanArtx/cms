@@ -1654,6 +1654,51 @@ CREATE TABLE savings_handouts (
     CONSTRAINT positive_handout_total     CHECK (total_amount > 0)
 );
 
+-- v1.58.0 — a Treasurer/Assistant Treasurer can redirect a member's
+-- own savings principal into a capital contribution instead of paying
+-- it out as cash. Deliberately its own table/flow rather than a
+-- variant of savings_handouts — the destination differs (a capital
+-- contribution landing in the usable/operational account, not a cash
+-- payout) and it produces a second, separate record
+-- (shareholder_contributions) that also changes the member's
+-- shares_held/percentage. Same "Treasurer enters it, only the member's
+-- own confirmation actually moves the money" shape as a handout — this
+-- is still the member's own savings being redirected, so their
+-- agreement is required before anything posts. Confirming debits the
+-- SAVINGS account (savings_transaction_id, inflow_type
+-- SAVINGS_TO_CAPITAL_OUT) and decrements savings_balances.principal_
+-- balance exactly like a handout does, then runs the ordinary
+-- creditShareholderContribution() flow into destination_account_id
+-- (contribution_id / contribution_transaction_id) — same shareholding
+-- recalculation and capital-goal auto-attribution as any other
+-- contribution.
+CREATE TABLE savings_capital_conversions (
+    id                          SERIAL PRIMARY KEY,
+    reference_id                INTEGER       NOT NULL REFERENCES references_registry(id),
+    user_id                     INTEGER       NOT NULL REFERENCES users(id),      -- the member whose savings this is
+    account_id                  INTEGER       NOT NULL REFERENCES accounts(id),   -- the SAVINGS account the money leaves
+    destination_account_id      INTEGER       NOT NULL REFERENCES accounts(id),   -- the usable/operational account the contribution lands in (must share the Savings account's currency — no implicit FX conversion)
+    category_id                 INTEGER       NOT NULL REFERENCES categories(id), -- categorizes both legs
+    amount                      NUMERIC(20,4) NOT NULL,
+    currency_id                 INTEGER       NOT NULL REFERENCES currencies(id),
+    conversion_date              DATE          NOT NULL,
+    notes                        TEXT,
+    status                       VARCHAR(30)   NOT NULL DEFAULT 'PENDING_CONFIRMATION'
+                                 CHECK (status IN ('PENDING_CONFIRMATION','CONFIRMED','REJECTED')),
+    savings_transaction_id       INTEGER REFERENCES transactions(id),               -- the SAVINGS account DEBIT, set once confirmed
+    contribution_id              INTEGER REFERENCES shareholder_contributions(id),  -- the resulting capital contribution row, set once confirmed
+    contribution_transaction_id  INTEGER REFERENCES transactions(id),               -- the destination account CREDIT, set once confirmed
+    entered_by                   INTEGER       NOT NULL REFERENCES users(id),       -- Treasurer/Assistant Treasurer who initiated it
+    confirmed_at                 TIMESTAMPTZ,
+    rejected_reason               TEXT,
+    rejected_at                   TIMESTAMPTZ,
+    created_at                    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_savings_capital_conversion_amount CHECK (amount > 0)
+);
+
+CREATE INDEX idx_savings_capital_conversions_user   ON savings_capital_conversions (user_id, status);
+CREATE INDEX idx_savings_capital_conversions_status ON savings_capital_conversions (status);
+
 
 -- ============================================================
 -- GROUP 14b: SIDE FUND — optional shared petty-cash-style pool
@@ -2034,6 +2079,7 @@ INSERT INTO permissions (code, module, description) VALUES
     ('SAVINGS_CREATE',                      'FINANCE',      'Record a savings deposit on behalf of a member'),
     ('SAVINGS_APPROVE',                     'FINANCE',      'Approve a pending savings deposit (Treasurer/Assistant Treasurer)'),
     ('SAVINGS_HANDOUT_CREATE',              'FINANCE',      'Enter a savings handout for a member (Treasurer)'),
+    ('SAVINGS_CAPITAL_CONVERT_CREATE',      'FINANCE',      'Redirect a member''s savings principal into a capital contribution, pending the member''s own confirmation (v1.58.0)'),
     ('SAVINGS_SETTINGS_MANAGE',             'FINANCE',      'Change the company-wide savings interest rate'),
     -- Side Fund
     ('SIDE_FUND_VIEW',                      'FINANCE',      'View side fund balance, dues, and spending history'),
@@ -3467,6 +3513,66 @@ CREATE TABLE fines (
 CREATE INDEX idx_fines_user   ON fines (user_id);
 CREATE INDEX idx_fines_status ON fines (status);
 
+-- v1.59.0 — pay one or more of a member's own OUTSTANDING fines
+-- straight out of their savings principal, instead of paying in cash.
+-- Two entry points, mirroring the Savings module's own established
+-- pattern: a Treasurer/Assistant Treasurer enters it directly on the
+-- member's behalf (source=TREASURY_DIRECT) and the member themselves
+-- must confirm before anything posts (PENDING_CONFIRMATION — same
+-- shape as a Savings Handout / v1.58.0's Savings-to-Capital
+-- Conversion); OR a member requests it themselves
+-- (source=MEMBER_REQUEST) and a Treasurer/Assistant Treasurer must
+-- approve it (PENDING_APPROVAL — same shape as a self-service Savings
+-- Deposit requisition). Whichever party did NOT initiate it is always
+-- the one who reviews it, tracked generically as reviewed_by/at/notes
+-- since only one review action (confirm-or-reject, or
+-- approve-or-deny) ever happens per settlement, never both.
+-- Settling debits the SAVINGS account once for the combined total
+-- (savings_transaction_id), then reuses finesService.clearFine() once
+-- per selected fine (each fine keeps its own normal FINE_PAYMENT_IN
+-- transaction, tracked per-item in savings_fine_settlement_items) —
+-- the exact same crediting core every other fine-clearing path
+-- already shares. Every selectable fine must be in the SAME currency
+-- as the Savings account itself (enforced in the controller) — this
+-- system never silently blends or converts currencies across a real
+-- money movement.
+CREATE TABLE savings_fine_settlements (
+    id                       SERIAL PRIMARY KEY,
+    reference_id             INTEGER       NOT NULL REFERENCES references_registry(id),
+    user_id                  INTEGER       NOT NULL REFERENCES users(id),      -- whose fines and whose savings
+    account_id               INTEGER       NOT NULL REFERENCES accounts(id),   -- the SAVINGS account the money leaves
+    destination_account_id   INTEGER       NOT NULL REFERENCES accounts(id),   -- where each fine's own clearing payment lands (must match the fines' own currency)
+    total_amount             NUMERIC(20,4) NOT NULL,
+    currency_id              INTEGER       NOT NULL REFERENCES currencies(id),
+    settlement_date           DATE          NOT NULL,
+    notes                     TEXT,
+    source                    VARCHAR(20)   NOT NULL
+                              CHECK (source IN ('TREASURY_DIRECT','MEMBER_REQUEST')),
+    status                    VARCHAR(30)   NOT NULL DEFAULT 'PENDING_CONFIRMATION'
+                              CHECK (status IN ('PENDING_CONFIRMATION','PENDING_APPROVAL','SETTLED','REJECTED')),
+    savings_transaction_id    INTEGER REFERENCES transactions(id),             -- the single SAVINGS DEBIT covering total_amount, set once SETTLED
+    initiated_by              INTEGER       NOT NULL REFERENCES users(id),     -- the Treasurer (TREASURY_DIRECT) or the member themselves (MEMBER_REQUEST)
+    reviewed_by                INTEGER REFERENCES users(id),                   -- whoever confirmed/rejected or approved/denied it
+    reviewed_at                TIMESTAMPTZ,
+    review_notes                TEXT,
+    created_at                  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_savings_fine_settlement_total CHECK (total_amount > 0)
+);
+
+CREATE TABLE savings_fine_settlement_items (
+    id                   SERIAL PRIMARY KEY,
+    settlement_id         INTEGER       NOT NULL REFERENCES savings_fine_settlements(id),
+    fine_id               INTEGER       NOT NULL REFERENCES fines(id),
+    amount                NUMERIC(20,4) NOT NULL,               -- snapshot of fines.amount at selection time, for display/audit
+    fine_transaction_id   INTEGER REFERENCES transactions(id),  -- the clearFine() CREDIT for this specific fine, set once SETTLED
+    UNIQUE (settlement_id, fine_id)
+);
+
+CREATE INDEX idx_savings_fine_settlements_user   ON savings_fine_settlements (user_id, status);
+CREATE INDEX idx_savings_fine_settlements_status ON savings_fine_settlements (status);
+CREATE INDEX idx_savings_fine_settlement_items_settlement ON savings_fine_settlement_items (settlement_id);
+CREATE INDEX idx_savings_fine_settlement_items_fine        ON savings_fine_settlement_items (fine_id);
+
 ALTER TABLE requisitions ADD COLUMN fine_id INTEGER REFERENCES fines(id);
 
 -- v1.43.0 — only ever set for a late ITERATION 1 pledge payment
@@ -3929,6 +4035,115 @@ ON CONFLICT (inflow_type) DO NOTHING;
 -- (the same permission Accounts/Currencies configuration already
 -- requires), since reclassifying an inflow type is an accounting-
 -- policy change, not a day-to-day finance action.
+
+-- ============================================================
+-- GROUP: SAVINGS-TO-CAPITAL CONVERSION (v1.58.0)
+-- savings_capital_conversions itself is defined earlier, alongside
+-- savings_handouts (GROUP 14), so it's created in the right order
+-- relative to the tables it references. This trailing block only
+-- widens transactions.inflow_type and extends the GL mapping —
+-- appended here, after the GL feature (v1.55.0) is already defined
+-- above, for the same forward-reference reason every other post-
+-- v1.55.0 inflow_type widening in this file lives down here.
+-- ============================================================
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN',
+            'DEPOSIT_CONTRIBUTION_IN', 'DEPOSIT_REFUND_OUT',
+            'GENERAL_PAYMENT_OUT',
+            'SERVICE_FEE_ADVANCE_OUT',
+            'SAVINGS_TO_CAPITAL_OUT'
+        ));
+END $$;
+
+-- Same liability account (2100, Member Savings Payable) as
+-- SAVINGS_HANDOUT_OUT — money leaving the savings pool always reduces
+-- that liability, whether it's paid out in cash (a handout) or
+-- reclassified into capital (this). The offsetting CREDIT leg posts
+-- through the ordinary CONTRIBUTION inflow_type/mapping (3000, Member
+-- Capital Contributions) via creditShareholderContribution — no new
+-- mapping needed for that side.
+INSERT INTO gl_inflow_type_mapping (inflow_type, gl_account_id, notes)
+SELECT v.inflow_type, ga.id, v.notes
+FROM (VALUES
+    ('SAVINGS_TO_CAPITAL_OUT', '2100', 'Same account as SAVINGS_HANDOUT_OUT — money leaving the savings pool, here reclassified into capital (3000) rather than paid out in cash.')
+) AS v(inflow_type, gl_code, notes)
+JOIN gl_accounts ga ON ga.code = v.gl_code
+ON CONFLICT (inflow_type) DO NOTHING;
+
+-- ============================================================
+-- GROUP: SAVINGS-TO-FINE-SETTLEMENT (v1.59.0)
+-- savings_fine_settlements/savings_fine_settlement_items themselves
+-- are defined earlier, alongside `fines` (GROUP: FINES), so they're
+-- created in the right order relative to the tables they reference.
+-- This trailing block only widens transactions.inflow_type and
+-- extends the GL mapping, same reason every other post-v1.55.0
+-- inflow_type widening in this file lives down here.
+-- ============================================================
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN',
+            'DEPOSIT_CONTRIBUTION_IN', 'DEPOSIT_REFUND_OUT',
+            'GENERAL_PAYMENT_OUT',
+            'SERVICE_FEE_ADVANCE_OUT',
+            'SAVINGS_TO_CAPITAL_OUT',
+            'SAVINGS_FINE_SETTLEMENT_OUT'
+        ));
+END $$;
+
+-- Same liability account (2100, Member Savings Payable) as
+-- SAVINGS_HANDOUT_OUT/SAVINGS_TO_CAPITAL_OUT — money leaving the
+-- savings pool always reduces that liability, whatever it's used for.
+-- The offsetting CREDIT leg posts through the ordinary FINE_PAYMENT_IN
+-- inflow_type/mapping (4400, Fines Income) via finesService.clearFine
+-- — no new mapping needed for that side.
+INSERT INTO gl_inflow_type_mapping (inflow_type, gl_account_id, notes)
+SELECT v.inflow_type, ga.id, v.notes
+FROM (VALUES
+    ('SAVINGS_FINE_SETTLEMENT_OUT', '2100', 'Same account as SAVINGS_HANDOUT_OUT/SAVINGS_TO_CAPITAL_OUT — money leaving the savings pool, here used to settle one or more fines (4400) instead of being paid out or converted to capital.')
+) AS v(inflow_type, gl_code, notes)
+JOIN gl_accounts ga ON ga.code = v.gl_code
+ON CONFLICT (inflow_type) DO NOTHING;
 
 -- ============================================================
 -- END OF SCHEMA — v1.39.0

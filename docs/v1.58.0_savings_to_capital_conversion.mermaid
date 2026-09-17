@@ -1,0 +1,36 @@
+%% v1.58.0 — Savings-to-Capital Conversion
+%% A Treasurer/Assistant Treasurer redirects a member's own savings
+%% principal into a capital contribution instead of paying it out as
+%% cash. Nothing moves until the member themselves confirms it.
+flowchart TD
+
+    A[Treasurer / Assistant Treasurer\nopens 'Convert to Capital'] --> B[Picks member, amount, category, date\nSees member's available savings principal]
+    B --> C["POST /savings/capital-conversions\n(requires SAVINGS_CAPITAL_CONVERT_CREATE)"]
+    C --> D{Amount <= member's\nprincipal_balance?}
+    D -->|No| D1[Rejected: cannot convert\nmore than they have saved]
+    D -->|Yes| E{Destination account currency\n== Savings account currency?}
+    E -->|No| E1["Rejected: no automatic FX conversion\n(same safety rule as v1.57.1's currency fixes)"]
+    E -->|Yes, defaults to Primary| F[New savings_capital_conversions row\nstatus = PENDING_CONFIRMATION\nNOTHING has moved yet]
+    F --> G[Member notified:\nbell + email\n'Confirm or reject']
+
+    G --> H{Member's decision}
+    H -->|Reject| I["PATCH .../reject\nstatus = REJECTED\nTreasurer notified — nothing ever moved"]
+    H -->|Confirm| J["PATCH .../confirm\n(ownership checked: only this member)"]
+
+    J --> K[Re-check balance at confirm time\n— it may have changed since entry]
+    K -->|Insufficient now| K1[Rejected: balance has\nsince dropped]
+    K -->|OK| L[Leg 1 — DEBIT the SAVINGS account\ninflow_type: SAVINGS_TO_CAPITAL_OUT\nsame mechanics as confirmSavingsHandout]
+    L --> M[savings_balances.principal_balance\ndecremented]
+    M --> N["Leg 2 — creditShareholderContribution()\nthe SAME core every other contribution uses"]
+    N --> O[CREDIT posted to destination account\n(Primary, by default)]
+    O --> P[New shareholder_contributions row\nAPPROVED]
+    P --> Q[recalculateShareholding()\nmember's shares_held / percentage increase]
+    Q --> R[Auto-attributed to member's\nprimary capital goal, if applicable]
+    R --> S[savings_capital_conversions row\nstatus = CONFIRMED\nlinks both transactions + contribution_id]
+    S --> T[Treasurer who entered it notified:\nconversion confirmed]
+
+    style D1 fill:#fee2e2
+    style E1 fill:#fee2e2
+    style K1 fill:#fee2e2
+    style I fill:#fef9c3
+    style S fill:#dcfce7

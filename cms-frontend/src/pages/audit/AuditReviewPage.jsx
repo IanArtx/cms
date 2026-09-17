@@ -13,6 +13,7 @@ import { formatDate, formatFileSize, getErrorMessage } from '../../utils/helpers
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import {
     CheckCircleIcon, XCircleIcon, ClockIcon, PaperClipIcon, EyeIcon,
 } from '@heroicons/react/24/outline';
@@ -24,6 +25,7 @@ const statusBadgeClass = (status) => {
 };
 
 const AuditReviewPage = () => {
+    const confirm = useConfirm();
     const [tab, setTab] = useState('submissions'); // 'submissions' | 'extensions'
 
     // --- Submissions ---
@@ -90,7 +92,12 @@ const AuditReviewPage = () => {
     };
 
     const handleApprove = async () => {
-        if (!window.confirm('Record your approval for this submission?')) return;
+        const ok = await confirm({
+            title: 'Approve Submission',
+            message: 'Record your approval for this submission?',
+            confirmLabel: 'Approve',
+        });
+        if (!ok) return;
         setActing(true);
         setError(null);
         try {

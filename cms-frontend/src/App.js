@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './contexts/AuthContext';
 import { BrandingProvider } from './contexts/BrandingContext';
+import { ConfirmProvider } from './contexts/ConfirmContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import AppLayout from './components/layout/AppLayout';
 
@@ -74,6 +75,7 @@ function App() {
         <QueryClientProvider client={queryClient}>
             <AuthProvider>
               <BrandingProvider>
+              <ConfirmProvider>
                 <BrowserRouter>
                     <Routes>
                         {/* Public routes */}
@@ -186,6 +188,7 @@ function App() {
                         <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                 </BrowserRouter>
+              </ConfirmProvider>
               </BrandingProvider>
             </AuthProvider>
         </QueryClientProvider>

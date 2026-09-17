@@ -15,6 +15,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     PencilIcon, XMarkIcon, FlagIcon, TrophyIcon, BoltIcon, HandRaisedIcon,
@@ -307,6 +308,7 @@ const StatTile = ({ label, value, tone = 'default' }) => (
 const CapitalGoalDetailPage = () => {
     const { id } = useParams();
     const { hasPermission } = useAuth();
+    const confirm = useConfirm();
     const canManage = hasPermission('CAPITAL_GOAL_MANAGE');
     const theme = useChartTheme();
 
@@ -388,7 +390,12 @@ const CapitalGoalDetailPage = () => {
     };
 
     const handleComplete = async () => {
-        if (!window.confirm('Mark this capital goal as completed?')) return;
+        const ok = await confirm({
+            title: 'Complete Capital Goal',
+            message: 'Mark this capital goal as completed?',
+            confirmLabel: 'Mark Completed',
+        });
+        if (!ok) return;
         setActionLoading(true);
         try {
             await capitalGoalsAPI.complete(id);

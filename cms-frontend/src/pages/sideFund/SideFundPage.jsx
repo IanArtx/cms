@@ -14,6 +14,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, Cog6ToothIcon, BanknotesIcon, CheckCircleIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
@@ -625,6 +626,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, categories, currentBal
 // same "forward-only" rule as the company-wide default.
 // ============================================================
 const OverridesPanel = ({ config }) => {
+    const confirm = useConfirm();
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -680,7 +682,13 @@ const OverridesPanel = ({ config }) => {
     };
 
     const handleClear = async (userId) => {
-        if (!window.confirm("Clear this member's override? They'll go back to the company default from next month.")) return;
+        const ok = await confirm({
+            title: 'Clear Override',
+            message: "Clear this member's override? They'll go back to the company default from next month.",
+            confirmLabel: 'Clear',
+            danger: true,
+        });
+        if (!ok) return;
         setSaving(true);
         setError(null);
         try {

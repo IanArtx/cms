@@ -18,6 +18,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, CheckIcon, XMarkIcon, Cog6ToothIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
@@ -252,6 +253,128 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
 };
 
 // ============================================================
+// CONVERT TO CAPITAL MODAL (v1.58.0, Treasurer/Assistant Treasurer)
+// Redirects part of a member's own savings principal into a capital
+// contribution instead of paying it out as cash. Same "nothing moves
+// until the member confirms" shape as a Handout — this modal only
+// records the request; confirmCapitalConversion (member-side) is what
+// actually posts anything.
+// ============================================================
+const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories }) => {
+    const [form, setForm] = useState({
+        user_id: '', category_id: '', amount: '', conversion_date: '', notes: '',
+    });
+    const [memberBalance, setMemberBalance] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (form.user_id) {
+            savingsAPI.getBalanceForUser(form.user_id)
+                .then(r => setMemberBalance(r.data.data))
+                .catch(() => setMemberBalance(null));
+        } else {
+            setMemberBalance(null);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [form.user_id]);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await savingsAPI.createCapitalConversion({ ...form, amount: parseFloat(form.amount) });
+            onSuccess();
+            onClose();
+            setForm({ user_id: '', category_id: '', amount: '', conversion_date: '', notes: '' });
+            setMemberBalance(null);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Convert Savings to Capital</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Moves this amount out of the member's savings and into their capital
+                        contributions (increasing their shareholding) instead of paying it out as
+                        cash. Nothing moves yet — the member must confirm before this posts.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Member *</label>
+                            <select className="input" value={form.user_id}
+                                onChange={e => setForm(p => ({ ...p, user_id: e.target.value }))} required>
+                                <option value="">Select member...</option>
+                                {members.map(m => (
+                                    <option key={m.id} value={m.id}>{m.first_name} {m.last_name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        {memberBalance && (
+                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm">
+                                <p className="text-primary-700">
+                                    Available principal: <span className="font-bold">{formatNumber(memberBalance.principal_balance)}</span>
+                                </p>
+                            </div>
+                        )}
+                        <div>
+                            <label className="label">Category *</label>
+                            <select className="input" value={form.category_id}
+                                onChange={e => setForm(p => ({ ...p, category_id: e.target.value }))} required>
+                                <option value="">Select category...</option>
+                                {categories.filter(c => c.module === 'FINANCE').map(c => (
+                                    <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="label">Amount *</label>
+                                <input type="number" className="input" value={form.amount}
+                                    onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
+                                    min="0.01" step="0.01" required />
+                            </div>
+                            <div>
+                                <label className="label">Conversion Date *</label>
+                                <input type="date" className="input" value={form.conversion_date}
+                                    max={new Date().toISOString().slice(0, 10)}
+                                    onChange={e => setForm(p => ({ ...p, conversion_date: e.target.value }))} required />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="label">Notes</label>
+                            <textarea className="input" rows={2} value={form.notes}
+                                onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Recording...' : 'Record Conversion'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // RECORD POOL INFLOW MODAL (Treasurer/Assistant Treasurer)
 // A non-member credit into the savings pool — e.g. the fund was
 // invested and paid a profit back. NOT a member deposit — doesn't
@@ -444,13 +567,16 @@ const SettingsModal = ({ isOpen, onClose, onSuccess }) => {
 // ============================================================
 const SavingsPage = () => {
     const { hasPermission } = useAuth();
+    const confirm = useConfirm();
     const [myBalance, setMyBalance] = useState(null);
     const [mySavings, setMySavings] = useState([]);
     const [myHandouts, setMyHandouts] = useState([]);
+    const [myCapitalConversions, setMyCapitalConversions] = useState([]);
     const [pendingDeposits, setPendingDeposits] = useState([]);
     const [pendingPoolInflows, setPendingPoolInflows] = useState([]);
     const [allSavings, setAllSavings] = useState([]);
     const [allHandouts, setAllHandouts] = useState([]);
+    const [allCapitalConversions, setAllCapitalConversions] = useState([]);
     const [members, setMembers] = useState([]);
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -458,28 +584,32 @@ const SavingsPage = () => {
     const [activeTab, setActiveTab] = useState('mine');
     const [showDeposit, setShowDeposit] = useState(false);
     const [showHandout, setShowHandout] = useState(false);
+    const [showConvertToCapital, setShowConvertToCapital] = useState(false);
     const [showPoolInflow, setShowPoolInflow] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [actionLoading, setActionLoading] = useState(null);
     const [preview, setPreview] = useState(null);
 
-    const canCreate   = hasPermission('SAVINGS_CREATE');
-    const canApprove  = hasPermission('SAVINGS_APPROVE');
-    const canHandout  = hasPermission('SAVINGS_HANDOUT_CREATE');
-    const canView     = hasPermission('SAVINGS_VIEW');
-    const canSettings = hasPermission('SAVINGS_SETTINGS_MANAGE');
+    const canCreate          = hasPermission('SAVINGS_CREATE');
+    const canApprove         = hasPermission('SAVINGS_APPROVE');
+    const canHandout         = hasPermission('SAVINGS_HANDOUT_CREATE');
+    const canConvertToCapital = hasPermission('SAVINGS_CAPITAL_CONVERT_CREATE');
+    const canView             = hasPermission('SAVINGS_VIEW');
+    const canSettings         = hasPermission('SAVINGS_SETTINGS_MANAGE');
 
     const loadMine = useCallback(async () => {
         try {
             setLoading(true);
-            const [balRes, savRes, hoRes] = await Promise.all([
+            const [balRes, savRes, hoRes, ccRes] = await Promise.all([
                 savingsAPI.getMyBalance(),
                 savingsAPI.getMySavings(),
                 savingsAPI.getMyHandouts(),
+                savingsAPI.getMyCapitalConversions(),
             ]);
             setMyBalance(balRes.data.data);
             setMySavings(savRes.data.data || []);
             setMyHandouts(hoRes.data.data || []);
+            setMyCapitalConversions(ccRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -504,12 +634,14 @@ const SavingsPage = () => {
     const loadManage = useCallback(async () => {
         if (!canView) return;
         try {
-            const [savRes, hoRes] = await Promise.all([
+            const [savRes, hoRes, ccRes] = await Promise.all([
                 savingsAPI.getAll({ limit: 50 }),
                 savingsAPI.getAllHandouts({ limit: 50 }),
+                savingsAPI.getAllCapitalConversions({ limit: 50 }),
             ]);
             setAllSavings(savRes.data.data || []);
             setAllHandouts(hoRes.data.data || []);
+            setAllCapitalConversions(ccRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         }
@@ -519,11 +651,11 @@ const SavingsPage = () => {
         loadMine();
         loadApprovals();
         loadManage();
-        if (canCreate || canHandout) {
+        if (canCreate || canHandout || canConvertToCapital) {
             usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
             categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         }
-    }, [loadMine, loadApprovals, loadManage, canCreate, canHandout]);
+    }, [loadMine, loadApprovals, loadManage, canCreate, canHandout, canConvertToCapital]);
 
     const refreshAll = () => { loadMine(); loadApprovals(); loadManage(); };
 
@@ -540,7 +672,10 @@ const SavingsPage = () => {
     };
 
     const handleRejectDeposit = async (id) => {
-        const review_notes = window.prompt('Reason for rejecting this deposit:');
+        const review_notes = await confirm({
+            title: 'Reject Deposit', message: 'Reason for rejecting this deposit:',
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Reject', danger: true,
+        });
         if (!review_notes) return;
         setActionLoading(id);
         try {
@@ -566,7 +701,10 @@ const SavingsPage = () => {
     };
 
     const handleRejectPoolInflow = async (id) => {
-        const review_notes = window.prompt('Reason for rejecting this pool inflow:');
+        const review_notes = await confirm({
+            title: 'Reject Pool Inflow', message: 'Reason for rejecting this pool inflow:',
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Reject', danger: true,
+        });
         if (!review_notes) return;
         setActionLoading(id);
         try {
@@ -580,7 +718,10 @@ const SavingsPage = () => {
     };
 
     const handleConfirmHandout = async (id) => {
-        if (!window.confirm('Confirm you received this savings handout? This cannot be undone.')) return;
+        const ok = await confirm({
+            title: 'Confirm Handout', message: 'Confirm you received this savings handout? This cannot be undone.',
+        });
+        if (!ok) return;
         setActionLoading(id);
         try {
             await savingsAPI.confirmHandout(id);
@@ -593,7 +734,10 @@ const SavingsPage = () => {
     };
 
     const handleRejectHandout = async (id) => {
-        const reason = window.prompt('What\'s wrong with this handout?');
+        const reason = await confirm({
+            title: 'Dispute Handout', message: 'What\'s wrong with this handout?',
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Dispute', danger: true,
+        });
         if (!reason) return;
         setActionLoading(id);
         try {
@@ -606,8 +750,45 @@ const SavingsPage = () => {
         }
     };
 
+    const handleConfirmCapitalConversion = async (id) => {
+        const ok = await confirm({
+            title: 'Confirm Conversion',
+            message: 'Confirm moving this amount from your savings into your capital contributions? This cannot be undone.',
+        });
+        if (!ok) return;
+        setActionLoading(id);
+        try {
+            await savingsAPI.confirmCapitalConversion(id);
+            refreshAll();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const handleRejectCapitalConversion = async (id) => {
+        const reason = await confirm({
+            title: 'Dispute Conversion', message: 'What\'s wrong with this conversion?',
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Dispute', danger: true,
+        });
+        if (!reason) return;
+        setActionLoading(id);
+        try {
+            await savingsAPI.rejectCapitalConversion(id, { reason });
+            refreshAll();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const handleWithdrawFixedTerm = async (id) => {
-        if (!window.confirm('Process this fixed-term savings withdrawal? This cannot be undone.')) return;
+        const ok = await confirm({
+            title: 'Withdraw Savings', message: 'Process this fixed-term savings withdrawal? This cannot be undone.',
+        });
+        if (!ok) return;
         setActionLoading(id);
         try {
             await savingsAPI.withdraw(id);
@@ -698,6 +879,29 @@ const SavingsPage = () => {
         ) },
     ];
 
+    // Columns — My Savings-to-Capital Conversions (confirm/reject)
+    const myCapitalConversionsColumns = [
+        { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {formatNumber(row.amount)}</span> },
+        { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
+        { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.conversion_date)}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        { header: 'Actions', render: row => (
+            row.status === 'PENDING_CONFIRMATION' ? (
+                <div className="flex gap-2">
+                    <button onClick={() => handleConfirmCapitalConversion(row.id)} disabled={actionLoading === row.id}
+                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Confirm — move this into my capital contributions">
+                        <CheckIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => handleRejectCapitalConversion(row.id)} disabled={actionLoading === row.id}
+                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Dispute this conversion">
+                        <XMarkIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            ) : null
+        ) },
+    ];
+
     // Columns — Pending Approvals
     const approvalColumns = [
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
@@ -762,6 +966,15 @@ const SavingsPage = () => {
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
     ];
 
+    const allCapitalConversionsColumns = [
+        { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
+        { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
+        { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.amount)}</span> },
+        { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
+        { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.conversion_date)}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+    ];
+
     return (
         <div>
             <PageHeader
@@ -779,6 +992,12 @@ const SavingsPage = () => {
                             <button onClick={() => setShowHandout(true)} className="btn-secondary flex items-center gap-2">
                                 <PlusIcon className="h-4 w-4" />
                                 New Handout
+                            </button>
+                        )}
+                        {canConvertToCapital && (
+                            <button onClick={() => setShowConvertToCapital(true)} className="btn-secondary flex items-center gap-2">
+                                <PlusIcon className="h-4 w-4" />
+                                Convert to Capital
                             </button>
                         )}
                         {canCreate && (
@@ -820,10 +1039,11 @@ const SavingsPage = () => {
                 <div className="card">
                     <p className="text-sm text-gray-400">Awaiting You</p>
                     <p className="text-2xl font-bold text-gray-900 mt-1">
-                        {(myBalance?.pending_deposits || 0) + (myBalance?.pending_handouts || 0)}
+                        {(myBalance?.pending_deposits || 0) + (myBalance?.pending_handouts || 0) + (myBalance?.pending_capital_conversions || 0)}
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                        {myBalance?.pending_deposits || 0} deposit(s) pending · {myBalance?.pending_handouts || 0} handout(s) to confirm
+                        {myBalance?.pending_deposits || 0} deposit(s) pending · {myBalance?.pending_handouts || 0} handout(s) ·{' '}
+                        {myBalance?.pending_capital_conversions || 0} capital conversion(s) to confirm
                     </p>
                 </div>
             </div>
@@ -863,6 +1083,32 @@ const SavingsPage = () => {
                                 data={myHandouts.filter(h => h.status === 'PENDING_CONFIRMATION')}
                                 loading={false}
                                 emptyMessage="Nothing to confirm"
+                            />
+                        </div>
+                    )}
+                    {myCapitalConversions.some(c => c.status === 'PENDING_CONFIRMATION') && (
+                        <div className="mb-6">
+                            <h3 className="text-sm font-semibold text-gray-700 mb-2">Savings-to-Capital Conversions Awaiting Your Confirmation</h3>
+                            <p className="text-xs text-gray-400 mb-2">
+                                The Treasurer wants to move these amounts out of your savings and into your
+                                capital contributions — nothing has moved yet.
+                            </p>
+                            <DataTable
+                                columns={myCapitalConversionsColumns}
+                                data={myCapitalConversions.filter(c => c.status === 'PENDING_CONFIRMATION')}
+                                loading={false}
+                                emptyMessage="Nothing to confirm"
+                            />
+                        </div>
+                    )}
+                    {myCapitalConversions.length > 0 && (
+                        <div className="mb-6">
+                            <h3 className="text-sm font-semibold text-gray-700 mb-2">Savings-to-Capital Conversion History</h3>
+                            <DataTable
+                                columns={myCapitalConversionsColumns}
+                                data={myCapitalConversions}
+                                loading={false}
+                                emptyMessage="No conversions yet"
                             />
                         </div>
                     )}
@@ -919,6 +1165,15 @@ const SavingsPage = () => {
                         searchable
                         searchPlaceholder="Search all handouts..."
                     />
+                    <h3 className="text-sm font-semibold text-gray-700 mt-6 mb-2">All Savings-to-Capital Conversions</h3>
+                    <DataTable
+                        columns={allCapitalConversionsColumns}
+                        data={allCapitalConversions}
+                        loading={loading}
+                        emptyMessage="No savings-to-capital conversions found"
+                        searchable
+                        searchPlaceholder="Search all conversions..."
+                    />
                 </>
             )}
 
@@ -932,6 +1187,13 @@ const SavingsPage = () => {
             <RecordHandoutModal
                 isOpen={showHandout}
                 onClose={() => setShowHandout(false)}
+                onSuccess={refreshAll}
+                members={members}
+                categories={categories}
+            />
+            <ConvertToCapitalModal
+                isOpen={showConvertToCapital}
+                onClose={() => setShowConvertToCapital(false)}
                 onSuccess={refreshAll}
                 members={members}
                 categories={categories}

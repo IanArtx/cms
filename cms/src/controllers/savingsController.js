@@ -36,7 +36,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
-const { postTransaction } = require('./transactionsController');
+const { postTransaction, creditShareholderContribution } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
@@ -591,6 +591,374 @@ const rejectSavingsHandout = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// CREATE SAVINGS-TO-CAPITAL CONVERSION (v1.58.0) — Treasurer / Assistant Treasurer
+// POST /api/savings/capital-conversions
+// Requested directly: "the treasurer can decide to take money out of
+// one's savings account and top it up to their capital contributions
+// with an approval... to post the money on the usable account funds."
+// Its own standalone flow (not a Handout variant) — the destination is
+// a capital contribution, not a cash payout, and it produces a second
+// record (shareholder_contributions) that changes the member's
+// shares_held/percentage. Nothing moves yet — this is still the
+// member's own savings, so their own confirmation is required before
+// anything posts (confirmSavingsCapitalConversion below), exactly the
+// same shape as a Handout.
+// ============================================================
+const createSavingsCapitalConversion = asyncHandler(async (req, res) => {
+    const { user_id, category_id, amount, conversion_date, notes, destination_account_id } = req.body;
+
+    await withTransaction(async (client) => {
+        const memberResult = await client.query(
+            'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+            [user_id]
+        );
+        if (memberResult.rows.length === 0) {
+            throw createError.notFound('Member not found');
+        }
+        const member = memberResult.rows[0];
+
+        const balance = await getOrCreateSavingsBalance(client, user_id, null);
+        const principal = parseFloat(amount);
+
+        if (principal > parseFloat(balance.principal_balance)) {
+            throw createError.badRequest(
+                `Cannot convert more principal than the member has saved. Available: ${balance.principal_balance}.`
+            );
+        }
+
+        const savingsAccount = await getSavingsAccount(client);
+
+        // Destination defaults to Primary (same default creditShareholderContribution
+        // itself uses for an ordinary Record Contribution) — validated to share the
+        // Savings account's own currency. This system never silently blends or
+        // converts currencies across a real money movement (same convention as
+        // Transfers/Record Contribution), so a mismatch fails fast here rather than
+        // quietly recording a contribution worth a different amount than what left
+        // savings.
+        const destAccountResult = destination_account_id
+            ? await client.query(`
+                SELECT id, currency_id, account_type
+                FROM   accounts
+                WHERE  id = $1 AND is_active = TRUE AND account_type != 'SAVINGS'
+            `, [destination_account_id])
+            : await client.query(`
+                SELECT id, currency_id, account_type
+                FROM   accounts
+                WHERE  account_type = 'PRIMARY' AND is_active = TRUE
+            `);
+        if (destAccountResult.rows.length === 0) {
+            throw createError.badRequest(
+                destination_account_id
+                    ? 'The selected destination account was not found, is inactive, or is a Savings account'
+                    : 'Primary account has not been set up yet'
+            );
+        }
+        const destAccount = destAccountResult.rows[0];
+
+        if (destAccount.currency_id !== savingsAccount.currency_id) {
+            throw createError.badRequest(
+                'The destination account must be in the same currency as the Savings account — ' +
+                'this system does not automatically convert currencies when moving real money between accounts.'
+            );
+        }
+
+        const { referenceId, referenceCode } = await generateReference(
+            client, MODULE_CODES.SAVINGS, 'SAVCAP', 'SAVINGS_CAPITAL_CONVERSION', req.user.id
+        );
+
+        const result = await client.query(`
+            INSERT INTO savings_capital_conversions (
+                reference_id, user_id, account_id, destination_account_id, category_id,
+                amount, currency_id, conversion_date, notes, entered_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id
+        `, [
+            referenceId, user_id, savingsAccount.id, destAccount.id, category_id,
+            principal, savingsAccount.currency_id, conversion_date, notes || null, req.user.id,
+        ]);
+
+        const conversionId = result.rows[0].id;
+        await linkReferenceToRecord(client, referenceId, conversionId);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CAPITAL_CONVERSION_ENTERED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_capital_conversions',
+            recordId:    conversionId,
+            newValues:   { referenceCode, user_id, amount: principal },
+            description: `Savings-to-capital conversion entered (awaiting member confirmation): ${referenceCode} — ${member.first_name} ${member.last_name}: ${principal}`,
+            client,
+        });
+
+        notify({
+            userId:     user_id,
+            type:       'SAVINGS_CAPITAL_CONVERSION_PENDING',
+            title:      'Confirm redirecting your savings into capital',
+            body:       `The Treasurer wants to move ${principal} from your savings into a capital contribution (${referenceCode}). Nothing has moved yet — please confirm or reject.`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_capital_conversions',
+            recordId:   conversionId,
+            email: {
+                subject: `Confirm: savings to be converted to capital — ${referenceCode}`,
+                html: await wrapEmail(`
+                    <p>Dear ${member.first_name},</p>
+                    <p>The Treasurer has entered a request to move part of your savings into a capital contribution:</p>
+                    <table style="width:100%; border-collapse:collapse; margin:12px 0;">
+                        <tr><td style="padding:4px 0; color:#6b7280;">Amount</td><td style="padding:4px 0; text-align:right; font-weight:700;">${principal}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">Reference</td><td style="padding:4px 0; text-align:right;">${referenceCode}</td></tr>
+                    </table>
+                    <p>Nothing has moved yet — please log in and confirm you agree, or reject it if something's wrong.</p>
+                `, { preheader: 'Confirm your savings-to-capital conversion' }),
+            },
+        });
+
+        sendCreated(res, {
+            conversion_id: conversionId,
+            reference:     referenceCode,
+            status:        'PENDING_CONFIRMATION',
+        }, `Savings-to-capital conversion recorded. Reference: ${referenceCode}. Awaiting the member's confirmation.`);
+    });
+});
+
+// ============================================================
+// CONFIRM SAVINGS-TO-CAPITAL CONVERSION — only the member whose savings this is
+// PATCH /api/savings/capital-conversions/:id/confirm
+// This is what actually moves the money: debits the SAVINGS account
+// (identical mechanics to confirmSavingsHandout), then runs the
+// ordinary creditShareholderContribution() flow into the destination
+// account — same shareholding recalculation and capital-goal
+// auto-attribution as any other contribution.
+// ============================================================
+const confirmSavingsCapitalConversion = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(`
+            SELECT scc.*, r.reference_code, u.first_name, u.last_name
+            FROM   savings_capital_conversions scc
+            JOIN   references_registry r ON r.id = scc.reference_id
+            JOIN   users u ON u.id = scc.user_id
+            WHERE  scc.id = $1 FOR UPDATE
+        `, [id]);
+
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Savings-to-capital conversion not found');
+        }
+        const conversion = existing.rows[0];
+
+        if (conversion.user_id !== req.user.id) {
+            throw createError.forbidden('Only the member whose savings this is can confirm this conversion');
+        }
+        if (conversion.status !== 'PENDING_CONFIRMATION') {
+            throw createError.badRequest(`This conversion cannot be confirmed. Status: ${conversion.status}`);
+        }
+
+        // Re-check the balance at confirm time too — it may have moved
+        // (e.g. a handout, or another conversion) since the Treasurer
+        // entered this.
+        const balance = await getOrCreateSavingsBalance(client, conversion.user_id, null);
+        if (parseFloat(conversion.amount) > parseFloat(balance.principal_balance)) {
+            throw createError.badRequest(
+                `Your savings balance has since dropped below this amount. Available: ${balance.principal_balance}.`
+            );
+        }
+
+        // Leg 1 — debit the SAVINGS account, identical mechanics to
+        // confirmSavingsHandout's own DEBIT.
+        const { referenceId: txRefId, referenceCode: txRefCode } =
+            await generateReference(client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAVCAP-OUT', 'TRANSACTION', req.user.id);
+
+        const { transactionId: savingsTxId } =
+            await postTransaction(client, {
+                accountId:       conversion.account_id,
+                transactionType: 'DEBIT',
+                inflowType:      'SAVINGS_TO_CAPITAL_OUT',
+                amount:          conversion.amount,
+                currencyId:      conversion.currency_id,
+                categoryId:      conversion.category_id,
+                description:     `Savings redirected to capital contribution — ${conversion.first_name} ${conversion.last_name} (${conversion.reference_code})`,
+                valueDate:       new Date().toISOString().split('T')[0],
+                createdBy:       req.user.id,
+                referenceId:     txRefId,
+            });
+        await linkReferenceToRecord(client, txRefId, savingsTxId);
+
+        await client.query(`
+            UPDATE savings_balances
+            SET    principal_balance = principal_balance - $1,
+                   updated_at = NOW()
+            WHERE  user_id = $2
+        `, [conversion.amount, conversion.user_id]);
+
+        // Leg 2 — the ordinary contribution flow: posts the CREDIT into
+        // the destination account, records shareholder_contributions,
+        // recalculates every shareholder's shares_held/percentage, and
+        // auto-attributes to the member's primary capital goal — all
+        // via the exact same shared core every other contribution path
+        // (Record Contribution, a CONTRIBUTION_ACKNOWLEDGEMENT
+        // requisition) already uses, so this stays perfectly consistent
+        // with them.
+        const { transactionId: contribTxId, contributionId } =
+            await creditShareholderContribution(client, {
+                contributorId:     conversion.user_id,
+                amount:            conversion.amount,
+                contributionDate:  conversion.conversion_date,
+                categoryId:        conversion.category_id,
+                notes:             `Redirected from savings (${conversion.reference_code})${conversion.notes ? ` — ${conversion.notes}` : ''}`,
+                recordedByUserId:  req.user.id,
+                accountId:         conversion.destination_account_id,
+            });
+
+        await client.query(`
+            UPDATE savings_capital_conversions
+            SET    status = 'CONFIRMED',
+                   savings_transaction_id = $1,
+                   contribution_id = $2,
+                   contribution_transaction_id = $3,
+                   confirmed_at = NOW()
+            WHERE  id = $4
+        `, [savingsTxId, contributionId, contribTxId, id]);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CAPITAL_CONVERSION_CONFIRMED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_capital_conversions',
+            recordId:    parseInt(id),
+            newValues:   { txRefCode, amount: conversion.amount },
+            description: `Savings-to-capital conversion confirmed: ${conversion.reference_code} — ${conversion.amount}`,
+            client,
+        });
+
+        notify({
+            userId:     conversion.entered_by,
+            type:       'SAVINGS_CAPITAL_CONVERSION_CONFIRMED',
+            title:      'Savings-to-capital conversion confirmed',
+            body:       `${conversion.first_name} ${conversion.last_name} confirmed the savings-to-capital conversion ${conversion.reference_code}.`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_capital_conversions',
+            recordId:   parseInt(id),
+        });
+
+        sendSuccess(res, {
+            status: 'CONFIRMED',
+            savings_transaction_reference: txRefCode,
+        }, 'Conversion confirmed — your savings have been added to your capital contributions');
+    });
+});
+
+// ============================================================
+// REJECT SAVINGS-TO-CAPITAL CONVERSION — only the member whose savings this is
+// PATCH /api/savings/capital-conversions/:id/reject
+// ============================================================
+const rejectSavingsCapitalConversion = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(`
+            SELECT scc.*, r.reference_code, u.first_name, u.last_name
+            FROM   savings_capital_conversions scc
+            JOIN   references_registry r ON r.id = scc.reference_id
+            JOIN   users u ON u.id = scc.user_id
+            WHERE  scc.id = $1 FOR UPDATE
+        `, [id]);
+
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Savings-to-capital conversion not found');
+        }
+        const conversion = existing.rows[0];
+
+        if (conversion.user_id !== req.user.id) {
+            throw createError.forbidden('Only the member whose savings this is can reject this conversion');
+        }
+        if (conversion.status !== 'PENDING_CONFIRMATION') {
+            throw createError.badRequest(`This conversion cannot be rejected. Status: ${conversion.status}`);
+        }
+
+        await client.query(`
+            UPDATE savings_capital_conversions
+            SET    status = 'REJECTED', rejected_reason = $1, rejected_at = NOW()
+            WHERE  id = $2
+        `, [reason || null, id]);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CAPITAL_CONVERSION_REJECTED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_capital_conversions',
+            recordId:    parseInt(id),
+            description: `Savings-to-capital conversion rejected by member: ${conversion.reference_code}`,
+            client,
+        });
+
+        notify({
+            userId:     conversion.entered_by,
+            type:       'SAVINGS_CAPITAL_CONVERSION_REJECTED',
+            title:      'Savings-to-capital conversion rejected',
+            body:       `${conversion.first_name} ${conversion.last_name} rejected the conversion ${conversion.reference_code}.${reason ? ` Reason: ${reason}` : ''}`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_capital_conversions',
+            recordId:   parseInt(id),
+        });
+
+        sendSuccess(res, { status: 'REJECTED' }, 'Conversion rejected');
+    });
+});
+
+// ============================================================
+// GET MY SAVINGS-TO-CAPITAL CONVERSIONS
+// GET /api/savings/capital-conversions/me
+// ============================================================
+const getMySavingsCapitalConversions = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT scc.*, r.reference_code, c.code AS currency_code,
+               en.first_name || ' ' || en.last_name AS entered_by_name
+        FROM   savings_capital_conversions scc
+        JOIN   references_registry r ON r.id = scc.reference_id
+        JOIN   currencies c ON c.id = scc.currency_id
+        JOIN   users en ON en.id = scc.entered_by
+        WHERE  scc.user_id = $1
+        ORDER BY scc.created_at DESC
+    `, [req.user.id]);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================
+// GET ALL SAVINGS-TO-CAPITAL CONVERSIONS — Treasurer/Admin
+// GET /api/savings/capital-conversions
+// ============================================================
+const getAllSavingsCapitalConversions = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
+
+    const conditions = [];
+    const params = [];
+    let p = 0;
+    if (status) { p++; conditions.push(`scc.status = $${p}`); params.push(status.toUpperCase()); }
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const countResult = await query(`SELECT COUNT(*) AS total FROM savings_capital_conversions scc ${where}`, params);
+    const total = parseInt(countResult.rows[0].total);
+
+    params.push(limit, offset);
+    const result = await query(`
+        SELECT
+            scc.*, r.reference_code, c.code AS currency_code,
+            u.first_name || ' ' || u.last_name AS member_name,
+            en.first_name || ' ' || en.last_name AS entered_by_name
+        FROM  savings_capital_conversions scc
+        JOIN  references_registry r ON r.id = scc.reference_id
+        JOIN  currencies c ON c.id = scc.currency_id
+        JOIN  users u ON u.id = scc.user_id
+        JOIN  users en ON en.id = scc.entered_by
+        ${where}
+        ORDER BY scc.created_at DESC
+        LIMIT $${p + 1} OFFSET $${p + 2}
+    `, params);
+
+    sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
 // WITHDRAW SAVINGS (FIXED_TERM legacy, at maturity)
 // POST /api/savings/:id/withdraw
 // ============================================================
@@ -845,10 +1213,17 @@ const getMySavingsBalance = asyncHandler(async (req, res) => {
         WHERE user_id = $1 AND status = 'PENDING_CONFIRMATION'
     `, [req.user.id]);
 
+    // v1.58.0
+    const pendingCapitalConversions = await query(`
+        SELECT COUNT(*) AS n FROM savings_capital_conversions
+        WHERE user_id = $1 AND status = 'PENDING_CONFIRMATION'
+    `, [req.user.id]);
+
     sendSuccess(res, {
         ...balance,
         pending_deposits: parseInt(pendingDeposits.rows[0].n),
         pending_handouts: parseInt(pendingHandouts.rows[0].n),
+        pending_capital_conversions: parseInt(pendingCapitalConversions.rows[0].n),
     });
 });
 
@@ -1300,4 +1675,10 @@ module.exports = {
     approveSavingsPoolInflow,
     rejectSavingsPoolInflow,
     getSavingsPoolInflows,
+    // v1.58.0 — savings-to-capital conversion
+    createSavingsCapitalConversion,
+    confirmSavingsCapitalConversion,
+    rejectSavingsCapitalConversion,
+    getMySavingsCapitalConversions,
+    getAllSavingsCapitalConversions,
 };

@@ -11,6 +11,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, ClockIcon, FlagIcon } from '@heroicons/react/24/outline';
 import { eventTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
@@ -282,6 +283,7 @@ const ExtendEventModal = ({ isOpen, onClose, onSuccess, event }) => {
 // ============================================================
 const EventsPage = () => {
     const { hasPermission, user } = useAuth();
+    const confirm = useConfirm();
     const [events,      setEvents]      = useState([]);
     const [categories,  setCategories]  = useState([]);
     const [eventTypes,  setEventTypes]  = useState([]);
@@ -346,7 +348,13 @@ const EventsPage = () => {
     };
 
     const handleCancel = async (id) => {
-        const reason = window.prompt('Enter reason for cancellation:');
+        const reason = await confirm({
+            title: 'Cancel Event',
+            message: 'Enter reason for cancellation:',
+            requireInput: true,
+            confirmLabel: 'Cancel Event',
+            danger: true,
+        });
         if (!reason) return;
         setActionLoading(id);
         try {
@@ -360,7 +368,12 @@ const EventsPage = () => {
     };
 
     const handleComplete = async (id) => {
-        if (!window.confirm('Mark this event as completed?')) return;
+        const ok = await confirm({
+            title: 'Complete Event',
+            message: 'Mark this event as completed?',
+            confirmLabel: 'Mark Completed',
+        });
+        if (!ok) return;
         setActionLoading(id);
         try {
             await eventsAPI.complete(id);

@@ -28,6 +28,9 @@ router.get('/balance/me', savingsController.getMySavingsBalance);
 // Own savings handouts
 router.get('/handouts/me', savingsController.getMySavingsHandouts);
 
+// Own savings-to-capital conversions (v1.58.0)
+router.get('/capital-conversions/me', savingsController.getMySavingsCapitalConversions);
+
 // A specific member's balance — for treasury to check before entering a handout
 router.get('/balance/:userId',
     requireAnyPermission(['SAVINGS_VIEW', 'SAVINGS_HANDOUT_CREATE']),
@@ -157,6 +160,43 @@ router.patch('/pool-inflows/:id/reject',
     [ body('review_notes').optional().trim() ],
     validateRequest,
     savingsController.rejectSavingsPoolInflow
+);
+
+// ------------------------------------------------------------
+// SAVINGS-TO-CAPITAL CONVERSION (v1.58.0) — a Treasurer/Assistant
+// Treasurer redirects a member's own savings principal into a capital
+// contribution instead of paying it out as cash. Nothing moves until
+// the member themselves confirms it (checked in controller, same
+// shape as Handouts above). Declared here (static paths, no bare
+// /:id) before the /:id routes below.
+// ------------------------------------------------------------
+router.get('/capital-conversions',
+    requirePermissions(['SAVINGS_VIEW']),
+    savingsController.getAllSavingsCapitalConversions
+);
+router.post('/capital-conversions',
+    requirePermissions(['SAVINGS_CAPITAL_CONVERT_CREATE']),
+    [
+        body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
+        body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
+        body('conversion_date').isISO8601().withMessage('A valid conversion date is required').custom(notFutureDate),
+        body('destination_account_id').optional().isInt({ min: 1 }),
+        body('notes').optional().trim(),
+    ],
+    validateRequest,
+    savingsController.createSavingsCapitalConversion
+);
+router.patch('/capital-conversions/:id/confirm',
+    validators.idParam('id'),
+    validateRequest,
+    savingsController.confirmSavingsCapitalConversion
+);
+router.patch('/capital-conversions/:id/reject',
+    validators.idParam('id'),
+    [ body('reason').optional().trim() ],
+    validateRequest,
+    savingsController.rejectSavingsCapitalConversion
 );
 
 // ------------------------------------------------------------

@@ -469,6 +469,14 @@ export const savingsAPI = {
     createPoolInflow: (data)     => api.post('/savings/pool-inflows', data),
     approvePoolInflow: (id, data) => api.patch(`/savings/pool-inflows/${id}/approve`, data),
     rejectPoolInflow:  (id, data) => api.patch(`/savings/pool-inflows/${id}/reject`, data),
+    // Savings-to-Capital Conversion (v1.58.0) — Treasurer redirects a
+    // member's own savings principal into a capital contribution;
+    // nothing moves until the member confirms.
+    getMyCapitalConversions:  ()         => api.get('/savings/capital-conversions/me'),
+    getAllCapitalConversions: (params)   => api.get('/savings/capital-conversions', { params }),
+    createCapitalConversion:  (data)     => api.post('/savings/capital-conversions', data),
+    confirmCapitalConversion: (id)       => api.patch(`/savings/capital-conversions/${id}/confirm`),
+    rejectCapitalConversion:  (id, data) => api.patch(`/savings/capital-conversions/${id}/reject`, data),
 };
 
 // ============================================================
@@ -520,6 +528,19 @@ export const finesAPI = {
     getAll:    (params)   => api.get('/fines', { params }),
     create:    (data)     => api.post('/fines', data),
     clear:     (id, data) => api.patch(`/fines/${id}/clear`, data),
+    // Settle Fines With Savings (v1.59.0) — two entry points funnelling
+    // into the same review flow: a Treasurer enters it directly
+    // (member confirms), or a member requests it themselves (Treasurer
+    // approves).
+    getMySettlements:      ()         => api.get('/fines/settlements/me'),
+    getAllSettlements:     (params)   => api.get('/fines/settlements', { params }),
+    getSettlementItems:    (id)       => api.get(`/fines/settlements/${id}/items`),
+    createSettlement:      (data)     => api.post('/fines/settlements', data),
+    requestSettlement:     (data)     => api.post('/fines/settlements/request', data),
+    confirmSettlement:     (id)       => api.patch(`/fines/settlements/${id}/confirm`),
+    rejectSettlement:      (id, data) => api.patch(`/fines/settlements/${id}/reject`, data),
+    approveSettlement:     (id)       => api.patch(`/fines/settlements/${id}/approve`),
+    denySettlement:        (id, data) => api.patch(`/fines/settlements/${id}/deny`, data),
 };
 
 // ============================================================

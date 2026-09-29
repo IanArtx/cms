@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './contexts/AuthContext';
 import { BrandingProvider } from './contexts/BrandingContext';
+import { ThemeProvider } from './contexts/ThemeContext'; // v1.71.0
 import { ConfirmProvider } from './contexts/ConfirmContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import AppLayout from './components/layout/AppLayout';
@@ -27,7 +28,6 @@ import LoansPage from './pages/loans/LoansPage';
 import LoanDetailPage from './pages/loans/LoanDetailPage';
 import InvestmentsPage from './pages/investments/InvestmentsPage';
 import InvestmentDetailPage from './pages/investments/InvestmentDetailPage';
-import MmfPage from './pages/mmf/MmfPage';
 import MmfDetailPage from './pages/mmf/MmfDetailPage';
 import CapitalGoalsPage from './pages/capitalGoals/CapitalGoalsPage';
 import CapitalGoalDetailPage from './pages/capitalGoals/CapitalGoalDetailPage';
@@ -36,6 +36,8 @@ import CapitalCallDetailPage from './pages/capitalGoals/CapitalCallDetailPage';
 import PaymentAcknowledgementsPage from './pages/paymentAcknowledgements/PaymentAcknowledgementsPage';
 import ChartOfAccountsPage from './pages/reports/ChartOfAccountsPage';
 import GeneralLedgerPage from './pages/reports/GeneralLedgerPage';
+import RecordChecksPage from './pages/reports/RecordChecksPage'; // v1.72.0
+import MoneyApprovalsPage from './pages/moneyApprovals/MoneyApprovalsPage'; // v1.73.0
 import EventsPage from './pages/events/EventsPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
 import ReportsPage from './pages/reports/ReportsPage';
@@ -48,6 +50,8 @@ import VerifyEmailPage from './pages/auth/VerifyEmailPage';
 import PendingApprovalPage from './pages/auth/PendingApprovalPage';
 import ConsentPage from './pages/auth/ConsentPage';
 import DividendsPage from './pages/dividends/DividendsPage';
+import ShareCapitalPage from './pages/shareCapital/ShareCapitalPage';
+import TaxPage from './pages/tax/TaxPage'; // v1.70.0
 import SavingsPage from './pages/savings/SavingsPage';
 import SideFundPage from './pages/sideFund/SideFundPage';
 import FinesPage from './pages/fines/FinesPage';
@@ -73,6 +77,7 @@ const queryClient = new QueryClient({
 function App() {
     return (
         <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
             <AuthProvider>
               <BrandingProvider>
               <ConfirmProvider>
@@ -136,7 +141,10 @@ function App() {
                             <Route path="loans/given/:id" element={<LoanDetailPage loanType="given" />} />
                             <Route path="investments" element={<InvestmentsPage />} />
                             <Route path="investments/:id" element={<InvestmentDetailPage />} />
-                            <Route path="mmf" element={<MmfPage />} />
+                            {/* v1.60.0 — MMF's own list page folded into the unified
+                                Investments page; redirect any old bookmark/link. The
+                                detail page (topup/withdrawal/interest/fee actions) stays. */}
+                            <Route path="mmf" element={<Navigate to="/investments" replace />} />
                             <Route path="mmf/:id" element={<MmfDetailPage />} />
                             <Route path="capital-goals" element={<CapitalGoalsPage />} />
                             {/* v1.43.0 Capital Goal Calls — static segments (my-calls,
@@ -152,12 +160,16 @@ function App() {
                             <Route path="reports" element={<ReportsPage />} />
                             <Route path="reports/chart-of-accounts" element={<ChartOfAccountsPage />} />
                             <Route path="reports/general-ledger" element={<GeneralLedgerPage />} />
+                            <Route path="reports/record-checks" element={<RecordChecksPage />} />
+                            <Route path="money-approvals" element={<MoneyApprovalsPage />} />
                             <Route path="users" element={<UsersPage />} />
                             <Route path="users/:id/portfolio" element={<MemberPortfolioPage />} />
                             <Route path="portfolio" element={<MemberPortfolioPage />} />
                             <Route path="profile" element={<ProfilePage />} />
                             <Route path="settings" element={<SettingsPage />} />
                             <Route path="dividends" element={<DividendsPage />} />
+                            <Route path="share-capital" element={<ShareCapitalPage />} />
+                            <Route path="tax" element={<TaxPage />} />
                             <Route path="savings" element={<SavingsPage />} />
                             <Route path="side-fund" element={<SideFundPage />} />
                             <Route path="fines" element={<FinesPage />} />
@@ -191,6 +203,7 @@ function App() {
               </ConfirmProvider>
               </BrandingProvider>
             </AuthProvider>
+          </ThemeProvider>
         </QueryClientProvider>
     );
 }

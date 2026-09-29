@@ -14,6 +14,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { PlusIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const BLANK_DIVIDEND_FORM = {
     account_id: '', category_id: '', total_amount: '',
@@ -235,6 +236,12 @@ const ApproveDividendModal = ({ isOpen, dividend, onClose, onSuccess }) => {
                         )}
                     </div>
 
+                    <p className="text-xs text-gray-500 bg-amber-50 border border-amber-100 rounded p-2 mb-4">
+                        Withholding tax is deducted from each shareholder's share (15% for residents and non-residents unless the rate
+                        was changed on the Tax page). Members are credited the net; the tax stays in the declaring account until it is
+                        paid to URA by the 15th of next month, and each member gets a deduction certificate in My Documents.
+                    </p>
+
                     <form onSubmit={handleSubmit} className="space-y-4">
                         {needsRate && (
                             <div>
@@ -335,6 +342,14 @@ const DividendDetailModal = ({ isOpen, dividend, onClose }) => {
                                         {dividend.currency_code}{' '}
                                         {parseFloat(d.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                                     </p>
+                                    {/* v1.70.0 — withholding tax kept for URA */}
+                                    {d.status === 'PAID' && d.wht_amount != null && parseFloat(d.wht_amount) > 0 && (
+                                        <p className="text-xs text-gray-500">
+                                            WHT {parseFloat(d.wht_rate)}%: {dividend.currency_code}{' '}
+                                            {parseFloat(d.wht_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} · net{' '}
+                                            {parseFloat(d.net_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                        </p>
+                                    )}
                                     {d.status === 'PAID' && d.credited_amount != null && (
                                         <p className="text-xs text-green-600">
                                             Credited: {dividend.savings_currency_code || ''}{' '}
@@ -528,7 +543,7 @@ const AuthorityPaymentModal = ({ isOpen, onClose, onSuccess, accounts, categorie
 // ============================================================
 const DividendsPage = () => {
     const { hasPermission, hasRole, user } = useAuth();
-    const [activeTab,     setActiveTab]     = useState('dividends');
+    const [activeTab,     setActiveTab]     = useTabParam('dividends');
     const [dividends,     setDividends]     = useState([]);
     const [authPayments,  setAuthPayments]  = useState([]);
     const [accounts,      setAccounts]      = useState([]);
@@ -805,14 +820,10 @@ const DividendsPage = () => {
             {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
                 by scrolling on a narrow screen instead of overflowing with
                 no way to reach it (same fix as SettingsPage). */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 <button
                     onClick={() => setActiveTab('dividends')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium
-                        transition-colors ${activeTab === 'dividends'
-                            ? 'bg-primary-700 text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                    className={`tab ${activeTab === 'dividends' ? 'tab-active' : ''}`}
                 >
                     Dividends
                     <span className="ml-2 text-xs opacity-70">
@@ -821,11 +832,7 @@ const DividendsPage = () => {
                 </button>
                 <button
                     onClick={() => setActiveTab('authority')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium
-                        transition-colors ${activeTab === 'authority'
-                            ? 'bg-primary-700 text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                    className={`tab ${activeTab === 'authority' ? 'tab-active' : ''}`}
                 >
                     Authority Payments
                     <span className="ml-2 text-xs opacity-70">

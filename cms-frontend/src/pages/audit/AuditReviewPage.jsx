@@ -17,6 +17,7 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import {
     CheckCircleIcon, XCircleIcon, ClockIcon, PaperClipIcon, EyeIcon,
 } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const statusBadgeClass = (status) => {
     if (status === 'APPROVED') return 'badge-green';
@@ -26,7 +27,7 @@ const statusBadgeClass = (status) => {
 
 const AuditReviewPage = () => {
     const confirm = useConfirm();
-    const [tab, setTab] = useState('submissions'); // 'submissions' | 'extensions'
+    const [tab, setTab] = useTabParam('submissions'); // 'submissions' | 'extensions'
 
     // --- Submissions ---
     const [submissions, setSubmissions]   = useState([]);
@@ -178,13 +179,13 @@ const AuditReviewPage = () => {
                 </div>
             )}
 
-            <div className="flex gap-2 mb-4">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setTab('submissions')}
-                    className={tab === 'submissions' ? 'btn-primary' : 'btn-secondary'}>
+                    className={`tab ${tab === 'submissions' ? 'tab-active' : ''}`}>
                     Submissions
                 </button>
                 <button onClick={() => setTab('extensions')}
-                    className={tab === 'extensions' ? 'btn-primary' : 'btn-secondary'}>
+                    className={`tab ${tab === 'extensions' ? 'tab-active' : ''}`}>
                     Extension Requests
                 </button>
             </div>

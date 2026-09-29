@@ -15,6 +15,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { computeShareUnitsPerUser, recalculateShareholding } = require('./transactionsController');
+const shareCapitalService = require('../services/shareCapitalService');
 
 // ============================================================
 // GET CURRENT SHARE PRICE
@@ -50,8 +51,21 @@ const getCurrentPrice = asyncHandler(async (req, res) => {
 // Every shareholder gets notified — this changes what their
 // holding is worth.
 // ============================================================
+// v1.69.0 — only for the very FIRST price of a brand-new installation.
+// Once any price exists, the issue price (and the nominal value and
+// registered shares) can only change through Share Capital > Changes:
+// a FINAL board resolution plus two different approvers (two
+// Directors, or a Director and the Treasurer). See shareCapitalService.
 const setSharePrice = asyncHandler(async (req, res) => {
     const { price_per_share, currency_id, effective_from, notes } = req.body;
+
+    const anyPrice = await query('SELECT 1 FROM share_price_history LIMIT 1');
+    if (anyPrice.rows.length > 0) {
+        throw createError.conflict(
+            'The share price can no longer be set directly. Propose the change on the Share Capital page (Changes tab): ' +
+            'it needs an approved board resolution and two approvers — two Directors, or a Director and the Treasurer.'
+        );
+    }
 
     if (!price_per_share || parseFloat(price_per_share) <= 0) {
         throw createError.badRequest('price_per_share must be a positive number');
@@ -163,7 +177,17 @@ const getPriceHistory = asyncHandler(async (req, res) => {
 // sideFundController.computeExitPayout's shared preview/commit core).
 // ============================================================
 const buildRecalculatePreview = async (client) => {
-    const { unitsByUser, breakdownByContribution } = await computeShareUnitsPerUser(client);
+    // v1.69.0 — once converted to whole shares, the "proposed" figures
+    // are each member's ACTIVE allotments (share_allotments), i.e. what
+    // the registry should say; this becomes a consistency check.
+    let unitsByUser;
+    let breakdownByContribution = [];
+    if (await shareCapitalService.isOpeningConverted(client)) {
+        const h = await client.query(`SELECT user_id, SUM(shares)::int AS shares FROM share_allotments WHERE status = 'ACTIVE' GROUP BY user_id`);
+        unitsByUser = Object.fromEntries(h.rows.map(r => [r.user_id, r.shares]));
+    } else {
+        ({ unitsByUser, breakdownByContribution } = await computeShareUnitsPerUser(client));
+    }
     const grandTotal = Object.values(unitsByUser).reduce((sum, u) => sum + u, 0);
 
     // Every active user, LEFT JOINed against their current registry row —

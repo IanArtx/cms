@@ -1,201 +1,374 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
 /* ============================================================
-   CSS VARIABLES — for the handful of layout components (TopBar,
-   Sidebar) that set colours via inline `style={{...}}` instead of
-   Tailwind classes, because part of their styling already depends
-   on runtime values (the branding colour from the database). Those
-   components reference these variables directly (e.g.
-   `backgroundColor: 'var(--cms-surface)'`) so they still pick up
-   dark mode even though they're not using `dark:` utility classes.
+   v1.71.0 — "HARBOUR" DESIGN SYSTEM
+   ------------------------------------------------------------
+   One fixed look for the whole system, in light AND dark.
+
+   HOW DARK MODE WORKS NOW
+   Until v1.70 the app followed the operating system only
+   (`prefers-color-scheme`). From v1.71 each person chooses Light,
+   Dark or "Same as my device" in the top bar (and the profile
+   menu). ThemeContext.js adds the class `dark` to <html> whenever
+   dark is in effect, so every rule below is written as
+   `.dark …` instead of inside a media query.
+
+   COLOURS ARE FIXED
+   Nothing here reads the company colours from Settings any more.
+   Company colours are only used on generated documents / emails.
+
+   TOKENS (use these variables in inline styles)
+     --cms-bg            page background
+     --cms-surface       cards, top bar, menus
+     --cms-surface-2     table headers, inset panels, hover
+     --cms-border        lines around cards and inputs
+     --cms-text-primary  main text          (≥ 12:1 contrast)
+     --cms-text-secondary secondary text    (≥ 7:1)
+     --cms-text-muted    hints, captions     (≥ 4.5:1)
+     --cms-nav-*         sidebar colours
+   Contrast of every text colour was checked against the surface
+   it sits on, in both modes (WCAG AA 4.5:1 or better).
    ============================================================ */
 :root {
+  color-scheme: light;
+  --cms-bg:               #f5f7fb;
   --cms-surface:          #ffffff;
-  --cms-surface-hover:    #f9fafb;
-  --cms-surface-divider:  #f3f4f6;
-  --cms-border:           #e5e7eb;
-  --cms-text-primary:     #111827;
-  --cms-text-secondary:   #6b7280;
-  --cms-text-muted:       #9ca3af;
+  --cms-surface-2:        #f1f5f9;
+  --cms-surface-hover:    #f1f5f9;
+  --cms-surface-divider:  #eef2f7;
+  --cms-zebra:            #fafbfd;
+  --cms-border:           #e3e8f0;
+  --cms-border-strong:    #cbd5e1;
+  --cms-text-primary:     #0f172a;
+  --cms-text-secondary:   #334155;
+  --cms-text-muted:       #64748b;
+  --cms-primary:          #1d4ed8;
+  --cms-primary-hover:    #1e40af;
+  --cms-primary-soft:     #dbeafe;
+  --cms-primary-text:     #1d4ed8;
+  --cms-accent:           #0f766e;
+  --cms-nav-bg:           #0b1f3a;
+  --cms-nav-bg-2:         #132c4f;
+  --cms-nav-line:         #24406a;
+  --cms-nav-text:         #c7d2e3;
+  --cms-nav-text-strong:  #ffffff;
+  --cms-nav-label:        #9fb0c8;
+  --cms-positive:         #15803d;
+  --cms-negative:         #b91c1c;
+  --cms-shadow-pop:       0 12px 32px rgba(15, 23, 42, 0.16);
+}
+
+.dark {
+  color-scheme: dark;
+  --cms-bg:               #0b1220;
+  --cms-surface:          #111a2e;
+  --cms-surface-2:        #16213a;
+  --cms-surface-hover:    #1a2744;
+  --cms-surface-divider:  #1e2b45;
+  --cms-zebra:            #0f1729;
+  --cms-border:           #24324f;
+  --cms-border-strong:    #334766;
+  --cms-text-primary:     #e6ecf5;
+  --cms-text-secondary:   #c3cedf;
+  --cms-text-muted:       #a9b6cc;
+  --cms-primary:          #2563eb;
+  --cms-primary-hover:    #1d4ed8;
+  --cms-primary-soft:     rgba(59, 130, 246, 0.18);
+  --cms-primary-text:     #93c5fd;
+  --cms-accent:           #2dd4bf;
+  --cms-nav-bg:           #08111f;
+  --cms-nav-bg-2:         #13223d;
+  --cms-nav-line:         #24406a;
+  --cms-nav-text:         #c7d2e3;
+  --cms-nav-text-strong:  #ffffff;
+  --cms-nav-label:        #9fb0c8;
+  --cms-positive:         #4ade80;
+  --cms-negative:         #f87171;
+  --cms-shadow-pop:       0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
 /* ============================================================
-   SCROLLBAR-HIDDEN (v1.28.2) — hides the visible scrollbar track/
-   thumb on a scroll container while leaving it fully scrollable
-   (mouse wheel, trackpad, touch, and keyboard all still work).
-   Applied to the sidebar's nav list and the main content area so
-   the app reads as a single clean surface instead of showing two
-   separate scrollbar tracks side by side.
+   SCROLLBAR-HIDDEN (v1.28.2) — hides the scrollbar on a scroll
+   container while leaving it fully scrollable.
    ============================================================ */
 .scrollbar-hidden {
-  scrollbar-width: none;     /* Firefox */
-  -ms-overflow-style: none;  /* legacy Edge/IE */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 .scrollbar-hidden::-webkit-scrollbar {
-  display: none;              /* Chrome, Safari, Edge (Chromium) */
+  display: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --cms-surface:          #1f2937;
-    --cms-surface-hover:    #374151;
-    --cms-surface-divider:  #374151;
-    --cms-border:           #4b5563;
-    --cms-text-primary:     #f9fafb;
-    --cms-text-secondary:   #cbd5e1;
-    --cms-text-muted:       #9ca3af;
-  }
+/* Thin, theme-coloured scrollbars everywhere else (tables that
+   scroll sideways, long dropdowns). */
+.thin-scroll, .table-scroll-bottom, .table-scroll-top {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cms-border-strong) transparent;
 }
 
 @layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
   body {
-    @apply bg-gray-50 text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100
-           transition-colors duration-150;
+    background-color: var(--cms-bg);
+    color: var(--cms-text-primary);
+    font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    @apply antialiased transition-colors duration-150;
+  }
+  /* Figures line up in columns everywhere they appear in a table. */
+  td, th, .num {
+    font-variant-numeric: tabular-nums;
+  }
+  /* A visible focus ring for keyboard users on every control. */
+  :focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+  }
+  /* Controls from the forms plugin follow the theme. */
+  .dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  .dark select,
+  .dark textarea {
+    background-color: #0b1220;
+    border-color: var(--cms-border-strong);
+    color: var(--cms-text-primary);
+  }
+  .dark input::placeholder, .dark textarea::placeholder {
+    color: #7d8ba3;
+  }
+  .dark input[type="checkbox"], .dark input[type="radio"] {
+    background-color: #0b1220;
+    border-color: #4b5f82;
+  }
+  .dark input[type="checkbox"]:checked, .dark input[type="radio"]:checked {
+    background-color: #2563eb;
+    border-color: #2563eb;
+  }
+  .dark input:disabled, .dark select:disabled, .dark textarea:disabled {
+    background-color: var(--cms-surface-2);
+    color: var(--cms-text-muted);
+  }
+  .dark option {
+    background-color: #111a2e;
+    color: #e6ecf5;
   }
 }
 
 @layer components {
   /* ============================================================
-     BUTTONS
+     BUTTONS — 40 px tall on desktop, 44 px on phones (touch).
      ============================================================ */
   .btn-primary {
-    @apply bg-primary-700 text-white px-4 py-2 rounded-lg font-medium
-           hover:bg-primary-800 focus:outline-none focus:ring-2
-           focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
-           transition-colors;
+    @apply inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2
+           rounded-[10px] font-semibold text-sm text-white bg-primary-700
+           hover:bg-primary-800 focus:outline-none focus-visible:ring-2
+           focus-visible:ring-primary-500 focus-visible:ring-offset-2
+           disabled:opacity-60 disabled:cursor-not-allowed transition-colors;
   }
+  .dark .btn-primary { @apply bg-primary-600 hover:bg-primary-700 ring-offset-[#0b1220]; }
 
   .btn-secondary {
-    @apply bg-white text-gray-700 px-4 py-2 rounded-lg font-medium border
-           border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2
-           focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
-           transition-colors
-           dark:bg-gray-800 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-700;
+    @apply inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2
+           rounded-[10px] font-semibold text-sm border transition-colors
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500
+           disabled:opacity-60 disabled:cursor-not-allowed;
+    background-color: var(--cms-surface);
+    color: var(--cms-text-primary);
+    border-color: var(--cms-border-strong);
   }
+  .btn-secondary:hover { background-color: var(--cms-surface-hover); }
 
   .btn-danger {
-    @apply bg-red-600 text-white px-4 py-2 rounded-lg font-medium
-           hover:bg-red-700 focus:outline-none focus:ring-2
-           focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900
-           transition-colors;
+    @apply inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2
+           rounded-[10px] font-semibold text-sm text-white bg-red-700
+           hover:bg-red-800 focus:outline-none focus-visible:ring-2
+           focus-visible:ring-red-500 focus-visible:ring-offset-2
+           disabled:opacity-60 disabled:cursor-not-allowed transition-colors;
+  }
+
+  /* Plain icon button (top bar, table row actions). */
+  .btn-icon {
+    @apply inline-flex items-center justify-center w-10 h-10 rounded-[10px] border
+           transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500;
+    background-color: var(--cms-surface);
+    color: var(--cms-text-secondary);
+    border-color: var(--cms-border);
+  }
+  .btn-icon:hover { background-color: var(--cms-surface-hover); color: var(--cms-text-primary); }
+
+  @media (max-width: 767px) {
+    .btn-primary, .btn-secondary, .btn-danger { min-height: 44px; }
   }
 
   /* ============================================================
      CARDS / TILES
      ============================================================ */
   .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6
-           dark:bg-gray-800 dark:border-gray-700 transition-colors duration-150;
+    @apply rounded-xl border p-6 shadow-card transition-colors duration-150;
+    background-color: var(--cms-surface);
+    border-color: var(--cms-border);
+  }
+  @media (max-width: 639px) {
+    .card { padding: 1rem; }
   }
 
-  /* A card that carries the brand gradient instead of a flat white/dark
-     fill — used for banners and highlighted summary tiles. Text inside
-     should use the white/light utility classes below since the
-     background is always dark regardless of light/dark mode. */
+  /* Card with the brand gradient (always dark, so text is white). */
   .card-gradient {
     @apply bg-brand-gradient rounded-xl shadow-md p-6 text-white border-0;
   }
+  .dark .card-gradient { @apply bg-brand-gradient-dark; }
 
-  /* Softer gradient tile — for stat cards that need to stay readable
-     with dark body text, e.g. dashboard KPI tiles. */
+  /* Softer tile — readable with dark text in light mode. */
   .card-gradient-soft {
-    @apply bg-brand-gradient-soft dark:bg-brand-gradient-soft-dark
-           rounded-xl shadow-sm border border-primary-100 dark:border-gray-700
-           p-6 transition-colors duration-150;
+    @apply bg-brand-gradient-soft rounded-xl shadow-card border border-primary-100 p-6
+           transition-colors duration-150;
+  }
+  .dark .card-gradient-soft { @apply bg-brand-gradient-soft-dark; border-color: var(--cms-border); }
+
+  /* ============================================================
+     PAGE HEADER BAND — full width under the top bar (PageHeader.jsx
+     pulls it out to the edges of the content area).
+     ============================================================ */
+  .page-banner {
+    @apply bg-brand-gradient text-white relative;
+  }
+  .dark .page-banner { @apply bg-brand-gradient-dark; }
+
+  /* Buttons that sit ON the blue header band. */
+  .btn-on-band {
+    @apply inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2
+           rounded-[10px] font-bold text-sm bg-white text-primary-900 hover:bg-primary-50
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-white transition-colors;
+  }
+  .btn-on-band-ghost {
+    @apply inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2
+           rounded-[10px] font-semibold text-sm text-white border border-white/40
+           hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white transition-colors;
   }
 
   /* ============================================================
-     PAGE / SECTION BANNERS
+     TABS — one style for every page. Tabs sit on a line; the
+     active one is underlined in blue. On a phone the row scrolls
+     sideways instead of wrapping onto several lines.
      ============================================================ */
-  /* No overflow-hidden here on purpose (v1.27.1 fix) — a gradient
-     background already respects rounded corners on its own in CSS, and
-     several pages put a dropdown menu (e.g. Transactions' "Record"
-     button) inside the banner's actions area that opens BELOW the
-     button via absolute positioning. overflow-hidden was clipping the
-     bottom of those dropdowns — e.g. "Record Expense" was invisible
-     under "Record Contribution" since it fell outside this box. */
-  .page-banner {
-    @apply bg-brand-gradient rounded-2xl shadow-md p-5 sm:p-6 mb-6 text-white
-           relative;
+  .tab-bar {
+    @apply flex items-end gap-1 mb-6 overflow-x-auto border-b;
+    border-color: var(--cms-border);
+    scrollbar-width: thin;
+  }
+  .tab {
+    @apply relative inline-flex items-center gap-2 whitespace-nowrap px-4 h-11 text-sm font-medium
+           border-b-[3px] border-transparent -mb-px rounded-t-lg transition-colors
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500;
+    color: var(--cms-text-muted);
+  }
+  .tab:hover { color: var(--cms-text-primary); background-color: var(--cms-surface-hover); }
+  .tab-active, .tab-active:hover {
+    @apply font-bold;
+    color: var(--cms-primary-text);
+    border-bottom-color: var(--cms-primary-text);
+    background-color: transparent;
+  }
+  .tab-count {
+    @apply inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-bold;
+    background-color: var(--cms-surface-2);
+    color: var(--cms-text-secondary);
+  }
+  .tab-count-alert {
+    @apply inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-bold
+           bg-rose-600 text-white;
+  }
+
+  /* Filter chips (status filters, option pickers) — rounded pills,
+     the selected one filled blue. */
+  .chip-filter {
+    @apply inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full border text-sm font-medium
+           transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500;
+    background-color: var(--cms-surface);
+    border-color: var(--cms-border-strong);
+    color: var(--cms-text-secondary);
+  }
+  .chip-filter:hover { background-color: var(--cms-surface-hover); color: var(--cms-text-primary); }
+  .chip-filter-active, .chip-filter-active:hover {
+    @apply bg-primary-700 border-primary-700 text-white font-semibold;
   }
 
   /* ============================================================
      FORM CONTROLS
      ============================================================ */
   .input {
-    @apply block w-full rounded-lg border-gray-300 shadow-sm
-           focus:border-primary-500 focus:ring-primary-500 sm:text-sm
-           dark:bg-gray-900 dark:border-gray-600 dark:text-gray-100
-           dark:placeholder-gray-500;
+    @apply block w-full rounded-[10px] shadow-sm sm:text-sm min-h-[40px]
+           focus:border-primary-500 focus:ring-primary-500;
+    border-color: var(--cms-border-strong);
   }
-
   .label {
-    @apply block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300;
+    @apply block text-sm font-semibold mb-1;
+    color: var(--cms-text-secondary);
   }
 
   /* ============================================================
-     BADGES
+     STATUS CHIPS — same meaning everywhere:
+       green  = posted / paid / active / approved
+       violet = awaiting approval / pending
+       amber  = due soon / warning / tax
+       rose   = overdue / rejected / failed
+       blue   = transfer / info
+       gray   = reversed / closed / cancelled
+     Every chip carries a word, so colour is never the only signal.
      ============================================================ */
-  .badge-green {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-green-100 text-green-800
-           dark:bg-green-900/40 dark:text-green-300;
+  .badge-green, .badge-yellow, .badge-red, .badge-blue, .badge-gray, .badge-purple, .badge-teal, .badge-orange {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap;
   }
+  .badge-green  { @apply bg-green-100 text-green-800; }
+  .badge-yellow { @apply bg-amber-100 text-amber-900; }
+  .badge-red    { @apply bg-rose-100 text-rose-800; }
+  .badge-blue   { @apply bg-blue-100 text-blue-800; }
+  .badge-gray   { @apply bg-slate-100 text-slate-700; }
+  .badge-purple { @apply bg-violet-100 text-violet-800; }
+  .badge-teal   { @apply bg-teal-100 text-teal-800; }
+  .badge-orange { @apply bg-orange-100 text-orange-800; }
+  .dark .badge-green  { background-color: #0f3d2a; color: #86efac; }
+  .dark .badge-yellow { background-color: #45300a; color: #fcd34d; }
+  .dark .badge-red    { background-color: #4a1422; color: #fda4af; }
+  .dark .badge-blue   { background-color: #172e5c; color: #93c5fd; }
+  .dark .badge-gray   { background-color: #1e293b; color: #cbd5e1; }
+  .dark .badge-purple { background-color: #2e1f5c; color: #c4b5fd; }
+  .dark .badge-teal   { background-color: #123b37; color: #5eead4; }
+  .dark .badge-orange { background-color: #4a2410; color: #fdba74; }
 
-  .badge-yellow {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-yellow-100 text-yellow-800
-           dark:bg-yellow-900/40 dark:text-yellow-300;
+  /* References (INC-CAP-2609-0142 …) in a monospace face. */
+  .ref {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8125rem;
+    letter-spacing: -0.01em;
   }
-
-  .badge-red {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-red-100 text-red-800
-           dark:bg-red-900/40 dark:text-red-300;
-  }
-
-  .badge-blue {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-blue-100 text-blue-800
-           dark:bg-blue-900/40 dark:text-blue-300;
-  }
-
-  .badge-gray {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs
-           font-medium bg-gray-100 text-gray-800
-           dark:bg-gray-700 dark:text-gray-300;
-  }
+  .amount-in  { color: var(--cms-positive); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .amount-out { color: var(--cms-negative); font-weight: 600; font-variant-numeric: tabular-nums; }
 
   /* ============================================================
-     TABLES
+     TABLES — tinted header row, roomy rows, soft hover.
      ============================================================ */
   .table-header {
-    @apply px-6 py-3 text-left text-xs font-medium text-gray-500
-           uppercase tracking-wider dark:text-gray-400;
+    @apply px-4 sm:px-6 py-3 text-left text-xs font-bold uppercase tracking-wider;
+    color: var(--cms-text-secondary);
+    background-color: var(--cms-surface-2);
   }
-
   .table-cell {
-    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100;
+    @apply px-4 sm:px-6 py-3.5 whitespace-nowrap text-sm;
+    color: var(--cms-text-primary);
   }
 
-  /* Wraps a scrollable table with a mirrored scrollbar ABOVE the table
-     in addition to the browser's native one below it — long tables no
-     longer force a scroll all the way down just to find the horizontal
-     scrollbar. See DataTable.jsx for the small script that keeps the
-     two scroll positions in sync. */
   .table-scroll-top {
     @apply overflow-x-auto overflow-y-hidden;
     height: 14px;
   }
-
   .table-scroll-top-inner {
     height: 1px;
   }
-
   .table-scroll-bottom {
     @apply overflow-x-auto max-w-full;
   }
@@ -204,97 +377,224 @@
      TYPOGRAPHY
      ============================================================ */
   .page-title {
-    @apply text-2xl font-bold text-gray-900 dark:text-gray-50;
+    @apply text-2xl font-bold;
+    color: var(--cms-text-primary);
+  }
+  .section-title {
+    @apply text-base sm:text-lg font-bold;
+    color: var(--cms-text-primary);
   }
 
-  .section-title {
-    @apply text-lg font-semibold text-gray-900 dark:text-gray-50;
+  /* KPI tile used on dashboards and summary rows. */
+  .kpi {
+    @apply rounded-xl border p-4 flex flex-col gap-1.5 shadow-card;
+    background-color: var(--cms-surface);
+    border-color: var(--cms-border);
   }
+  .kpi-label { @apply text-[13px] font-medium; color: var(--cms-text-muted); }
+  .kpi-value { @apply text-2xl font-bold; font-variant-numeric: tabular-nums; color: var(--cms-text-primary); }
 }
 
 /* ============================================================
-   DARK MODE — BLANKET COVERAGE FOR RAW UTILITY CLASSES
-   ============================================================
-   The shared classes above (.card, .btn-*, .badge-*, etc.) already
-   carry their own `dark:` variants. But ~40 page files also reach
-   for raw Tailwind colour utilities directly in JSX (bg-white,
-   text-gray-700, border-gray-200, bg-green-50 for an alert box,
-   etc.) — over a thousand occurrences across the app. Rewriting
-   every one of those individually would mean touching nearly every
-   page file by hand.
-
-   Instead, this block re-targets those SAME utility classes globally,
-   the moment the OS is in dark mode. It's placed after `@tailwind
-   utilities` (and outside any `@layer`), so in the compiled CSS it
-   comes after Tailwind's own utility rules — same selector
-   specificity (one class), later in the file, wins the cascade
-   automatically, no `!important` needed. Any page using these
-   standard gray/neutral/alert-colour classes gets dark mode for
-   free, including pages written before this change and any written
-   after it, without editing the page itself.
-
-   This does NOT catch one-off inline `style={{ color: '#111827' }}`
-   props (a handful of layout components use those for values that
-   come from the database, like branding colour) — those are handled
-   individually where they matter (see TopBar.jsx, Sidebar.jsx).
+   BUTTONS ON THE HEADER BAND (PageHeader) — the page's main action
+   is white on the blue band; secondary actions are outlined.
    ============================================================ */
-@media (prefers-color-scheme: dark) {
-  /* Neutral surfaces */
-  .bg-white     { background-color: #1f2937; } /* gray-800 */
-  .bg-gray-50   { background-color: #111827; } /* gray-900 */
-  .bg-gray-100  { background-color: #1f2937; } /* gray-800 */
-  .bg-gray-200  { background-color: #374151; } /* gray-700 */
-
-  /* !important here (unlike the plain-state overrides above) because
-     these are the ones a user actually reported reading as low-contrast
-     in practice — a hovered element's background/text pairing has to
-     win unconditionally, since there's no legitimate case where some
-     other rule should be allowed to leave hovered text unreadable. */
-  .hover\:bg-gray-50:hover  { background-color: #1f2937 !important; }
-  .hover\:bg-gray-100:hover { background-color: #374151 !important; }
-  .hover\:bg-gray-200:hover { background-color: #4b5563 !important; }
-
-  /* Neutral text */
-  .text-gray-900 { color: #f9fafb; }
-  .text-gray-800 { color: #f3f4f6; }
-  .text-gray-700 { color: #e5e7eb; }
-  .text-gray-600 { color: #d1d5db; }
-  .text-gray-500 { color: #9ca3af; }
-  .text-gray-400 { color: #6b7280; }
-
-  .hover\:text-gray-700:hover { color: #f3f4f6 !important; }
-  .hover\:text-gray-900:hover { color: #f9fafb !important; }
-
-  /* Neutral borders / dividers */
-  .border-gray-100 { border-color: #374151; }
-  .border-gray-200 { border-color: #374151; }
-  .border-gray-300 { border-color: #4b5563; }
-  .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: #374151; }
-  .divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: #374151; }
-
-  /* Light alert/callout boxes (bg-{colour}-50 + border-{colour}-200 +
-     text-{colour}-800 is the recurring pattern for inline notices) —
-     deepened so they read as tinted panels on a dark page instead of
-     bright white cutouts. */
-  .bg-blue-50    { background-color: rgba(59, 130, 246, 0.12); }
-  .bg-green-50   { background-color: rgba(34, 197, 94, 0.12); }
-  .bg-red-50     { background-color: rgba(239, 68, 68, 0.12); }
-  .bg-yellow-50  { background-color: rgba(234, 179, 8, 0.12); }
-  .bg-amber-50   { background-color: rgba(245, 158, 11, 0.12); }
-  .bg-purple-50  { background-color: rgba(168, 85, 247, 0.12); }
-  .bg-teal-50    { background-color: rgba(20, 184, 166, 0.12); }
-
-  .border-blue-200   { border-color: rgba(59, 130, 246, 0.35); }
-  .border-green-200  { border-color: rgba(34, 197, 94, 0.35); }
-  .border-red-200    { border-color: rgba(239, 68, 68, 0.35); }
-  .border-yellow-200 { border-color: rgba(234, 179, 8, 0.35); }
-  .border-amber-200  { border-color: rgba(245, 158, 11, 0.35); }
-  .border-purple-200 { border-color: rgba(168, 85, 247, 0.35); }
-
-  .text-blue-800   { color: #93c5fd; }
-  .text-green-800  { color: #86efac; }
-  .text-red-800    { color: #fca5a5; }
-  .text-yellow-800 { color: #fde047; }
-  .text-amber-800  { color: #fcd34d; }
-  .text-purple-800 { color: #d8b4fe; }
+.page-banner .btn-primary, .dark .page-banner .btn-primary {
+  background-color: #ffffff; color: #0b1f3a; box-shadow: none;
 }
+.page-banner .btn-primary:hover, .dark .page-banner .btn-primary:hover { background-color: #eff6ff; }
+.page-banner .btn-secondary {
+  background-color: transparent; color: #ffffff; border-color: rgba(255, 255, 255, 0.5);
+}
+.page-banner .btn-secondary:hover { background-color: rgba(255, 255, 255, 0.12); }
+.page-banner .btn-primary:disabled, .page-banner .btn-secondary:disabled { opacity: 0.6; }
+.page-banner .btn-primary, .page-banner .btn-secondary, .page-banner .btn-danger { white-space: nowrap; }
+
+/* ============================================================
+   TABLE ROWS — a soft highlight on hover, in every table.
+   ============================================================ */
+tbody tr { transition: background-color 0.12s; }
+tbody tr:hover { background-color: var(--cms-surface-hover); }
+
+/* ============================================================
+   LIGHT MODE READABILITY FIXES
+   Pages use text-gray-400 for real words (labels, captions). The
+   stock gray-400 is only 2.6 : 1 on white — too faint to read. It is
+   darkened here to 4.7 : 1. Same for text-gray-300 used as text.
+   ============================================================ */
+.text-gray-400 { color: #64748b; }
+.text-gray-300 { color: #7b8aa0; }
+
+/* ============================================================
+   DARK MODE — BLANKET COVERAGE FOR RAW UTILITY CLASSES
+   ------------------------------------------------------------
+   ~40 page files use raw Tailwind colour classes (bg-white,
+   text-gray-700, bg-green-50 …) directly. Instead of rewriting
+   thousands of class names, the same classes are re-coloured here
+   whenever dark mode is on. These rules come after Tailwind's own
+   utilities and are more specific (.dark .x), so they win.
+   ============================================================ */
+/* Surfaces */
+.dark .bg-white, .dark .dark\:bg-gray-800 { background-color: var(--cms-surface); }
+.dark .bg-gray-50, .dark .dark\:bg-gray-900 { background-color: var(--cms-bg); }
+.dark .bg-gray-100, .dark .bg-slate-100, .dark .bg-slate-50 { background-color: var(--cms-surface-2); }
+.dark .bg-gray-200, .dark .dark\:bg-gray-700 { background-color: #1e2b45; }
+.dark .bg-gray-300 { background-color: #2b3b5c; }
+.dark .hover\:bg-white:hover { background-color: var(--cms-surface-hover) !important; }
+.dark .hover\:bg-gray-50:hover  { background-color: var(--cms-surface-hover) !important; }
+.dark .hover\:bg-gray-100:hover { background-color: #1e2b45 !important; }
+.dark .hover\:bg-gray-200:hover { background-color: #26365a !important; }
+.dark .bg-white\/80, .dark .bg-white\/90 { background-color: rgba(17, 26, 46, 0.9); }
+
+/* Text */
+.dark .text-gray-900, .dark .text-gray-800, .dark .text-slate-900, .dark .text-slate-800,
+.dark .dark\:text-gray-100, .dark .dark\:text-gray-50 { color: #e6ecf5; }
+.dark .text-gray-700, .dark .text-slate-700, .dark .dark\:text-gray-200 { color: #d5deea; }
+.dark .text-gray-600, .dark .text-slate-600, .dark .dark\:text-gray-300 { color: #c3cedf; }
+.dark .text-gray-500, .dark .text-slate-500, .dark .dark\:text-gray-400 { color: #a9b6cc; }
+.dark .text-gray-400, .dark .text-slate-400 { color: #8d9bb4; }
+.dark .text-gray-300 { color: #7d8ba3; }
+.dark .text-gray-200, .dark .text-gray-100 { color: #c3cedf; }
+.dark .hover\:text-gray-700:hover, .dark .hover\:text-gray-900:hover, .dark .hover\:text-gray-600:hover { color: #ffffff !important; }
+
+/* Lines */
+.dark .border-gray-50, .dark .border-gray-100, .dark .border-gray-200, .dark .dark\:border-gray-700 { border-color: var(--cms-border); }
+.dark .border-gray-300, .dark .border-gray-400 { border-color: var(--cms-border-strong); }
+.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--cms-surface-divider); }
+
+/* Translucent white panels on the blue header band stay translucent */
+.dark .bg-white.bg-opacity-10, .dark .page-banner .bg-white.bg-opacity-10 { background-color: rgba(255, 255, 255, 0.10); }
+.dark .bg-white.bg-opacity-20 { background-color: rgba(255, 255, 255, 0.20); }
+.dark .bg-white.bg-opacity-25 { background-color: rgba(255, 255, 255, 0.25); }
+.dark .bg-white.bg-opacity-30 { background-color: rgba(255, 255, 255, 0.30); }
+
+/* A few older menus set white / grey colours inline (style={{…}});
+   the browser writes those as rgb(), so they can be caught here. */
+.dark [style*="background-color: white"],
+.dark [style*="background-color: rgb(255, 255, 255)"] { background-color: var(--cms-surface) !important; }
+.dark [style*="border: 1px solid rgb(229, 231, 235)"] { border-color: var(--cms-border) !important; }
+.dark [style*="color: rgb(55, 65, 81)"], .dark [style*="color: rgb(17, 24, 39)"] { color: #d5deea !important; }
+
+/* Dark shades used as light text on coloured panels */
+.dark .text-primary-700, .dark .text-primary-800, .dark .text-primary-900 { color: #93c5fd; }
+.dark .bg-red-950 { background-color: rgba(239, 68, 68, 0.14); }
+.dark .bg-green-950 { background-color: rgba(34, 197, 94, 0.14); }
+.dark .shadow-sm, .dark .shadow { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
+
+/* Coloured tints (alert boxes, chips, soft panels) */
+  .dark .bg-blue-50, .dark .hover\:bg-blue-50:hover { background-color: rgba(59,130,246,0.10); }
+  .dark .bg-blue-100, .dark .hover\:bg-blue-100:hover { background-color: rgba(59,130,246,0.16); }
+  .dark .bg-blue-200 { background-color: rgba(59,130,246,0.24); }
+  .dark .border-blue-100, .dark .border-blue-200, .dark .border-blue-300 { border-color: rgba(59,130,246,0.38); }
+  .dark .text-blue-600, .dark .text-blue-500 { color: #93c5fd; }
+  .dark .text-blue-700, .dark .text-blue-800, .dark .text-blue-900, .dark .text-blue-950 { color: #bfdbfe; }
+  .dark .bg-green-50, .dark .hover\:bg-green-50:hover { background-color: rgba(34,197,94,0.10); }
+  .dark .bg-green-100, .dark .hover\:bg-green-100:hover { background-color: rgba(34,197,94,0.16); }
+  .dark .bg-green-200 { background-color: rgba(34,197,94,0.24); }
+  .dark .border-green-100, .dark .border-green-200, .dark .border-green-300 { border-color: rgba(34,197,94,0.38); }
+  .dark .text-green-600, .dark .text-green-500 { color: #86efac; }
+  .dark .text-green-700, .dark .text-green-800, .dark .text-green-900, .dark .text-green-950 { color: #bbf7d0; }
+  .dark .bg-red-50, .dark .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.10); }
+  .dark .bg-red-100, .dark .hover\:bg-red-100:hover { background-color: rgba(239,68,68,0.16); }
+  .dark .bg-red-200 { background-color: rgba(239,68,68,0.24); }
+  .dark .border-red-100, .dark .border-red-200, .dark .border-red-300 { border-color: rgba(239,68,68,0.38); }
+  .dark .text-red-600, .dark .text-red-500 { color: #fca5a5; }
+  .dark .text-red-700, .dark .text-red-800, .dark .text-red-900, .dark .text-red-950 { color: #fecaca; }
+  .dark .bg-yellow-50, .dark .hover\:bg-yellow-50:hover { background-color: rgba(234,179,8,0.10); }
+  .dark .bg-yellow-100, .dark .hover\:bg-yellow-100:hover { background-color: rgba(234,179,8,0.16); }
+  .dark .bg-yellow-200 { background-color: rgba(234,179,8,0.24); }
+  .dark .border-yellow-100, .dark .border-yellow-200, .dark .border-yellow-300 { border-color: rgba(234,179,8,0.38); }
+  .dark .text-yellow-600, .dark .text-yellow-500 { color: #fde047; }
+  .dark .text-yellow-700, .dark .text-yellow-800, .dark .text-yellow-900, .dark .text-yellow-950 { color: #fef08a; }
+  .dark .bg-amber-50, .dark .hover\:bg-amber-50:hover { background-color: rgba(245,158,11,0.10); }
+  .dark .bg-amber-100, .dark .hover\:bg-amber-100:hover { background-color: rgba(245,158,11,0.16); }
+  .dark .bg-amber-200 { background-color: rgba(245,158,11,0.24); }
+  .dark .border-amber-100, .dark .border-amber-200, .dark .border-amber-300 { border-color: rgba(245,158,11,0.38); }
+  .dark .text-amber-600, .dark .text-amber-500 { color: #fcd34d; }
+  .dark .text-amber-700, .dark .text-amber-800, .dark .text-amber-900, .dark .text-amber-950 { color: #fde68a; }
+  .dark .bg-purple-50, .dark .hover\:bg-purple-50:hover { background-color: rgba(168,85,247,0.10); }
+  .dark .bg-purple-100, .dark .hover\:bg-purple-100:hover { background-color: rgba(168,85,247,0.16); }
+  .dark .bg-purple-200 { background-color: rgba(168,85,247,0.24); }
+  .dark .border-purple-100, .dark .border-purple-200, .dark .border-purple-300 { border-color: rgba(168,85,247,0.38); }
+  .dark .text-purple-600, .dark .text-purple-500 { color: #d8b4fe; }
+  .dark .text-purple-700, .dark .text-purple-800, .dark .text-purple-900, .dark .text-purple-950 { color: #e9d5ff; }
+  .dark .bg-teal-50, .dark .hover\:bg-teal-50:hover { background-color: rgba(20,184,166,0.10); }
+  .dark .bg-teal-100, .dark .hover\:bg-teal-100:hover { background-color: rgba(20,184,166,0.16); }
+  .dark .bg-teal-200 { background-color: rgba(20,184,166,0.24); }
+  .dark .border-teal-100, .dark .border-teal-200, .dark .border-teal-300 { border-color: rgba(20,184,166,0.38); }
+  .dark .text-teal-600, .dark .text-teal-500 { color: #5eead4; }
+  .dark .text-teal-700, .dark .text-teal-800, .dark .text-teal-900, .dark .text-teal-950 { color: #99f6e4; }
+  .dark .bg-emerald-50, .dark .hover\:bg-emerald-50:hover { background-color: rgba(16,185,129,0.10); }
+  .dark .bg-emerald-100, .dark .hover\:bg-emerald-100:hover { background-color: rgba(16,185,129,0.16); }
+  .dark .bg-emerald-200 { background-color: rgba(16,185,129,0.24); }
+  .dark .border-emerald-100, .dark .border-emerald-200, .dark .border-emerald-300 { border-color: rgba(16,185,129,0.38); }
+  .dark .text-emerald-600, .dark .text-emerald-500 { color: #6ee7b7; }
+  .dark .text-emerald-700, .dark .text-emerald-800, .dark .text-emerald-900, .dark .text-emerald-950 { color: #a7f3d0; }
+  .dark .bg-orange-50, .dark .hover\:bg-orange-50:hover { background-color: rgba(249,115,22,0.10); }
+  .dark .bg-orange-100, .dark .hover\:bg-orange-100:hover { background-color: rgba(249,115,22,0.16); }
+  .dark .bg-orange-200 { background-color: rgba(249,115,22,0.24); }
+  .dark .border-orange-100, .dark .border-orange-200, .dark .border-orange-300 { border-color: rgba(249,115,22,0.38); }
+  .dark .text-orange-600, .dark .text-orange-500 { color: #fdba74; }
+  .dark .text-orange-700, .dark .text-orange-800, .dark .text-orange-900, .dark .text-orange-950 { color: #fed7aa; }
+  .dark .bg-indigo-50, .dark .hover\:bg-indigo-50:hover { background-color: rgba(99,102,241,0.10); }
+  .dark .bg-indigo-100, .dark .hover\:bg-indigo-100:hover { background-color: rgba(99,102,241,0.16); }
+  .dark .bg-indigo-200 { background-color: rgba(99,102,241,0.24); }
+  .dark .border-indigo-100, .dark .border-indigo-200, .dark .border-indigo-300 { border-color: rgba(99,102,241,0.38); }
+  .dark .text-indigo-600, .dark .text-indigo-500 { color: #a5b4fc; }
+  .dark .text-indigo-700, .dark .text-indigo-800, .dark .text-indigo-900, .dark .text-indigo-950 { color: #c7d2fe; }
+  .dark .bg-pink-50, .dark .hover\:bg-pink-50:hover { background-color: rgba(236,72,153,0.10); }
+  .dark .bg-pink-100, .dark .hover\:bg-pink-100:hover { background-color: rgba(236,72,153,0.16); }
+  .dark .bg-pink-200 { background-color: rgba(236,72,153,0.24); }
+  .dark .border-pink-100, .dark .border-pink-200, .dark .border-pink-300 { border-color: rgba(236,72,153,0.38); }
+  .dark .text-pink-600, .dark .text-pink-500 { color: #f9a8d4; }
+  .dark .text-pink-700, .dark .text-pink-800, .dark .text-pink-900, .dark .text-pink-950 { color: #fbcfe8; }
+  .dark .bg-rose-50, .dark .hover\:bg-rose-50:hover { background-color: rgba(244,63,94,0.10); }
+  .dark .bg-rose-100, .dark .hover\:bg-rose-100:hover { background-color: rgba(244,63,94,0.16); }
+  .dark .bg-rose-200 { background-color: rgba(244,63,94,0.24); }
+  .dark .border-rose-100, .dark .border-rose-200, .dark .border-rose-300 { border-color: rgba(244,63,94,0.38); }
+  .dark .text-rose-600, .dark .text-rose-500 { color: #fda4af; }
+  .dark .text-rose-700, .dark .text-rose-800, .dark .text-rose-900, .dark .text-rose-950 { color: #fecdd3; }
+  .dark .bg-violet-50, .dark .hover\:bg-violet-50:hover { background-color: rgba(139,92,246,0.10); }
+  .dark .bg-violet-100, .dark .hover\:bg-violet-100:hover { background-color: rgba(139,92,246,0.16); }
+  .dark .bg-violet-200 { background-color: rgba(139,92,246,0.24); }
+  .dark .border-violet-100, .dark .border-violet-200, .dark .border-violet-300 { border-color: rgba(139,92,246,0.38); }
+  .dark .text-violet-600, .dark .text-violet-500 { color: #c4b5fd; }
+  .dark .text-violet-700, .dark .text-violet-800, .dark .text-violet-900, .dark .text-violet-950 { color: #ddd6fe; }
+  .dark .bg-sky-50, .dark .hover\:bg-sky-50:hover { background-color: rgba(14,165,233,0.10); }
+  .dark .bg-sky-100, .dark .hover\:bg-sky-100:hover { background-color: rgba(14,165,233,0.16); }
+  .dark .bg-sky-200 { background-color: rgba(14,165,233,0.24); }
+  .dark .border-sky-100, .dark .border-sky-200, .dark .border-sky-300 { border-color: rgba(14,165,233,0.38); }
+  .dark .text-sky-600, .dark .text-sky-500 { color: #7dd3fc; }
+  .dark .text-sky-700, .dark .text-sky-800, .dark .text-sky-900, .dark .text-sky-950 { color: #bae6fd; }
+  .dark .bg-cyan-50, .dark .hover\:bg-cyan-50:hover { background-color: rgba(6,182,212,0.10); }
+  .dark .bg-cyan-100, .dark .hover\:bg-cyan-100:hover { background-color: rgba(6,182,212,0.16); }
+  .dark .bg-cyan-200 { background-color: rgba(6,182,212,0.24); }
+  .dark .border-cyan-100, .dark .border-cyan-200, .dark .border-cyan-300 { border-color: rgba(6,182,212,0.38); }
+  .dark .text-cyan-600, .dark .text-cyan-500 { color: #67e8f9; }
+  .dark .text-cyan-700, .dark .text-cyan-800, .dark .text-cyan-900, .dark .text-cyan-950 { color: #a5f3fc; }
+  .dark .bg-lime-50, .dark .hover\:bg-lime-50:hover { background-color: rgba(132,204,22,0.10); }
+  .dark .bg-lime-100, .dark .hover\:bg-lime-100:hover { background-color: rgba(132,204,22,0.16); }
+  .dark .bg-lime-200 { background-color: rgba(132,204,22,0.24); }
+  .dark .border-lime-100, .dark .border-lime-200, .dark .border-lime-300 { border-color: rgba(132,204,22,0.38); }
+  .dark .text-lime-600, .dark .text-lime-500 { color: #bef264; }
+  .dark .text-lime-700, .dark .text-lime-800, .dark .text-lime-900, .dark .text-lime-950 { color: #d9f99d; }
+  .dark .bg-fuchsia-50, .dark .hover\:bg-fuchsia-50:hover { background-color: rgba(217,70,239,0.10); }
+  .dark .bg-fuchsia-100, .dark .hover\:bg-fuchsia-100:hover { background-color: rgba(217,70,239,0.16); }
+  .dark .bg-fuchsia-200 { background-color: rgba(217,70,239,0.24); }
+  .dark .border-fuchsia-100, .dark .border-fuchsia-200, .dark .border-fuchsia-300 { border-color: rgba(217,70,239,0.38); }
+  .dark .text-fuchsia-600, .dark .text-fuchsia-500 { color: #f0abfc; }
+  .dark .text-fuchsia-700, .dark .text-fuchsia-800, .dark .text-fuchsia-900, .dark .text-fuchsia-950 { color: #f5d0fe; }
+  .dark .bg-primary-50, .dark .hover\:bg-primary-50:hover { background-color: rgba(59,130,246,0.10); }
+  .dark .bg-primary-100, .dark .hover\:bg-primary-100:hover { background-color: rgba(59,130,246,0.16); }
+  .dark .bg-primary-200 { background-color: rgba(59,130,246,0.24); }
+  .dark .border-primary-100, .dark .border-primary-200, .dark .border-primary-300 { border-color: rgba(59,130,246,0.38); }
+  .dark .text-primary-600, .dark .text-primary-500 { color: #93c5fd; }
+  .dark .text-primary-700, .dark .text-primary-800, .dark .text-primary-900, .dark .text-primary-950 { color: #bfdbfe; }
+  .dark .bg-accent-50, .dark .hover\:bg-accent-50:hover { background-color: rgba(20,184,166,0.10); }
+  .dark .bg-accent-100, .dark .hover\:bg-accent-100:hover { background-color: rgba(20,184,166,0.16); }
+  .dark .bg-accent-200 { background-color: rgba(20,184,166,0.24); }
+  .dark .border-accent-100, .dark .border-accent-200, .dark .border-accent-300 { border-color: rgba(20,184,166,0.38); }
+  .dark .text-accent-600, .dark .text-accent-500 { color: #5eead4; }
+  .dark .text-accent-700, .dark .text-accent-800, .dark .text-accent-900, .dark .text-accent-950 { color: #99f6e4; }

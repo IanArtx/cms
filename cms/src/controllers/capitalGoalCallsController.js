@@ -10,6 +10,7 @@ const { query, withTransaction } = require('../config/database');
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const capitalGoalCallService = require('../services/capitalGoalCallService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // Shared write-guard (v1.51.0) — every pledge/payment-writing action
 // below rejects with a clear error while Capital Goal Tracking is
@@ -98,6 +99,8 @@ const rejectPledge = asyncHandler(async (req, res) => {
 // POST /api/capital-goals/pledges/:id/approve
 // ============================================================
 const approvePledgePayment = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'capital_goal_pledges', req.params.id, ['user_id'], 'pledge payment');
     const { id } = req.params;
     const { amount, account_id, paid_date, notes } = req.body;
 

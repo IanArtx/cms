@@ -16,7 +16,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { RepaymentModal } from './LoansPage';
 import {
     ArrowLeftIcon,
@@ -28,6 +28,7 @@ import {
     PieChart, Pie, Cell, BarChart, Bar, LineChart, Line,
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
 
 // ============================================================
 // AMEND PENALTY RATE MODAL
@@ -120,6 +121,57 @@ const AmendRateModal = ({ loan, isReceived, isOpen, onClose, onSuccess }) => {
     );
 };
 
+// ============================================================
+// LOAN RECEIVED — TAX (v1.70.0)
+// Interest paid to a lender outside Uganda has withholding tax (15%)
+// deducted: the lender receives the net, the tax is paid to URA. Turn
+// it on here; it applies to repayments recorded from now on.
+// ============================================================
+const LoanTaxCard = ({ loan, canEdit, onSaved }) => {
+    const [form, setForm] = useState({
+        lender_residency: loan.lender_residency || 'RESIDENT',
+        lender_tin: loan.lender_tin || '',
+        wht_applicable: !!loan.wht_applicable,
+    });
+    const [msg, setMsg] = useState(null);
+    const [error, setError] = useState(null);
+    if (loan.lender_residency === undefined) return null; // tax module not installed
+    const save = async () => {
+        setError(null);
+        try { await loansAPI.updateReceivedTax(loan.id, form); setMsg('Saved'); onSaved(); } catch (err) { setError(getErrorMessage(err)); }
+    };
+    return (
+        <div className="card mb-6">
+            <h3 className="section-title mb-2">Tax on interest paid to the lender</h3>
+            <p className="text-xs text-gray-500 mb-3">
+                When withholding tax applies, the interest part of each repayment is paid net of tax (15% for a lender outside Uganda,
+                unless a tax treaty sets another rate); the tax stays with the company, is paid to URA by the 15th of the next month and
+                a deduction certificate is issued. The loan is still reduced by the full amount.
+            </p>
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <div><label className="label">Lender is</label>
+                    <select className="input" disabled={!canEdit} value={form.lender_residency}
+                        onChange={e => setForm(p => ({ ...p, lender_residency: e.target.value, wht_applicable: e.target.value === 'NON_RESIDENT' ? true : p.wht_applicable }))}>
+                        <option value="RESIDENT">Resident in Uganda</option><option value="NON_RESIDENT">Outside Uganda (non-resident)</option>
+                    </select></div>
+                <div><label className="label">Lender TIN (if any)</label>
+                    <input className="input" disabled={!canEdit} value={form.lender_tin} onChange={e => setForm(p => ({ ...p, lender_tin: e.target.value }))} /></div>
+                <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" disabled={!canEdit} checked={form.wht_applicable} onChange={e => setForm(p => ({ ...p, wht_applicable: e.target.checked }))} />
+                    Withhold tax from interest
+                </label>
+            </div>
+            {canEdit && (
+                <div className="flex justify-end items-center gap-3 mt-3">
+                    {msg && <span className="text-sm text-green-700">{msg}</span>}
+                    <button className="btn-primary text-sm" onClick={save}>Save</button>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const LoanDetailPage = ({ loanType }) => {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -127,6 +179,7 @@ const LoanDetailPage = ({ loanType }) => {
     const theme = useChartTheme();
 
     const [loan,    setLoan]    = useState(null);
+    useBreadcrumbTitle(loan ? (loanType === 'received' ? loan.lender_name : loan.borrower_name) : null);
     const [loading, setLoading] = useState(true);
     const [error,   setError]   = useState(null);
     const [showRepay, setShowRepay] = useState(false);
@@ -223,19 +276,13 @@ const LoanDetailPage = ({ loanType }) => {
 
     return (
         <div>
-            {/* Back button */}
-            <button
-                onClick={() => navigate('/loans')}
-                className="flex items-center gap-2 text-sm text-gray-500
-                    hover:text-gray-700 mb-6 transition-colors"
-            >
-                <ArrowLeftIcon className="h-4 w-4" />
-                Back to Loans
-            </button>
 
             {/* Loan Header */}
-            <div className="rounded-xl p-6 mb-6 text-white
-                bg-gradient-to-r from-primary-900 to-primary-700">
+            <div className="page-banner -mx-4 -mt-4 md:-mx-6 md:-mt-6 mb-6 px-4 md:px-7 py-6">
+                <button type="button" onClick={() => navigate('/loans')} className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-white/90 hover:text-white rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                    <ArrowLeftIcon className="h-4 w-4" />
+                    Back to Loans
+                </button>
                 <div className="flex items-start justify-between flex-wrap gap-4">
                     <div className="flex items-center gap-3">
                         <CreditCardIcon className="h-8 w-8 opacity-80" />
@@ -361,7 +408,7 @@ const LoanDetailPage = ({ loanType }) => {
                                 <CartesianGrid {...theme.gridProps} />
                                 <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Repayment']}
@@ -385,7 +432,7 @@ const LoanDetailPage = ({ loanType }) => {
                         <CartesianGrid {...theme.gridProps} />
                         <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                         <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                            tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                            tickFormatter={compactNumber} />
                         <Tooltip
                             {...theme.tooltipProps}
                             formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
@@ -457,6 +504,10 @@ const LoanDetailPage = ({ loanType }) => {
                     )}
                 </div>
             </div>
+
+            {isReceived && (
+                <LoanTaxCard loan={loan} canEdit={hasRole(['Treasurer', 'Assistant Treasurer', 'Director'])} onSaved={loadLoan} />
+            )}
 
             {/* Rate Amendments */}
             {rateAmendments.length > 0 && (

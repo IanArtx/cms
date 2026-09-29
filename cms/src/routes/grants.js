@@ -16,6 +16,7 @@ const { body, param } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission } = require('../middleware/auth');
 const grantsController = require('../controllers/grantsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 // All routes require login
 router.use(authenticate);
@@ -126,6 +127,7 @@ router.post('/:id/tranches',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('grants.tranche', grantsController.recordTranche, { label: 'Grant tranche received', subject: { type: 'grant', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     grantsController.recordTranche
 );
 

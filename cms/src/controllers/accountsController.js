@@ -4,8 +4,9 @@
 // managing the primary account floor limit, and account balances.
 //
 // RULES ENFORCED HERE:
-//   - Only one primary account and only one SAVINGS account can
-//     exist (both enforced by DB unique indexes)
+//   - Only one primary account can exist, and only one active SAVINGS
+//     account per currency (v1.61.0 — was exactly one SAVINGS account,
+//     ever; both enforced by DB unique indexes)
 //   - Any account can have a floor limit (v1.14.0) except SAVINGS,
 //     which is permanently exempt and may sit at zero at any time
 //   - Floor limit changes are never overwritten — history kept
@@ -438,18 +439,22 @@ const createPrimaryAccount = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
-// CREATE SAVINGS ACCOUNT (one-time setup)
+// CREATE SAVINGS ACCOUNT
 // POST /api/accounts/savings
-// This is the single dedicated account every member savings
-// transaction (deposits, handouts, and the non-member "pool inflow")
-// is posted against instead of Primary. Same settings as any other
-// account (currency, bank details/virtual flag) except it:
+// This is the dedicated account every member savings transaction
+// (deposits, handouts, and the non-member "pool inflow") in ITS
+// CURRENCY is posted against instead of Primary. Same settings as any
+// other account (currency, bank details/virtual flag) except it:
 //   - can never take part in a transfer (transfersController only
 //     ever allows PRIMARY<->SECONDARY legs, so this is automatic)
 //   - is permanently exempt from floor limits (enforced in
 //     updateFloorLimit / postTransaction)
 //   - only ever receives CREDIT postings, never an expense
-// Only one may exist at a time (idx_one_savings_account).
+// v1.61.0 — a company can now have one active SAVINGS account PER
+// CURRENCY (was: exactly one, ever — idx_one_savings_account_per_currency),
+// so members can hold and move savings across several currencies.
+// Create one the first time a given currency is needed, same as any
+// other account.
 // ============================================================
 const createSavingsAccount = asyncHandler(async (req, res) => {
     const {
@@ -458,21 +463,22 @@ const createSavingsAccount = asyncHandler(async (req, res) => {
     } = req.body;
 
     await withTransaction(async (client) => {
-        const existing = await client.query(
-            `SELECT id FROM accounts WHERE account_type = 'SAVINGS' AND is_active = TRUE`
-        );
-        if (existing.rows.length > 0) {
-            throw createError.conflict(
-                'A savings account already exists. Only one savings account is allowed.'
-            );
-        }
-
         const currency = await client.query(
             'SELECT id, code, name FROM currencies WHERE id = $1 AND is_active = TRUE',
             [currency_id]
         );
         if (currency.rows.length === 0) {
             throw createError.badRequest('Currency not found or inactive');
+        }
+
+        const existing = await client.query(
+            `SELECT id FROM accounts WHERE account_type = 'SAVINGS' AND is_active = TRUE AND currency_id = $1`,
+            [currency_id]
+        );
+        if (existing.rows.length > 0) {
+            throw createError.conflict(
+                `A Savings account already exists for ${currency.rows[0].code}. Only one Savings account per currency is allowed.`
+            );
         }
 
         const isVirtual = !!is_virtual;
@@ -699,9 +705,18 @@ const getInflowOutflowTrend = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT
             TO_CHAR(t.value_date, 'YYYY-MM') AS period,
-            COALESCE(SUM(CASE WHEN t.transaction_type IN ('CREDIT', 'REVERSAL_DEBIT')
+            -- v1.64.0 fix: this previously read ('CREDIT','REVERSAL_DEBIT') as
+            -- inflow and ('DEBIT','REVERSAL_CREDIT') as outflow — backwards
+            -- relative to every other cash-direction query in this codebase
+            -- (reportService.js, auditController.js, glService.js's isCashIn,
+            -- transactionsController.js's own isCredit checks all agree
+            -- REVERSAL_CREDIT reverses a DEBIT, i.e. money back IN, and
+            -- REVERSAL_DEBIT reverses a CREDIT, i.e. money back OUT — see
+            -- transactionsController.js's reverseTransaction). Corrected to
+            -- match that convention.
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('CREDIT', 'REVERSAL_CREDIT')
                 THEN t.amount ELSE 0 END), 0) AS inflow,
-            COALESCE(SUM(CASE WHEN t.transaction_type IN ('DEBIT', 'REVERSAL_CREDIT')
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('DEBIT', 'REVERSAL_DEBIT')
                 THEN t.amount ELSE 0 END), 0) AS outflow
         FROM   transactions t
         JOIN   accounts a ON a.id = t.account_id

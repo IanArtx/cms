@@ -308,6 +308,14 @@ const scheduleDailyOverdueCheck = () => {
 // Accrues interest on every member's FLEXIBLE savings principal
 // balance at the single company-wide rate in savings_settings —
 // mirrors the loan accrual job's pattern exactly.
+//
+// v1.61.0 — a member can now hold savings in more than one currency
+// at once, each its own row in savings_balances. This job already
+// iterated row-by-row (never assumed one balance per user), so the
+// only real change is scoping every lookup/update to that SPECIFIC
+// row's own (user_id, currency_id) pair — via balance.id/currency_id
+// — instead of user_id alone, which would previously have applied
+// one day's interest amount to every currency a member holds.
 // ============================================================
 const scheduleDailySavingsAccrual = () => {
     cron.schedule('10 0 * * *', async () => {
@@ -331,8 +339,8 @@ const scheduleDailySavingsAccrual = () => {
             for (const balance of balances.rows) {
                 const existing = await query(`
                     SELECT id FROM savings_interest_accrual
-                    WHERE  user_id = $1 AND accrual_date = $2
-                `, [balance.user_id, today]);
+                    WHERE  user_id = $1 AND currency_id = $2 AND accrual_date = $3
+                `, [balance.user_id, balance.currency_id, today]);
 
                 if (existing.rows.length > 0) continue;
 
@@ -345,21 +353,21 @@ const scheduleDailySavingsAccrual = () => {
 
                 await query(`
                     INSERT INTO savings_interest_accrual (
-                        user_id, accrual_date, rate_used, principal_balance, interest_accrued
-                    ) VALUES ($1, $2, $3, $4, $5)
-                `, [balance.user_id, today, settings.interest_rate, principal, rounded]);
+                        user_id, currency_id, accrual_date, rate_used, principal_balance, interest_accrued
+                    ) VALUES ($1, $2, $3, $4, $5, $6)
+                `, [balance.user_id, balance.currency_id, today, settings.interest_rate, principal, rounded]);
 
                 await query(`
                     UPDATE savings_balances
                     SET    accrued_interest = accrued_interest + $1,
                            updated_at = NOW()
-                    WHERE  user_id = $2
-                `, [rounded, balance.user_id]);
+                    WHERE  id = $2
+                `, [rounded, balance.id]);
 
                 accrualCount++;
             }
 
-            logger.info(`Daily savings interest accrual completed — ${accrualCount} members processed`);
+            logger.info(`Daily savings interest accrual completed — ${accrualCount} balance(s) processed`);
         } catch (err) {
             logger.error('Daily savings interest accrual job failed', { error: err.message });
         }
@@ -915,6 +923,30 @@ const scheduleServiceFeeDueReminders = () => {
 };
 
 // ============================================================
+// TAX DEADLINE REMINDERS (v1.70.0)
+// Every morning: the Treasurer, Assistant Treasurer and Directors are
+// reminded of each tax deadline 7 days before it, on the day, and every
+// 7 days after it while it is still open — monthly withholding tax
+// returns and payments (the 15th), provisional tax instalments, and the
+// annual return with the balance of tax. See taxService.getCalendar.
+// ============================================================
+const scheduleTaxDeadlineReminders = () => {
+    cron.schedule('50 7 * * *', async () => {
+        logger.info('Starting tax deadline reminder job...');
+        try {
+            const taxService = require('../services/taxService');
+            const result = await taxService.runDeadlineReminders({ notifyMany, wrapEmail });
+            logger.info(`Tax deadline reminder job completed — ${result.sent} reminder(s) sent`);
+        } catch (err) {
+            logger.error('Tax deadline reminder job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+    logger.info('Tax deadline reminders scheduled: 50 7 * * *');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -935,6 +967,7 @@ const startAllJobs = () => {
     scheduleCertificateSigningReminders();
     scheduleDocumentSignatureReminders();
     scheduleAuditAccessExpiryReminders();
+    scheduleTaxDeadlineReminders();
     logger.info('All scheduled jobs started successfully');
 };
 

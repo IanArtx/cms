@@ -41,7 +41,10 @@ router.get('/price/history',
 // ============================================================
 // SET NEW SHARE PRICE
 // POST /api/shares/price
-// Treasurer / Admin only
+// Treasurer / Admin only — and since v1.69.0 ONLY for the very first
+// price of a new installation (409 otherwise). Every later change goes
+// through /api/share-capital/change-requests (resolution + two
+// approvers).
 // ============================================================
 router.post('/price',
     requireRoles(['Treasurer', 'Admin']),

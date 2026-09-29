@@ -1,0 +1,45 @@
+%% v1.71.0 — "Harbour" interface: page frame, navigation levels, theme and shortcuts
+flowchart TD
+
+    subgraph FRAME["Page frame (AppLayout + LayoutProvider)"]
+        direction LR
+        SB["Sidebar (navy)\nDashboard · ★ Shortcuts · 6 groups\none group open at a time\n‹ shrinks to icon strip"]
+        TB["Top bar\nbreadcrumb · Search (Ctrl K) · Balances ·\n+ New · ☀/☾ · 🔔 · profile menu"]
+        PG["Page\nheader band → tabs → content"]
+        MB["Phone bottom bar (< 768 px)\nHome · Shortcuts · + New · Alerts · Menu"]
+    end
+
+    NAV["navConfig.js\nevery page: group, visibility rule,\nbreadcrumb name, search words"] --> SB
+    NAV --> TB
+    NAV --> MB
+
+    subgraph LEVELS["Same three levels everywhere"]
+        direction LR
+        L1["1 · Group\n(sidebar)"] --> L2["2 · Page with tabs\n?tab= kept in the address\n(useTabParam)"]
+        L2 --> L3["3 · Record detail\nBack + breadcrumb step\n(useBreadcrumbTitle)"]
+    end
+
+    PG --> LEVELS
+
+    subgraph NEW["+ New quick actions"]
+        N1["menu item → /page?new=kind"] --> N2["useNewParam on that page\nopens its own form once\n(only if the person may use it)"]
+    end
+    TB --> NEW
+    MB --> NEW
+
+    subgraph THEME["Light / dark"]
+        T1["choice: Light · Dark · Same as my device\nlocalStorage cms-theme (per browser)"] --> T2["ThemeContext adds class 'dark' on html\n(index.html does it before load)"]
+        T2 --> T3["index.css tokens + .dark overrides\nTailwind darkMode: 'class'"]
+        T2 --> T4["useChartTheme → 8-colour series\n(brighter set in dark), compact axes"]
+    end
+    TB --> THEME
+
+    subgraph SC["Shortcuts"]
+        S1["defaults: Transactions · Tax · Capital goals\n(skipped if not visible)"] --> S2["Edit → ★ beside each page\nup to 6 · saved per person per browser"]
+    end
+    SB --> SC
+
+    subgraph COLOURS["Colours"]
+        C1["screens: fixed Harbour palette\n(no longer from Settings)"]
+        C2["Settings > Company 'Document colours'\n→ exportUtils → letterheads, certificates, emails only"]
+    end

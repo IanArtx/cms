@@ -13,7 +13,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, FunnelIcon } from '@heroicons/react/24/outline';
 import { transferTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
@@ -21,6 +21,7 @@ import {
     BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer,
 } from 'recharts';
+import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -96,7 +97,7 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
                                     <CartesianGrid {...theme.gridProps} />
                                     <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                        tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Volume']} />
                                     <Bar dataKey="expense" name="Volume" fill={theme.primary} radius={[4, 4, 0, 0]} />
@@ -147,7 +148,7 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
                                     <XAxis dataKey="date" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                         domain={['auto', 'auto']}
-                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 4 })} />
+                                        tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
                                     <Line type="monotone" dataKey="rate" stroke={theme.series[idx % theme.series.length]}
@@ -419,6 +420,10 @@ const TransfersPage = () => {
     const [error,      setError]      = useState(null);
     const [page,       setPage]       = useState(1);
     const [showModal,  setShowModal]  = useState(false);
+    // v1.71.0 — opened from the "+ New" menu (?new=1)
+    useNewParam(() => {
+        if (hasPermission('FINANCE_TRANSFER_CREATE')) { setEditingRecord(null); setShowModal(true); }
+    });
     const [editingRecord, setEditingRecord] = useState(null);
     const [actionLoading, setActionLoading] = useState(null);
     const [preview, setPreview] = useState(null);

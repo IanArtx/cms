@@ -18,6 +18,7 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, Cog6ToothIcon, BanknotesIcon, CheckCircleIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // SETTINGS / ACTIVATION MODAL — Admin/Treasurer
@@ -157,6 +158,8 @@ const PayDueModal = ({ isOpen, onClose, onSuccess, due, categories }) => {
         setError(null);
         try {
             const res = await sideFundAPI.payDue(due.id, { ...form, amount: parseFloat(form.amount) });
+            // v1.73.0 — held for the Treasurer/Admin's approval: nothing to show yet
+            if (res.data.data?.held) { onSuccess(); onClose(); return; }
             // Paying more than the outstanding amount for this one period is
             // allowed — the backend cascades any extra to this member's
             // other unpaid periods (oldest first) and banks whatever's left
@@ -379,6 +382,8 @@ const BulkPayModal = ({ isOpen, onClose, onSuccess, categories }) => {
                 paid_date: paidDate,
                 payments: selectedRows.map(r => ({ user_id: r.user_id, amount: parseFloat(amounts[r.user_id]) })),
             });
+            // v1.73.0 — held for the Treasurer/Admin's approval: nothing to show yet
+            if (res.data.data?.held) { onSuccess(); onClose(); return; }
             setResult(res.data.data);
             onSuccess();
         } catch (err) {
@@ -1096,7 +1101,7 @@ const SideFundPage = () => {
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [showSettings, setShowSettings] = useState(false);
     const [showExpense, setShowExpense] = useState(false);
     const [showBulkPay, setShowBulkPay] = useState(false);
@@ -1322,36 +1327,36 @@ const SideFundPage = () => {
                 </div>
             )}
 
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                     My Dues
                 </button>
                 {canView && (
                     <>
                         <button onClick={() => setActiveTab('all')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            className={`tab ${activeTab === 'all' ? 'tab-active' : ''}`}>
                             All Members
                         </button>
                         <button onClick={() => setActiveTab('expenses')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'expenses' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            className={`tab ${activeTab === 'expenses' ? 'tab-active' : ''}`}>
                             Spending History
                         </button>
                         <button onClick={() => setActiveTab('credit')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'credit' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            className={`tab ${activeTab === 'credit' ? 'tab-active' : ''}`}>
                             Member Credit
                         </button>
                     </>
                 )}
                 {canManage && (
                     <button onClick={() => setActiveTab('overrides')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'overrides' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'overrides' ? 'tab-active' : ''}`}>
                         Member Overrides
                     </button>
                 )}
                 {canManage && (
                     <button onClick={() => setActiveTab('membership')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'membership' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'membership' ? 'tab-active' : ''}`}>
                         Membership
                     </button>
                 )}

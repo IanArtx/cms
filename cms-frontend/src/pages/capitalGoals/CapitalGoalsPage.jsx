@@ -357,11 +357,7 @@ const CapitalGoalsPage = () => {
                     {['', 'ACTIVE', 'COMPLETED', 'CANCELLED'].map(s => (
                         <button key={s}
                             onClick={() => { setStatusFilter(s); setPage(1); }}
-                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                                statusFilter === s
-                                    ? 'bg-primary-700 text-white'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                            }`}>
+                            className={`chip-filter ${statusFilter === s ? 'chip-filter-active' : ''}`}>
                             {s || 'All'}
                         </button>
                     ))}

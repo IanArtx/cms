@@ -484,8 +484,24 @@ const getAuditLog = asyncHandler(async (req, res) => {
 // or edit (matching Accounts/Currencies configuration elsewhere).
 // ============================================================
 
-const todayIsoDate = () => new Date().toISOString().split('T')[0];
-const startOfYearIsoDate = (dateStr) => `${new Date(dateStr).getFullYear()}-01-01`;
+const fxService = require('../services/fxService');
+const fxRevaluationService = require('../services/fxRevaluationService');
+
+const todayIsoDate = () => fxService.todayStr();
+
+// v1.66.0: the default "from" date is the start of the FINANCIAL year
+// (1 July for these companies — company_settings.fiscal_year_start_month),
+// not 1 January.
+const defaultFromDate = async (toDate) => {
+    const settings = await fxService.getAccountingSettings();
+    return fxService.fiscalYearStartFor(toDate, settings.fiscalYearStartMonth);
+};
+
+// v1.66.0: ?basis=FUNCTIONAL (default — the official statements, one set
+// in UGX) or ?basis=CURRENCY (supporting view, one set per original
+// currency, the v1.64.0 behaviour).
+const parseBasis = (basis) => (basis === 'CURRENCY' ? glService.BASIS.CURRENCY : glService.BASIS.FUNCTIONAL);
+const basisLabel = (basis) => (basis === glService.BASIS.CURRENCY ? 'by original currency' : 'consolidated in functional currency');
 
 // GET /api/reports/gl-accounts
 const getGLAccounts = asyncHandler(async (req, res) => {
@@ -518,88 +534,175 @@ const updateGLAccountMapping = asyncHandler(async (req, res) => {
     sendSuccess(res, updated, `'${inflowType}' reclassified`);
 });
 
-// GET /api/reports/trial-balance?account_id=&as_of_date=
+// GET /api/reports/trial-balance?account_id=&as_of_date=&basis=
 const getTrialBalance = asyncHandler(async (req, res) => {
     const { account_id, as_of_date } = req.query;
     const asOfDate = as_of_date || todayIsoDate();
+    const basis = parseBasis(req.query.basis);
 
     const report = await glService.computeTrialBalance({
         accountId: account_id ? parseInt(account_id) : null,
-        asOfDate,
+        asOfDate, basis,
     });
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
-        ipAddress: req.ip, description: `Trial Balance generated as of ${asOfDate}`,
+        ipAddress: req.ip, description: `Trial Balance generated as of ${asOfDate} (${basisLabel(basis)})`,
     });
     sendSuccess(res, report, `Trial Balance as of ${asOfDate}`);
 });
 
-// GET /api/reports/general-ledger?gl_account_id=&account_id=&from_date=&to_date=
+// GET /api/reports/general-ledger?gl_account_id=&account_id=&from_date=&to_date=&basis=
 const getGeneralLedger = asyncHandler(async (req, res) => {
     const { gl_account_id, account_id, from_date, to_date } = req.query;
     const toDate = to_date || todayIsoDate();
-    const fromDate = from_date || startOfYearIsoDate(toDate);
+    const fromDate = from_date || await defaultFromDate(toDate);
+    const basis = parseBasis(req.query.basis);
 
     const report = await glService.computeGeneralLedger({
         glAccountId: gl_account_id ? parseInt(gl_account_id) : null,
         accountId:   account_id ? parseInt(account_id) : null,
-        fromDate, toDate,
+        fromDate, toDate, basis,
     });
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
-        ipAddress: req.ip, description: `General Ledger generated for ${fromDate} to ${toDate}`,
+        ipAddress: req.ip, description: `General Ledger generated for ${fromDate} to ${toDate} (${basisLabel(basis)})`,
     });
     sendSuccess(res, report, `General Ledger, ${fromDate} to ${toDate}`);
 });
 
-// GET /api/reports/balance-sheet?account_id=&as_of_date=
+// GET /api/reports/balance-sheet?account_id=&as_of_date=&basis=
 const getBalanceSheet = asyncHandler(async (req, res) => {
     const { account_id, as_of_date } = req.query;
     const asOfDate = as_of_date || todayIsoDate();
+    const basis = parseBasis(req.query.basis);
 
     const report = await glService.computeBalanceSheet({
         accountId: account_id ? parseInt(account_id) : null,
-        asOfDate,
+        asOfDate, basis,
     });
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
-        ipAddress: req.ip, description: `Balance Sheet generated as of ${asOfDate}`,
+        ipAddress: req.ip, description: `Balance Sheet generated as of ${asOfDate} (${basisLabel(basis)})`,
     });
     sendSuccess(res, report, `Balance Sheet as of ${asOfDate}`);
 });
 
-// GET /api/reports/income-statement?account_id=&from_date=&to_date=
+// GET /api/reports/income-statement?account_id=&from_date=&to_date=&basis=
 const getIncomeStatement = asyncHandler(async (req, res) => {
     const { account_id, from_date, to_date } = req.query;
     const toDate = to_date || todayIsoDate();
-    const fromDate = from_date || startOfYearIsoDate(toDate);
+    const fromDate = from_date || await defaultFromDate(toDate);
+    const basis = parseBasis(req.query.basis);
 
     const report = await glService.computeIncomeStatement({
         accountId: account_id ? parseInt(account_id) : null,
-        fromDate, toDate,
+        fromDate, toDate, basis,
     });
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
-        ipAddress: req.ip, description: `Income Statement generated for ${fromDate} to ${toDate}`,
+        ipAddress: req.ip, description: `Income Statement generated for ${fromDate} to ${toDate} (${basisLabel(basis)})`,
     });
     sendSuccess(res, report, `Income Statement, ${fromDate} to ${toDate}`);
 });
 
-// GET /api/reports/cash-flow-statement?account_id=&from_date=&to_date=
+// GET /api/reports/cash-flow-statement?account_id=&from_date=&to_date=&basis=
 const getCashFlowStatement = asyncHandler(async (req, res) => {
     const { account_id, from_date, to_date } = req.query;
     const toDate = to_date || todayIsoDate();
-    const fromDate = from_date || startOfYearIsoDate(toDate);
+    const fromDate = from_date || await defaultFromDate(toDate);
+    const basis = parseBasis(req.query.basis);
 
     const report = await glService.computeCashFlowStatement({
         accountId: account_id ? parseInt(account_id) : null,
-        fromDate, toDate,
+        fromDate, toDate, basis,
     });
 
     await logAction(req.user.id, ACTIONS.REPORT_GENERATED, MODULES.REPORTS, {
-        ipAddress: req.ip, description: `Cash Flow Statement generated for ${fromDate} to ${toDate}`,
+        ipAddress: req.ip, description: `Cash Flow Statement generated for ${fromDate} to ${toDate} (${basisLabel(basis)})`,
     });
     sendSuccess(res, report, `Cash Flow Statement, ${fromDate} to ${toDate}`);
+});
+
+// ============================================================
+// FX & REVALUATION (v1.66.0) — see fxRevaluationService.js.
+// ============================================================
+
+// GET /api/reports/fx/status
+const getFxStatus = asyncHandler(async (req, res) => {
+    const status = await fxRevaluationService.getStatus();
+    sendSuccess(res, status);
+});
+
+// GET /api/reports/fx/revaluations
+const getFxRevaluations = asyncHandler(async (req, res) => {
+    const runs = await fxRevaluationService.listRevaluations();
+    sendSuccess(res, runs);
+});
+
+// POST /api/reports/fx/revaluations   { through_date, notes }
+const runFxRevaluation = asyncHandler(async (req, res) => {
+    const { through_date, notes } = req.body;
+    const result = await fxRevaluationService.runRevaluation({
+        throughDate: through_date || todayIsoDate(),
+        userId: req.user.id,
+        notes: notes || null,
+        ipAddress: req.ip,
+    });
+    const closedList = result.closed.map(c => c.periodEnd).join(', ');
+    let message;
+    if (result.closed.length === 0 && !result.stoppedAt) message = result.reason;
+    else if (!result.stoppedAt) message = `Revaluation closed for ${result.closed.length} month(s): ${closedList}`;
+    else message = `${result.closed.length ? `Closed ${closedList}; ` : ''}stopped at ${result.stoppedAt}: ${result.reason}`;
+    sendSuccess(res, result, message);
+});
+
+// DELETE /api/reports/fx/revaluations/:periodEnd — reopen that month and every later one
+const deleteFxRevaluations = asyncHandler(async (req, res) => {
+    const { periodEnd } = req.params;
+    const result = await fxRevaluationService.deleteRevaluationsFrom({
+        periodEnd, userId: req.user.id, ipAddress: req.ip,
+    });
+    sendSuccess(res, result, `Reopened ${result.removed.length} month(s) from ${periodEnd}`);
+});
+
+// PATCH /api/reports/fx/transactions/:id/rate   { rate, note }
+const setTransactionFxRate = asyncHandler(async (req, res) => {
+    const { rate, note } = req.body;
+    const updated = await fxRevaluationService.setManualRate({
+        transactionId: parseInt(req.params.id),
+        rate: parseFloat(rate),
+        note,
+        userId: req.user.id,
+        ipAddress: req.ip,
+    });
+    sendSuccess(res, updated, `Manual rate ${rate} set on transaction #${req.params.id}`);
+});
+
+// DELETE /api/reports/fx/transactions/:id/rate
+const clearTransactionFxRate = asyncHandler(async (req, res) => {
+    const updated = await fxRevaluationService.clearManualRate({
+        transactionId: parseInt(req.params.id),
+        userId: req.user.id,
+        ipAddress: req.ip,
+    });
+    sendSuccess(res, updated, `Manual rate removed from transaction #${req.params.id}`);
+});
+
+// POST /api/reports/fx/recompute — re-value every transaction still
+// missing a UGX value (e.g. after historical rates were entered).
+const recomputeFxValues = asyncHandler(async (req, res) => {
+    const result = await withTransaction(async (client) => {
+        const r = await fxService.recomputeFunctionalAmounts(client, {});
+        await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.FINANCE, {
+            ipAddress: req.ip,
+            recordType: 'transactions',
+            newValues: r,
+            description: `Functional (UGX) values recalculated: ${r.recalculated} transaction(s); ${r.stillMissing} still without a rate`,
+            client,
+        });
+        return r;
+    });
+    sendSuccess(res, result, `${result.recalculated} transaction(s) re-valued; ${result.stillMissing} still need a rate`);
 });
 
 module.exports = {
@@ -618,4 +721,11 @@ module.exports = {
     getBalanceSheet,
     getIncomeStatement,
     getCashFlowStatement,
-};
+    getFxStatus,
+    getFxRevaluations,
+    runFxRevaluation,
+    deleteFxRevaluations,
+    setTransactionFxRate,
+    clearTransactionFxRate,
+    recomputeFxValues,
+};

@@ -16,6 +16,7 @@ const {
 } = require('../middleware/auth');
 const finesController = require('../controllers/finesController');
 const savingsFineSettlementController = require('../controllers/savingsFineSettlementController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -74,6 +75,7 @@ router.patch('/:id/clear',
         body('description').optional().isString(),
     ],
     validateRequest,
+    holdMoneyEntry('fines.clear', finesController.clearFineDirect, { label: 'Fine paid', account: b => b.account_id, subject: { type: 'fine', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     finesController.clearFineDirect
 );
 

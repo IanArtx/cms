@@ -12,13 +12,17 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { PlusIcon, FunnelIcon, ArrowDownTrayIcon, ArrowUturnLeftIcon, PrinterIcon } from '@heroicons/react/24/outline';
 import { transactionTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { ExpenseTaxFields, expenseTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
+import { useTabParam } from '../../hooks/useTabParam'; // v1.72.0 — Ledger / Reversal requests tabs
+import { useConfirm } from '../../contexts/ConfirmContext'; // v1.72.0
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -89,7 +93,7 @@ const IncomeExpenseCharts = ({ analytics, loading }) => {
                                     <CartesianGrid {...theme.gridProps} />
                                     <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                        tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`]} />
                                     <Legend {...theme.legendProps} />
@@ -187,6 +191,13 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const depositPortion  = includeDeposit  ? (parseFloat(form.deposit_amount)  || 0) : 0;
     const totalAmount     = parseFloat(form.amount) || 0;
     const contributionRemainder = Math.max(0, totalAmount - sideFundPortion - savingsPortion - depositPortion);
+    // v1.69.1 — the amount is in the currency of the account it is paid
+    // into (Primary if none chosen), not always EUR.
+    const paidAccount = form.account_id
+        ? accounts.find(a => String(a.id) === String(form.account_id))
+        : accounts.find(a => a.account_type === 'PRIMARY');
+    const paidCurrency = paidAccount?.currency_code || '';
+    const hasSavingsInCurrency = accounts.some(a => a.account_type === 'SAVINGS' && a.currency_code === paidCurrency);
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -197,8 +208,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                         Record Contribution
                     </h2>
                     <p className="text-sm text-gray-400 mb-4">
-                        Capital contribution to the primary account.
-                        Shareholding percentages are automatically recalculated.
+                        Capital contribution into any account, in that account's currency.
+                        Whole shares are allotted automatically at the share price on the
+                        contribution date (converted if the currencies differ).
                     </p>
                     {error && (
                         <div className="mb-4">
@@ -227,7 +239,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                             </div>
                         )}
                         <div>
-                            <label className="label">Amount (EUR) *</label>
+                            <label className="label">Amount{paidCurrency ? ` (${paidCurrency})` : ''} *</label>
                             <input type="number" className="input" value={form.amount}
                                 onChange={e => setForm(p => ({
                                     ...p, amount: e.target.value }))}
@@ -246,10 +258,10 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 ))}
                             </select>
                             <p className="text-xs text-gray-400 mt-1">
-                                Which account this contribution is paid into. The money
-                                stays there — shares are still calculated by converting
-                                this account's currency into the share price's currency
-                                at the rate in effect on the contribution date.
+                                Which account this contribution is paid into — the amount above is in
+                                its currency. The money stays there; shares are calculated by converting
+                                it into the share price's currency at the rate in effect on the
+                                contribution date (no conversion if it is already in that currency).
                             </p>
                         </div>
                         {sideFundActive && (
@@ -265,7 +277,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 </label>
                                 {includeSideFund && (
                                     <div className="mt-2">
-                                        <label className="label">Side Fund Portion</label>
+                                        <label className="label">Side Fund Portion{paidCurrency ? ` (${paidCurrency})` : ''}</label>
                                         <input type="number" className="input" value={form.side_fund_amount}
                                             onChange={e => setForm(p => ({
                                                 ...p, side_fund_amount: e.target.value }))}
@@ -273,6 +285,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                             placeholder="0.00" />
                                         <p className="text-xs text-gray-400 mt-1">
                                             Sliced out of the total above and credited to this member's own side fund dues.
+                                        Only possible when the side fund is kept in {paidCurrency || 'this currency'}.
                                         </p>
                                     </div>
                                 )}
@@ -290,14 +303,19 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                             </label>
                             {includeSavings && (
                                 <div className="mt-2">
-                                    <label className="label">Savings Portion</label>
+                                    <label className="label">Savings Portion{paidCurrency ? ` (${paidCurrency})` : ''}</label>
                                     <input type="number" className="input" value={form.savings_amount}
                                         onChange={e => setForm(p => ({
                                             ...p, savings_amount: e.target.value }))}
                                         min="0" step="0.01" max={form.amount || undefined}
                                         placeholder="0.00" />
                                     <p className="text-xs text-gray-400 mt-1">
-                                        Sliced out of the total above and credited directly to this member's own savings balance.
+                                        Sliced out of the total above and credited to this member's {paidCurrency} savings balance.
+                                        {!hasSavingsInCurrency && paidCurrency && (
+                                            <span className="block text-amber-700 mt-1">
+                                                There is no {paidCurrency} Savings account yet — add one on the Accounts page first.
+                                            </span>
+                                        )}
                                     </p>
                                 </div>
                             )}
@@ -315,7 +333,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 </label>
                                 {includeDeposit && (
                                     <div className="mt-2">
-                                        <label className="label">Deposit Portion</label>
+                                        <label className="label">Deposit Portion{paidCurrency ? ` (${paidCurrency})` : ''}</label>
                                         <input type="number" className="input" value={form.deposit_amount}
                                             onChange={e => setForm(p => ({
                                                 ...p, deposit_amount: e.target.value }))}
@@ -396,7 +414,9 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
         setLoading(true);
         setError(null);
         try {
-            await transactionsAPI.recordExpense(form);
+            // v1.70.0 — tax treatment + supplier withholding (see TaxFields)
+            const res = await transactionsAPI.recordExpense(expenseTaxPayload(form));
+            if (res?.data?.data?.withholding) window.alert(res.data.message);
             onSuccess();
             onClose();
             setForm({ account_id: '', amount: '', category_id: '',
@@ -474,6 +494,8 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
                                     ...p, value_date: e.target.value }))}
                                 required />
                         </div>
+                        <ExpenseTaxFields form={form} setForm={setForm}
+                            currencyCode={(accounts.find(a => String(a.id) === String(form.account_id)) || {}).currency_code} />
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
@@ -490,28 +512,46 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
 };
 
 // ============================================================
-// REVERSE TRANSACTION MODAL
+// REQUEST REVERSAL MODAL (v1.72.0 — was "Reverse Transaction")
 // Treasurer only (matches the backend's requireRoles(['Treasurer'])
-// gate on POST /transactions/:id/reverse). Posts an equal-and-
-// opposite entry rather than deleting/editing the original —
-// nothing in this system's ledger is ever silently altered.
+// gate on POST /transactions/:id/reverse).
+//
+// Since v1.72.0 pressing the button no longer posts the reversal
+// straight away. It files a REQUEST, and a second person (Treasurer,
+// Assistant Treasurer, Director or Admin — never the person who asked,
+// unless they are an Admin) approves it on the "Reversal requests" tab.
+// Only then is the equal-and-opposite entry posted; nothing in the
+// ledger is ever silently altered.
+//
+// When the entry belongs to an investment or money market fund the
+// server also works out what the reversal will do to that record
+// (e.g. "fund balance 7,050,000 → 4,050,000") and, for a bond coupon
+// or treasury-bill maturity, reverses all of its linked entries
+// together. That explanation is shown here once the request is filed.
 // ============================================================
 const ReverseTransactionModal = ({ transaction, onClose, onSuccess }) => {
     const [reason, setReason]   = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError]     = useState(null);
+    const [result, setResult]   = useState(null); // { message, effect_summary, linked_count }
 
     if (!transaction) return null;
+
+    const close = () => {
+        setReason('');
+        setError(null);
+        setResult(null);
+        onClose();
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
         try {
-            await transactionsAPI.reverse(transaction.id, { reason });
+            const res = await transactionsAPI.reverse(transaction.id, { reason });
+            setResult({ message: res.data.message, ...(res.data.data || {}) });
             onSuccess();
-            onClose();
-            setReason('');
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -521,17 +561,19 @@ const ReverseTransactionModal = ({ transaction, onClose, onSuccess }) => {
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={close} />
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">
-                        Reverse Transaction
+                        {result ? 'Reversal requested' : 'Request a reversal'}
                     </h2>
-                    <p className="text-sm text-gray-400 mb-4">
-                        This posts a new, equal-and-opposite entry — the original
-                        transaction ({transaction.reference_code}) is never deleted or
-                        edited. This cannot be undone once posted.
-                    </p>
+                    {!result && (
+                        <p className="text-sm text-gray-400 mb-4">
+                            Someone else must approve this before anything is posted. Once
+                            approved, a new equal-and-opposite entry is added — the original
+                            ({transaction.reference_code}) is never deleted or edited.
+                        </p>
+                    )}
                     <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm">
                         <p className="text-gray-500">{transaction.description}</p>
                         <p className="font-semibold text-gray-900 mt-1">
@@ -543,25 +585,189 @@ const ReverseTransactionModal = ({ transaction, onClose, onSuccess }) => {
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />
                         </div>
                     )}
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label className="label">Reason for Reversal *</label>
-                            <textarea className="input" rows={3} value={reason}
-                                onChange={e => setReason(e.target.value)}
-                                placeholder="Why is this transaction being reversed?"
-                                required />
+                    {result ? (
+                        <div className="space-y-3">
+                            <p className="text-sm text-gray-700">{result.message}</p>
+                            {result.effect_summary && (
+                                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                                    <p className="font-medium mb-1">What it will change once approved</p>
+                                    <p>{result.effect_summary}</p>
+                                </div>
+                            )}
+                            <div className="flex justify-end pt-2">
+                                <button type="button" onClick={close} className="btn-primary">Done</button>
+                            </div>
                         </div>
-                        <div className="flex justify-end gap-3 pt-2">
-                            <button type="button" onClick={onClose}
-                                className="btn-secondary">Cancel</button>
-                            <button type="submit" disabled={loading || !reason.trim()}
-                                className="btn-danger">
-                                {loading ? 'Reversing...' : 'Reverse Transaction'}
-                            </button>
-                        </div>
-                    </form>
+                    ) : (
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="label">Reason for Reversal *</label>
+                                <textarea className="input" rows={3} value={reason}
+                                    onChange={e => setReason(e.target.value)}
+                                    placeholder="Why is this transaction being reversed?"
+                                    required />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" onClick={close}
+                                    className="btn-secondary">Cancel</button>
+                                <button type="submit" disabled={loading || !reason.trim()}
+                                    className="btn-danger">
+                                    {loading ? 'Checking...' : 'Request reversal'}
+                                </button>
+                            </div>
+                        </form>
+                    )}
                 </div>
             </div>
+        </div>
+    );
+};
+
+// ============================================================
+// REVERSAL REQUESTS TAB (v1.72.0)
+// Lists reversal requests, waiting ones first. On a waiting request:
+//   • someone other than the requester (Treasurer, Assistant Treasurer,
+//     Director, Admin) sees Approve and Refuse;
+//   • the requester sees Withdraw instead (an Admin may also approve
+//     their own — the one exception to the "four eyes" rule).
+// Approving posts the reversal (and any linked entries) at once.
+// ============================================================
+const REVERSAL_APPROVER_ROLES = ['Treasurer', 'Assistant Treasurer', 'Director', 'Admin'];
+
+const ReversalRequestsTab = ({ requests, loading, onChanged, setError }) => {
+    const { user, hasRole } = useAuth();
+    const confirm = useConfirm();
+    const [busy, setBusy] = useState(null);
+    const [notice, setNotice] = useState(null);
+    const isApprover = hasRole(REVERSAL_APPROVER_ROLES);
+    const isAdmin = hasRole('Admin');
+
+    const run = async (id, fn) => {
+        setBusy(id);
+        setNotice(null);
+        try {
+            const res = await fn();
+            setNotice(res?.data?.message || null);
+            onChanged();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const approve = async (r) => {
+        const ok = await confirm({
+            title: 'Approve reversal',
+            message: `Post the reversal of ${r.reference_code} now?` +
+                (r.effect_summary ? ` It will also: ${r.effect_summary}.` : '') +
+                ' This cannot be undone.',
+            confirmLabel: 'Approve and post',
+        });
+        if (ok) run(r.id, () => transactionsAPI.approveReversalRequest(r.id));
+    };
+    const refuse = async (r) => {
+        const note = await confirm({
+            title: 'Refuse reversal', message: `Why is the reversal of ${r.reference_code} being refused?`,
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Refuse', danger: true,
+        });
+        if (note) run(r.id, () => transactionsAPI.rejectReversalRequest(r.id, { note }));
+    };
+    const withdraw = async (r) => {
+        const ok = await confirm({
+            title: 'Withdraw request', message: `Withdraw your request to reverse ${r.reference_code}?`,
+            confirmLabel: 'Withdraw', danger: true,
+        });
+        if (ok) run(r.id, () => transactionsAPI.rejectReversalRequest(r.id, {}));
+    };
+
+    const columns = [
+        {
+            header: 'Entry',
+            render: r => (
+                <div>
+                    <p className="font-mono text-xs font-medium text-primary-700">{r.reference_code}</p>
+                    <p className="text-sm text-gray-900 truncate max-w-[16rem]" title={r.description}>{r.description}</p>
+                    <p className="text-xs text-gray-400">{r.account_name} · {formatDate(r.value_date)}</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                        Asked by {r.requested_by_name} · {formatDate(r.requested_at)}
+                    </p>
+                </div>
+            ),
+        },
+        {
+            header: 'Amount',
+            render: r => (
+                <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">
+                    {r.currency_code} {parseFloat(r.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                </span>
+            ),
+        },
+        {
+            header: 'Reason & effect',
+            render: r => (
+                <div className="min-w-[14rem] max-w-sm whitespace-normal">
+                    <p className="text-sm text-gray-700">{r.reason}</p>
+                    {r.effect_summary && (
+                        <p className="text-xs text-blue-700 mt-1">{r.effect_summary}</p>
+                    )}
+                    {r.decision_note && (
+                        <p className="text-xs text-red-600 mt-1">Note: {r.decision_note}</p>
+                    )}
+                </div>
+            ),
+        },
+        {
+            header: 'Status',
+            render: r => (
+                <div className="text-xs text-gray-500 space-y-1">
+                    <StatusBadge status={r.status} label={r.status === 'PENDING' ? 'Waiting' : null} />
+                    {r.decided_by_name && <p>by {r.decided_by_name}</p>}
+                    {r.reversal_reference && <p className="font-mono">{r.reversal_reference}</p>}
+                </div>
+            ),
+        },
+        {
+            header: '',
+            render: r => {
+                if (r.status !== 'PENDING') return null;
+                const mine = Number(r.requested_by) === Number(user?.id);
+                return (
+                    <div className="flex flex-col items-stretch gap-1.5 min-w-[6.5rem]">
+                        {isApprover && (!mine || isAdmin) && (
+                            <>
+                                <button disabled={busy === r.id} onClick={() => approve(r)}
+                                    className="btn-primary text-xs px-3 py-1.5">Approve</button>
+                                <button disabled={busy === r.id} onClick={() => refuse(r)}
+                                    className="btn-secondary text-xs px-3 py-1.5">Refuse</button>
+                            </>
+                        )}
+                        {mine && (
+                            <button disabled={busy === r.id} onClick={() => withdraw(r)}
+                                className="btn-secondary text-xs px-3 py-1.5">Withdraw</button>
+                        )}
+                        {mine && !isAdmin && (
+                            <span className="text-[11px] text-gray-400 whitespace-normal">Waiting for someone else to approve</span>
+                        )}
+                    </div>
+                );
+            },
+        },
+    ];
+
+    return (
+        <div>
+            {notice && (
+                <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+                    {notice}
+                </div>
+            )}
+            <DataTable
+                columns={columns}
+                data={requests}
+                loading={loading}
+                emptyMessage="No reversal requests yet"
+            />
         </div>
     );
 };
@@ -581,12 +787,37 @@ const TransactionsPage = () => {
     const [showContrib,  setShowContrib]  = useState(false);
     const [showExpense,  setShowExpense]  = useState(false);
     const [showMenu,     setShowMenu]     = useState(false);
+    // v1.71.0 — opened from the "+ New" menu (?new=contribution / ?new=expense)
+    useNewParam((kind) => {
+        if (!hasPermission('FINANCE_TRANSACTION_CREATE')) return;
+        if (kind === 'contribution') setShowContrib(true);
+        if (kind === 'expense') setShowExpense(true);
+    });
     const [shareholders, setShareholders] = useState([]);
     const [preview,      setPreview]      = useState(null);
     const [reversing,    setReversing]    = useState(null);
     const [analytics,        setAnalytics]        = useState(null);
     const [analyticsLoading, setAnalyticsLoading] = useState(true);
     const [exportingCsv,     setExportingCsv]     = useState(false);
+    // v1.72.0 — "Ledger" and "Reversal requests" tabs (?tab=reversals)
+    const [activeTab,  setActiveTab]  = useTabParam('ledger');
+    const [revRequests, setRevRequests] = useState([]);
+    const [revLoading,  setRevLoading]  = useState(false);
+    const canSeeReversals = hasRole(REVERSAL_APPROVER_ROLES);
+    const loadReversalRequests = useCallback(async () => {
+        if (!canSeeReversals) return;
+        setRevLoading(true);
+        try {
+            const res = await transactionsAPI.getReversalRequests();
+            setRevRequests(res.data.data || []);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setRevLoading(false);
+        }
+    }, [canSeeReversals]);
+    useEffect(() => { loadReversalRequests(); }, [loadReversalRequests]);
+    const pendingReversals = revRequests.filter(r => r.status === 'PENDING').length;
 
     // Filters
     const [filters, setFilters] = useState({
@@ -745,7 +976,15 @@ const TransactionsPage = () => {
         },
         {
             header: 'Status',
-            render: row => <StatusBadge status={row.status} />,
+            render: row => (
+                <div className="flex flex-col items-start gap-1">
+                    <StatusBadge status={row.status} />
+                    {/* v1.72.0 — a reversal has been asked for and is waiting for approval */}
+                    {row.reversal_pending && (
+                        <StatusBadge status="PENDING" label="Reversal requested" />
+                    )}
+                </div>
+            ),
         },
         {
             header: '',
@@ -759,12 +998,12 @@ const TransactionsPage = () => {
                     >
                         <ArrowDownTrayIcon className="h-4 w-4" />
                     </button>
-                    {hasRole('Treasurer') && !row.is_reversal && !row.is_reversed && (
+                    {hasRole('Treasurer') && !row.is_reversal && !row.is_reversed && !row.reversal_pending && (
                         <button
                             onClick={() => setReversing(row)}
                             className="p-1.5 rounded-lg bg-red-50 text-red-600
                                 hover:bg-red-100 transition-colors"
-                            title="Reverse this transaction"
+                            title="Request a reversal of this transaction (someone else approves it)"
                         >
                             <ArrowUturnLeftIcon className="h-4 w-4" />
                         </button>
@@ -881,6 +1120,35 @@ const TransactionsPage = () => {
                 </div>
             )}
 
+            {canSeeReversals && (
+                <div className="tab-bar" role="tablist">
+                    <button
+                        onClick={() => setActiveTab('ledger')}
+                        className={`tab ${activeTab === 'ledger' ? 'tab-active' : ''}`}
+                    >
+                        Ledger
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('reversals')}
+                        className={`tab ${activeTab === 'reversals' ? 'tab-active' : ''}`}
+                    >
+                        Reversal requests
+                        {pendingReversals > 0 && (
+                            <span className="tab-count-alert">{pendingReversals}</span>
+                        )}
+                    </button>
+                </div>
+            )}
+
+            {canSeeReversals && activeTab === 'reversals' ? (
+                <ReversalRequestsTab
+                    requests={revRequests}
+                    loading={revLoading}
+                    onChanged={() => { loadReversalRequests(); loadTransactions(); }}
+                    setError={setError}
+                />
+            ) : (
+            <>
             <IncomeExpenseCharts analytics={analytics} loading={analyticsLoading} />
 
             {/* Filters */}
@@ -941,6 +1209,8 @@ const TransactionsPage = () => {
                 pagination={pagination}
                 onPageChange={setPage}
             />
+            </>
+            )}
 
             <ContributionModal
                 isOpen={showContrib}
@@ -964,7 +1234,7 @@ const TransactionsPage = () => {
             <ReverseTransactionModal
                 transaction={reversing}
                 onClose={() => setReversing(null)}
-                onSuccess={loadTransactions}
+                onSuccess={() => { loadTransactions(); loadReversalRequests(); }}
             />
         </div>
     );

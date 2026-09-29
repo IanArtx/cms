@@ -22,6 +22,7 @@ const { wrapEmail } = require('../services/emailTemplates');
 const { loadFiscalQuarters, bucketAndSummarize } = require('../services/quarterAnalyticsService');
 const { rowsToCsv, sendCsv } = require('../utils/csv');
 const { normalizeDateInput } = require('../utils/dateUtils');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // ============================================================
 // INITIATE A TRANSFER
@@ -296,6 +297,8 @@ const editTransfer = asyncHandler(async (req, res) => {
 // Directors approve Secondary to Primary (needs 3).
 // ============================================================
 const approveTransfer = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'transfers', req.params.id, ['created_by'], 'transfer');
     const { id } = req.params;
     const { notes } = req.body;
 
@@ -776,7 +779,7 @@ const getTransfers = asyncHandler(async (req, res) => {
         LEFT JOIN approval_workflows aw
             ON aw.record_type = 'transfers' AND aw.record_id = t.id
         ${where}
-        ORDER BY t.created_at DESC
+        ORDER BY t.value_date DESC, t.created_at DESC
         LIMIT $${p + 1} OFFSET $${p + 2}
     `, params);
 

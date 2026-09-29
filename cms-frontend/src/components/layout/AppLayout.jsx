@@ -1,6 +1,13 @@
 // ============================================================
 // APP LAYOUT
 // The main layout wrapper for all authenticated pages.
+//
+// v1.71.0 ("Harbour"): the frame is now
+//   [ Sidebar ][ TopBar                         ]
+//   [         ][ page (header band, tabs, body) ]
+//   [ phone bottom bar (below 768 px only)      ]
+// LayoutProvider shares the menu state (drawer, shortcuts, breadcrumb
+// title, notification panel) between these parts.
 // ============================================================
 
 import { useState, useCallback } from 'react';
@@ -10,13 +17,15 @@ import useIdleLogout from '../../hooks/useIdleLogout';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import ConfirmModal from '../common/ConfirmModal';
+import MobileNav from './MobileNav';
+import { LayoutProvider } from './LayoutContext';
+import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
 
 // Auto-logout after this many minutes of no mouse/keyboard/touch/
 // scroll activity anywhere in the app — see hooks/useIdleLogout.js.
 const IDLE_LOGOUT_MINUTES = 20;
 
 const AppLayout = () => {
-    const [sidebarOpen, setSidebarOpen] = useState(false);
     const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
     const [loggingOut, setLoggingOut] = useState(false);
     const { user, hasRole, logout } = useAuth();
@@ -72,35 +81,32 @@ const AppLayout = () => {
     }
 
     return (
-        <div className="flex" style={{ height: '100vh', overflow: 'hidden' }}>
-            {/* Sidebar — manages its own responsive width/position now
-                (fixed off-canvas drawer on mobile, static column on
-                desktop), so this wrapper no longer reserves fixed space. */}
-            <Sidebar
-                isOpen={sidebarOpen}
-                onClose={() => setSidebarOpen(false)}
-                onLogoutClick={() => setShowLogoutConfirm(true)}
-            />
+        <LayoutProvider>
+        <div className="flex h-[100dvh] overflow-hidden" style={{ backgroundColor: 'var(--cms-bg)' }}>
+            {/* Sidebar — static column on wide screens (full or icon strip),
+                slide-in drawer on phones and tablets. */}
+            <Sidebar onLogoutClick={() => setShowLogoutConfirm(true)} />
 
-            {/* Main content area */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column',
-                overflow: 'hidden', minWidth: 0 }}>
-                {/* Top bar */}
-                <TopBar
-                    onMenuClick={() => setSidebarOpen(true)}
-                    onLogoutClick={() => setShowLogoutConfirm(true)}
-                />
+            {/* Main column */}
+            <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                <TopBar onLogoutClick={() => setShowLogoutConfirm(true)} />
 
-                {/* Page content */}
-                <main className="p-4 md:p-6 scrollbar-hidden" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-                    <Outlet />
+                {/* Page content. Extra space at the bottom on phones so the
+                    bottom bar never covers the last row of a page. */}
+                <main id="main-content" className="flex-1 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-28 md:px-6 md:pt-6 md:pb-10">
+                    <div className="w-full">
+                        <Outlet />
+                    </div>
                 </main>
             </div>
 
-            {/* Shared Logout confirmation — reached from either the
-                sidebar's own Logout button or the TopBar user menu's
-                Sign Out item (v1.28.2). Idle-timeout logout (above)
-                deliberately bypasses this and logs out directly. */}
+            <MobileNav />
+
+            {/* v1.73.0 — "Sent for approval" notice for held money entries */}
+            <HeldEntryNotice />
+
+            {/* Shared Logout confirmation — reached from the sidebar and the
+                profile menu (v1.28.2). Idle-timeout logout bypasses it. */}
             <ConfirmModal
                 isOpen={showLogoutConfirm}
                 title="Log out?"
@@ -112,6 +118,7 @@ const AppLayout = () => {
                 onCancel={() => setShowLogoutConfirm(false)}
             />
         </div>
+        </LayoutProvider>
     );
 };
 

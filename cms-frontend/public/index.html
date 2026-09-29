@@ -9,7 +9,22 @@
          pre-JS-load / no-JS fallback. -->
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" id="app-favicon" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#0b1f3a" />
+    <!-- v1.71.0 — apply the person's Light/Dark/Device choice BEFORE the
+         app loads, so a dark-mode user never sees a white flash. Must
+         match contexts/ThemeContext.js (same localStorage key). -->
+    <script>
+      (function () {
+        try {
+          var m = localStorage.getItem('cms-theme') || 'system';
+          var dark = m === 'dark' || (m === 'system' && window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <!-- %REACT_APP_COMPANY_NAME% (v1.32.6) — substituted at BUILD time from
          render.yaml/render.company-b.yaml's own REACT_APP_COMPANY_NAME, so
          each company's deployment gets its own correct tab title/description

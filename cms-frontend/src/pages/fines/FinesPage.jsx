@@ -20,6 +20,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, ExclamationTriangleIcon, CheckIcon, XMarkIcon, BanknotesIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const REASONS = [
     { value: 'CONTRIBUTION_FAILURE', label: 'Contribution Failure' },
@@ -663,7 +664,7 @@ const FinesPage = () => {
     const [currencies, setCurrencies] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [showAssign, setShowAssign] = useState(false);
     const [clearingFine, setClearingFine] = useState(null);
     const [ackFine, setAckFine] = useState(null);
@@ -966,14 +967,14 @@ const FinesPage = () => {
                 </div>
             )}
 
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                     My Fines
                 </button>
                 {canView && (
                     <button onClick={() => setActiveTab('all')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'all' ? 'tab-active' : ''}`}>
                         All Fines
                     </button>
                 )}

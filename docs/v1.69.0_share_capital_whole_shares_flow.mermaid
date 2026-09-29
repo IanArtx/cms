@@ -1,0 +1,62 @@
+%% v1.69.0 — Share capital: nominal value, whole-share allotments, members' share credit, registered limit, returns of allotment, dual-approved changes
+flowchart TD
+
+    subgraph SETUP["One-off (after migration_v1.69.0.sql)"]
+        direction TB
+        S0["Registered values entered on the Share Capital page\n(Director or Treasurer): nominal value, registered shares,\nand their history — editable until the first allotment,\nthen only through Changes"] --> S1["share_nominal_history"]
+        S1 --> S2["Opening conversion\n(Share Capital > Overview, or\nbackfill_v1.69.0_share_allotments.js)\npreview first, run once"]
+        S2 --> S3["every APPROVED contribution, oldest first,\nat the share price ON ITS OWN DATE:\ncredit += value in UGX\nwhole shares = floor(credit / price)\ncredit -= shares x price"]
+        S3 --> S4["share_allotments (OPENING_CONVERSION)\n+ member_capital_credit_entries\nregistry = whole shares"]
+    end
+
+    subgraph LIVE["Every contribution (creditShareholderContribution)"]
+        direction TB
+        L1["contribution + CONTRIBUTION transaction\n(EUR, valued in UGX at the rate on its date)"] --> L2["allotForContribution\n(advisory lock)"]
+        L2 --> L3["credit available =\ncredit brought forward + contribution UGX value"]
+        L3 --> L4["whole shares = floor(available / issue price on the date)"]
+        L4 --> L5["share_allotments row:\ncapital = shares x nominal\npremium = shares x (issue - nominal)\nshares beyond registered noted\nreturn due = date + 60 days (s.61)"]
+        L5 --> L6["credit carried forward =\navailable - shares x issue price"]
+        L6 --> L7["registry = SUM(active allotments)\nShare Purchase Receipt shows\ncredit before / used / after"]
+        R1["Contribution reversed"] --> R2["its allotments REVERSED,\nits value taken out of credit\n(credit may go negative;\nnext contribution fills it)"]
+    end
+
+    subgraph BOOKS["Books (glService, FUNCTIONAL basis)"]
+        direction TB
+        B1["Dr 1000 Cash / Cr 3020 Capital Pending Allotment\n(every contribution)"] --> B2["Allotment (synthetic line):\nDr 3020  shares x issue price\nCr 3000 Share Capital  shares x nominal\nCr 3010 Share Premium  shares x (issue - nominal)"]
+        B2 --> B3["3020 balance = members' total share credit\n(checked on the Overview: 'Books check')"]
+        B4["Credit refund paid:\nDr 3020 / Cr 1000\n(CAPITAL_CREDIT_REFUND_OUT)"] --> B3
+        B5["CURRENCY basis: no allotment lines,\n3020 shown as 3000 (capital paid in)"]
+    end
+
+    subgraph CHANGE["Share capital changes (share_capital_change_requests)"]
+        direction TB
+        C1["Director or Treasurer proposes\n(= first approval)\n+ FINAL board RESOLUTION from Documents"] --> C2{"second approver\ndifferent person?\nDirector or Treasurer?\nat least one Director?\n(Admin alone: never)"}
+        C2 -->|"no"| C3["refused"]
+        C2 -->|"yes"| C4{"what changes"}
+        C4 -->|"ISSUE_PRICE"| C5["new share_price_history row\n(today or future; never below nominal)"]
+        C4 -->|"REGISTERED_SHARES"| C6["new share_nominal_history row\n(same nominal, new registered number)"]
+        C4 -->|"NOMINAL_VALUE"| C7{"exact ratio?"}
+        C7 -->|"split 1 -> k"| C8["every holding x k (SPLIT allotments)\nissue price / k, registered x k\nshare capital unchanged"]
+        C7 -->|"consolidation k -> 1"| C9["every holding / k, rounded down\n(CONSOLIDATION allotments)\nleftover old shares x old nominal\n-> member's credit (Dr 3000 / Cr 3020)\nissue price x k, registered / k"]
+        C5 --> N1["Notice to Shareholders auto-generated\n(documents.audience = ALL_SHAREHOLDERS)\nwith the full price / nominal history\n+ bell and email to every shareholder"]
+        C6 --> N1
+        C8 --> N1
+        C9 --> N1
+    end
+
+    subgraph REFUND["Share credit refund (capital_credit_refunds)"]
+        direction TB
+        F1["Treasurer / Asst Treasurer requests\n(up to the member's available credit)"] --> F2{"approved by a DIFFERENT\nTreasurer / Asst Treasurer / Director?"}
+        F2 -->|"yes"| F3["payment posted from the chosen account\n(foreign currency: rate on the day,\nrounded down to the cent)\ncredit reduced by its UGX value"]
+        F2 -->|"no"| F4["REJECTED"]
+    end
+
+    subgraph RETURNS["Registered limit & returns of allotment"]
+        direction TB
+        T1["allotments never blocked by the\nregistered number (issued monthly)"] --> T2["Overview: shares beyond registered\n= increase to resolve and file\n(s.72-73), then REGISTERED_SHARES change"]
+        T3["Allotments tab: due / overdue returns\n(60 days, s.61), tick a month\n-> mark filed with URSB reference"]
+    end
+
+    S4 --> B2
+    L1 --> B1
+    L5 --> B2

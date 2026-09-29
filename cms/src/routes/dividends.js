@@ -9,6 +9,7 @@ const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
 const dividendsController = require('../controllers/dividendsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -50,6 +51,7 @@ router.post('/authority-payments',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('dividends.authorityPayment', dividendsController.recordAuthorityPayment, { label: 'Payment to an authority', account: b => b.account_id }), // v1.73.0 — held for approval unless Treasurer/Admin
     dividendsController.recordAuthorityPayment
 );
 

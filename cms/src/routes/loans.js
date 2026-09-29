@@ -16,6 +16,7 @@ const { body, param } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const loansController = require('../controllers/loansController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 // All routes require login
 router.use(authenticate);
@@ -138,7 +139,22 @@ router.post('/received/:id/repayments',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('loans.receivedRepayment', loansController.recordLoanReceivedRepayment, { label: 'Loan repayment (paid by us)', subject: { type: 'loanReceived', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     loansController.recordLoanReceivedRepayment
+);
+
+// v1.70.0 — lender residency / TIN and withholding tax on interest
+router.patch('/received/:id/tax',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Director']),
+    validators.idParam('id'),
+    [
+        body('lender_residency').optional({ values: 'falsy' }).isIn(['RESIDENT', 'NON_RESIDENT']),
+        body('lender_tin').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
+        body('wht_applicable').optional().isBoolean(),
+        body('wht_rate_code').optional({ values: 'falsy' }).isString().isLength({ max: 40 }),
+    ],
+    validateRequest,
+    loansController.updateLoanReceivedTax
 );
 
 // Amend penalty rate — Treasurer only
@@ -259,6 +275,7 @@ router.post('/given/:id/repayments',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('loans.givenRepayment', loansController.recordLoanGivenRepayment, { label: 'Loan repayment (received)', subject: { type: 'loanGiven', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     loansController.recordLoanGivenRepayment
 );
 

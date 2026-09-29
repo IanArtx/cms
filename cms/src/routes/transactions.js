@@ -19,6 +19,7 @@ const { body, param, query } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
 const transactionsController = require('../controllers/transactionsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 // All routes require login
 router.use(authenticate);
@@ -77,6 +78,32 @@ router.get('/export',
 );
 
 // ============================================================
+// REVERSAL REQUESTS (v1.72.0) — a reversal is asked for by the
+// Treasurer and approved by a DIFFERENT person (Treasurer, Assistant
+// Treasurer, Director or Admin; an Admin may approve their own).
+// Declared before GET /:id so "reversal-requests" isn't read as an id.
+// ============================================================
+router.get('/reversal-requests',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Director', 'Admin']),
+    [query('status').optional().isIn(['PENDING', 'APPROVED', 'REJECTED', 'pending', 'approved', 'rejected'])],
+    validateRequest,
+    transactionsController.listReversalRequests
+);
+router.post('/reversal-requests/:id/approve',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Director', 'Admin']),
+    validators.idParam('id'),
+    validateRequest,
+    transactionsController.approveReversalRequest
+);
+router.post('/reversal-requests/:id/reject',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Director', 'Admin']),
+    validators.idParam('id'),
+    [body('note').optional({ values: 'falsy' }).trim().isLength({ max: 1000 })],
+    validateRequest,
+    transactionsController.rejectReversalRequest
+);
+
+// ============================================================
 // GET SINGLE TRANSACTION
 // GET /api/transactions/:id
 // ============================================================
@@ -123,6 +150,7 @@ router.post('/contributions',
             .optional().isInt({ min: 1 }).withMessage('Invalid account'),
     ],
     validateRequest,
+    holdMoneyEntry('transactions.contribution', transactionsController.recordContribution, { label: 'Shareholder contribution', account: b => b.account_id, subject: { type: 'member', id: r => r.body.contributed_by } }), // v1.73.0 — held for approval unless Treasurer/Admin
     transactionsController.recordContribution
 );
 
@@ -144,8 +172,16 @@ router.post('/expenses',
         body('value_date')
             .isISO8601().withMessage('A valid date is required')
             .custom(notFutureDate),
+        // v1.70.0 — tax treatment and supplier withholding (all optional)
+        body('tax_treatment').optional({ values: 'falsy' })
+            .isIn(['DEDUCTIBLE', 'NOT_DEDUCTIBLE', 'CAPITAL']).withMessage('Invalid tax treatment'),
+        body('payee_name').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
+        body('payee_tin').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
+        body('payee_residency').optional({ values: 'falsy' }).isIn(['RESIDENT', 'NON_RESIDENT']),
+        body('apply_wht').optional().isBoolean(),
     ],
     validateRequest,
+    holdMoneyEntry('transactions.expense', transactionsController.recordExpense, { label: 'Expense', account: b => b.account_id }), // v1.73.0 — held for approval unless Treasurer/Admin
     transactionsController.recordExpense
 );
 
@@ -167,15 +203,26 @@ router.post('/inflows',
         body('value_date')
             .isISO8601().withMessage('A valid date is required')
             .custom(notFutureDate),
+        // v1.70.0 — income received net of tax kept back by the payer
+        body('income_type').optional({ values: 'falsy' }).isIn(['OTHER_INCOME', 'INTEREST_IN']),
+        body('tax_deducted').optional({ values: 'falsy' }).isFloat({ min: 0 }).withMessage('Tax deducted must be a number'),
+        body('tax_treatment').optional({ values: 'falsy' }).isIn(['FINAL', 'CREDITABLE']),
+        body('tax_source_type').optional({ values: 'falsy' })
+            .isIn(['BANK_INTEREST', 'MMF', 'DIVIDEND_RECEIVED', 'OTHER_INCOME', 'OTHER', 'INVESTMENT_RETURN']),
+        body('payer_name').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
+        body('payer_tin').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
+        body('tax_certificate_number').optional({ values: 'falsy' }).trim().isLength({ max: 60 }),
     ],
     validateRequest,
+    holdMoneyEntry('transactions.inflow', transactionsController.recordInflow, { label: 'Other income', account: b => b.account_id }), // v1.73.0 — held for approval unless Treasurer/Admin
     transactionsController.recordInflow
 );
 
 // ============================================================
 // REVERSE A TRANSACTION
 // POST /api/transactions/:id/reverse
-// Treasurer only — creates a reversal entry
+// Treasurer only. v1.72.0: this now ASKS for the reversal — it is
+// posted when someone else approves the request (see above).
 // ============================================================
 router.post('/:id/reverse',
     requireRoles(['Treasurer']),

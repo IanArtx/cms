@@ -316,17 +316,24 @@ const GenerateDocumentPage = () => {
     const [pendingPayload,   setPendingPayload]   = useState(null);
     const [generated,        setGenerated]        = useState(false);
 
+    // v1.69.1 — each list loads on its own. Before, all three were
+    // fetched together (Promise.all), so when the member list was
+    // refused (GET /users needs USER_VIEW_ALL, which a Secretary or
+    // Director may not hold) the templates were thrown away too and the
+    // page showed no templates for anyone but Admin. The person pickers
+    // now use the names-only member directory.
     useEffect(() => {
-        Promise.all([
-            documentsAPI.getTemplates(),
-            categoriesAPI.getAll({ flat: true }),
-            usersAPI.getAllUsers({ is_active: true, limit: 500 }),
-        ]).then(([tRes, cRes, uRes]) => {
-            setTemplates(tRes.data.data || []);
-            setCategories(cRes.data.data || []);
-            setUsers(uRes.data.data || []);
-        }).catch(() => {})
-          .finally(() => setLoadingTemplates(false));
+        const templatesReq = documentsAPI.getTemplates()
+            .then(res => setTemplates(res.data.data || []))
+            .catch(err => setError(`Could not load the templates: ${getErrorMessage(err)}`));
+        const categoriesReq = categoriesAPI.getAll({ flat: true })
+            .then(res => setCategories(res.data.data || []))
+            .catch(() => {});
+        const usersReq = usersAPI.getDirectory()
+            .then(res => setUsers(res.data.data || []))
+            .catch(() => {}); // pickers still allow typing a name
+        Promise.allSettled([templatesReq, categoriesReq, usersReq])
+            .finally(() => setLoadingTemplates(false));
     }, []);
 
     const handleTemplateSelect = (template) => {

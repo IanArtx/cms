@@ -1,0 +1,31 @@
+%% v1.62.1 — Hotfix: broken signature/stamp images + lingering "Invalid Date"
+flowchart TD
+
+    subgraph IMG["Signature / stamp images — broken-image icon"]
+        direction TB
+        A["Backend stores/returns a\nrelative path, e.g.\n'/uploads/signature-snapshots/xxx.png'\n(relative to the API's OWN origin)"] --> B{"Where is it used?"}
+        B -->|"Avatar.jsx (profile photo)"| C["getPhotoUrl() already\nresolves it against the API\norigin — works fine"]
+        B -->|"signatureBlock() / stampOverlay()\n(exportUtils.js)"| D["Used RAW as <img src>\n— resolves against the FRONTEND's\nown origin instead -> 404\n-> broken-image icon"]
+        B -->|"DocumentsPage.jsx / ReportsPage.jsx\nsignature list, ProfilePage.jsx\nsignature preview"| D
+
+        D --> E["FIX:\nexportUtils.js gets its own local\nresolveUploadUrl() (no cross-file\nimports in this file, by design)"]
+        D --> F["FIX:\nhelpers.js's getPhotoUrl() generalised\ninto exported getUploadUrl()\n(getPhotoUrl kept as a thin alias)"]
+        E --> G["signatureBlock() + stampOverlay()\nnow call resolveUploadUrl()"]
+        F --> H["DocumentsPage.jsx, ReportsPage.jsx,\nProfilePage.jsx now call getUploadUrl()"]
+    end
+
+    subgraph DATE["\"Invalid Date\" on older documents"]
+        direction TB
+        I["v1.57.2: new documents now save\ngenerated_date as new Date().toISOString()"] --> J["...but documents generated\nBEFORE v1.57.2 shipped still have\nthe OLD value baked into their\nsaved template_data\n(already toLocaleDateString('en-GB')\nformatted, e.g. '17/09/2026')"]
+        J --> K["Reopening an OLD document:\ndocumentTrail()'s fmt.date()\nre-parses that string with new Date(...)\n-> JS reads it as MM/DD/YYYY\n-> month '17' is invalid -> Invalid Date"]
+        K --> L{"formatDate() (helpers.js, used by\nordinary in-app tables) already\ntry/catches and falls back to '—'.\nfmt.date() (exportUtils.js) did not."}
+        L --> M["FIX: fmt.date() now checks\nisNaN(parsed.getTime())\nand falls back to '—'\n— same placeholder already used\nfor a genuinely missing date"]
+        M --> N["Covers every fmt.date() caller at once:\ndocumentTrail(), signatureBlock()'s\ndate line, and the letterhead"]
+    end
+
+    style D fill:#fee2e2
+    style K fill:#fee2e2
+    style G fill:#dcfce7
+    style H fill:#dcfce7
+    style M fill:#dcfce7
+    style N fill:#dcfce7

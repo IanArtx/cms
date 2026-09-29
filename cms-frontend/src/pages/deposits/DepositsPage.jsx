@@ -23,6 +23,7 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import { useAuth } from '../../contexts/AuthContext';
 import { PlusIcon, Cog6ToothIcon, ExclamationTriangleIcon, BanknotesIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // SETTINGS / ACTIVATION MODAL — Admin/Treasurer (DEPOSIT_MANAGE)
@@ -450,7 +451,7 @@ const DepositsPage = () => {
     const [accounts, setAccounts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [showSettings, setShowSettings] = useState(false);
     const [showRecord, setShowRecord] = useState(false);
     const [refundingMember, setRefundingMember] = useState(null);
@@ -642,14 +643,14 @@ const DepositsPage = () => {
             )}
 
             {isActive && (
-                <div className="flex gap-2 mb-6 flex-wrap">
+                <div className="tab-bar" role="tablist">
                     <button onClick={() => setActiveTab('mine')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                         My Deposit
                     </button>
                     {canView && (
                         <button onClick={() => setActiveTab('all')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                            className={`tab ${activeTab === 'all' ? 'tab-active' : ''}`}>
                             All Members
                         </button>
                     )}

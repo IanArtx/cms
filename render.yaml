@@ -127,6 +127,23 @@ services:
         sync: false
       - key: S3_REGION
         value: auto
+      # --- Google Calendar / Meet integration (v1.63.0) ---
+      # Fill these in by hand in the Render dashboard; see
+      # DEPLOYMENT_GUIDE.md's "Google Calendar (Meet auto-creation)"
+      # section for exactly where each value comes from in Google
+      # Cloud Console. Settings > Integrations in the app itself then
+      # does the actual one-time connect (getting the refresh token) —
+      # these two are just the OAuth app's own static credentials, and
+      # nothing works without them being filled in first.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # Only needed if this backend is ever given its own custom
+      # domain — RENDER_EXTERNAL_URL (a built-in Render env var, no
+      # setup needed) already covers the plain onrender.com address.
+      - key: BACKEND_URL
+        sync: false
       - key: MONTHLY_REPORT_CRON
         value: "0 8 1 * *"
       - key: COMPANY_NAME
@@ -175,7 +192,7 @@ services:
       # Bump this with every migration so the sidebar's version label
       # stays accurate — it's a plain display string, nothing reads it.
       - key: REACT_APP_VERSION
-        value: "1.59.0"
+        value: "1.73.0"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

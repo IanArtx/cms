@@ -16,6 +16,8 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { invalidateBrandingCache } = require('../services/emailTemplates');
 const { uploadBuffer, generateKey } = require('../services/storageService');
 const { SIGNABLE_DOCUMENT_TYPES } = require('../services/signatureService');
+const googleCalendarService = require('../services/googleCalendarService');
+const logger = require('../config/logger');
 
 // ============================================================
 // GET COMPANY SETTINGS
@@ -592,6 +594,78 @@ const deleteFiscalQuarter = asyncHandler(async (req, res) => {
     sendSuccess(res, { id: parseInt(id) }, 'Fiscal quarter deleted');
 });
 
+// ============================================================
+// GOOGLE CALENDAR / MEET INTEGRATION (v1.63.0)
+// Settings > Integrations. See googleCalendarService.js for the full
+// OAuth/API mechanics — this controller is just the thin HTTP layer:
+// report status, kick off the consent redirect, receive Google's
+// callback, and disconnect.
+// ============================================================
+
+// GET /settings/google/status — any authenticated user (see
+// routes/settings.js for why: no secrets in the response, and anyone
+// who can create an online event needs to know whether an
+// auto-created Meet link is available).
+const getGoogleStatus = asyncHandler(async (req, res) => {
+    const status = await googleCalendarService.getStatus();
+    sendSuccess(res, status);
+});
+
+// GET /settings/google/connect — Admin only. Returns the consent URL
+// for the FRONTEND to navigate the browser to (rather than this route
+// redirecting itself) — the request that reaches this route carries
+// the Admin's JWT as an Authorization header (an ordinary authenticated
+// API call), which a plain server-side redirect can't hand off to the
+// next page; the frontend does `window.location.href = auth_url`
+// once it has the URL back.
+const startGoogleConnect = asyncHandler(async (req, res) => {
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        throw createError.badRequest(
+            'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set on the backend yet — ' +
+            'add them (Google Cloud Console > APIs & Services > Credentials) before connecting.'
+        );
+    }
+    const authUrl = googleCalendarService.getAuthUrl(req.user.id);
+    sendSuccess(res, { auth_url: authUrl });
+});
+
+// GET /settings/google/callback — PUBLIC (see routes/settings.js).
+// This is Google itself navigating the browser back here after the
+// Admin grants or denies consent, so the only sane response is a
+// redirect back into the app — there's no API caller waiting on a
+// JSON response the way every other route in this file has.
+const googleOAuthCallback = asyncHandler(async (req, res) => {
+    const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+    const { code, state, error } = req.query;
+
+    if (error) {
+        // Admin clicked "Cancel" on Google's consent screen.
+        return res.redirect(`${frontendUrl}/settings?google=denied`);
+    }
+
+    try {
+        const { email, userId } = await googleCalendarService.handleOAuthCallback(code, state);
+        await logAction(userId, ACTIONS.GOOGLE_CALENDAR_CONNECTED, MODULES.SYSTEM, {
+            ipAddress:   req.ip,
+            description: `Google Calendar connected${email ? ` — ${email}` : ''}`,
+        });
+        res.redirect(`${frontendUrl}/settings?google=connected`);
+    } catch (err) {
+        logger.error('Google OAuth callback failed', { error: err.message });
+        res.redirect(`${frontendUrl}/settings?google=error&message=${encodeURIComponent(err.message)}`);
+    }
+});
+
+// POST /settings/google/disconnect — Admin only.
+const disconnectGoogle = asyncHandler(async (req, res) => {
+    await googleCalendarService.disconnect();
+    await logAction(req.user.id, ACTIONS.GOOGLE_CALENDAR_DISCONNECTED, MODULES.SYSTEM, {
+        ipAddress:   req.ip,
+        description: 'Google Calendar disconnected',
+    });
+    sendSuccess(res, null, 'Google Calendar disconnected');
+});
+
 module.exports = {
     getCompanySettings,
     updateCompanySettings,
@@ -610,4 +684,8 @@ module.exports = {
     createFiscalQuarter,
     updateFiscalQuarter,
     deleteFiscalQuarter,
+    getGoogleStatus,
+    startGoogleConnect,
+    googleOAuthCallback,
+    disconnectGoogle,
 };

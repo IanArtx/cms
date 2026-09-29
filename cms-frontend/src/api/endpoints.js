@@ -33,6 +33,8 @@ export const usersAPI = {
     getMyProfile:    ()         => api.get('/users/me'),
     updateMyProfile: (data)     => api.patch('/users/me', data),
     getAllUsers:      (params)   => api.get('/users', { params }),
+    // v1.69.1 — names only, for person pickers (Generate Document, Events)
+    getDirectory:     ()         => api.get('/users/directory'),
     getUserById:     (id)       => api.get(`/users/${id}`),
     // v1.34.0 — full Member Portfolio snapshot (Section 6.x)
     getPortfolio:    (id)       => api.get(`/users/${id}/portfolio`),
@@ -96,6 +98,22 @@ export const transactionsAPI = {
     // and a CSV export honoring the same filters as the ledger.
     getAnalytics:     (params) => api.get('/transactions/analytics', { params }),
     exportCsv:        (params) => api.get('/transactions/export', { params, responseType: 'blob' }),
+    // v1.72.0 — a reversal is now a REQUEST that someone else approves.
+    // reverse() above files the request; these list and decide them.
+    getReversalRequests:    (params)   => api.get('/transactions/reversal-requests', { params }),
+    approveReversalRequest: (id)       => api.post(`/transactions/reversal-requests/${id}/approve`),
+    rejectReversalRequest:  (id, data) => api.post(`/transactions/reversal-requests/${id}/reject`, data),
+};
+
+// ============================================================
+// MONEY APPROVALS (v1.73.0) — money entries recorded by anyone who is
+// not the Treasurer or an Admin wait here until the Treasurer or an
+// Admin approves them.
+// ============================================================
+export const moneyApprovalsAPI = {
+    getAll:  (params)   => api.get('/money-approvals', { params }),
+    approve: (id)       => api.post(`/money-approvals/${id}/approve`),
+    reject:  (id, data) => api.post(`/money-approvals/${id}/reject`, data),
 };
 
 // ============================================================
@@ -146,6 +164,8 @@ export const loansAPI = {
     approveGiven:        (id)       => api.post(`/loans/given/${id}/approve`),
     recordGivenRepayment:(id, data) => api.post(`/loans/given/${id}/repayments`, data),
     amendGivenRate:      (id, data) => api.post(`/loans/given/${id}/amend-rate`, data),
+    // v1.70.0 — lender residency / TIN and withholding tax on interest
+    updateReceivedTax:   (id, data) => api.patch(`/loans/received/${id}/tax`, data),
 };
 
 // ============================================================
@@ -170,6 +190,8 @@ export const investmentsAPI = {
     payCoupon:       (id, couponId, data) =>
         api.patch(`/investments/${id}/coupons/${couponId}/pay`, data),
     recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
+    // v1.70.0 — treasury bill repaid at maturity (tax on the discount)
+    recordTreasuryBillMaturity: (id, data) => api.post(`/investments/${id}/treasury-bill-maturity`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
     getInputVsReturn:      () => api.get('/investments/input-vs-return'), // v1.56.0
     getPortfolioSummary:   () => api.get('/investments/portfolio-summary'), // v1.57.0
@@ -181,6 +203,8 @@ export const investmentsAPI = {
     rejectTermination:        (id, data) => api.post(`/investments/${id}/terminate/reject`, data),
     // v1.42.0
     setSettlementValue:       (id, data) => api.patch(`/investments/${id}/settlement-value`, data),
+    // v1.60.0 — bond term identifier (2/3/5/10/15/20/25yr)
+    setBondTerm:              (id, data) => api.patch(`/investments/${id}/bond-term`, data),
 };
 
 // ============================================================
@@ -288,6 +312,12 @@ export const eventsAPI = {
 // ============================================================
 export const documentsAPI = {
     getAll:         (params) => api.get('/documents', { params }),
+    // v1.65.0 — a member's own documents (Share Purchase Receipts).
+    // No DOCUMENT_VIEW permission needed; see documentsController.getMyDocuments.
+    getMine:        (params) => api.get('/documents/mine', { params }),
+    // v1.67.0 — every member's Share Purchase Receipts, Treasury only
+    // (Treasurer / Assistant Treasurer / Admin); see documentsController.getShareReceipts.
+    getShareReceipts: (params) => api.get('/documents/share-receipts', { params }),
     getById:        (id)     => api.get(`/documents/${id}`),
     // responseType 'blob' so this works for both a real file stream
     // (UPLOADED) and a JSON payload (SYSTEM_GENERATED) — the caller
@@ -399,6 +429,12 @@ export const settingsAPI = {
     deleteFiscalQuarter: (id)     => api.delete(`/settings/fiscal-quarters/${id}`),
     // v1.51.0 — today's quarter, for the Dashboard widget.
     getCurrentFiscalQuarter: () => api.get('/settings/fiscal-quarters/current'),
+    // v1.63.0 — Google Calendar / Meet integration (Section 4.20
+    // addendum). Status is open to any authenticated user; connect/
+    // disconnect are Admin-only (enforced server-side).
+    getGoogleStatus:     () => api.get('/settings/google/status'),
+    startGoogleConnect:  () => api.get('/settings/google/connect'),
+    disconnectGoogle:    () => api.post('/settings/google/disconnect'),
 };
 
 // ============================================================
@@ -423,6 +459,20 @@ export const reportsAPI = {
     getBalanceSheet:      (params)         => api.get('/reports/balance-sheet', { params }),
     getIncomeStatement:   (params)         => api.get('/reports/income-statement', { params }),
     getCashFlowStatement: (params)         => api.get('/reports/cash-flow-statement', { params }),
+
+    // Records check (v1.72.0) — stored fund/investment figures vs the
+    // same figures worked out again from their entries, plus the log of
+    // automatic corrections.
+    getRecordChecks:      ()               => api.get('/reports/record-checks'),
+
+    // FX & Revaluation (v1.66.0)
+    getFxStatus:          ()               => api.get('/reports/fx/status'),
+    getFxRevaluations:    ()               => api.get('/reports/fx/revaluations'),
+    runFxRevaluation:     (data)           => api.post('/reports/fx/revaluations', data),
+    reopenFxRevaluation:  (periodEnd)      => api.delete(`/reports/fx/revaluations/${periodEnd}`),
+    setTransactionFxRate: (id, data)       => api.patch(`/reports/fx/transactions/${id}/rate`, data),
+    clearTransactionFxRate: (id)           => api.delete(`/reports/fx/transactions/${id}/rate`),
+    recomputeFxValues:    ()               => api.post('/reports/fx/recompute'),
 };
 
 // ============================================================
@@ -446,6 +496,11 @@ export const savingsAPI = {
     getMySavings:     ()         => api.get('/savings/me'),
     getMyBalance:     ()         => api.get('/savings/balance/me'),
     getBalanceForUser: (userId)  => api.get(`/savings/balance/${userId}`),
+    // Currencies that already have an active SAVINGS account set up —
+    // every currency picker on the Savings page (v1.61.0) is built
+    // from this, not the general accounts list (which needs
+    // FINANCE_VIEW_ALL and isn't every Savings actor's permission).
+    getSavingsCurrencies: () => api.get('/savings/currencies'),
     getMyHandouts:    ()         => api.get('/savings/handouts/me'),
     getAll:           (params)   => api.get('/savings', { params }),
     create:           (data)     => api.post('/savings', data),
@@ -477,6 +532,15 @@ export const savingsAPI = {
     createCapitalConversion:  (data)     => api.post('/savings/capital-conversions', data),
     confirmCapitalConversion: (id)       => api.patch(`/savings/capital-conversions/${id}/confirm`),
     rejectCapitalConversion:  (id, data) => api.patch(`/savings/capital-conversions/${id}/reject`, data),
+    // Savings Currency Conversion (v1.61.0) — Treasurer moves a
+    // member's own savings from one currency they hold into another,
+    // at a manually-entered rate, no charges; nothing moves until the
+    // member confirms.
+    getMyCurrencyConversions:  ()         => api.get('/savings/currency-conversions/me'),
+    getAllCurrencyConversions: (params)   => api.get('/savings/currency-conversions', { params }),
+    createCurrencyConversion:  (data)     => api.post('/savings/currency-conversions', data),
+    confirmCurrencyConversion: (id)       => api.patch(`/savings/currency-conversions/${id}/confirm`),
+    rejectCurrencyConversion:  (id, data) => api.patch(`/savings/currency-conversions/${id}/reject`, data),
 };
 
 // ============================================================
@@ -582,6 +646,9 @@ export const serviceFeesAPI = {
     createAgreement:  (data)   => api.post('/service-fees/agreements', data),
     updateAgreement:  (id, data) => api.patch(`/service-fees/agreements/${id}`, data),
     recordPayment:    (id, data) => api.post(`/service-fees/agreements/${id}/pay`, data),
+    // v1.70.0 — withholding tax on an agreement (amendment with a trail)
+    getAgreementWht:  (id)       => api.get(`/service-fees/agreements/${id}/wht`),
+    amendAgreementWht:(id, data) => api.patch(`/service-fees/agreements/${id}/wht`, data),
 
     // v1.52.0 — monthly period tracking
     getOutstandingPeriods: (id) => api.get(`/service-fees/agreements/${id}/outstanding-periods`),
@@ -657,6 +724,69 @@ export const sharesAPI = {
     // actually commits it. Admin only on the backend.
     getRecalculatePreview: () => api.get('/shares/recalculate-preview'),
     recalculate:           () => api.post('/shares/recalculate'),
+};
+
+// ============================================================
+// SHARE CAPITAL (v1.69.0) — nominal value, whole-share allotments,
+// members' share credit and refunds, returns of allotment, and
+// dual-approved changes to the issue price / nominal value /
+// registered shares.
+// ============================================================
+export const shareCapitalAPI = {
+    getOverview:            ()           => api.get('/share-capital/overview'),
+    getMyStatement:         ()           => api.get('/share-capital/me'),
+    getMemberStatement:     (userId)     => api.get(`/share-capital/members/${userId}/statement`),
+    getRegisteredSetup:     ()           => api.get('/share-capital/registered-setup'),
+    saveRegisteredSetup:    (data)       => api.put('/share-capital/registered-setup', data),
+    previewOpeningConversion: ()         => api.get('/share-capital/opening-conversion/preview'),
+    runOpeningConversion:   ()           => api.post('/share-capital/opening-conversion'),
+    getAllotments:          (params)     => api.get('/share-capital/allotments', { params }),
+    markReturnsFiled:       (data)       => api.post('/share-capital/allotments/returns', data),
+    getChangeRequests:      ()           => api.get('/share-capital/change-requests'),
+    getResolutions:         ()           => api.get('/share-capital/resolutions'),
+    createChangeRequest:    (data)       => api.post('/share-capital/change-requests', data),
+    approveChangeRequest:   (id, data)   => api.post(`/share-capital/change-requests/${id}/approve`, data || {}),
+    rejectChangeRequest:    (id, data)   => api.post(`/share-capital/change-requests/${id}/reject`, data || {}),
+    cancelChangeRequest:    (id, data)   => api.post(`/share-capital/change-requests/${id}/cancel`, data || {}),
+    getRefunds:             ()           => api.get('/share-capital/refunds'),
+    createRefund:           (data)       => api.post('/share-capital/refunds', data),
+    approveRefund:          (id, data)   => api.post(`/share-capital/refunds/${id}/approve`, data || {}),
+    rejectRefund:           (id, data)   => api.post(`/share-capital/refunds/${id}/reject`, data || {}),
+    cancelRefund:           (id, data)   => api.post(`/share-capital/refunds/${id}/cancel`, data || {}),
+};
+
+// ============================================================
+// TAX (v1.70.0)
+// Withholding tax (deducted from the company and withheld by it),
+// corporate income tax years, payments to URA and deadlines.
+// ============================================================
+export const taxAPI = {
+    getOverview:        ()           => api.get('/tax/overview'),
+    getRegistration:    ()           => api.get('/tax/registration'),
+    saveRegistration:   (data)       => api.put('/tax/registration', data),
+    setAgentStatus:     (data)       => api.post('/tax/agent-status', data),
+    getRates:           ()           => api.get('/tax/rates'),
+    addRate:            (data)       => api.post('/tax/rates', data),
+    getWithholdings:    (params)     => api.get('/tax/withholdings', { params }),
+    previewWithholding: (params)     => api.get('/tax/withholding-preview', { params }),
+    getRemittances:     ()           => api.get('/tax/remittances'),
+    remitMonth:         (data)       => api.post('/tax/remittances', data),
+    getAtSource:        (params)     => api.get('/tax/at-source', { params }),
+    recordAtSource:     (data)       => api.post('/tax/at-source', data),
+    updateAtSource:     (id, data)   => api.patch(`/tax/at-source/${id}`, data),
+    getYears:           ()           => api.get('/tax/years'),
+    getWorksheet:       (id)         => api.get(`/tax/years/${id}/worksheet`),
+    updateYearOptions:  (id, data)   => api.patch(`/tax/years/${id}/options`, data),
+    setProvisional:     (id, data)   => api.put(`/tax/years/${id}/provisional`, data),
+    addAdjustment:      (id, data)   => api.post(`/tax/years/${id}/adjustments`, data),
+    removeAdjustment:   (adjId)      => api.delete(`/tax/adjustments/${adjId}`),
+    prepareYear:        (id)         => api.post(`/tax/years/${id}/prepare`),
+    returnYear:         (id, data)   => api.post(`/tax/years/${id}/return`, data || {}),
+    approveYear:        (id)         => api.post(`/tax/years/${id}/approve`),
+    fileYear:           (id, data)   => api.post(`/tax/years/${id}/file`, data),
+    recordPayment:      (data)       => api.post('/tax/payments', data),
+    getCalendar:        ()           => api.get('/tax/calendar'),
+    getMyWithholdings:  ()           => api.get('/tax/my-withholdings'),
 };
 
 // ============================================================

@@ -55,6 +55,15 @@ const rebuildCategoryPath = async (client, categoryId) => {
 // GET /api/categories?module=FINANCE
 // Returns a structured tree
 // ============================================================
+let taxColumnKnown = null;
+const hasTaxTreatmentColumn = async () => {
+    if (taxColumnKnown) return true;
+    const r = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'categories' AND column_name = 'tax_treatment'`);
+    taxColumnKnown = r.rows.length > 0 || null;
+    return !!taxColumnKnown;
+};
+const TAX_TREATMENTS = ['DEDUCTIBLE', 'NOT_DEDUCTIBLE', 'CAPITAL'];
+
 const getAllCategories = asyncHandler(async (req, res) => {
     const { module: mod, flat } = req.query;
 
@@ -65,16 +74,35 @@ const getAllCategories = asyncHandler(async (req, res) => {
         where += ` AND c.module = $${params.length}`;
     }
 
+    // v1.70.0 — tax_treatment (own setting, NULL = inherit) and the
+    // effective one after inheriting from parents (default DEDUCTIBLE).
+    const hasTax = await hasTaxTreatmentColumn();
     const result = await query(`
         SELECT
             c.id, c.parent_id, c.module, c.name, c.abbreviation,
             c.description, c.is_active, c.created_at,
             cp.full_path, cp.full_abbreviation, cp.depth
+            ${hasTax ? ', c.tax_treatment' : ''}
         FROM categories c
         LEFT JOIN category_paths cp ON cp.category_id = c.id
         ${where}
         ORDER BY cp.depth ASC, c.name ASC
     `, params);
+    if (hasTax) {
+        const all = await query(`SELECT id, parent_id, tax_treatment FROM categories`);
+        const byId = new Map(all.rows.map(c => [c.id, c]));
+        const effective = (id) => {
+            let cur = byId.get(id);
+            const seen = new Set();
+            while (cur && !seen.has(cur.id)) {
+                seen.add(cur.id);
+                if (cur.tax_treatment) return cur.tax_treatment;
+                cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+            }
+            return 'DEDUCTIBLE';
+        };
+        result.rows.forEach(r => { r.effective_tax_treatment = effective(r.id); });
+    }
 
     // If flat=true, return array; otherwise build a tree
     if (flat === 'true') {
@@ -103,7 +131,7 @@ const getAllCategories = asyncHandler(async (req, res) => {
 // POST /api/categories
 // ============================================================
 const createCategory = asyncHandler(async (req, res) => {
-    const { parent_id, module, name, abbreviation, description } = req.body;
+    const { parent_id, module, name, abbreviation, description, tax_treatment } = req.body;
 
     await withTransaction(async (client) => {
         // Validate parent exists if provided
@@ -133,6 +161,10 @@ const createCategory = asyncHandler(async (req, res) => {
         ]);
 
         const newCat = result.rows[0];
+        // v1.70.0 — optional tax treatment (NULL = inherit from the parent)
+        if (tax_treatment && TAX_TREATMENTS.includes(tax_treatment) && await hasTaxTreatmentColumn()) {
+            await client.query(`UPDATE categories SET tax_treatment = $1 WHERE id = $2`, [tax_treatment, newCat.id]);
+        }
 
         // Build and store the path
         await rebuildCategoryPath(client, newCat.id);
@@ -164,9 +196,23 @@ const createCategory = asyncHandler(async (req, res) => {
 // ============================================================
 const updateCategory = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { name, abbreviation, description, is_active } = req.body;
+    const { name, abbreviation, description, is_active, tax_treatment } = req.body;
 
     await withTransaction(async (client) => {
+        // v1.70.0 — '' or 'INHERIT' clears the category's own setting.
+        if (tax_treatment !== undefined && await hasTaxTreatmentColumn()) {
+            const value = TAX_TREATMENTS.includes(tax_treatment) ? tax_treatment : null;
+            const before = await client.query(`SELECT tax_treatment, name FROM categories WHERE id = $1`, [id]);
+            await client.query(`UPDATE categories SET tax_treatment = $1 WHERE id = $2`, [value, id]);
+            if (before.rows.length && (before.rows[0].tax_treatment || null) !== value) {
+                await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.SYSTEM, {
+                    ipAddress: req.ip, recordType: 'categories', recordId: parseInt(id),
+                    oldValues: { tax_treatment: before.rows[0].tax_treatment }, newValues: { tax_treatment: value },
+                    description: `Category "${before.rows[0].name}" tax treatment: ${before.rows[0].tax_treatment || 'inherit'} -> ${value || 'inherit'}`,
+                    client,
+                });
+            }
+        }
         const result = await client.query(`
             UPDATE categories SET
                 name         = COALESCE($1, name),
@@ -210,6 +256,7 @@ router.post('/',
         body('abbreviation').trim().notEmpty().withMessage('Abbreviation is required')
             .isLength({ max: 20 }).withMessage('Abbreviation max 20 characters'),
         body('parent_id').optional().isInt({ min: 1 }),
+        body('tax_treatment').optional({ values: 'falsy' }).isIn(TAX_TREATMENTS).withMessage('Invalid tax treatment'),
     ],
     validateRequest,
     createCategory
@@ -217,7 +264,10 @@ router.post('/',
 
 router.patch('/:id',
     requirePermissions(['CATEGORY_MANAGE']),
-    [param('id').isInt({ min: 1 })],
+    [
+        param('id').isInt({ min: 1 }),
+        body('tax_treatment').optional({ values: 'null' }).isIn(['', 'INHERIT', ...TAX_TREATMENTS]).withMessage('Invalid tax treatment'),
+    ],
     validateRequest,
     updateCategory
 );

@@ -1,8 +1,8 @@
 // ============================================================
 // CURRENCY EXCHANGE RATE ROUTES
 // Prefix: /api/exchange-rates
-// Monthly rates, used to display the share price/value in
-// currencies other than the one it was set in.
+// Company-set rates per currency pair. Since v1.66.0 they also value
+// foreign-currency transactions in UGX for the financial statements.
 // ============================================================
 
 const router = require('express').Router();

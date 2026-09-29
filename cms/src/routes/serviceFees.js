@@ -92,6 +92,26 @@ router.patch('/agreements/:id',
     serviceFeesController.updateAgreement
 );
 
+// v1.70.0 — withholding tax on an agreement (by amendment, with a trail)
+router.get('/agreements/:id/wht',
+    requirePermissions(['SERVICE_FEE_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    serviceFeesController.getAgreementWht
+);
+router.patch('/agreements/:id/wht',
+    requirePermissions(['SERVICE_FEE_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('wht_applicable').isBoolean().withMessage('Say whether withholding tax applies'),
+        body('wht_rate_code').optional({ values: 'falsy' }).isIn(['WHT_AGENT_PAYMENTS', 'WHT_NON_RESIDENT_SERVICES']),
+        body('effective_from').isISO8601().withMessage('The date the change takes effect is required'),
+        body('reason').trim().notEmpty().withMessage('A reason is required'),
+    ],
+    validateRequest,
+    serviceFeesController.amendAgreementWht
+);
+
 router.post('/agreements/:id/pay',
     requirePermissions(['SERVICE_FEE_MANAGE']),
     validators.idParam('id'),

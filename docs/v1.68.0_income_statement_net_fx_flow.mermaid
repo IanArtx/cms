@@ -1,0 +1,11 @@
+%% v1.68.0 — Income Statement shows FX gains/losses as one net line
+flowchart TD
+    A["Ledger lines for the period\n(UGX, incl. revaluation)"] --> B["Totals per REVENUE / EXPENSE account"]
+    B --> C{"4600 FX Gains or\n5600 FX Losses present?"}
+    C -->|"No"| F["Statement as before"]
+    C -->|"Yes"| D["net = gains - losses\nfxDetail = { gains, losses, net }"]
+    D --> E{"net > 0 ?"}
+    E -->|"Yes"| G["Revenue: 'Net foreign exchange gain' = net"]
+    E -->|"No, < 0"| H["Expenses: 'Net foreign exchange loss' = -net"]
+    G --> I["Gross gains/losses shown beneath the line\n(Trial Balance / GL / Balance Sheet keep 4600 & 5600 separate)"]
+    H --> I

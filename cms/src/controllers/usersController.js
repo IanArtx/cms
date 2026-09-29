@@ -27,6 +27,10 @@ const getMyProfile = asyncHandler(async (req, res) => {
             u.emergency_contact_phone, u.two_factor_enabled,
             u.is_email_verified, u.last_login_at, u.created_at,
             u.signature_path, u.signature_updated_at,
+            -- v1.70.0 — tax details (read this way so a database without
+            -- the v1.70.0 columns still works)
+            to_jsonb(u)->>'tin' AS tin,
+            COALESCE(to_jsonb(u)->>'tax_residency', 'RESIDENT') AS tax_residency,
             bool_or(mc.id IS NOT NULL) AS has_consented,
             COALESCE(
                 json_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
@@ -131,7 +135,30 @@ const updateMyProfile = asyncHandler(async (req, res) => {
         emergency_contact_name, emergency_contact_phone,
         gender, avatar_choice,
         auditor_company_name, auditor_company_initials, auditor_contact_phone,
+        tin, tax_residency,
     } = req.body;
+
+    // v1.70.0 — the member's own TIN and tax residency (used for the
+    // withholding tax on their dividends / savings interest, and printed
+    // on their withholding tax certificates).
+    if (tin !== undefined || tax_residency !== undefined) {
+        const cleanTin = tin ? String(tin).replace(/\s+/g, '') : null;
+        if (cleanTin && !/^\d{10}$/.test(cleanTin)) {
+            throw createError.badRequest('A Uganda TIN is 10 digits. Leave it empty if you do not have one.');
+        }
+        const before = await query(`SELECT tin, tax_residency FROM users WHERE id = $1`, [req.user.id]);
+        await query(`
+            UPDATE users SET tin = $1, tax_residency = COALESCE($2, tax_residency), updated_at = NOW() WHERE id = $3
+        `, [tin !== undefined ? cleanTin : before.rows[0].tin, tax_residency || null, req.user.id]);
+        if ((before.rows[0].tin || null) !== (tin !== undefined ? cleanTin : before.rows[0].tin) ||
+            (tax_residency && tax_residency !== before.rows[0].tax_residency)) {
+            await logAction(req.user.id, ACTIONS.USER_PROFILE_UPDATED, MODULES.USERS, {
+                ipAddress: req.ip, recordType: 'users', recordId: req.user.id,
+                oldValues: before.rows[0], newValues: { tin: cleanTin, tax_residency },
+                description: 'User updated their tax details (TIN / residency)',
+            });
+        }
+    }
 
     const result = await query(`
         UPDATE users SET

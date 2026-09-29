@@ -41,9 +41,24 @@ const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 const { getOrCreateSavingsBalance, getSavingsAccount } = require('../services/savingsService');
+const { getOrCreateCategory } = require('../services/categoryService');
+const taxService = require('../services/taxService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 MODULE_CODES.SAVINGS = 'SAV';
 MODULE_CODES.SAVINGS_HANDOUT = 'SAVOUT';
+
+// v1.61.0 — the category both legs of an internal currency conversion
+// post under. Mirrors FINES_CATEGORY's shape (finesService.js):
+// looked up/created once via getOrCreateCategory rather than asking
+// the Treasurer to pick one — there's nothing for them to categorize,
+// this is purely a currency swap of money already inside Savings.
+const SAVINGS_CURRENCY_CONVERSION_CATEGORY = {
+    module:       'FINANCE',
+    name:         'Savings Currency Conversion',
+    abbreviation: 'SAVFX',
+    description:  'Internal movement of a member\'s own savings from one currency they hold into another',
+};
 
 // ============================================================
 // INTERNAL HELPER — create a PENDING_APPROVAL flexible deposit row
@@ -55,7 +70,7 @@ MODULE_CODES.SAVINGS_HANDOUT = 'SAVOUT';
 // Must be called from inside an existing `withTransaction` block.
 // ============================================================
 const createPendingFlexibleDeposit = async (client, {
-    userId, categoryId, amount, depositDate, notes,
+    userId, categoryId, amount, depositDate, notes, currencyId,
     recordedByUserId, source = 'TREASURY_DIRECT', requisitionId = null,
 }) => {
     const memberResult = await client.query(
@@ -67,7 +82,9 @@ const createPendingFlexibleDeposit = async (client, {
     }
     const member = memberResult.rows[0];
 
-    const savingsAccount = await getSavingsAccount(client);
+    // v1.61.0 — which currency's Savings account this deposit goes
+    // into; a company can now have more than one.
+    const savingsAccount = await getSavingsAccount(client, currencyId);
 
     const { referenceId, referenceCode } = await generateReference(
         client, MODULE_CODES.SAVINGS, 'SAV', 'SAVINGS', recordedByUserId
@@ -131,12 +148,12 @@ const createPendingFlexibleDeposit = async (client, {
 // member. Sits PENDING_APPROVAL until a Treasurer/Assistant Treasurer approves it.
 // ============================================================
 const createSavingsDeposit = asyncHandler(async (req, res) => {
-    const { user_id, category_id, amount, deposit_date, notes } = req.body;
+    const { user_id, category_id, amount, deposit_date, notes, currency_id } = req.body;
 
     await withTransaction(async (client) => {
         const { savingsId, referenceCode, member } = await createPendingFlexibleDeposit(client, {
             userId: user_id, categoryId: category_id, amount, depositDate: deposit_date,
-            notes, recordedByUserId: req.user.id, source: 'TREASURY_DIRECT',
+            notes, currencyId: currency_id, recordedByUserId: req.user.id, source: 'TREASURY_DIRECT',
         });
 
         await logAction(req.user.id, ACTIONS.SAVINGS_CREATED, MODULES.FINANCE, {
@@ -162,6 +179,8 @@ const createSavingsDeposit = asyncHandler(async (req, res) => {
 // Posts the crediting transaction and updates the member's balance.
 // ============================================================
 const approveSavingsDeposit = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'member_savings', req.params.id, ['user_id', 'recorded_by', 'created_by'], 'savings deposit');
     const { id } = req.params;
     const { review_notes } = req.body;
 
@@ -211,14 +230,17 @@ const approveSavingsDeposit = asyncHandler(async (req, res) => {
             WHERE  id = $4
         `, [transactionId, req.user.id, review_notes || null, id]);
 
-        const balance = await getOrCreateSavingsBalance(client, savings.user_id, savings.currency_id);
+        // v1.61.0 — a member can hold several currencies' worth of
+        // savings_balances rows now, so every update here must be
+        // scoped to the SPECIFIC (user, currency) row, never just
+        // user_id alone (that would touch every currency they hold).
+        await getOrCreateSavingsBalance(client, savings.user_id, savings.currency_id);
         await client.query(`
             UPDATE savings_balances
             SET    principal_balance = principal_balance + $1,
-                   currency_id = COALESCE(currency_id, $2),
                    updated_at = NOW()
-            WHERE  user_id = $3
-        `, [savings.principal_amount, savings.currency_id, savings.user_id]);
+            WHERE  user_id = $2 AND currency_id = $3
+        `, [savings.principal_amount, savings.user_id, savings.currency_id]);
 
         await logAction(req.user.id, ACTIONS.SAVINGS_DEPOSIT_APPROVED, MODULES.FINANCE, {
             ipAddress:   req.ip,
@@ -330,11 +352,11 @@ const rejectSavingsDeposit = asyncHandler(async (req, res) => {
 // never actually in the member's savings.
 // ============================================================
 const createSavingsHandout = asyncHandler(async (req, res) => {
-    const { user_id, category_id, principal_amount, interest_amount, handout_date, notes } = req.body;
+    const { user_id, category_id, principal_amount, interest_amount, handout_date, notes, currency_id } = req.body;
 
     await withTransaction(async (client) => {
         const memberResult = await client.query(
-            'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+            'SELECT * FROM users WHERE id = $1 AND is_active = TRUE',
             [user_id]
         );
         if (memberResult.rows.length === 0) {
@@ -342,7 +364,9 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
         }
         const member = memberResult.rows[0];
 
-        const balance = await getOrCreateSavingsBalance(client, user_id, null);
+        // v1.61.0 — which of the member's currency balances this
+        // handout pays out of; a member can hold several at once.
+        const balance = await getOrCreateSavingsBalance(client, user_id, currency_id);
 
         const principal = parseFloat(principal_amount);
         const interest  = parseFloat(interest_amount || 0);
@@ -360,9 +384,24 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
             );
         }
 
-        const savingsAccount = await getSavingsAccount(client);
+        const savingsAccount = await getSavingsAccount(client, currency_id);
 
         const total = principal + interest;
+
+        // v1.70.0 — withholding tax on the INTEREST part (Income Tax Act
+        // s.117): the member receives the interest net of tax; the tax is
+        // kept for URA. The principal is their own money — never taxed.
+        // Worked out now for the member to see, and again at confirmation
+        // (the day the money actually moves).
+        let whtPreview = null;
+        if (interest > 0 && await taxService.isMigrated()) {
+            const w = await taxService.computeWithholding(client, {
+                paymentType: 'SAVINGS_INTEREST', residency: member.tax_residency || 'RESIDENT',
+                gross: interest, currencyId: savingsAccount.currency_id, date: handout_date,
+            });
+            if (w.applies) whtPreview = w;
+        }
+        const whtAmount = whtPreview ? whtPreview.tax : 0;
 
         const { referenceId, referenceCode } = await generateReference(
             client, MODULE_CODES.SAVINGS_HANDOUT, 'SAVOUT', 'SAVINGS_HANDOUT', req.user.id
@@ -382,6 +421,10 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
 
         const handoutId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, handoutId);
+        if (await taxService.isMigrated()) {
+            await client.query(`UPDATE savings_handouts SET wht_rate = $1, wht_amount = $2, net_amount = $3 WHERE id = $4`,
+                [whtPreview ? whtPreview.rate : null, whtAmount, total - whtAmount, handoutId]);
+        }
 
         await logAction(req.user.id, ACTIONS.SAVINGS_HANDOUT_ENTERED, MODULES.FINANCE, {
             ipAddress:   req.ip,
@@ -396,7 +439,7 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
             userId:     user_id,
             type:       'SAVINGS_HANDOUT_PENDING',
             title:      'Confirm your savings handout',
-            body:       `A savings handout of ${total} (${referenceCode}) has been entered for you. Please confirm you received it.`,
+            body:       `A savings handout of ${total - whtAmount}${whtAmount > 0 ? ` (${total} less ${whtAmount} withholding tax on the interest)` : ''} (${referenceCode}) has been entered for you. Please confirm you received it.`,
             link:       `/savings`,
             module:     'FINANCE',
             recordType: 'savings_handouts',
@@ -409,7 +452,8 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
                     <table style="width:100%; border-collapse:collapse; margin:12px 0;">
                         <tr><td style="padding:4px 0; color:#6b7280;">Principal</td><td style="padding:4px 0; text-align:right;">${principal}</td></tr>
                         <tr><td style="padding:4px 0; color:#6b7280;">Interest</td><td style="padding:4px 0; text-align:right;">${interest}</td></tr>
-                        <tr><td style="padding:4px 0; color:#6b7280; font-weight:700;">Total</td><td style="padding:4px 0; text-align:right; font-weight:700;">${total}</td></tr>
+                        ${whtAmount > 0 ? `<tr><td style="padding:4px 0; color:#6b7280;">Less withholding tax on interest (${whtPreview.rate}%)</td><td style="padding:4px 0; text-align:right;">-${whtAmount}</td></tr>` : ''}
+                        <tr><td style="padding:4px 0; color:#6b7280; font-weight:700;">Total paid to you</td><td style="padding:4px 0; text-align:right; font-weight:700;">${total - whtAmount}</td></tr>
                     </table>
                     <p>Please log in and confirm you received this, or reject it if something's wrong.</p>
                 `, { preheader: 'Please confirm your savings handout' }),
@@ -420,7 +464,10 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
             handout_id: handoutId,
             reference:  referenceCode,
             status:     'PENDING_CONFIRMATION',
-        }, `Handout recorded. Reference: ${referenceCode}. Awaiting the member's confirmation.`);
+            withholding_tax: whtAmount,
+            net_amount: total - whtAmount,
+        }, `Handout recorded. Reference: ${referenceCode}. Awaiting the member's confirmation.` +
+           (whtAmount > 0 ? ` ${whtAmount} withholding tax on the interest will be kept for URA.` : ''));
     });
 });
 
@@ -453,6 +500,23 @@ const confirmSavingsHandout = asyncHandler(async (req, res) => {
             throw createError.badRequest(`This handout cannot be confirmed. Status: ${handout.status}`);
         }
 
+        // v1.70.0 — withholding tax on the interest part, worked out on
+        // the day the money moves; only the net amount leaves the account.
+        const today = new Date().toISOString().split('T')[0];
+        const interestPart = parseFloat(handout.interest_amount) || 0;
+        let wht = null;
+        const taxReady = await taxService.isMigrated();
+        if (interestPart > 0 && taxReady) {
+            const member = await client.query('SELECT tax_residency FROM users WHERE id = $1', [handout.user_id]);
+            const w = await taxService.computeWithholding(client, {
+                paymentType: 'SAVINGS_INTEREST', residency: member.rows[0]?.tax_residency || 'RESIDENT',
+                gross: interestPart, currencyId: handout.currency_id, date: today,
+            });
+            if (w.applies) wht = w;
+        }
+        const whtAmount = wht ? wht.tax : 0;
+        const netPaid = parseFloat((parseFloat(handout.total_amount) - whtAmount).toFixed(4));
+
         const { referenceId: txRefId, referenceCode: txRefCode } =
             await generateReference(client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAV-OUT', 'TRANSACTION', req.user.id);
 
@@ -461,15 +525,33 @@ const confirmSavingsHandout = asyncHandler(async (req, res) => {
                 accountId:       handout.account_id,
                 transactionType: 'DEBIT',
                 inflowType:      'SAVINGS_HANDOUT_OUT',
-                amount:          handout.total_amount,
+                amount:          netPaid,
                 currencyId:      handout.currency_id,
                 categoryId:      handout.category_id,
-                description:     `Savings handout — ${handout.first_name} ${handout.last_name} (${handout.reference_code})`,
-                valueDate:       new Date().toISOString().split('T')[0],
+                description:     `Savings handout — ${handout.first_name} ${handout.last_name} (${handout.reference_code})` +
+                                 (whtAmount > 0 ? ` — interest ${interestPart} less withholding tax ${whtAmount}` : ''),
+                valueDate:       today,
                 createdBy:       req.user.id,
                 referenceId:     txRefId,
             });
         await linkReferenceToRecord(client, txRefId, transactionId);
+
+        if (taxReady) {
+            await client.query(`UPDATE savings_handouts SET wht_rate = $1, wht_amount = $2, net_amount = $3 WHERE id = $4`,
+                [wht ? wht.rate : null, whtAmount, netPaid, id]);
+        }
+        if (wht) {
+            const who = await client.query('SELECT tin, tax_residency FROM users WHERE id = $1', [handout.user_id]);
+            await taxService.recordWithholding(client, {
+                paymentType: 'SAVINGS_INTEREST', payeeUserId: handout.user_id,
+                payeeName: `${handout.first_name} ${handout.last_name}`, payeeTin: who.rows[0]?.tin || null,
+                payeeResidency: who.rows[0]?.tax_residency || 'RESIDENT',
+                rateCode: wht.rateCode, rate: wht.rate, gross: interestPart, tax: whtAmount,
+                currencyId: handout.currency_id, date: today, debitGlCode: '2100',
+                sourceTransactionId: transactionId, savingsHandoutId: parseInt(id), userId: req.user.id,
+                notes: `Interest paid with savings handout ${handout.reference_code}`,
+            });
+        }
 
         await client.query(`
             UPDATE savings_handouts
@@ -483,8 +565,8 @@ const confirmSavingsHandout = asyncHandler(async (req, res) => {
                    accrued_interest    = accrued_interest - $2,
                    total_interest_paid = total_interest_paid + $2,
                    updated_at = NOW()
-            WHERE  user_id = $3
-        `, [handout.principal_amount, handout.interest_amount, handout.user_id]);
+            WHERE  user_id = $3 AND currency_id = $4
+        `, [handout.principal_amount, handout.interest_amount, handout.user_id, handout.currency_id]);
 
         // v1.30.2 (Section 4.35) — same Payment Acknowledgement flow as
         // dividends/service fees/reimbursements, now covering savings
@@ -497,9 +579,10 @@ const confirmSavingsHandout = asyncHandler(async (req, res) => {
             transactionId,
             payerId:       handout.entered_by,
             recipientId:   handout.user_id,
-            amount:        handout.total_amount,
+            amount:        netPaid,
             currencyId:    handout.currency_id,
             purpose:       `Savings handout — ${handout.reference_code}` +
+                           (whtAmount > 0 ? ` (net of ${whtAmount} withholding tax on interest)` : '') +
                            `${handout.notes ? `: ${handout.notes}` : ''}`,
         });
 
@@ -605,11 +688,11 @@ const rejectSavingsHandout = asyncHandler(async (req, res) => {
 // same shape as a Handout.
 // ============================================================
 const createSavingsCapitalConversion = asyncHandler(async (req, res) => {
-    const { user_id, category_id, amount, conversion_date, notes, destination_account_id } = req.body;
+    const { user_id, category_id, amount, conversion_date, notes, destination_account_id, currency_id } = req.body;
 
     await withTransaction(async (client) => {
         const memberResult = await client.query(
-            'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+            'SELECT * FROM users WHERE id = $1 AND is_active = TRUE',
             [user_id]
         );
         if (memberResult.rows.length === 0) {
@@ -617,7 +700,9 @@ const createSavingsCapitalConversion = asyncHandler(async (req, res) => {
         }
         const member = memberResult.rows[0];
 
-        const balance = await getOrCreateSavingsBalance(client, user_id, null);
+        // v1.61.0 — which of the member's currency balances this
+        // conversion draws from; a member can hold several at once.
+        const balance = await getOrCreateSavingsBalance(client, user_id, currency_id);
         const principal = parseFloat(amount);
 
         if (principal > parseFloat(balance.principal_balance)) {
@@ -626,7 +711,7 @@ const createSavingsCapitalConversion = asyncHandler(async (req, res) => {
             );
         }
 
-        const savingsAccount = await getSavingsAccount(client);
+        const savingsAccount = await getSavingsAccount(client, currency_id);
 
         // Destination defaults to Primary (same default creditShareholderContribution
         // itself uses for an ordinary Record Contribution) — validated to share the
@@ -756,7 +841,7 @@ const confirmSavingsCapitalConversion = asyncHandler(async (req, res) => {
         // Re-check the balance at confirm time too — it may have moved
         // (e.g. a handout, or another conversion) since the Treasurer
         // entered this.
-        const balance = await getOrCreateSavingsBalance(client, conversion.user_id, null);
+        const balance = await getOrCreateSavingsBalance(client, conversion.user_id, conversion.currency_id);
         if (parseFloat(conversion.amount) > parseFloat(balance.principal_balance)) {
             throw createError.badRequest(
                 `Your savings balance has since dropped below this amount. Available: ${balance.principal_balance}.`
@@ -787,8 +872,8 @@ const confirmSavingsCapitalConversion = asyncHandler(async (req, res) => {
             UPDATE savings_balances
             SET    principal_balance = principal_balance - $1,
                    updated_at = NOW()
-            WHERE  user_id = $2
-        `, [conversion.amount, conversion.user_id]);
+            WHERE  user_id = $2 AND currency_id = $3
+        `, [conversion.amount, conversion.user_id, conversion.currency_id]);
 
         // Leg 2 — the ordinary contribution flow: posts the CREDIT into
         // the destination account, records shareholder_contributions,
@@ -959,6 +1044,378 @@ const getAllSavingsCapitalConversions = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// CREATE SAVINGS CURRENCY CONVERSION (v1.61.0) — Treasurer / Assistant Treasurer
+// POST /api/savings/currency-conversions
+// Requested directly: "the savings account have allowance to hold
+// multiple currencies... money can be transferred within the savings
+// account at an exchange rate just like the normal transfer except
+// that no charges apply here." Own standalone flow, structurally the
+// closest sibling to Savings-to-Capital Conversion (v1.58.0) — same
+// "Treasurer enters it, member confirms" shape, since this is still
+// entirely the member's own money either way, just changing which of
+// their own currency balances it sits in. Unlike a real Transfer,
+// there are NO bank charges — nothing ever leaves the club's own
+// accounts, both legs are the club's own SAVINGS-type accounts.
+// ============================================================
+const createSavingsCurrencyConversion = asyncHandler(async (req, res) => {
+    const {
+        user_id, from_currency_id, to_currency_id, from_amount,
+        exchange_rate, conversion_date, notes,
+    } = req.body;
+
+    await withTransaction(async (client) => {
+        const memberResult = await client.query(
+            'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND is_active = TRUE',
+            [user_id]
+        );
+        if (memberResult.rows.length === 0) {
+            throw createError.notFound('Member not found');
+        }
+        const member = memberResult.rows[0];
+
+        if (parseInt(from_currency_id) === parseInt(to_currency_id)) {
+            throw createError.badRequest('Choose two different currencies to convert between');
+        }
+
+        const fromAmount = parseFloat(from_amount);
+        const rate = parseFloat(exchange_rate);
+        if (!(rate > 0)) {
+            throw createError.badRequest('Exchange rate must be a positive number');
+        }
+        const toAmount = parseFloat((fromAmount * rate).toFixed(4));
+
+        const balance = await getOrCreateSavingsBalance(client, user_id, from_currency_id);
+        if (fromAmount > parseFloat(balance.principal_balance)) {
+            throw createError.badRequest(
+                `Cannot convert more than the member has saved in that currency. Available: ${balance.principal_balance}.`
+            );
+        }
+
+        const fromAccount = await getSavingsAccount(client, from_currency_id);
+        const toAccount   = await getSavingsAccount(client, to_currency_id);
+
+        const { referenceId, referenceCode } = await generateReference(
+            client, MODULE_CODES.SAVINGS, 'SAVFX', 'SAVINGS_CURRENCY_CONVERSION', req.user.id
+        );
+
+        const result = await client.query(`
+            INSERT INTO savings_currency_conversions (
+                reference_id, user_id, from_account_id, from_currency_id, from_amount,
+                to_account_id, to_currency_id, to_amount, exchange_rate,
+                exchange_rate_entered_by, conversion_date, notes, entered_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING id
+        `, [
+            referenceId, user_id, fromAccount.id, from_currency_id, fromAmount,
+            toAccount.id, to_currency_id, toAmount, rate,
+            req.user.id, conversion_date, notes || null, req.user.id,
+        ]);
+
+        const conversionId = result.rows[0].id;
+        await linkReferenceToRecord(client, referenceId, conversionId);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CURRENCY_CONVERSION_ENTERED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_currency_conversions',
+            recordId:    conversionId,
+            newValues:   { referenceCode, user_id, fromAmount, toAmount, rate },
+            description: `Savings currency conversion entered (awaiting member confirmation): ${referenceCode} — ${member.first_name} ${member.last_name}: ${fromAmount} → ${toAmount}`,
+            client,
+        });
+
+        notify({
+            userId:     user_id,
+            type:       'SAVINGS_CURRENCY_CONVERSION_PENDING',
+            title:      'Confirm converting your savings currency',
+            body:       `The Treasurer wants to convert ${fromAmount} of your savings into ${toAmount} (${referenceCode}). Nothing has moved yet — please confirm or reject.`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_currency_conversions',
+            recordId:   conversionId,
+            email: {
+                subject: `Confirm: savings currency conversion — ${referenceCode}`,
+                html: await wrapEmail(`
+                    <p>Dear ${member.first_name},</p>
+                    <p>The Treasurer has entered a request to convert part of your savings into a different currency:</p>
+                    <table style="width:100%; border-collapse:collapse; margin:12px 0;">
+                        <tr><td style="padding:4px 0; color:#6b7280;">Converting</td><td style="padding:4px 0; text-align:right; font-weight:700;">${fromAmount}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">You'll receive</td><td style="padding:4px 0; text-align:right; font-weight:700;">${toAmount}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">Rate</td><td style="padding:4px 0; text-align:right;">${rate}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">Reference</td><td style="padding:4px 0; text-align:right;">${referenceCode}</td></tr>
+                    </table>
+                    <p>Nothing has moved yet — please log in and confirm you agree, or reject it if something's wrong.</p>
+                `, { preheader: 'Confirm your savings currency conversion' }),
+            },
+        });
+
+        sendCreated(res, {
+            conversion_id: conversionId,
+            reference:     referenceCode,
+            from_amount:   fromAmount,
+            to_amount:     toAmount,
+            status:        'PENDING_CONFIRMATION',
+        }, `Currency conversion recorded. Reference: ${referenceCode}. Awaiting the member's confirmation.`);
+    });
+});
+
+// ============================================================
+// CONFIRM SAVINGS CURRENCY CONVERSION — only the member whose savings this is
+// PATCH /api/savings/currency-conversions/:id/confirm
+// Posts both legs atomically: a DEBIT on the source currency's
+// SAVINGS account and a CREDIT on the destination currency's SAVINGS
+// account, each moving that specific currency's savings_balances row
+// by its own amount. No bank charges — see the header comment above.
+// ============================================================
+const confirmSavingsCurrencyConversion = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(`
+            SELECT scc.*, r.reference_code, u.first_name, u.last_name
+            FROM   savings_currency_conversions scc
+            JOIN   references_registry r ON r.id = scc.reference_id
+            JOIN   users u ON u.id = scc.user_id
+            WHERE  scc.id = $1 FOR UPDATE
+        `, [id]);
+
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Savings currency conversion not found');
+        }
+        const conversion = existing.rows[0];
+
+        if (conversion.user_id !== req.user.id) {
+            throw createError.forbidden('Only the member whose savings this is can confirm this conversion');
+        }
+        if (conversion.status !== 'PENDING_CONFIRMATION') {
+            throw createError.badRequest(`This conversion cannot be confirmed. Status: ${conversion.status}`);
+        }
+
+        // Re-check the source balance at confirm time too — it may
+        // have moved since the Treasurer entered this.
+        const fromBalance = await getOrCreateSavingsBalance(client, conversion.user_id, conversion.from_currency_id);
+        if (parseFloat(conversion.from_amount) > parseFloat(fromBalance.principal_balance)) {
+            throw createError.badRequest(
+                `Your balance in that currency has since dropped below this amount. Available: ${fromBalance.principal_balance}.`
+            );
+        }
+        // Make sure the destination row exists (currency this member
+        // may never have held before) before crediting it below.
+        await getOrCreateSavingsBalance(client, conversion.user_id, conversion.to_currency_id);
+
+        // Both legs post under the same dedicated category — there's
+        // nothing for anyone to categorize here, this is purely a
+        // currency swap of money already inside Savings.
+        const categoryId = await getOrCreateCategory(client, {
+            ...SAVINGS_CURRENCY_CONVERSION_CATEGORY,
+            createdBy: req.user.id,
+        });
+
+        // Leg 1 — debit the source currency's SAVINGS account.
+        const { referenceId: outRefId, referenceCode: outRefCode } =
+            await generateReference(client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAVFX-OUT', 'TRANSACTION', req.user.id);
+
+        const { transactionId: fromTxId } =
+            await postTransaction(client, {
+                accountId:       conversion.from_account_id,
+                transactionType: 'DEBIT',
+                inflowType:      'SAVINGS_CURRENCY_CONV_OUT',
+                amount:          conversion.from_amount,
+                currencyId:      conversion.from_currency_id,
+                categoryId,
+                description:     `Savings currency conversion (out) — ${conversion.first_name} ${conversion.last_name} (${conversion.reference_code})`,
+                valueDate:       new Date().toISOString().split('T')[0],
+                createdBy:       req.user.id,
+                referenceId:     outRefId,
+            });
+        await linkReferenceToRecord(client, outRefId, fromTxId);
+
+        await client.query(`
+            UPDATE savings_balances
+            SET    principal_balance = principal_balance - $1,
+                   updated_at = NOW()
+            WHERE  user_id = $2 AND currency_id = $3
+        `, [conversion.from_amount, conversion.user_id, conversion.from_currency_id]);
+
+        // Leg 2 — credit the destination currency's SAVINGS account.
+        const { referenceId: inRefId, referenceCode: inRefCode } =
+            await generateReference(client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAVFX-IN', 'TRANSACTION', req.user.id);
+
+        const { transactionId: toTxId } =
+            await postTransaction(client, {
+                accountId:       conversion.to_account_id,
+                transactionType: 'CREDIT',
+                inflowType:      'SAVINGS_CURRENCY_CONV_IN',
+                amount:          conversion.to_amount,
+                currencyId:      conversion.to_currency_id,
+                categoryId,
+                description:     `Savings currency conversion (in) — ${conversion.first_name} ${conversion.last_name} (${conversion.reference_code})`,
+                valueDate:       new Date().toISOString().split('T')[0],
+                createdBy:       req.user.id,
+                referenceId:     inRefId,
+            });
+        await linkReferenceToRecord(client, inRefId, toTxId);
+
+        await client.query(`
+            UPDATE savings_balances
+            SET    principal_balance = principal_balance + $1,
+                   updated_at = NOW()
+            WHERE  user_id = $2 AND currency_id = $3
+        `, [conversion.to_amount, conversion.user_id, conversion.to_currency_id]);
+
+        await client.query(`
+            UPDATE savings_currency_conversions
+            SET    status = 'CONFIRMED',
+                   from_transaction_id = $1,
+                   to_transaction_id   = $2,
+                   confirmed_at = NOW()
+            WHERE  id = $3
+        `, [fromTxId, toTxId, id]);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CURRENCY_CONVERSION_CONFIRMED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_currency_conversions',
+            recordId:    parseInt(id),
+            newValues:   { outRefCode, inRefCode, from_amount: conversion.from_amount, to_amount: conversion.to_amount },
+            description: `Savings currency conversion confirmed: ${conversion.reference_code} — ${conversion.from_amount} → ${conversion.to_amount}`,
+            client,
+        });
+
+        notify({
+            userId:     conversion.entered_by,
+            type:       'SAVINGS_CURRENCY_CONVERSION_CONFIRMED',
+            title:      'Savings currency conversion confirmed',
+            body:       `${conversion.first_name} ${conversion.last_name} confirmed the currency conversion ${conversion.reference_code}.`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_currency_conversions',
+            recordId:   parseInt(id),
+        });
+
+        sendSuccess(res, {
+            status: 'CONFIRMED',
+            from_transaction_reference: outRefCode,
+            to_transaction_reference:   inRefCode,
+        }, 'Confirmed — your savings have been converted');
+    });
+});
+
+// ============================================================
+// REJECT SAVINGS CURRENCY CONVERSION — only the member whose savings this is
+// PATCH /api/savings/currency-conversions/:id/reject
+// ============================================================
+const rejectSavingsCurrencyConversion = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(`
+            SELECT scc.*, r.reference_code, u.first_name, u.last_name
+            FROM   savings_currency_conversions scc
+            JOIN   references_registry r ON r.id = scc.reference_id
+            JOIN   users u ON u.id = scc.user_id
+            WHERE  scc.id = $1 FOR UPDATE
+        `, [id]);
+
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Savings currency conversion not found');
+        }
+        const conversion = existing.rows[0];
+
+        if (conversion.user_id !== req.user.id) {
+            throw createError.forbidden('Only the member whose savings this is can reject this conversion');
+        }
+        if (conversion.status !== 'PENDING_CONFIRMATION') {
+            throw createError.badRequest(`This conversion cannot be rejected. Status: ${conversion.status}`);
+        }
+
+        await client.query(`
+            UPDATE savings_currency_conversions
+            SET    status = 'REJECTED', rejected_reason = $1, rejected_at = NOW()
+            WHERE  id = $2
+        `, [reason || null, id]);
+
+        await logAction(req.user.id, ACTIONS.SAVINGS_CURRENCY_CONVERSION_REJECTED, MODULES.FINANCE, {
+            ipAddress:   req.ip,
+            recordType:  'savings_currency_conversions',
+            recordId:    parseInt(id),
+            description: `Savings currency conversion rejected by member: ${conversion.reference_code}`,
+            client,
+        });
+
+        notify({
+            userId:     conversion.entered_by,
+            type:       'SAVINGS_CURRENCY_CONVERSION_REJECTED',
+            title:      'Savings currency conversion rejected',
+            body:       `${conversion.first_name} ${conversion.last_name} rejected the currency conversion ${conversion.reference_code}.${reason ? ` Reason: ${reason}` : ''}`,
+            link:       `/savings`,
+            module:     'FINANCE',
+            recordType: 'savings_currency_conversions',
+            recordId:   parseInt(id),
+        });
+
+        sendSuccess(res, { status: 'REJECTED' }, 'Conversion rejected');
+    });
+});
+
+// ============================================================
+// GET MY SAVINGS CURRENCY CONVERSIONS
+// GET /api/savings/currency-conversions/me
+// ============================================================
+const getMySavingsCurrencyConversions = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT scc.*, r.reference_code,
+               fc.code AS from_currency_code, tc.code AS to_currency_code,
+               en.first_name || ' ' || en.last_name AS entered_by_name
+        FROM   savings_currency_conversions scc
+        JOIN   references_registry r ON r.id = scc.reference_id
+        JOIN   currencies fc ON fc.id = scc.from_currency_id
+        JOIN   currencies tc ON tc.id = scc.to_currency_id
+        JOIN   users en ON en.id = scc.entered_by
+        WHERE  scc.user_id = $1
+        ORDER BY scc.created_at DESC
+    `, [req.user.id]);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================
+// GET ALL SAVINGS CURRENCY CONVERSIONS — Treasurer/Admin
+// GET /api/savings/currency-conversions
+// ============================================================
+const getAllSavingsCurrencyConversions = asyncHandler(async (req, res) => {
+    const { status } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
+
+    const conditions = [];
+    const params = [];
+    let p = 0;
+    if (status) { p++; conditions.push(`scc.status = $${p}`); params.push(status.toUpperCase()); }
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const countResult = await query(`SELECT COUNT(*) AS total FROM savings_currency_conversions scc ${where}`, params);
+    const total = parseInt(countResult.rows[0].total);
+
+    params.push(limit, offset);
+    const result = await query(`
+        SELECT
+            scc.*, r.reference_code,
+            fc.code AS from_currency_code, tc.code AS to_currency_code,
+            u.first_name || ' ' || u.last_name AS member_name,
+            en.first_name || ' ' || en.last_name AS entered_by_name
+        FROM  savings_currency_conversions scc
+        JOIN  references_registry r ON r.id = scc.reference_id
+        JOIN  currencies fc ON fc.id = scc.from_currency_id
+        JOIN  currencies tc ON tc.id = scc.to_currency_id
+        JOIN  users u ON u.id = scc.user_id
+        JOIN  users en ON en.id = scc.entered_by
+        ${where}
+        ORDER BY scc.created_at DESC
+        LIMIT $${p + 1} OFFSET $${p + 2}
+    `, params);
+
+    sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
 // WITHDRAW SAVINGS (FIXED_TERM legacy, at maturity)
 // POST /api/savings/:id/withdraw
 // ============================================================
@@ -1068,6 +1525,7 @@ const createFixedTermSavings = asyncHandler(async (req, res) => {
         deposit_date,
         maturity_date,
         notes,
+        currency_id,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -1080,7 +1538,14 @@ const createFixedTermSavings = asyncHandler(async (req, res) => {
             throw createError.forbidden('Only shareholders can open savings accounts');
         }
 
-        const savingsAccount = await getSavingsAccount(client);
+        // v1.61.0 — a company can now have more than one Savings
+        // account, so a fixed-term deposit must say which currency's
+        // account it's going into. Fixed-term deposits are out of
+        // scope for the new multi-currency-holding/conversion feature
+        // itself (a lump sum with its own fixed maturity doesn't fit
+        // that model), but they still need an unambiguous account to
+        // post against now that there's no longer a single default.
+        const savingsAccount = await getSavingsAccount(client, currency_id);
 
         const rate   = parseFloat(interest_rate || 0) / 100;
         const start  = new Date(deposit_date);
@@ -1159,6 +1624,28 @@ const createFixedTermSavings = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// GET SAVINGS CURRENCIES — every currency that already has an active
+// SAVINGS account set up (Accounts page). v1.61.0: every Savings
+// action now needs to pick a currency, and getSavingsAccount()
+// throws for any currency that doesn't have an account yet, so the
+// frontend needs this list to only ever offer valid choices. Kept
+// separate from the general accounts list (GET /api/accounts, which
+// needs FINANCE_VIEW_ALL) so any member with a Savings-related
+// permission — not just Treasurer/Director — can load the picker.
+// GET /api/savings/currencies
+// ============================================================
+const getSavingsCurrencies = asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT c.id, c.code, c.name, c.symbol
+        FROM   currencies c
+        JOIN   accounts a ON a.currency_id = c.id
+        WHERE  a.account_type = 'SAVINGS' AND a.is_active = TRUE AND c.is_active = TRUE
+        ORDER  BY c.code
+    `);
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================
 // GET / UPDATE SAVINGS SETTINGS — company-wide interest rate
 // ============================================================
 const getSavingsSettings = asyncHandler(async (req, res) => {
@@ -1194,14 +1681,21 @@ const updateSavingsSettings = asyncHandler(async (req, res) => {
 // ============================================================
 // GET MY SAVINGS BALANCE — for the individual member's own summary
 // GET /api/savings/balance/me
+// v1.61.0 — a member can now hold savings in more than one currency
+// at once, so this returns a `balances` ARRAY (one row per currency
+// they've ever touched, possibly empty) instead of a single object.
+// The pending-* counts stay whole-member totals (not split by
+// currency) — they're just "how many things need your attention"
+// badges, not money figures.
 // ============================================================
 const getMySavingsBalance = asyncHandler(async (req, res) => {
-    const balanceResult = await query(
-        'SELECT * FROM savings_balances WHERE user_id = $1', [req.user.id]
-    );
-    const balance = balanceResult.rows[0] || {
-        principal_balance: 0, accrued_interest: 0, total_interest_paid: 0,
-    };
+    const balancesResult = await query(`
+        SELECT sb.*, c.code AS currency_code, c.symbol AS currency_symbol
+        FROM   savings_balances sb
+        JOIN   currencies c ON c.id = sb.currency_id
+        WHERE  sb.user_id = $1
+        ORDER  BY c.code
+    `, [req.user.id]);
 
     const pendingDeposits = await query(`
         SELECT COUNT(*) AS n FROM member_savings
@@ -1219,11 +1713,18 @@ const getMySavingsBalance = asyncHandler(async (req, res) => {
         WHERE user_id = $1 AND status = 'PENDING_CONFIRMATION'
     `, [req.user.id]);
 
+    // v1.61.0
+    const pendingCurrencyConversions = await query(`
+        SELECT COUNT(*) AS n FROM savings_currency_conversions
+        WHERE user_id = $1 AND status = 'PENDING_CONFIRMATION'
+    `, [req.user.id]);
+
     sendSuccess(res, {
-        ...balance,
+        balances: balancesResult.rows,
         pending_deposits: parseInt(pendingDeposits.rows[0].n),
         pending_handouts: parseInt(pendingHandouts.rows[0].n),
         pending_capital_conversions: parseInt(pendingCapitalConversions.rows[0].n),
+        pending_currency_conversions: parseInt(pendingCurrencyConversions.rows[0].n),
     });
 });
 
@@ -1231,16 +1732,19 @@ const getMySavingsBalance = asyncHandler(async (req, res) => {
 // GET A MEMBER'S SAVINGS BALANCE (Treasurer/Admin)
 // GET /api/savings/balance/:userId
 // Used to show the treasurer a member's available balance before
-// entering a handout for them.
+// entering a handout for them. v1.61.0 — same shape change as
+// getMySavingsBalance above: an array, one row per currency.
 // ============================================================
 const getSavingsBalanceByUser = asyncHandler(async (req, res) => {
     const { userId } = req.params;
-    const balanceResult = await query(
-        'SELECT * FROM savings_balances WHERE user_id = $1', [userId]
-    );
-    sendSuccess(res, balanceResult.rows[0] || {
-        principal_balance: 0, accrued_interest: 0, total_interest_paid: 0,
-    });
+    const balancesResult = await query(`
+        SELECT sb.*, c.code AS currency_code, c.symbol AS currency_symbol
+        FROM   savings_balances sb
+        JOIN   currencies c ON c.id = sb.currency_id
+        WHERE  sb.user_id = $1
+        ORDER  BY c.code
+    `, [userId]);
+    sendSuccess(res, { balances: balancesResult.rows });
 });
 
 // ============================================================
@@ -1437,10 +1941,10 @@ const getAllSavingsHandouts = asyncHandler(async (req, res) => {
 // a member deposit (reuses SAVINGS_CREATE / SAVINGS_APPROVE).
 // ============================================================
 const createSavingsPoolInflow = asyncHandler(async (req, res) => {
-    const { category_id, amount, value_date, description } = req.body;
+    const { category_id, amount, value_date, description, currency_id } = req.body;
 
     await withTransaction(async (client) => {
-        const savingsAccount = await getSavingsAccount(client);
+        const savingsAccount = await getSavingsAccount(client, currency_id);
 
         const { referenceId, referenceCode } = await generateReference(
             client, (MODULE_CODES.SAVINGS || 'SAV'), 'SAVPOOL', 'SAVINGS_POOL_INFLOW', req.user.id
@@ -1500,6 +2004,8 @@ const createSavingsPoolInflow = asyncHandler(async (req, res) => {
 // PATCH /api/savings/pool-inflows/:id/approve
 // ============================================================
 const approveSavingsPoolInflow = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'savings_pool_inflows', req.params.id, ['recorded_by'], 'savings pool entry');
     const { id } = req.params;
     const { review_notes } = req.body;
 
@@ -1661,6 +2167,7 @@ module.exports = {
     rejectSavingsHandout,
     withdrawSavings,
     createFixedTermSavings,
+    getSavingsCurrencies,
     getSavingsSettings,
     updateSavingsSettings,
     getMySavingsBalance,
@@ -1681,4 +2188,10 @@ module.exports = {
     rejectSavingsCapitalConversion,
     getMySavingsCapitalConversions,
     getAllSavingsCapitalConversions,
+    // v1.61.0 — savings currency conversion
+    createSavingsCurrencyConversion,
+    confirmSavingsCurrencyConversion,
+    rejectSavingsCurrencyConversion,
+    getMySavingsCurrencyConversions,
+    getAllSavingsCurrencyConversions,
 };

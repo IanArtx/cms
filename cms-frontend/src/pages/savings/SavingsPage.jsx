@@ -22,13 +22,14 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { PlusIcon, CheckIcon, XMarkIcon, Cog6ToothIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { txFromRow, transactionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // RECORD DEPOSIT MODAL (Treasurer/Assistant Treasurer)
 // ============================================================
-const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories }) => {
+const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories, savingsCurrencies }) => {
     const [form, setForm] = useState({
-        user_id: '', category_id: '', amount: '', deposit_date: '', notes: '',
+        user_id: '', category_id: '', currency_id: '', amount: '', deposit_date: '', notes: '',
     });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -40,10 +41,10 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories })
         setLoading(true);
         setError(null);
         try {
-            await savingsAPI.create({ ...form, amount: parseFloat(form.amount) });
+            await savingsAPI.create({ ...form, currency_id: parseInt(form.currency_id), amount: parseFloat(form.amount) });
             onSuccess();
             onClose();
-            setForm({ user_id: '', category_id: '', amount: '', deposit_date: '', notes: '' });
+            setForm({ user_id: '', category_id: '', currency_id: '', amount: '', deposit_date: '', notes: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -90,17 +91,28 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories })
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
+                                <label className="label">Currency *</label>
+                                <select className="input" value={form.currency_id}
+                                    onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))} required>
+                                    <option value="">Select currency...</option>
+                                    {savingsCurrencies.map(c => (
+                                        <option key={c.id} value={c.id}>{c.code}</option>
+                                    ))}
+                                </select>
+                                <p className="text-xs text-gray-400 mt-1">Which currency this deposit is in — the member's balance in that currency.</p>
+                            </div>
+                            <div>
                                 <label className="label">Amount *</label>
                                 <input type="number" className="input" value={form.amount}
                                     onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
                                     min="0.01" step="0.01" required />
                             </div>
-                            <div>
-                                <label className="label">Deposit Date *</label>
-                                <input type="date" className="input" value={form.deposit_date}
-                                    max={new Date().toISOString().slice(0, 10)}
-                                    onChange={e => setForm(p => ({ ...p, deposit_date: e.target.value }))} required />
-                            </div>
+                        </div>
+                        <div>
+                            <label className="label">Deposit Date *</label>
+                            <input type="date" className="input" value={form.deposit_date}
+                                max={new Date().toISOString().slice(0, 10)}
+                                onChange={e => setForm(p => ({ ...p, deposit_date: e.target.value }))} required />
                         </div>
                         <div>
                             <label className="label">Notes</label>
@@ -123,28 +135,35 @@ const RecordDepositModal = ({ isOpen, onClose, onSuccess, members, categories })
 // ============================================================
 // RECORD HANDOUT MODAL (Treasurer/Assistant Treasurer)
 // ============================================================
-const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories }) => {
+const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories, savingsCurrencies }) => {
     const [form, setForm] = useState({
-        user_id: '', category_id: '', principal_amount: '',
+        user_id: '', category_id: '', currency_id: '', principal_amount: '',
         interest_amount: '', handout_date: '', notes: '',
     });
-    const [memberBalance, setMemberBalance] = useState(null);
+    const [memberBalances, setMemberBalances] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
     useEffect(() => {
         if (form.user_id) {
             savingsAPI.getBalanceForUser(form.user_id)
-                .then(r => {
-                    setMemberBalance(r.data.data);
-                    setForm(p => ({ ...p, interest_amount: r.data.data.accrued_interest || '' }));
-                })
-                .catch(() => setMemberBalance(null));
+                .then(r => setMemberBalances(r.data.data?.balances || []))
+                .catch(() => setMemberBalances([]));
         } else {
-            setMemberBalance(null);
+            setMemberBalances([]);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [form.user_id]);
+
+    const selectedBalance = memberBalances.find(b => b.currency_id === parseInt(form.currency_id));
+
+    // Pre-fill interest from the accrued interest of whichever currency
+    // is currently selected — re-runs whenever the member or the
+    // currency changes.
+    useEffect(() => {
+        setForm(p => ({ ...p, interest_amount: selectedBalance?.accrued_interest || '' }));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [form.user_id, form.currency_id, memberBalances]);
 
     if (!isOpen) return null;
 
@@ -155,13 +174,14 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
         try {
             await savingsAPI.createHandout({
                 ...form,
+                currency_id: parseInt(form.currency_id),
                 principal_amount: parseFloat(form.principal_amount),
                 interest_amount: form.interest_amount ? parseFloat(form.interest_amount) : 0,
             });
             onSuccess();
             onClose();
-            setForm({ user_id: '', category_id: '', principal_amount: '', interest_amount: '', handout_date: '', notes: '' });
-            setMemberBalance(null);
+            setForm({ user_id: '', category_id: '', currency_id: '', principal_amount: '', interest_amount: '', handout_date: '', notes: '' });
+            setMemberBalances([]);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -195,12 +215,14 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
                                 ))}
                             </select>
                         </div>
-                        {memberBalance && (
-                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm">
-                                <p className="text-primary-700">
-                                    Available principal: <span className="font-bold">{formatNumber(memberBalance.principal_balance)}</span>
-                                    {' · '}Accrued interest: <span className="font-bold">{formatNumber(memberBalance.accrued_interest)}</span>
-                                </p>
+                        {memberBalances.length > 0 && (
+                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm space-y-1">
+                                {memberBalances.map(b => (
+                                    <p key={b.currency_id} className="text-primary-700">
+                                        {b.currency_code}: <span className="font-bold">{formatNumber(b.principal_balance)}</span>
+                                        {' · '}Interest: <span className="font-bold">{formatNumber(b.accrued_interest)}</span>
+                                    </p>
+                                ))}
                             </div>
                         )}
                         <div>
@@ -212,6 +234,21 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
                                     <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
                                 ))}
                             </select>
+                        </div>
+                        <div>
+                            <label className="label">Currency *</label>
+                            <select className="input" value={form.currency_id}
+                                onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))} required>
+                                <option value="">Select currency...</option>
+                                {savingsCurrencies.map(c => (
+                                    <option key={c.id} value={c.id}>{c.code}</option>
+                                ))}
+                            </select>
+                            {selectedBalance && (
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Available in {selectedBalance.currency_code}: {formatNumber(selectedBalance.principal_balance)}
+                                </p>
+                            )}
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
@@ -225,7 +262,8 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
                                 <input type="number" className="input" value={form.interest_amount}
                                     onChange={e => setForm(p => ({ ...p, interest_amount: e.target.value }))}
                                     min="0" step="0.01" />
-                                <p className="text-xs text-gray-400 mt-1">Pre-filled from accrued interest — adjust if needed</p>
+                                <p className="text-xs text-gray-400 mt-1">Pre-filled from accrued interest — adjust if needed.
+                                    Withholding tax (15%) is deducted from the interest part only and kept for URA; the member receives the rest.</p>
                             </div>
                         </div>
                         <div>
@@ -260,24 +298,26 @@ const RecordHandoutModal = ({ isOpen, onClose, onSuccess, members, categories })
 // records the request; confirmCapitalConversion (member-side) is what
 // actually posts anything.
 // ============================================================
-const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories }) => {
+const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories, savingsCurrencies }) => {
     const [form, setForm] = useState({
-        user_id: '', category_id: '', amount: '', conversion_date: '', notes: '',
+        user_id: '', category_id: '', currency_id: '', amount: '', conversion_date: '', notes: '',
     });
-    const [memberBalance, setMemberBalance] = useState(null);
+    const [memberBalances, setMemberBalances] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
     useEffect(() => {
         if (form.user_id) {
             savingsAPI.getBalanceForUser(form.user_id)
-                .then(r => setMemberBalance(r.data.data))
-                .catch(() => setMemberBalance(null));
+                .then(r => setMemberBalances(r.data.data?.balances || []))
+                .catch(() => setMemberBalances([]));
         } else {
-            setMemberBalance(null);
+            setMemberBalances([]);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [form.user_id]);
+
+    const selectedBalance = memberBalances.find(b => b.currency_id === parseInt(form.currency_id));
 
     if (!isOpen) return null;
 
@@ -286,11 +326,11 @@ const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories
         setLoading(true);
         setError(null);
         try {
-            await savingsAPI.createCapitalConversion({ ...form, amount: parseFloat(form.amount) });
+            await savingsAPI.createCapitalConversion({ ...form, currency_id: parseInt(form.currency_id), amount: parseFloat(form.amount) });
             onSuccess();
             onClose();
-            setForm({ user_id: '', category_id: '', amount: '', conversion_date: '', notes: '' });
-            setMemberBalance(null);
+            setForm({ user_id: '', category_id: '', currency_id: '', amount: '', conversion_date: '', notes: '' });
+            setMemberBalances([]);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -325,11 +365,13 @@ const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories
                                 ))}
                             </select>
                         </div>
-                        {memberBalance && (
-                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm">
-                                <p className="text-primary-700">
-                                    Available principal: <span className="font-bold">{formatNumber(memberBalance.principal_balance)}</span>
-                                </p>
+                        {memberBalances.length > 0 && (
+                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm space-y-1">
+                                {memberBalances.map(b => (
+                                    <p key={b.currency_id} className="text-primary-700">
+                                        {b.currency_code}: <span className="font-bold">{formatNumber(b.principal_balance)}</span>
+                                    </p>
+                                ))}
                             </div>
                         )}
                         <div>
@@ -341,6 +383,21 @@ const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories
                                     <option key={c.id} value={c.id}>{c.full_path || c.name}</option>
                                 ))}
                             </select>
+                        </div>
+                        <div>
+                            <label className="label">Currency *</label>
+                            <select className="input" value={form.currency_id}
+                                onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))} required>
+                                <option value="">Select currency...</option>
+                                {savingsCurrencies.map(c => (
+                                    <option key={c.id} value={c.id}>{c.code}</option>
+                                ))}
+                            </select>
+                            {selectedBalance && (
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Available in {selectedBalance.currency_code}: {formatNumber(selectedBalance.principal_balance)}
+                                </p>
+                            )}
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
@@ -381,9 +438,9 @@ const ConvertToCapitalModal = ({ isOpen, onClose, onSuccess, members, categories
 // touch any member's balance. Sits PENDING_APPROVAL, same pipeline
 // as a member deposit.
 // ============================================================
-const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
+const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories, savingsCurrencies }) => {
     const [form, setForm] = useState({
-        category_id: '', amount: '', value_date: '', description: '',
+        category_id: '', currency_id: '', amount: '', value_date: '', description: '',
     });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -395,10 +452,10 @@ const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
         setLoading(true);
         setError(null);
         try {
-            await savingsAPI.createPoolInflow({ ...form, amount: parseFloat(form.amount) });
+            await savingsAPI.createPoolInflow({ ...form, currency_id: parseInt(form.currency_id), amount: parseFloat(form.amount) });
             onSuccess();
             onClose();
-            setForm({ category_id: '', amount: '', value_date: '', description: '' });
+            setForm({ category_id: '', currency_id: '', amount: '', value_date: '', description: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -435,6 +492,17 @@ const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
                                 ))}
                             </select>
                         </div>
+                        <div>
+                            <label className="label">Currency *</label>
+                            <select className="input" value={form.currency_id}
+                                onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))} required>
+                                <option value="">Select currency...</option>
+                                {savingsCurrencies.map(c => (
+                                    <option key={c.id} value={c.id}>{c.code}</option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-gray-400 mt-1">Which currency's Savings pool this credit belongs to.</p>
+                        </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="label">Amount *</label>
@@ -459,6 +527,179 @@ const RecordPoolInflowModal = ({ isOpen, onClose, onSuccess, categories }) => {
                             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading} className="btn-primary">
                                 {loading ? 'Recording...' : 'Record Inflow'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// CONVERT CURRENCY MODAL (v1.61.0, Treasurer/Assistant Treasurer)
+// Moves part of a member's own savings from one currency they hold
+// into another, at a manually-entered rate — same convention as the
+// Transfers module's own rate field, but with NO bank charges, since
+// the money never leaves the club's own accounts. Same "nothing moves
+// until the member confirms" shape as a Handout/Capital Conversion —
+// this modal only records the request.
+// ============================================================
+const ConvertCurrencyModal = ({ isOpen, onClose, onSuccess, members, savingsCurrencies }) => {
+    const [form, setForm] = useState({
+        user_id: '', from_currency_id: '', to_currency_id: '', from_amount: '',
+        exchange_rate: '', conversion_date: '', notes: '',
+    });
+    const [memberBalances, setMemberBalances] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (form.user_id) {
+            savingsAPI.getBalanceForUser(form.user_id)
+                .then(r => setMemberBalances(r.data.data?.balances || []))
+                .catch(() => setMemberBalances([]));
+        } else {
+            setMemberBalances([]);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [form.user_id]);
+
+    if (!isOpen) return null;
+
+    const fromCurrency = savingsCurrencies.find(c => c.id === parseInt(form.from_currency_id));
+    const toCurrency   = savingsCurrencies.find(c => c.id === parseInt(form.to_currency_id));
+    const fromBalance  = memberBalances.find(b => b.currency_id === parseInt(form.from_currency_id));
+
+    const amountReceived = form.from_amount && form.exchange_rate
+        ? (parseFloat(form.from_amount) * parseFloat(form.exchange_rate)).toLocaleString('en-US', { maximumFractionDigits: 4 })
+        : null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        try {
+            await savingsAPI.createCurrencyConversion({
+                ...form,
+                from_currency_id: parseInt(form.from_currency_id),
+                to_currency_id: parseInt(form.to_currency_id),
+                from_amount: parseFloat(form.from_amount),
+                exchange_rate: parseFloat(form.exchange_rate),
+            });
+            onSuccess();
+            onClose();
+            setForm({ user_id: '', from_currency_id: '', to_currency_id: '', from_amount: '', exchange_rate: '', conversion_date: '', notes: '' });
+            setMemberBalances([]);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Convert Savings Currency</h2>
+                    <p className="text-sm text-gray-400 mb-4">
+                        Moves part of a member's own savings from one currency they hold into
+                        another, at a rate you enter — no bank charges, the money never leaves the
+                        club's own accounts. Nothing moves yet — the member must confirm before this posts.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Member *</label>
+                            <select className="input" value={form.user_id}
+                                onChange={e => setForm(p => ({ ...p, user_id: e.target.value }))} required>
+                                <option value="">Select member...</option>
+                                {members.map(m => (
+                                    <option key={m.id} value={m.id}>{m.first_name} {m.last_name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        {memberBalances.length > 0 && (
+                            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm space-y-1">
+                                {memberBalances.map(b => (
+                                    <p key={b.currency_id} className="text-primary-700">
+                                        {b.currency_code}: <span className="font-bold">{formatNumber(b.principal_balance)}</span>
+                                    </p>
+                                ))}
+                            </div>
+                        )}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="label">From Currency *</label>
+                                <select className="input" value={form.from_currency_id}
+                                    onChange={e => setForm(p => ({ ...p, from_currency_id: e.target.value }))} required>
+                                    <option value="">Select...</option>
+                                    {savingsCurrencies.map(c => (
+                                        <option key={c.id} value={c.id}>{c.code}</option>
+                                    ))}
+                                </select>
+                                {fromBalance && (
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        Available: {formatNumber(fromBalance.principal_balance)}
+                                    </p>
+                                )}
+                            </div>
+                            <div>
+                                <label className="label">To Currency *</label>
+                                <select className="input" value={form.to_currency_id}
+                                    onChange={e => setForm(p => ({ ...p, to_currency_id: e.target.value }))} required>
+                                    <option value="">Select...</option>
+                                    {savingsCurrencies.filter(c => c.id !== parseInt(form.from_currency_id)).map(c => (
+                                        <option key={c.id} value={c.id}>{c.code}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="label">
+                                    Amount {fromCurrency ? `(${fromCurrency.code})` : ''} *
+                                </label>
+                                <input type="number" className="input" value={form.from_amount}
+                                    onChange={e => setForm(p => ({ ...p, from_amount: e.target.value }))}
+                                    min="0.01" step="0.01" required />
+                            </div>
+                            <div>
+                                <label className="label">Exchange Rate *</label>
+                                <input type="number" className="input" value={form.exchange_rate}
+                                    onChange={e => setForm(p => ({ ...p, exchange_rate: e.target.value }))}
+                                    min="0.00000001" step="0.00000001" required />
+                            </div>
+                        </div>
+                        {amountReceived && toCurrency && (
+                            <div className="bg-blue-50 rounded-lg p-3 text-sm">
+                                <p className="text-blue-700">
+                                    Member will receive:{' '}
+                                    <span className="font-bold">{toCurrency.code} {amountReceived}</span>
+                                </p>
+                            </div>
+                        )}
+                        <div>
+                            <label className="label">Conversion Date *</label>
+                            <input type="date" className="input" value={form.conversion_date}
+                                max={new Date().toISOString().slice(0, 10)}
+                                onChange={e => setForm(p => ({ ...p, conversion_date: e.target.value }))} required />
+                        </div>
+                        <div>
+                            <label className="label">Notes</label>
+                            <textarea className="input" rows={2} value={form.notes}
+                                onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading} className="btn-primary">
+                                {loading ? 'Recording...' : 'Record Conversion'}
                             </button>
                         </div>
                     </form>
@@ -572,19 +813,27 @@ const SavingsPage = () => {
     const [mySavings, setMySavings] = useState([]);
     const [myHandouts, setMyHandouts] = useState([]);
     const [myCapitalConversions, setMyCapitalConversions] = useState([]);
+    const [myCurrencyConversions, setMyCurrencyConversions] = useState([]);
     const [pendingDeposits, setPendingDeposits] = useState([]);
     const [pendingPoolInflows, setPendingPoolInflows] = useState([]);
     const [allSavings, setAllSavings] = useState([]);
     const [allHandouts, setAllHandouts] = useState([]);
     const [allCapitalConversions, setAllCapitalConversions] = useState([]);
+    const [allCurrencyConversions, setAllCurrencyConversions] = useState([]);
     const [members, setMembers] = useState([]);
     const [categories, setCategories] = useState([]);
+    // Currencies that already have an active SAVINGS account set up
+    // (Accounts page) — every Savings action needs to pick one of
+    // these, since getSavingsAccount() throws for any currency that
+    // doesn't have one yet.
+    const [savingsCurrencies, setSavingsCurrencies] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [showDeposit, setShowDeposit] = useState(false);
     const [showHandout, setShowHandout] = useState(false);
     const [showConvertToCapital, setShowConvertToCapital] = useState(false);
+    const [showConvertCurrency, setShowConvertCurrency] = useState(false);
     const [showPoolInflow, setShowPoolInflow] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [actionLoading, setActionLoading] = useState(null);
@@ -594,22 +843,25 @@ const SavingsPage = () => {
     const canApprove         = hasPermission('SAVINGS_APPROVE');
     const canHandout         = hasPermission('SAVINGS_HANDOUT_CREATE');
     const canConvertToCapital = hasPermission('SAVINGS_CAPITAL_CONVERT_CREATE');
+    const canConvertCurrency  = hasPermission('SAVINGS_CURRENCY_CONVERT_CREATE');
     const canView             = hasPermission('SAVINGS_VIEW');
     const canSettings         = hasPermission('SAVINGS_SETTINGS_MANAGE');
 
     const loadMine = useCallback(async () => {
         try {
             setLoading(true);
-            const [balRes, savRes, hoRes, ccRes] = await Promise.all([
+            const [balRes, savRes, hoRes, ccRes, fxRes] = await Promise.all([
                 savingsAPI.getMyBalance(),
                 savingsAPI.getMySavings(),
                 savingsAPI.getMyHandouts(),
                 savingsAPI.getMyCapitalConversions(),
+                savingsAPI.getMyCurrencyConversions(),
             ]);
             setMyBalance(balRes.data.data);
             setMySavings(savRes.data.data || []);
             setMyHandouts(hoRes.data.data || []);
             setMyCapitalConversions(ccRes.data.data || []);
+            setMyCurrencyConversions(fxRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -634,14 +886,16 @@ const SavingsPage = () => {
     const loadManage = useCallback(async () => {
         if (!canView) return;
         try {
-            const [savRes, hoRes, ccRes] = await Promise.all([
+            const [savRes, hoRes, ccRes, fxRes] = await Promise.all([
                 savingsAPI.getAll({ limit: 50 }),
                 savingsAPI.getAllHandouts({ limit: 50 }),
                 savingsAPI.getAllCapitalConversions({ limit: 50 }),
+                savingsAPI.getAllCurrencyConversions({ limit: 50 }),
             ]);
             setAllSavings(savRes.data.data || []);
             setAllHandouts(hoRes.data.data || []);
             setAllCapitalConversions(ccRes.data.data || []);
+            setAllCurrencyConversions(fxRes.data.data || []);
         } catch (err) {
             setError(getErrorMessage(err));
         }
@@ -651,11 +905,14 @@ const SavingsPage = () => {
         loadMine();
         loadApprovals();
         loadManage();
-        if (canCreate || canHandout || canConvertToCapital) {
+        if (canCreate || canHandout || canConvertToCapital || canConvertCurrency) {
             usersAPI.getAllUsers({ is_active: true, limit: 500 }).then(r => setMembers(r.data.data || [])).catch(() => {});
             categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
         }
-    }, [loadMine, loadApprovals, loadManage, canCreate, canHandout, canConvertToCapital]);
+        if (canCreate || canHandout || canConvertToCapital || canConvertCurrency || canView) {
+            savingsAPI.getSavingsCurrencies().then(r => setSavingsCurrencies(r.data.data || [])).catch(() => {});
+        }
+    }, [loadMine, loadApprovals, loadManage, canCreate, canHandout, canConvertToCapital, canConvertCurrency, canView]);
 
     const refreshAll = () => { loadMine(); loadApprovals(); loadManage(); };
 
@@ -784,6 +1041,40 @@ const SavingsPage = () => {
         }
     };
 
+    const handleConfirmCurrencyConversion = async (id) => {
+        const ok = await confirm({
+            title: 'Confirm Currency Conversion',
+            message: 'Confirm converting this amount of your savings into the other currency? This cannot be undone.',
+        });
+        if (!ok) return;
+        setActionLoading(id);
+        try {
+            await savingsAPI.confirmCurrencyConversion(id);
+            refreshAll();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const handleRejectCurrencyConversion = async (id) => {
+        const reason = await confirm({
+            title: 'Dispute Conversion', message: 'What\'s wrong with this currency conversion?',
+            requireInput: true, inputLabel: 'Reason', confirmLabel: 'Dispute', danger: true,
+        });
+        if (!reason) return;
+        setActionLoading(id);
+        try {
+            await savingsAPI.rejectCurrencyConversion(id, { reason });
+            refreshAll();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const handleWithdrawFixedTerm = async (id) => {
         const ok = await confirm({
             title: 'Withdraw Savings', message: 'Process this fixed-term savings withdrawal? This cannot be undone.',
@@ -859,7 +1150,9 @@ const SavingsPage = () => {
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Principal', render: row => <span className="text-sm text-gray-900">{row.currency_code} {formatNumber(row.principal_amount)}</span> },
         { header: 'Interest', render: row => <span className="text-sm text-green-600">{row.currency_code} {formatNumber(row.interest_amount)}</span> },
-        { header: 'Total', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {formatNumber(row.total_amount)}</span> },
+        // v1.70.0 — withholding tax on the interest, kept for URA
+        { header: 'Tax on interest', render: row => <span className="text-sm text-gray-500">{parseFloat(row.wht_amount) > 0 ? `${row.currency_code} ${formatNumber(row.wht_amount)}` : '—'}</span> },
+        { header: 'You receive', render: row => <span className="text-sm font-bold text-primary-700">{row.currency_code} {formatNumber(row.net_amount != null ? row.net_amount : row.total_amount)}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.handout_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
         transactionColumn,
@@ -894,6 +1187,31 @@ const SavingsPage = () => {
                         <CheckIcon className="h-4 w-4" />
                     </button>
                     <button onClick={() => handleRejectCapitalConversion(row.id)} disabled={actionLoading === row.id}
+                        className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Dispute this conversion">
+                        <XMarkIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            ) : null
+        ) },
+    ];
+
+    // Columns — My Savings Currency Conversions (confirm/reject)
+    const myCurrencyConversionsColumns = [
+        { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
+        { header: 'Converting', render: row => <span className="text-sm text-gray-900">{row.from_currency_code} {formatNumber(row.from_amount)}</span> },
+        { header: "You'll Receive", render: row => <span className="text-sm font-bold text-primary-700">{row.to_currency_code} {formatNumber(row.to_amount)}</span> },
+        { header: 'Rate', render: row => <span className="text-xs text-gray-500">{parseFloat(row.exchange_rate).toLocaleString('en-US', { maximumFractionDigits: 4 })}</span> },
+        { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
+        { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.conversion_date)}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        { header: 'Actions', render: row => (
+            row.status === 'PENDING_CONFIRMATION' ? (
+                <div className="flex gap-2">
+                    <button onClick={() => handleConfirmCurrencyConversion(row.id)} disabled={actionLoading === row.id}
+                        className="p-1.5 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Confirm this conversion">
+                        <CheckIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => handleRejectCurrencyConversion(row.id)} disabled={actionLoading === row.id}
                         className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors" title="Dispute this conversion">
                         <XMarkIcon className="h-4 w-4" />
                     </button>
@@ -961,6 +1279,7 @@ const SavingsPage = () => {
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
         { header: 'Total', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.total_amount)}</span> },
+        { header: 'WHT / Paid', render: row => <span className="text-xs text-gray-500">{parseFloat(row.wht_amount) > 0 ? `WHT ${formatNumber(row.wht_amount)} · paid ${formatNumber(row.net_amount)}` : '—'}</span> },
         { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.handout_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
@@ -970,6 +1289,17 @@ const SavingsPage = () => {
         { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
         { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
         { header: 'Amount', render: row => <span className="text-sm font-bold text-gray-900">{row.currency_code} {formatNumber(row.amount)}</span> },
+        { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
+        { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.conversion_date)}</span> },
+        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+    ];
+
+    const allCurrencyConversionsColumns = [
+        { header: 'Reference', render: row => <span className="font-mono text-xs font-medium text-primary-700">{row.reference_code}</span> },
+        { header: 'Member', render: row => <p className="text-sm font-medium text-gray-900">{row.member_name}</p> },
+        { header: 'Converting', render: row => <span className="text-sm text-gray-900">{row.from_currency_code} {formatNumber(row.from_amount)}</span> },
+        { header: 'Received', render: row => <span className="text-sm font-bold text-gray-900">{row.to_currency_code} {formatNumber(row.to_amount)}</span> },
+        { header: 'Rate', render: row => <span className="text-xs text-gray-500">{parseFloat(row.exchange_rate).toLocaleString('en-US', { maximumFractionDigits: 4 })}</span> },
         { header: 'Entered By', render: row => <span className="text-xs text-gray-500">{row.entered_by_name}</span> },
         { header: 'Date', render: row => <span className="text-sm text-gray-500">{formatDate(row.conversion_date)}</span> },
         { header: 'Status', render: row => <StatusBadge status={row.status} /> },
@@ -1000,6 +1330,12 @@ const SavingsPage = () => {
                                 Convert to Capital
                             </button>
                         )}
+                        {canConvertCurrency && (
+                            <button onClick={() => setShowConvertCurrency(true)} className="btn-secondary flex items-center gap-2">
+                                <PlusIcon className="h-4 w-4" />
+                                Convert Currency
+                            </button>
+                        )}
                         {canCreate && (
                             <button onClick={() => setShowPoolInflow(true)} className="btn-secondary flex items-center gap-2">
                                 <PlusIcon className="h-4 w-4" />
@@ -1022,44 +1358,55 @@ const SavingsPage = () => {
                 </div>
             )}
 
-            {/* My Balance Summary */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-                <div className="card">
-                    <p className="text-sm text-gray-400">My Savings Balance</p>
-                    <p className="text-2xl font-bold text-primary-700 mt-1">
-                        {myBalance ? formatNumber(myBalance.principal_balance) : '0.00'}
-                    </p>
-                </div>
-                <div className="card">
-                    <p className="text-sm text-gray-400">Accrued Interest</p>
-                    <p className="text-2xl font-bold text-green-600 mt-1">
-                        {myBalance ? formatNumber(myBalance.accrued_interest) : '0.00'}
-                    </p>
-                </div>
-                <div className="card">
+            {/* My Balance Summary — one card per currency held (v1.61.0) */}
+            <div className="mb-6">
+                {(myBalance?.balances || []).length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {myBalance.balances.map(b => (
+                            <div key={b.currency_id} className="card">
+                                <p className="text-sm text-gray-400">{b.currency_code} Savings Balance</p>
+                                <p className="text-2xl font-bold text-primary-700 mt-1">
+                                    {formatNumber(b.principal_balance)}
+                                </p>
+                                <p className="text-xs text-green-600 mt-1">
+                                    + {formatNumber(b.accrued_interest)} accrued interest
+                                </p>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="card">
+                        <p className="text-sm text-gray-400">My Savings Balance</p>
+                        <p className="text-2xl font-bold text-primary-700 mt-1">0.00</p>
+                        <p className="text-xs text-gray-400 mt-1">You don't hold any savings in any currency yet.</p>
+                    </div>
+                )}
+                <div className="card mt-4 sm:max-w-sm">
                     <p className="text-sm text-gray-400">Awaiting You</p>
                     <p className="text-2xl font-bold text-gray-900 mt-1">
-                        {(myBalance?.pending_deposits || 0) + (myBalance?.pending_handouts || 0) + (myBalance?.pending_capital_conversions || 0)}
+                        {(myBalance?.pending_deposits || 0) + (myBalance?.pending_handouts || 0) +
+                            (myBalance?.pending_capital_conversions || 0) + (myBalance?.pending_currency_conversions || 0)}
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
                         {myBalance?.pending_deposits || 0} deposit(s) pending · {myBalance?.pending_handouts || 0} handout(s) ·{' '}
-                        {myBalance?.pending_capital_conversions || 0} capital conversion(s) to confirm
+                        {myBalance?.pending_capital_conversions || 0} capital conversion(s) ·{' '}
+                        {myBalance?.pending_currency_conversions || 0} currency conversion(s) to confirm
                     </p>
                 </div>
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                     My Savings
                 </button>
                 {canApprove && (
                     <button onClick={() => setActiveTab('approvals')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'approvals' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'approvals' ? 'tab-active' : ''}`}>
                         Pending Approvals
                         {(pendingDeposits.length + pendingPoolInflows.length) > 0 && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${activeTab === 'approvals' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'}`}>
+                            <span className="tab-count-alert">
                                 {pendingDeposits.length + pendingPoolInflows.length}
                             </span>
                         )}
@@ -1067,7 +1414,7 @@ const SavingsPage = () => {
                 )}
                 {canView && (
                     <button onClick={() => setActiveTab('manage')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'manage' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        className={`tab ${activeTab === 'manage' ? 'tab-active' : ''}`}>
                         All Members
                     </button>
                 )}
@@ -1107,6 +1454,32 @@ const SavingsPage = () => {
                             <DataTable
                                 columns={myCapitalConversionsColumns}
                                 data={myCapitalConversions}
+                                loading={false}
+                                emptyMessage="No conversions yet"
+                            />
+                        </div>
+                    )}
+                    {myCurrencyConversions.some(c => c.status === 'PENDING_CONFIRMATION') && (
+                        <div className="mb-6">
+                            <h3 className="text-sm font-semibold text-gray-700 mb-2">Currency Conversions Awaiting Your Confirmation</h3>
+                            <p className="text-xs text-gray-400 mb-2">
+                                The Treasurer wants to move these amounts between currencies within your
+                                savings — nothing has moved yet.
+                            </p>
+                            <DataTable
+                                columns={myCurrencyConversionsColumns}
+                                data={myCurrencyConversions.filter(c => c.status === 'PENDING_CONFIRMATION')}
+                                loading={false}
+                                emptyMessage="Nothing to confirm"
+                            />
+                        </div>
+                    )}
+                    {myCurrencyConversions.length > 0 && (
+                        <div className="mb-6">
+                            <h3 className="text-sm font-semibold text-gray-700 mb-2">Currency Conversion History</h3>
+                            <DataTable
+                                columns={myCurrencyConversionsColumns}
+                                data={myCurrencyConversions}
                                 loading={false}
                                 emptyMessage="No conversions yet"
                             />
@@ -1174,6 +1547,15 @@ const SavingsPage = () => {
                         searchable
                         searchPlaceholder="Search all conversions..."
                     />
+                    <h3 className="text-sm font-semibold text-gray-700 mt-6 mb-2">All Currency Conversions</h3>
+                    <DataTable
+                        columns={allCurrencyConversionsColumns}
+                        data={allCurrencyConversions}
+                        loading={loading}
+                        emptyMessage="No currency conversions found"
+                        searchable
+                        searchPlaceholder="Search all currency conversions..."
+                    />
                 </>
             )}
 
@@ -1183,6 +1565,7 @@ const SavingsPage = () => {
                 onSuccess={refreshAll}
                 members={members}
                 categories={categories}
+                savingsCurrencies={savingsCurrencies}
             />
             <RecordHandoutModal
                 isOpen={showHandout}
@@ -1190,6 +1573,7 @@ const SavingsPage = () => {
                 onSuccess={refreshAll}
                 members={members}
                 categories={categories}
+                savingsCurrencies={savingsCurrencies}
             />
             <ConvertToCapitalModal
                 isOpen={showConvertToCapital}
@@ -1197,12 +1581,21 @@ const SavingsPage = () => {
                 onSuccess={refreshAll}
                 members={members}
                 categories={categories}
+                savingsCurrencies={savingsCurrencies}
+            />
+            <ConvertCurrencyModal
+                isOpen={showConvertCurrency}
+                onClose={() => setShowConvertCurrency(false)}
+                onSuccess={refreshAll}
+                members={members}
+                savingsCurrencies={savingsCurrencies}
             />
             <RecordPoolInflowModal
                 isOpen={showPoolInflow}
                 onClose={() => setShowPoolInflow(false)}
                 onSuccess={refreshAll}
                 categories={categories}
+                savingsCurrencies={savingsCurrencies}
             />
             <SettingsModal
                 isOpen={showSettings}

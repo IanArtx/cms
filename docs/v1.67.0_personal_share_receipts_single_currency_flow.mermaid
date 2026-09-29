@@ -1,0 +1,33 @@
+%% v1.67.0 — Share Purchase Receipts: personal (owner-only + Treasury, grouped by month) and expressed in one currency (the share price's, UGX)
+flowchart TD
+
+    subgraph ISSUE["Contribution recorded (creditShareholderContribution)"]
+        direction TB
+        A["Treasurer records a capital\ncontribution (e.g. EUR 26.00)"] --> B["recalculateShareholding —\nunits = amount x rate / price\n(rate + price as of contribution date)"]
+        B --> C["issueSharePurchaseReceipt"]
+        C --> D["describeShareValuation — SAME rate\nand price the unit calculation used"]
+        D --> E["template_data: share_currency_code UGX,\namount_in_share_currency, exchange_rate,\nprice_per_share (UGX), shares"]
+        E --> F["documents row with\nowner_user_id = contributor"]
+    end
+
+    subgraph ACCESS["Who sees it"]
+        direction TB
+        F --> G["GET /documents/mine\n(owner_user_id = me)\n→ My Documents"]
+        F --> H["GET /documents/share-receipts\nTreasurer / Asst Treasurer / Admin only\n→ Shareholding Receipts, grouped by month"]
+        F -. "excluded (owner_user_id IS NULL filter)" .-> I["GET /documents\nAll Documents"]
+        F -. "excluded" .-> J["Global search"]
+        K["GET /documents/:id, /:id/download"] --> L{"owner or\nTreasury?"}
+        L -->|"No"| M["403 — personal document"]
+        L -->|"Yes"| N["template_data"]
+    end
+
+    subgraph RENDER["sharePurchaseReceiptTemplate"]
+        direction TB
+        O["Amount Contributed: UGX 117,415.22\n'Paid EUR 26.00 at 1 EUR = 4,515.97 UGX'"] --> P["Price Per Share: UGX 50,000.00"]
+        P --> Q["How the shares were calculated:\npaid → rate → UGX value → ÷ price → shares"]
+    end
+
+    subgraph BACKFILL["Existing receipts"]
+        direction TB
+        R["migration_v1.67.0.sql —\nowner_user_id from the contribution"] --> S["backfill_v1.67.0_share_receipts.js —\nadds share currency, rate, UGX amount"]
+    end

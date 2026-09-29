@@ -33,6 +33,24 @@ router.get('/me',
 );
 
 // ============================================================
+// RECORDS CHECK (v1.72.0)
+// GET /api/reports/record-checks
+// Stored money-market-fund and investment figures vs the same figures
+// worked out again from their entries, plus the log of automatic
+// corrections. Read-only.
+// ============================================================
+router.get('/record-checks',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    async (req, res, next) => {
+        try {
+            const { getRecordChecks } = require('../services/recordChecksService');
+            const { sendSuccess } = require('../utils/response');
+            sendSuccess(res, await getRecordChecks());
+        } catch (e) { next(e); }
+    }
+);
+
+// ============================================================
 // GET REPORT LOG
 // GET /api/reports/log
 // ============================================================
@@ -165,6 +183,7 @@ router.get('/trial-balance',
     [
         query('account_id').optional().isInt({ min: 1 }),
         query('as_of_date').optional().isISO8601().withMessage('Invalid date'),
+        query('basis').optional().isIn(['FUNCTIONAL', 'CURRENCY']).withMessage('basis must be FUNCTIONAL or CURRENCY'),
     ],
     validateRequest,
     reportsController.getTrialBalance
@@ -178,6 +197,7 @@ router.get('/general-ledger',
         query('account_id').optional().isInt({ min: 1 }),
         query('from_date').optional().isISO8601().withMessage('Invalid from date'),
         query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+        query('basis').optional().isIn(['FUNCTIONAL', 'CURRENCY']).withMessage('basis must be FUNCTIONAL or CURRENCY'),
     ],
     validateRequest,
     reportsController.getGeneralLedger
@@ -189,6 +209,7 @@ router.get('/balance-sheet',
     [
         query('account_id').optional().isInt({ min: 1 }),
         query('as_of_date').optional().isISO8601().withMessage('Invalid date'),
+        query('basis').optional().isIn(['FUNCTIONAL', 'CURRENCY']).withMessage('basis must be FUNCTIONAL or CURRENCY'),
     ],
     validateRequest,
     reportsController.getBalanceSheet
@@ -201,6 +222,7 @@ router.get('/income-statement',
         query('account_id').optional().isInt({ min: 1 }),
         query('from_date').optional().isISO8601().withMessage('Invalid from date'),
         query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+        query('basis').optional().isIn(['FUNCTIONAL', 'CURRENCY']).withMessage('basis must be FUNCTIONAL or CURRENCY'),
     ],
     validateRequest,
     reportsController.getIncomeStatement
@@ -213,9 +235,76 @@ router.get('/cash-flow-statement',
         query('account_id').optional().isInt({ min: 1 }),
         query('from_date').optional().isISO8601().withMessage('Invalid from date'),
         query('to_date').optional().isISO8601().withMessage('Invalid to date'),
+        query('basis').optional().isIn(['FUNCTIONAL', 'CURRENCY']).withMessage('basis must be FUNCTIONAL or CURRENCY'),
     ],
     validateRequest,
     reportsController.getCashFlowStatement
+);
+
+// ============================================================
+// FX & REVALUATION (v1.66.0)
+// Viewing is FINANCE_VIEW_ALL (same as every statement above).
+// Closing / reopening a month is FINANCE_TRANSACTION_APPROVE (the
+// Treasurer's approval right). Changing one transaction's rate, or
+// re-valuing transactions in bulk, is SYSTEM_CONFIG (an accounting-
+// policy action, same gate as the GL account mapping).
+// ============================================================
+
+// GET /api/reports/fx/status
+router.get('/fx/status',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    reportsController.getFxStatus
+);
+
+// GET /api/reports/fx/revaluations
+router.get('/fx/revaluations',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    reportsController.getFxRevaluations
+);
+
+// POST /api/reports/fx/revaluations — close every pending month end up to through_date
+router.post('/fx/revaluations',
+    requirePermissions(['FINANCE_TRANSACTION_APPROVE']),
+    [
+        body('through_date').optional().isISO8601().withMessage('Invalid through date'),
+        body('notes').optional({ checkFalsy: true }).isString(),
+    ],
+    validateRequest,
+    reportsController.runFxRevaluation
+);
+
+// DELETE /api/reports/fx/revaluations/:periodEnd — reopen that month and every later one
+router.delete('/fx/revaluations/:periodEnd',
+    requirePermissions(['FINANCE_TRANSACTION_APPROVE']),
+    [param('periodEnd').isISO8601().withMessage('Invalid period end')],
+    validateRequest,
+    reportsController.deleteFxRevaluations
+);
+
+// PATCH /api/reports/fx/transactions/:id/rate — set a manual rate on one transaction
+router.patch('/fx/transactions/:id/rate',
+    requirePermissions(['SYSTEM_CONFIG']),
+    [
+        param('id').isInt({ min: 1 }),
+        body('rate').isFloat({ gt: 0 }).withMessage('Rate must be a positive number'),
+        body('note').trim().notEmpty().withMessage('A note is required — say where the rate comes from (e.g. the bank proof of transfer)'),
+    ],
+    validateRequest,
+    reportsController.setTransactionFxRate
+);
+
+// DELETE /api/reports/fx/transactions/:id/rate — remove a manual rate
+router.delete('/fx/transactions/:id/rate',
+    requirePermissions(['SYSTEM_CONFIG']),
+    [param('id').isInt({ min: 1 })],
+    validateRequest,
+    reportsController.clearTransactionFxRate
+);
+
+// POST /api/reports/fx/recompute — re-value transactions still missing a UGX value
+router.post('/fx/recompute',
+    requirePermissions(['SYSTEM_CONFIG']),
+    reportsController.recomputeFxValues
 );
 
 module.exports = router;

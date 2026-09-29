@@ -1,160 +1,103 @@
 // ============================================================
-// USE CHART THEME (v1.49.0)
-// A shared, dark-mode-aware color/style palette for every recharts
-// chart in the system (Investments, Accounts, MMF, Loans, Capital
-// Goal Calls). Reported directly: charts had poor contrast and a
-// dated look in dark mode — dashed grid lines and axis text were
-// colored for a white card (`stroke="#f0f0f0"`, unstyled tick text),
-// so on a dark card they either vanished (near-invisible axis
-// labels) or turned into a harsh bright box (the default white
-// recharts Tooltip, and CartesianGrid's boundary lines reading as a
-// stark white rectangle).
+// USE CHART THEME (v1.49.0, re-coloured in v1.71.0 "Harbour")
+// One shared colour/style set for every recharts chart in the system,
+// in light and dark mode.
 //
-// WHY THIS HAS TO BE A JS HOOK, NOT JUST CSS:
-// The rest of this app follows the OS theme purely via Tailwind's
-// `darkMode: 'media'` and `dark:` utility classes (see index.css) —
-// no JS dark-mode detection existed anywhere before this. But
-// recharts renders plain SVG with color values passed as JS props
-// (`stroke="#2563eb"`, `<Tooltip contentStyle={{...}}>`) — there is
-// no `dark:` class equivalent for an SVG `stroke` attribute or an
-// inline style object, so those values have to be picked in JS,
-// which means knowing the current color scheme in JS. Hence
-// `useIsDarkMode()` below, the one place in the app that reads
-// `prefers-color-scheme` directly.
+// v1.71.0 changes:
+//   • Dark mode is no longer read from the operating system here — it
+//     comes from ThemeContext, which knows the person's own choice
+//     (Light / Dark / Same as my device).
+//   • `series` is now the fixed 8-colour chart palette. Every chart
+//     with several series uses the colours IN THIS ORDER, so the same
+//     position always means the same colour across the system:
+//       light: blue, teal, amber, pink, violet, green, orange, cyan
+//       dark : the same hues, one step brighter so they stay vivid and
+//              readable on the dark cards.
+//   • Grid, axis text and tooltip colours match the new surfaces.
 //
-// USAGE:
+// USAGE (unchanged):
 //   const theme = useChartTheme();
-//   <CartesianGrid stroke={theme.gridStroke} vertical={false} />
-//   <XAxis tick={{ fontSize: 11, fill: theme.axisText }} tickLine={false} />
+//   <CartesianGrid {...theme.gridProps} />
+//   <XAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
 //   <Tooltip {...theme.tooltipProps} formatter={...} />
-//   <Bar dataKey="amount" fill={theme.success} radius={[4, 4, 0, 0]} />
-//   <Legend wrapperStyle={theme.legendStyle} />
+//   <Bar dataKey="amount" fill={theme.success} radius={[6, 6, 0, 0]} />
+//   <Legend {...theme.legendProps} />
 // ============================================================
 
-import { useEffect, useState } from 'react';
+import { useTheme } from '../contexts/ThemeContext';
 
-// ------------------------------------------------------------
-// useIsDarkMode — mirrors the OS/browser color scheme exactly the
-// way Tailwind's own `darkMode: 'media'` does, via a live
-// `matchMedia` listener (not just a one-time read) so a chart
-// already on screen re-themes itself immediately if the user
-// switches their system theme without reloading the page.
-// ------------------------------------------------------------
-export const useIsDarkMode = () => {
-    const [isDark, setIsDark] = useState(
-        () => typeof window !== 'undefined'
-            && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true
-    );
+// Kept for any older import — now simply the person's current choice.
+export const useIsDarkMode = () => useTheme().isDark;
 
-    useEffect(() => {
-        if (typeof window === 'undefined' || !window.matchMedia) return;
-        const mql = window.matchMedia('(prefers-color-scheme: dark)');
-        const onChange = (e) => setIsDark(e.matches);
-        // addEventListener is the modern API; addListener is the
-        // Safari-pre-14 fallback some earlier code in this app
-        // similarly guards against (mirrors idle-logout's own
-        // defensive-support style).
-        if (mql.addEventListener) mql.addEventListener('change', onChange);
-        else mql.addListener(onChange);
-        return () => {
-            if (mql.removeEventListener) mql.removeEventListener('change', onChange);
-            else mql.removeListener(onChange);
-        };
-    }, []);
-
-    return isDark;
+export const CHART_SERIES = {
+    light: ['#2563eb', '#0d9488', '#f59e0b', '#db2777', '#7c3aed', '#16a34a', '#ea580c', '#0891b2'],
+    dark:  ['#60a5fa', '#2dd4bf', '#fbbf24', '#f472b6', '#a78bfa', '#4ade80', '#fb923c', '#22d3ee'],
 };
 
-// ------------------------------------------------------------
-// Palette — a modern, moderately saturated set that reads clearly
-// on both a white card and a dark-gray (#1f2937, this app's own
-// dark `.card` background) card. Dark-mode variants are shifted a
-// step lighter/brighter than their light-mode counterpart (e.g.
-// emerald-600 -> emerald-400) rather than reused as-is — a flat
-// `#16a34a` green that looks great on white reads noticeably muddy
-// and low-contrast against a dark background, which was a big part
-// of the reported "not well represented" complaint.
-// ------------------------------------------------------------
 const PALETTE = {
     light: {
-        primary:   '#2563eb', // blue-600  — primary line/bar accent
-        success:   '#16a34a', // green-600 — inflows, interest, spent-well
-        danger:    '#dc2626', // red-600   — outflows, fees, over budget
-        warning:   '#d97706', // amber-600 — secondary highlight
-        accent:    '#7c3aed', // violet-600 — tertiary series
-        neutral:   '#94a3b8', // slate-400 — baseline/remaining/muted series
-        gridStroke: '#e5e7eb', // gray-200
-        axisText:   '#6b7280', // gray-500
-        cardStroke: '#ffffff', // pie-slice separators match a light card
+        primary:   '#2563eb', // money in / main series
+        success:   '#16a34a', // positive (interest, inflows, on budget)
+        danger:    '#dc2626', // negative (outflows, fees, over budget)
+        warning:   '#f59e0b',
+        accent:    '#7c3aed',
+        teal:      '#0d9488',
+        neutral:   '#94a3b8', // baseline / remaining
+        gridStroke: '#e3e8f0',
+        axisText:   '#475569',
+        cardStroke: '#ffffff',
         tooltipBg:     '#ffffff',
-        tooltipBorder: '#e5e7eb',
-        tooltipText:   '#111827',
-        cursorFill:    'rgba(15, 23, 42, 0.04)',
+        tooltipBorder: '#e3e8f0',
+        tooltipText:   '#0f172a',
+        cursorFill:    'rgba(37, 99, 235, 0.06)',
     },
     dark: {
-        primary:   '#60a5fa', // blue-400
-        success:   '#34d399', // emerald-400
-        danger:    '#f87171', // red-400
-        warning:   '#fbbf24', // amber-400
-        accent:    '#a78bfa', // violet-400
-        neutral:   '#94a3b8', // slate-400 (already light enough to hold up)
-        gridStroke: '#374151', // gray-700 — visible but not harsh against #1f2937
-        axisText:   '#9ca3af', // gray-400
-        cardStroke: '#1f2937', // pie-slice separators match the dark card
-        tooltipBg:     '#1f2937',
-        tooltipBorder: '#374151',
-        tooltipText:   '#f3f4f6',
-        cursorFill:    'rgba(248, 250, 252, 0.06)',
+        primary:   '#60a5fa',
+        success:   '#4ade80',
+        danger:    '#f87171',
+        warning:   '#fbbf24',
+        accent:    '#a78bfa',
+        teal:      '#2dd4bf',
+        neutral:   '#8d9bb4',
+        gridStroke: '#24324f',
+        axisText:   '#a9b6cc',
+        cardStroke: '#111a2e',
+        tooltipBg:     '#16213a',
+        tooltipBorder: '#334766',
+        tooltipText:   '#e6ecf5',
+        cursorFill:    'rgba(96, 165, 250, 0.08)',
     },
 };
 
-// A colorblind-friendlier, brand-neutral rotation for charts with 3+
-// series that aren't strictly "good/bad" (e.g. a multi-slice pie) —
-// [primary, success, warning, accent, danger, neutral].
-const SERIES_ORDER = ['primary', 'success', 'warning', 'accent', 'danger', 'neutral'];
-
-// ------------------------------------------------------------
-// useChartTheme — the one hook every chart-bearing page should call.
-// Returns resolved colors plus ready-to-spread prop bundles for the
-// two recharts primitives (Tooltip, Legend) that need the most
-// boilerplate to theme correctly.
-// ------------------------------------------------------------
 export const useChartTheme = () => {
-    const isDark = useIsDarkMode();
+    const { isDark } = useTheme();
     const p = isDark ? PALETTE.dark : PALETTE.light;
-
-    const series = SERIES_ORDER.map(key => p[key]);
+    const series = isDark ? CHART_SERIES.dark : CHART_SERIES.light;
 
     return {
         isDark,
         ...p,
         series,
-        // Spread directly onto <CartesianGrid {...theme.gridProps} /> —
-        // horizontal-only lines read as a cleaner, more modern grid than
-        // the previous full box (which is what read as a stray white
-        // rectangle around the whole chart in dark mode).
         gridProps: {
             stroke: p.gridStroke,
-            strokeDasharray: '3 3',
+            strokeDasharray: '4 4',
             vertical: false,
         },
-        // Spread onto axis `tick` — e.g. tick={{ fontSize: 11, ...theme.axisTick }}
         axisTick: { fill: p.axisText },
-        // Spread directly onto <Tooltip {...theme.tooltipProps} formatter={...} />
         tooltipProps: {
             contentStyle: {
                 backgroundColor: p.tooltipBg,
                 border: `1px solid ${p.tooltipBorder}`,
-                borderRadius: 8,
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)',
+                borderRadius: 10,
+                boxShadow: isDark ? '0 8px 24px rgba(0,0,0,0.45)' : '0 8px 24px rgba(15,23,42,0.12)',
                 padding: '8px 12px',
                 fontSize: 12,
+                fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
             },
-            labelStyle: { color: p.tooltipText, fontWeight: 600, marginBottom: 2 },
+            labelStyle: { color: p.tooltipText, fontWeight: 700, marginBottom: 2 },
             itemStyle: { color: p.tooltipText },
             cursor: { fill: p.cursorFill },
         },
-        // Spread onto <Legend {...theme.legendProps} />
         legendProps: {
             wrapperStyle: { fontSize: 12, color: p.axisText },
             iconType: 'circle',
@@ -163,3 +106,19 @@ export const useChartTheme = () => {
 };
 
 export default useChartTheme;
+
+// ------------------------------------------------------------
+// compactNumber (v1.71.0) — axis labels that always fit:
+//   85,471,625 → 85.5M   ·   733,000 → 733K   ·   9,500 → 9,500
+// Used for chart axes only; tooltips still show the full figure.
+// ------------------------------------------------------------
+export const compactNumber = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return v;
+    const abs = Math.abs(n);
+    const fmt = (x, s) => `${parseFloat(x.toFixed(1))}${s}`;
+    if (abs >= 1e9) return fmt(n / 1e9, 'B');
+    if (abs >= 1e6) return fmt(n / 1e6, 'M');
+    if (abs >= 1e4) return fmt(n / 1e3, 'K');
+    return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};

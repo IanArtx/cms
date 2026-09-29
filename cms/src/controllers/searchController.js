@@ -74,6 +74,7 @@ const globalSearch = asyncHandler(async (req, res) => {
             JOIN   references_registry r ON r.id = d.reference_id
             WHERE  (d.title ILIKE $1 OR r.reference_code ILIKE $1 OR r.public_id ILIKE $1)
             AND    d.status != 'SUPERSEDED'
+            AND    d.owner_user_id IS NULL   -- v1.67.0: personal documents (share receipts) never appear in search
             ORDER  BY d.created_at DESC
             LIMIT  5
         `, [like]);

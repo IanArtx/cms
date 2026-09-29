@@ -97,9 +97,9 @@ router.patch('/:id',
 
 // Approve a requisition — Treasurer and Assistant Treasurer.
 // account_id is required for EXPENSE and FINE_PAYMENT requisitions
-// (which account to pay from / receive the fine into) but not for
-// CONTRIBUTION_ACKNOWLEDGEMENT — those always credit the primary
-// account, resolved automatically.
+// (which account to pay from / receive the fine into). For
+// CONTRIBUTION_ACKNOWLEDGEMENT it is optional (v1.69.1): the account the
+// member paid into, in any currency; the primary account if omitted.
 router.post('/:id/approve',
     requireRoles(['Treasurer', 'Assistant Treasurer']),
     validators.idParam('id'),

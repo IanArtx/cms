@@ -8,6 +8,7 @@ const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireFinancialAccess } = require('../middleware/auth');
 const sideFundController = require('../controllers/sideFundController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -58,6 +59,7 @@ router.post('/expenses',
         body('expense_date').isISO8601().withMessage('A valid expense date is required').custom(notFutureDate),
     ],
     validateRequest,
+    holdMoneyEntry('sideFund.expense', sideFundController.recordSideFundExpense, { label: 'Side fund expense' }), // v1.73.0 — held for approval unless Treasurer/Admin
     sideFundController.recordSideFundExpense
 );
 
@@ -76,6 +78,7 @@ router.patch('/dues/bulk-pay',
         body('payments.*.amount').isFloat({ min: 0.01 }).withMessage('Each payment amount must be greater than zero'),
     ],
     validateRequest,
+    holdMoneyEntry('sideFund.bulkPay', sideFundController.bulkPayDues, { label: 'Side fund dues (several members)' }), // v1.73.0 — held for approval unless Treasurer/Admin
     sideFundController.bulkPayDues
 );
 
@@ -171,6 +174,7 @@ router.patch('/members/:userId/remove',
         body('exchange_rate').optional().isFloat({ min: 0.000001 }),
     ],
     validateRequest,
+    holdMoneyEntry('sideFund.removeMember', sideFundController.removeMember, { label: 'Remove side fund member (pays out their balance)', subject: { type: 'member', id: r => r.params.userId } }), // v1.73.0 — held for approval unless Treasurer/Admin
     sideFundController.removeMember
 );
 
@@ -189,6 +193,7 @@ router.patch('/dues/:id/pay',
         body('notes').optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('sideFund.duePay', sideFundController.recordDuePayment, { label: 'Side fund due payment', subject: { type: 'sideFundDue', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     sideFundController.recordDuePayment
 );
 

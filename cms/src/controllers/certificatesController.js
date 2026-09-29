@@ -8,22 +8,28 @@
 
 const { query, withTransaction } = require('../config/database');
 const { asyncHandler, createError } = require('../utils/errors');
-const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
+const { sendSuccess, sendPaginated, getPagination } = require('../utils/response');
 const {
-    issueCertificate,
     issueCertificatesForAllShareholders,
     emailRoundCertificates,
+    getLatestSignedCertificate,
 } = require('../services/certificateService');
 const { signSlot, getSignatureStatus } = require('../services/signatureService');
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 
 // ============================================================
-// ISSUE A CERTIFICATE (on-demand)
+// DOWNLOAD A CERTIFICATE (on-demand) — v1.65.0
 // POST /api/certificates
-// Any authenticated user may issue their OWN certificate.
-// Treasurer / Assistant Treasurer / Admin may issue for anyone
-// by passing user_id.
+// Any authenticated user may download their OWN certificate.
+// Treasurer / Assistant Treasurer / Admin may download for anyone
+// by passing user_id. Renamed in behaviour, not route: this used to
+// MINT a fresh, live, unsigned certificate on every call — it now
+// always returns the most recently SIGNED monthly/annual batch
+// certificate instead, complete with its real baked-in signatures and
+// as-of date, so a member always downloads a signed version and
+// current live shareholding (shareholding_registry) is never touched
+// by this action. See certificateService.getLatestSignedCertificate.
 // ============================================================
 const issueOne = asyncHandler(async (req, res) => {
     const { certificate_type, user_id } = req.body;
@@ -39,18 +45,20 @@ const issueOne = asyncHandler(async (req, res) => {
             allowedRoles.includes(typeof r === 'object' ? r.name : r)
         );
         if (!hasRole) {
-            throw createError.forbidden('You can only issue your own certificate');
+            throw createError.forbidden('You can only download your own certificate');
         }
         targetUserId = parseInt(user_id);
     }
 
-    const cert = await issueCertificate({
-        userId:          targetUserId,
-        certificateType: certificate_type,
-        issuedBy:        req.user.id,
-    });
+    const result = await getLatestSignedCertificate(targetUserId, certificate_type);
+    if (!result) {
+        throw createError.notFound(
+            `No signed ${certificate_type === 'ANNUAL' ? 'annual' : 'monthly'} certificate is available yet for this member — it will be available once the next batch is issued and fully signed.`
+        );
+    }
 
-    sendCreated(res, cert, `Certificate issued: ${cert.reference_code}`);
+    sendSuccess(res, { ...result.cert, signatures: result.signatures, stamps: result.stamps },
+        `Certificate: ${result.cert.reference_code} (as of ${result.cert.as_of_date || 'the recorded period'})`);
 });
 
 // ============================================================
@@ -70,7 +78,7 @@ const getMine = asyncHandler(async (req, res) => {
         SELECT sc.id, r.reference_code, sc.certificate_type, sc.period_label,
                sc.shares_held, sc.percentage, sc.price_per_share,
                c.code AS currency_code, c.symbol AS currency_symbol,
-               sc.share_value, sc.issued_at, sc.email_sent
+               sc.share_value, sc.issued_at, sc.as_of_date, sc.email_sent
         FROM   share_certificates sc
         JOIN   references_registry r ON r.id = sc.reference_id
         LEFT JOIN currencies c ON c.id = sc.currency_id
@@ -114,7 +122,7 @@ const getAll = asyncHandler(async (req, res) => {
         SELECT sc.id, r.reference_code, sc.certificate_type, sc.period_label,
                sc.shares_held, sc.percentage, sc.price_per_share,
                c.code AS currency_code, c.symbol AS currency_symbol,
-               sc.share_value, sc.issued_at, sc.email_sent, sc.email_error,
+               sc.share_value, sc.issued_at, sc.as_of_date, sc.email_sent, sc.email_error,
                u.first_name || ' ' || u.last_name AS holder_name
         FROM   share_certificates sc
         JOIN   references_registry r ON r.id = sc.reference_id
@@ -143,8 +151,14 @@ const issueNow = asyncHandler(async (req, res) => {
 
     const result = await issueCertificatesForAllShareholders(certificate_type, req.user.id);
 
+    // v1.64.0 — signing is now always mandatory, so this never emails
+    // immediately: either it's blocked (no signatory configured yet)
+    // or it issued certificates into an OPEN round awaiting signatures.
+    if (result.blocked) {
+        return sendSuccess(res, result, result.blockedReason);
+    }
     sendSuccess(res, result,
-        `Issued ${result.issued}/${result.total} certificates, emailed ${result.emailed}`);
+        `Issued ${result.issued}/${result.total} certificates for ${result.periodLabel} (as of ${result.asOfDate}) — awaiting signatures before they can be emailed`);
 });
 
 // ============================================================

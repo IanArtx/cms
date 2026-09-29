@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { usersAPI, authAPI, certificatesAPI, sideFundAPI } from '../../api/endpoints';
 import api from '../../api/axios';
-import { formatDate, formatRelativeTime, getErrorMessage } from '../../utils/helpers';
+import { formatDate, formatRelativeTime, getErrorMessage, getUploadUrl } from '../../utils/helpers';
 import { shareCertificateTemplate, printDocument } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -27,6 +27,7 @@ import {
     XMarkIcon,
     DocumentTextIcon,
 } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // EDIT PERSONAL INFO FORM
@@ -41,6 +42,9 @@ const EditProfileForm = ({ user, onSuccess, onCancel }) => {
         address:                 user?.address     || '',
         emergency_contact_name:  user?.emergency_contact_name  || '',
         emergency_contact_phone: user?.emergency_contact_phone || '',
+        // v1.70.0 — used for withholding tax on dividends / interest paid to you
+        tin:                     user?.tin || '',
+        tax_residency:           user?.tax_residency || 'RESIDENT',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -90,7 +94,25 @@ const EditProfileForm = ({ user, onSuccess, onCancel }) => {
                     <input type="text" className="input" value={form.id_number}
                         onChange={e => setForm(p => ({ ...p, id_number: e.target.value }))} />
                 </div>
+                <div>
+                    <label className="label">TIN (Uganda, 10 digits)</label>
+                    <input type="text" className="input" value={form.tin} maxLength={10}
+                        onChange={e => setForm(p => ({ ...p, tin: e.target.value.replace(/\D/g, '') }))}
+                        placeholder="Leave empty if you have none" />
+                </div>
+                <div>
+                    <label className="label">Tax residency</label>
+                    <select className="input" value={form.tax_residency}
+                        onChange={e => setForm(p => ({ ...p, tax_residency: e.target.value }))}>
+                        <option value="RESIDENT">Resident in Uganda</option>
+                        <option value="NON_RESIDENT">Not resident in Uganda</option>
+                    </select>
+                </div>
             </div>
+            <p className="text-xs text-gray-400">
+                Your TIN and tax residency decide the withholding tax on dividends and savings interest paid to you,
+                and are printed on your withholding tax certificates.
+            </p>
             <div>
                 <label className="label">Address</label>
                 <textarea className="input" rows={2} value={form.address}
@@ -437,12 +459,7 @@ const AvatarPickerSection = ({ profile, onSuccess }) => {
                 {genders.map(g => (
                     <button key={g.value} type="button"
                         onClick={() => setGender(g.value)}
-                        className={`text-xs px-3 py-1.5 rounded-full font-medium
-                            transition-colors ${
-                            gender === g.value
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        className={`chip-filter ${gender === g.value ? 'chip-filter-active' : ''}`}
                     >
                         {g.label}
                     </button>
@@ -476,7 +493,7 @@ const ProfilePage = () => {
     const { user, refreshUser }                 = useAuth();
     const [profile,        setProfile]          = useState(null);
     const [loading,        setLoading]          = useState(true);
-    const [activeTab,      setActiveTab]        = useState('summary');
+    const [activeTab,      setActiveTab]        = useTabParam('summary');
     const [editing,        setEditing]          = useState(false);
     const [photoUploading, setPhotoUploading]   = useState(false);
     const [photoError,     setPhotoError]       = useState(null);
@@ -709,7 +726,7 @@ const ProfilePage = () => {
             {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
                 by scrolling on a narrow screen instead of overflowing with
                 no way to reach it. */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 {[
                     { key: 'summary',   label: 'Summary',          icon: UserCircleIcon },
                     { key: 'personal',  label: 'Personal Info',     icon: PencilIcon },
@@ -720,13 +737,7 @@ const ProfilePage = () => {
                     <button
                         key={tab.key}
                         onClick={() => { setActiveTab(tab.key); setEditing(false); }}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors flex-shrink-0
-                            whitespace-nowrap ${
-                            activeTab === tab.key
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        className={`tab ${activeTab === tab.key ? 'tab-active' : ''}`}
                     >
                         <tab.icon className="h-4 w-4" />
                         {tab.label}
@@ -959,6 +970,8 @@ const ProfilePage = () => {
                                     { label: 'Phone', value: profile?.phone },
                                     { label: 'Nationality', value: profile?.nationality },
                                     { label: 'ID / Passport', value: profile?.id_number },
+                                    { label: 'TIN', value: profile?.tin },
+                                    { label: 'Tax residency', value: profile?.tax_residency === 'NON_RESIDENT' ? 'Not resident in Uganda' : 'Resident in Uganda' },
                                     { label: 'Address', value: profile?.address },
                                     { label: 'Emergency Contact',
                                         value: profile?.emergency_contact_name },
@@ -1008,7 +1021,7 @@ const ProfilePage = () => {
                         {profile?.signature_path && (
                             <div className="mb-4">
                                 <p className="text-xs text-gray-400 mb-1">Current signature</p>
-                                <img src={profile.signature_path} alt="Current signature"
+                                <img src={getUploadUrl(profile.signature_path)} alt="Current signature"
                                     className="h-16 border border-gray-200 rounded-lg bg-white p-2" />
                             </div>
                         )}

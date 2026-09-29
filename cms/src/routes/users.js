@@ -63,6 +63,9 @@ router.patch('/me',
         body('auditor_company_name').optional().trim().isLength({ max: 200 }),
         body('auditor_company_initials').optional().trim().isLength({ max: 10 }),
         body('auditor_contact_phone').optional().trim().isLength({ max: 30 }),
+        // v1.70.0
+        body('tin').optional({ values: 'null' }).trim().isLength({ max: 20 }),
+        body('tax_residency').optional({ values: 'falsy' }).isIn(['RESIDENT', 'NON_RESIDENT']),
     ],
     validateRequest,
     usersController.updateMyProfile
@@ -123,6 +126,38 @@ router.get('/shareholders',
             LEFT JOIN shareholding_registry sr ON sr.user_id = u.id AND sr.effective_to IS NULL
             WHERE  u.is_active = TRUE
             ORDER BY u.first_name, u.last_name
+        `);
+        sendSuccess(res, result.rows);
+    })
+);
+
+// ============================================================
+// MEMBER DIRECTORY (v1.69.1) — names only.
+// GET /api/users/directory
+// Feeds the person pickers on Generate Document (attendees, chairperson,
+// secretary, members present) and Events (people to notify). Those
+// pages used the full member list (GET /users), which needs
+// USER_VIEW_ALL — a Secretary or Director with DOCUMENT_GENERATE /
+// EVENT_CREATE but not USER_VIEW_ALL got a refused request, and on
+// Generate Document that one refusal also blanked the template list.
+// This returns only id + first/last name of active members (no email,
+// phone, roles or finances) to anyone who can generate documents or
+// create events.
+// ============================================================
+router.get('/directory',
+    requireAssignedRole,
+    requireConsent,
+    (req, res, next) => {
+        const perms = req.user.permissions || [];
+        if (['DOCUMENT_GENERATE', 'EVENT_CREATE', 'USER_VIEW_ALL'].some(p => perms.includes(p))) return next();
+        return res.status(403).json({ success: false, message: 'Your role cannot list members.' });
+    },
+    asyncHandler(async (req, res) => {
+        const result = await query(`
+            SELECT id, first_name, last_name
+            FROM   users
+            WHERE  is_active = TRUE
+            ORDER  BY first_name, last_name
         `);
         sendSuccess(res, result.rows);
     })

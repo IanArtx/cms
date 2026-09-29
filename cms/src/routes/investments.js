@@ -17,6 +17,7 @@ const { body, param } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireFinancialAccess } = require('../middleware/auth');
 const investmentsController = require('../controllers/investmentsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 // All routes require login
 router.use(authenticate);
@@ -55,7 +56,10 @@ router.post('/',
         body('responsible_user_id')
             .optional().isInt({ min: 1 }),
         body('investment_type')
-            .optional().isIn(['STANDARD', 'BOND']).withMessage('Invalid investment type'),
+            .optional().isIn(['STANDARD', 'BOND', 'TREASURY_BILL']).withMessage('Invalid investment type'),
+        // v1.70.0 — treasury bills: when the tax on the discount is taken
+        body('tbill_tax_timing')
+            .optional({ values: 'falsy' }).isIn(['AT_MATURITY', 'AT_PURCHASE']).withMessage('Invalid tax timing'),
         body('face_value')
             .optional().isFloat({ min: 0.01 }).withMessage('Face value must be greater than zero'),
         body('coupon_rate')
@@ -67,6 +71,14 @@ router.post('/',
             .optional().isFloat({ min: 0, max: 100 }).withMessage('Tax withholding rate must be between 0 and 100'),
         body('settlement_value')
             .optional().isFloat({ min: 0.01 }).withMessage('Settlement value must be greater than zero'),
+        // v1.60.0 — required for BOND investments (checked precisely in
+        // the controller, since it only applies when investment_type
+        // is BOND); optional here so a STANDARD investment's request
+        // isn't rejected for omitting it.
+        body('bond_term_years')
+            .optional()
+            .custom(v => [2, 3, 5, 10, 15, 20, 25].includes(parseInt(v)))
+            .withMessage('Bond term must be one of: 2, 3, 5, 10, 15, 20, 25 years'),
     ],
     validateRequest,
     investmentsController.createInvestment
@@ -132,6 +144,11 @@ router.patch('/:id',
         body('tax_withholding_rate').optional().isFloat({ min: 0, max: 100 }),
         body('first_coupon_date').optional().isISO8601(),
         body('settlement_value').optional().isFloat({ min: 0.01 }),
+        body('bond_term_years')
+            .optional()
+            .custom(v => [2, 3, 5, 10, 15, 20, 25].includes(parseInt(v)))
+            .withMessage('Bond term must be one of: 2, 3, 5, 10, 15, 20, 25 years'),
+        body('tbill_tax_timing').optional({ values: 'falsy' }).isIn(['AT_MATURITY', 'AT_PURCHASE']),
     ],
     validateRequest,
     investmentsController.editInvestment
@@ -168,6 +185,7 @@ router.post('/:id/fund',
             .optional().isInt({ min: 1 }),
     ],
     validateRequest,
+    holdMoneyEntry('investments.fund', investmentsController.fundInvestment, { label: 'Investment funding', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     investmentsController.fundInvestment
 );
 
@@ -182,14 +200,20 @@ router.post('/:id/returns',
         body('amount')
             .isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('return_type')
-            .isIn(['DIVIDEND','PROFIT_SHARE','CAPITAL_GAIN','INTEREST','RENTAL','OTHER'])
+            .isIn(['DIVIDEND','PROFIT_SHARE','CAPITAL_GAIN','INTEREST','RENTAL','OTHER','PRINCIPAL'])
             .withMessage('Invalid return type'),
         body('return_date')
             .isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('notes')
             .optional().trim(),
+        // v1.70.0 — tax kept back by the payer (amount is then the gross)
+        body('tax_deducted').optional({ values: 'falsy' }).isFloat({ min: 0 }),
+        body('tax_treatment').optional({ values: 'falsy' }).isIn(['FINAL', 'CREDITABLE']),
+        body('payer_name').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
+        body('tax_certificate_number').optional({ values: 'falsy' }).trim().isLength({ max: 60 }),
     ],
     validateRequest,
+    holdMoneyEntry('investments.return', investmentsController.recordReturn, { label: 'Investment return', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     investmentsController.recordReturn
 );
 
@@ -214,9 +238,33 @@ router.post('/:id/transactions',
             .optional().trim(),
         body('category_id')
             .optional().isInt({ min: 1 }),
+        // v1.70.0 — for a TAX entry
+        body('tax_treatment').optional({ values: 'falsy' }).isIn(['FINAL', 'CREDITABLE']),
+        body('gross_amount').optional({ values: 'falsy' }).isFloat({ min: 0.01 }),
+        body('tax_certificate_number').optional({ values: 'falsy' }).trim().isLength({ max: 60 }),
     ],
     validateRequest,
+    holdMoneyEntry('investments.operation', investmentsController.recordInvestmentTransaction, { label: 'Investment inflow / expense / tax', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     investmentsController.recordInvestmentTransaction
+);
+
+// ============================================================
+// TREASURY BILL MATURITY (v1.70.0)
+// POST /api/investments/:id/treasury-bill-maturity
+// ============================================================
+router.post('/:id/treasury-bill-maturity',
+    requirePermissions(['INVESTMENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('maturity_date').optional({ values: 'falsy' }).isISO8601().withMessage('Invalid maturity date').custom(notFutureDate),
+        body('amount_received').optional({ values: 'falsy' }).isFloat({ min: 0.01 }),
+        body('tax_amount').optional({ values: 'null' }).isFloat({ min: 0 }),
+        body('notes').optional().trim(),
+        body('tax_certificate_number').optional({ values: 'falsy' }).trim().isLength({ max: 60 }),
+    ],
+    validateRequest,
+    holdMoneyEntry('investments.tbillMaturity', investmentsController.recordTreasuryBillMaturity, { label: 'Treasury bill maturity', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
+    investmentsController.recordTreasuryBillMaturity
 );
 
 // ============================================================
@@ -242,6 +290,7 @@ router.patch('/:id/coupons/:couponId/pay',
             .optional().isFloat({ min: 0.01 }).withMessage('Actual gross amount must be greater than zero'),
     ],
     validateRequest,
+    holdMoneyEntry('investments.couponPay', investmentsController.payBondCoupon, { label: 'Bond coupon received', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     investmentsController.payBondCoupon
 );
 
@@ -276,7 +325,25 @@ router.patch('/:id/settlement-value',
             .isFloat({ min: 0.01 }).withMessage('A settlement value greater than zero is required'),
     ],
     validateRequest,
+    holdMoneyEntry('investments.settlementValue', investmentsController.setSettlementValue, { label: 'Bond settlement value (funds the bond)', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     investmentsController.setSettlementValue
+);
+
+// v1.60.0 — set or correct a bond's term (2/3/5/10/15/20/25yr). Used
+// both for a legacy bond migration_v1.60.0.sql's auto-backfill left
+// at NULL, and to correct a wrongly-set one. No status restriction —
+// purely a categorical label, doesn't move money or regenerate the
+// coupon schedule.
+router.patch('/:id/bond-term',
+    requirePermissions(['INVESTMENT_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('bond_term_years')
+            .custom(v => [2, 3, 5, 10, 15, 20, 25].includes(parseInt(v)))
+            .withMessage('Bond term must be one of: 2, 3, 5, 10, 15, 20, 25 years'),
+    ],
+    validateRequest,
+    investmentsController.setBondTerm
 );
 
 // ============================================================

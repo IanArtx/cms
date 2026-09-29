@@ -1,0 +1,46 @@
+%% v1.63.0 — Online events (Google Meet auto-creation) + Notify Everyone
+flowchart TD
+
+    subgraph SETUP["One-time setup — Settings > Integrations (Admin)"]
+        direction TB
+        A["Admin clicks\n'Connect Google Calendar'"] --> B["GET /settings/google/connect\nbuilds a signed 'state' (JWT)\n+ Google consent URL"]
+        B --> C["Browser navigates to Google\nAdmin signs in, grants access"]
+        C --> D["Google redirects to\nGET /settings/google/callback\n(public route — Google has no\nsession/Authorization header)"]
+        D --> E["Verify signed state,\nexchange code for tokens,\nstore refresh_token in\ngoogle_calendar_settings (DB)"]
+        E --> F["Redirect back to\nSettings > Integrations\n— shows 'Connected'"]
+    end
+
+    subgraph CREATE["Creating/editing an online event"]
+        direction TB
+        G["Secretary creates or edits\nan event, checks 'online',\npicks audience (roles/users/Everyone)"] --> H["Event row committed\n(is_online, notify_all_users, etc.)"]
+        H --> I{"is_online AND\nno manual link given?"}
+        I -->|"Yes, Google connected"| J["googleCalendarService\ncreates a Calendar event\nwith conferenceData ->\nGoogle attaches a Meet link"]
+        J --> K["UPDATE events SET\nmeeting_link, meeting_provider='GOOGLE_MEET',\ngoogle_calendar_event_id"]
+        I -->|"Not connected, or\nGoogle call fails"| L["Event stays online,\nno link yet — Secretary\ncan paste one in by hand\n(meeting_provider='MANUAL')"]
+        I -->|"Manual link given"| L
+    end
+
+    subgraph SYNC["Keeping the Calendar event in sync"]
+        direction TB
+        M["Edit (still DRAFT):\ndate/title changed"] --> N["Patch the same\nGoogle Calendar event"]
+        O["Edit: turned offline,\nor replaced with manual link"] --> P["Delete the Google\nCalendar event"]
+        Q["Extend (APPROVED)"] --> N
+        R["Cancel"] --> P
+    end
+
+    subgraph APPROVE["Approve — email + notify"]
+        direction TB
+        S["Director approves the event"] --> T["Gather recipients:\nindividuals + role members\n+ (if notify_all_users)\nEVERY active user except Auditor"]
+        T --> U["Dedupe by email"]
+        U --> V["Send one email each —\nincludes 'Join Google Meet'\nbutton when a link exists"]
+        V --> W["Bell-notify internal\nrecipients too"]
+    end
+
+    F -.enables.-> J
+    K --> S
+
+    style E fill:#dcfce7
+    style J fill:#dcfce7
+    style K fill:#dcfce7
+    style L fill:#fef9c3
+    style V fill:#dcfce7

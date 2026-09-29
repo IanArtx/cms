@@ -15,6 +15,7 @@ const {
     blockFinanceRestricted, requirePermissions,
 } = require('../middleware/auth');
 const depositsController = require('../controllers/depositsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -59,6 +60,7 @@ router.post('/',
         body('description').optional().isString(),
     ],
     validateRequest,
+    holdMoneyEntry('deposits.create', depositsController.createStandaloneDeposit, { label: 'Membership deposit received', subject: { type: 'member', id: r => r.body.user_id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     depositsController.createStandaloneDeposit
 );
 
@@ -109,6 +111,7 @@ router.patch('/:userId/exit-refund',
         body('notes').optional().isString(),
     ],
     validateRequest,
+    holdMoneyEntry('deposits.exitRefund', depositsController.processExitRefundHandler, { label: 'Deposit exit refund', subject: { type: 'member', id: r => r.params.userId } }), // v1.73.0 — held for approval unless Treasurer/Admin
     depositsController.processExitRefundHandler
 );
 

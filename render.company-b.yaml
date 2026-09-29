@@ -158,6 +158,16 @@ services:
         sync: false
       - key: S3_REGION
         value: auto
+      # --- Google Calendar / Meet integration (v1.63.0) ---
+      # Use a SEPARATE Google Cloud OAuth Client from Company A's — this
+      # deployment shares no data with it. See DEPLOYMENT_GUIDE.md's
+      # "Google Calendar (Meet auto-creation)" section.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: BACKEND_URL
+        sync: false
       - key: MONTHLY_REPORT_CRON
         value: "0 8 1 * *"
       - key: COMPANY_NAME
@@ -216,7 +226,7 @@ services:
       # Keep this in sync with render.yaml's copy — same codebase,
       # same version, both companies.
       - key: REACT_APP_VERSION
-        value: "1.59.0"
+        value: "1.73.0"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

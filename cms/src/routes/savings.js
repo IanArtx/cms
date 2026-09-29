@@ -8,6 +8,7 @@ const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireRoles, requireFinancialAccess } = require('../middleware/auth');
 const savingsController = require('../controllers/savingsController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -37,6 +38,19 @@ router.get('/balance/:userId',
     savingsController.getSavingsBalanceByUser
 );
 
+// Currencies that already have an active SAVINGS account set up
+// (v1.61.0) — every currency picker on the Savings page needs this,
+// so it's open to anyone holding any Savings-related permission
+// rather than gated behind FINANCE_VIEW_ALL like the general
+// accounts list.
+router.get('/currencies',
+    requireAnyPermission([
+        'SAVINGS_VIEW', 'SAVINGS_CREATE', 'SAVINGS_HANDOUT_CREATE',
+        'SAVINGS_CAPITAL_CONVERT_CREATE', 'SAVINGS_CURRENCY_CONVERT_CREATE',
+    ]),
+    savingsController.getSavingsCurrencies
+);
+
 // Company-wide interest settings. v1.36.0: was "anyone can view" (any
 // authenticated user) — narrowed to the same financial-role default as
 // the rest of this module's data; only Admin/Treasurer can change.
@@ -63,10 +77,12 @@ router.post('/handouts',
     requirePermissions(['SAVINGS_HANDOUT_CREATE']),
     [
         // No account_id here — a handout always pays out of the one
-        // dedicated SAVINGS account, resolved server-side, never chosen
-        // by the client (Section 4.11).
+        // dedicated SAVINGS account for the chosen currency, resolved
+        // server-side, never chosen by the client (Section 4.11).
         body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        // v1.61.0 — which of the member's currency balances this pays out of.
+        body('currency_id').isInt({ min: 1 }).withMessage('A currency is required'),
         body('principal_amount').isFloat({ min: 0.01 }).withMessage('Principal must be greater than zero'),
         body('interest_amount').optional().isFloat({ min: 0 }),
         body('handout_date').isISO8601().withMessage('A valid handout date is required').custom(notFutureDate),
@@ -94,6 +110,8 @@ router.post('/fixed-term',
     requirePermissions(['FINANCE_TRANSACTION_CREATE']),
     [
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        // v1.61.0 — which Savings account/currency this fixed-term deposit goes into.
+        body('currency_id').isInt({ min: 1 }).withMessage('A currency is required'),
         body('principal_amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('interest_rate').optional().isFloat({ min: 0 }),
         body('interest_period').optional().isIn(['DAILY', 'WEEKLY', 'MONTHLY', 'ANNUALLY']),
@@ -102,6 +120,7 @@ router.post('/fixed-term',
         body('notes').optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('savings.fixedTerm', savingsController.createFixedTermSavings, { label: 'Fixed-term savings deposit', subject: { type: 'currency', id: r => r.body.currency_id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     savingsController.createFixedTermSavings
 );
 
@@ -117,6 +136,8 @@ router.post('/',
     [
         body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        // v1.61.0 — which Savings account/currency this deposit goes into.
+        body('currency_id').isInt({ min: 1 }).withMessage('A currency is required'),
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('deposit_date').isISO8601().withMessage('A valid deposit date is required').custom(notFutureDate),
         body('notes').optional().trim(),
@@ -140,6 +161,8 @@ router.post('/pool-inflows',
     requirePermissions(['SAVINGS_CREATE']),
     [
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        // v1.61.0 — which Savings account/currency this inflow lands in.
+        body('currency_id').isInt({ min: 1 }).withMessage('A currency is required'),
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('value_date').isISO8601().withMessage('A valid date is required').custom(notFutureDate),
         body('description').trim().notEmpty().withMessage('A description is required'),
@@ -179,6 +202,8 @@ router.post('/capital-conversions',
     [
         body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
         body('category_id').isInt({ min: 1 }).withMessage('A valid category is required'),
+        // v1.61.0 — which of the member's currency balances this draws from.
+        body('currency_id').isInt({ min: 1 }).withMessage('A currency is required'),
         body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
         body('conversion_date').isISO8601().withMessage('A valid conversion date is required').custom(notFutureDate),
         body('destination_account_id').optional().isInt({ min: 1 }),
@@ -197,6 +222,46 @@ router.patch('/capital-conversions/:id/reject',
     [ body('reason').optional().trim() ],
     validateRequest,
     savingsController.rejectSavingsCapitalConversion
+);
+
+// ------------------------------------------------------------
+// SAVINGS CURRENCY CONVERSION (v1.61.0) — a Treasurer/Assistant
+// Treasurer moves a member's own savings from one currency they hold
+// into another they also hold, at a manually-entered exchange rate,
+// with no bank charges. Nothing moves until the member themselves
+// confirms it (checked in controller, same shape as Handouts/Capital
+// Conversion above). Declared here (static paths, no bare /:id)
+// before the /:id routes below.
+// ------------------------------------------------------------
+router.get('/currency-conversions/me', savingsController.getMySavingsCurrencyConversions);
+router.get('/currency-conversions',
+    requirePermissions(['SAVINGS_VIEW']),
+    savingsController.getAllSavingsCurrencyConversions
+);
+router.post('/currency-conversions',
+    requirePermissions(['SAVINGS_CURRENCY_CONVERT_CREATE']),
+    [
+        body('user_id').isInt({ min: 1 }).withMessage('A valid member is required'),
+        body('from_currency_id').isInt({ min: 1 }).withMessage('A source currency is required'),
+        body('to_currency_id').isInt({ min: 1 }).withMessage('A destination currency is required'),
+        body('from_amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than zero'),
+        body('exchange_rate').isFloat({ gt: 0 }).withMessage('Exchange rate must be a positive number'),
+        body('conversion_date').isISO8601().withMessage('A valid conversion date is required').custom(notFutureDate),
+        body('notes').optional().trim(),
+    ],
+    validateRequest,
+    savingsController.createSavingsCurrencyConversion
+);
+router.patch('/currency-conversions/:id/confirm',
+    validators.idParam('id'),
+    validateRequest,
+    savingsController.confirmSavingsCurrencyConversion
+);
+router.patch('/currency-conversions/:id/reject',
+    validators.idParam('id'),
+    [ body('reason').optional().trim() ],
+    validateRequest,
+    savingsController.rejectSavingsCurrencyConversion
 );
 
 // ------------------------------------------------------------

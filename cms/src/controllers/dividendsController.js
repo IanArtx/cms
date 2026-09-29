@@ -21,6 +21,8 @@ const { postTransaction } = require('./transactionsController');
 const { getSavingsAccount, getOrCreateSavingsBalance } = require('./savingsController');
 const { notify, notifyMany } = require('../services/notificationService');
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
+const taxService = require('../services/taxService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // Add module codes for dividends and authority payments
 MODULE_CODES.DIVIDEND          = 'DIV';
@@ -181,14 +183,19 @@ const declareDividend = asyncHandler(async (req, res) => {
 // 1 is used.
 // ============================================================
 const approveDividend = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'dividends', req.params.id, ['created_by'], 'dividend');
     const { id } = req.params;
     // Defensive default (v1.26.2) — this endpoint has no required body
-    // fields when the dividend's currency already matches the Savings
-    // account's, so a caller sending no request body at all is legitimate;
-    // Express's JSON body parser only ever populates req.body when a
-    // request actually carries a JSON Content-Type, otherwise it's left
-    // `undefined` rather than `{}`.
-    const { exchange_rate } = req.body || {};
+    // fields when the dividend's currency already matches the target
+    // Savings account's, so a caller sending no request body at all is
+    // legitimate; Express's JSON body parser only ever populates
+    // req.body when a request actually carries a JSON Content-Type,
+    // otherwise it's left `undefined` rather than `{}`.
+    // v1.61.0 — target_currency_id (optional) picks WHICH currency's
+    // Savings account this dividend is credited into; defaults to the
+    // dividend's own currency (no conversion needed in that case).
+    const { exchange_rate, target_currency_id } = req.body || {};
 
     await withTransaction(async (client) => {
         // Get the dividend
@@ -212,18 +219,45 @@ const approveDividend = asyncHandler(async (req, res) => {
         }
 
         // Get all distributions
+        // v1.70.0 — with each shareholder's TIN and tax residency: the
+        // withholding tax on their dividend depends on it.
+        const taxReady = await taxService.isMigrated();
         const distributions = await client.query(`
             SELECT dd.*, u.first_name, u.last_name, u.email
+                   ${taxReady ? ', u.tin, u.tax_residency' : ''}
             FROM dividend_distributions dd
             JOIN users u ON u.id = dd.user_id
             WHERE dd.dividend_id = $1
         `, [id]);
 
-        // The one dedicated Savings account every shareholder's share
-        // is credited into (Section 4.11) — approval fails cleanly with
-        // a clear message if it hasn't been set up yet, same as every
-        // other Savings-module action.
-        const savingsAccount = await getSavingsAccount(client);
+        // v1.70.0 — WITHHOLDING TAX ON DIVIDENDS (Income Tax Act s.118):
+        // each shareholder is credited their share NET of tax; the tax
+        // stays in the declaring account, owed to URA (2500) and due by
+        // the 15th of next month. Declared amounts (gross) are unchanged.
+        const payDate = new Date().toISOString().split('T')[0];
+        const whtByDist = new Map();
+        if (taxReady) {
+            for (const dist of distributions.rows) {
+                const w = await taxService.computeWithholding(client, {
+                    paymentType: 'DIVIDEND', residency: dist.tax_residency || 'RESIDENT',
+                    gross: dist.amount, currencyId: dividend.currency_id, date: payDate,
+                });
+                whtByDist.set(dist.id, w.applies ? w : { applies: false, tax: 0, net: parseFloat(dist.amount), rate: 0 });
+            }
+        }
+        const netOf = (dist) => (whtByDist.has(dist.id) ? whtByDist.get(dist.id).net : parseFloat(dist.amount));
+        const totalWht = parseFloat(distributions.rows.reduce((s, d) => s + (whtByDist.get(d.id)?.tax || 0), 0).toFixed(4));
+        const totalNet = parseFloat((parseFloat(dividend.total_amount) - totalWht).toFixed(4));
+
+        // v1.61.0 — the Savings account every shareholder's share is
+        // credited into (Section 4.11) — defaults to the dividend's own
+        // currency (no conversion needed) unless the Treasurer
+        // deliberately targets a different one they also hold a
+        // Savings account for. Fails cleanly with a clear message if
+        // that currency's Savings account hasn't been set up yet, same
+        // as every other Savings-module action.
+        const targetCurrencyId = target_currency_id ? parseInt(target_currency_id) : dividend.currency_id;
+        const savingsAccount = await getSavingsAccount(client, targetCurrencyId);
         const savingsCurrency = await client.query(
             'SELECT code FROM currencies WHERE id = $1', [savingsAccount.currency_id]
         );
@@ -254,14 +288,15 @@ const approveDividend = asyncHandler(async (req, res) => {
             accountId:       dividend.account_id,
             transactionType: 'DEBIT',
             inflowType:      'DIVIDEND_OUT',
-            amount:          dividend.total_amount,
+            amount:          totalNet,
             currencyId:      dividend.currency_id,
             categoryId:      dividend.category_id,
             description:     `Dividend payment — ${dividend.reference_code}` +
                              `${dividend.period_label
                                 ? ` (${dividend.period_label})`
-                                : ''}`,
-            valueDate:       new Date().toISOString().split('T')[0],
+                                : ''}` +
+                             (totalWht > 0 ? ` — gross ${dividend.total_amount}, withholding tax ${totalWht} kept for URA, net paid ${totalNet}` : ''),
+            valueDate:       payDate,
             createdBy:       req.user.id,
             referenceId:     debitRefId,
         });
@@ -269,7 +304,7 @@ const approveDividend = asyncHandler(async (req, res) => {
 
         // ---- Leg 2: credit the Savings account with the converted total ----
         const savingsTotal = parseFloat(
-            (parseFloat(dividend.total_amount) * effectiveRate).toFixed(4)
+            (totalNet * effectiveRate).toFixed(4)
         );
 
         const { referenceId: creditRefId, referenceCode: creditRefCode } =
@@ -296,19 +331,51 @@ const approveDividend = asyncHandler(async (req, res) => {
 
         // ---- Credit each shareholder's own savings balance ----
         const notifyList = [];
+        // The DIVIDEND_OUT mapping's ledger account (3100) is where the
+        // gross dividend is charged — the withholding moves its tax part
+        // from there into 2500.
+        let dividendGlCode = '3100';
+        if (taxReady) {
+            const m = await client.query(`
+                SELECT ga.code FROM gl_inflow_type_mapping m JOIN gl_accounts ga ON ga.id = m.gl_account_id
+                WHERE  m.inflow_type = 'DIVIDEND_OUT'
+            `);
+            if (m.rows[0]) dividendGlCode = m.rows[0].code;
+        }
+        const debitRate = await client.query(`SELECT functional_rate FROM transactions WHERE id = $1`, [debitPosting.transactionId]);
+        const debitFunctionalRate = debitRate.rows[0]?.functional_rate !== null && debitRate.rows[0]?.functional_rate !== undefined
+            ? parseFloat(debitRate.rows[0].functional_rate) : null;
+
         for (const dist of distributions.rows) {
             const creditedAmount = parseFloat(
-                (parseFloat(dist.amount) * effectiveRate).toFixed(4)
+                (netOf(dist) * effectiveRate).toFixed(4)
             );
+            const w = whtByDist.get(dist.id);
+            if (taxReady) {
+                await client.query(`
+                    UPDATE dividend_distributions SET wht_rate = $1, wht_amount = $2, net_amount = $3 WHERE id = $4
+                `, [w && w.applies ? w.rate : 0, w && w.applies ? w.tax : 0, netOf(dist), dist.id]);
+            }
+            if (w && w.applies) {
+                await taxService.recordWithholding(client, {
+                    paymentType: 'DIVIDEND', payeeUserId: dist.user_id,
+                    payeeName: `${dist.first_name} ${dist.last_name}`, payeeTin: dist.tin || null,
+                    payeeResidency: dist.tax_residency || 'RESIDENT',
+                    rateCode: w.rateCode, rate: w.rate, gross: dist.amount, tax: w.tax,
+                    currencyId: dividend.currency_id, date: payDate, debitGlCode: dividendGlCode,
+                    sourceTransactionId: debitPosting.transactionId, dividendDistributionId: dist.id,
+                    functionalRate: debitFunctionalRate, userId: req.user.id,
+                    notes: `Dividend ${dividend.reference_code}${dividend.period_label ? ` (${dividend.period_label})` : ''}`,
+                });
+            }
 
             await getOrCreateSavingsBalance(client, dist.user_id, savingsAccount.currency_id);
             await client.query(`
                 UPDATE savings_balances
                 SET    principal_balance = principal_balance + $1,
-                       currency_id = COALESCE(currency_id, $2),
                        updated_at = NOW()
-                WHERE  user_id = $3
-            `, [creditedAmount, savingsAccount.currency_id, dist.user_id]);
+                WHERE  user_id = $2 AND currency_id = $3
+            `, [creditedAmount, dist.user_id, savingsAccount.currency_id]);
 
             await client.query(`
                 UPDATE dividend_distributions
@@ -394,13 +461,17 @@ const approveDividend = asyncHandler(async (req, res) => {
             debit_reference:        debitRefCode,
             savings_reference:      creditRefCode,
             total_amount:           dividend.total_amount,
+            total_withholding_tax:  totalWht,
+            total_net_paid:         totalNet,
             total_credited_savings: savingsTotal,
             exchange_rate:          effectiveRate,
             savings_currency:       savingsCurrencyCode,
             balance_before:         debitPosting.balanceBefore,
             balance_after:          debitPosting.balanceAfter,
             distributions_paid:     distributions.rows.length,
-        }, 'Dividend approved and credited to shareholder savings balances');
+        }, totalWht > 0
+            ? `Dividend approved and credited to shareholder savings balances (net of ${totalWht} withholding tax, to be paid to URA by the 15th of next month)`
+            : 'Dividend approved and credited to shareholder savings balances');
     });
 });
 
@@ -455,14 +526,15 @@ const getAllDividends = asyncHandler(async (req, res) => {
              WHERE dd.dividend_id = d.id) AS shareholder_count,
             d.exchange_rate,
             -- Lets the frontend show "needs an exchange rate" on a
-            -- PENDING row without a second round trip: TRUE if this
-            -- dividend's currency differs from the single Savings
-            -- account's currency (Section 4.12).
-            (
-                SELECT sa.currency_id IS DISTINCT FROM d.currency_id
-                FROM   accounts sa
-                WHERE  sa.account_type = 'SAVINGS' AND sa.is_active = TRUE
-                LIMIT 1
+            -- PENDING row without a second round trip: TRUE if there is
+            -- no SAVINGS account in this dividend's OWN currency yet
+            -- (v1.61.0 — a company can have one per currency now, so
+            -- approval defaults to crediting the matching-currency
+            -- account with no conversion; a rate is only needed if the
+            -- Treasurer deliberately targets a different currency).
+            NOT EXISTS (
+                SELECT 1 FROM accounts sa
+                WHERE  sa.account_type = 'SAVINGS' AND sa.is_active = TRUE AND sa.currency_id = d.currency_id
             ) AS needs_exchange_rate
         FROM  dividends d
         JOIN  references_registry r ON r.id  = d.reference_id
@@ -506,6 +578,11 @@ const getDividendById = asyncHandler(async (req, res) => {
                         dd.exchange_rate,
                         dd.status,
                         dd.paid_at,
+                        -- v1.70.0 — withholding tax (read this way so a
+                        -- database without the v1.70.0 columns still works)
+                        (to_jsonb(dd)->>'wht_rate')::numeric   AS wht_rate,
+                        (to_jsonb(dd)->>'wht_amount')::numeric AS wht_amount,
+                        (to_jsonb(dd)->>'net_amount')::numeric AS net_amount,
                         du.first_name || ' ' || du.last_name AS member_name,
                         du.email AS member_email
                     FROM dividend_distributions dd
@@ -513,15 +590,23 @@ const getDividendById = asyncHandler(async (req, res) => {
                     WHERE dd.dividend_id = d.id
                 ) dist
             ) AS distributions,
-            (SELECT sa.id FROM accounts sa WHERE sa.account_type = 'SAVINGS' AND sa.is_active = TRUE LIMIT 1) AS savings_account_id,
-            (SELECT sc.code FROM accounts sa JOIN currencies sc ON sc.id = sa.currency_id
-             WHERE sa.account_type = 'SAVINGS' AND sa.is_active = TRUE LIMIT 1) AS savings_currency_code,
+            -- v1.61.0 — the SAVINGS account matching this dividend's OWN
+            -- currency, if one exists (the one approval defaults to
+            -- crediting, no conversion needed). A company can hold
+            -- several SAVINGS accounts now, one per currency, so this
+            -- is no longer "the" singleton account — if none matches,
+            -- the frontend offers every OTHER active SAVINGS account as
+            -- a conversion target (see available_savings_accounts below).
+            (SELECT sa.id FROM accounts sa WHERE sa.account_type = 'SAVINGS' AND sa.is_active = TRUE AND sa.currency_id = d.currency_id) AS savings_account_id,
+            NOT EXISTS (
+                SELECT 1 FROM accounts sa
+                WHERE  sa.account_type = 'SAVINGS' AND sa.is_active = TRUE AND sa.currency_id = d.currency_id
+            ) AS needs_exchange_rate,
             (
-                SELECT sa.currency_id IS DISTINCT FROM d.currency_id
-                FROM   accounts sa
+                SELECT json_agg(json_build_object('id', sa.id, 'currency_id', sa.currency_id, 'currency_code', sc.code))
+                FROM   accounts sa JOIN currencies sc ON sc.id = sa.currency_id
                 WHERE  sa.account_type = 'SAVINGS' AND sa.is_active = TRUE
-                LIMIT 1
-            ) AS needs_exchange_rate
+            ) AS available_savings_accounts
         FROM  dividends d
         JOIN  references_registry r ON r.id  = d.reference_id
         JOIN  accounts a            ON a.id  = d.account_id

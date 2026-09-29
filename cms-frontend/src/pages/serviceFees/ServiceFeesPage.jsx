@@ -26,8 +26,9 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import useChartTheme from '../../hooks/useChartTheme';
+import useChartTheme, { compactNumber } from '../../hooks/useChartTheme';
 import { PlusIcon, CheckIcon, XMarkIcon, BanknotesIcon, ArrowDownTrayIcon, PencilIcon, NoSymbolIcon, HandRaisedIcon, ClockIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const SERVICE_FEE_CATEGORY_HINT = 'Service Fees';
 
@@ -1613,7 +1614,7 @@ const ServiceFeePersonalChart = ({ agreement }) => {
                     <BarChart data={chartData}>
                         <CartesianGrid {...theme.gridProps} />
                         <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
-                        <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
+                        <YAxis tickFormatter={compactNumber} tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
                         <Tooltip {...theme.tooltipProps} />
                         <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} />
                         <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
@@ -1718,7 +1719,7 @@ const ServiceFeesPage = () => {
     const canViewReimbursements = hasPermission('SERVICE_FEE_VIEW');
     const canManageReimbursements = hasPermission('SERVICE_FEE_MANAGE');
 
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [myAgreement, setMyAgreement] = useState(null);
     const [myReimbursements, setMyReimbursements] = useState([]);
     const [myPaymentRequests, setMyPaymentRequests] = useState([]);
@@ -1998,52 +1999,38 @@ const ServiceFeesPage = () => {
 
             {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
 
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}>
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                     My Service Fee
                 </button>
                 {canViewAgreements && (
                     <button onClick={() => setActiveTab('agreements')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            activeTab === 'agreements' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}>
+                        className={`tab ${activeTab === 'agreements' ? 'tab-active' : ''}`}>
                         Agreements
                     </button>
                 )}
                 {canViewAgreements && (
                     <button onClick={() => setActiveTab('treasury')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            activeTab === 'treasury' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}>
+                        className={`tab ${activeTab === 'treasury' ? 'tab-active' : ''}`}>
                         Treasury Overview
                     </button>
                 )}
                 {canViewReimbursements && (
                     <button onClick={() => setActiveTab('reimbursements')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            activeTab === 'reimbursements' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}>
+                        className={`tab ${activeTab === 'reimbursements' ? 'tab-active' : ''}`}>
                         Reimbursement Requests
                         {pendingReimbCount > 0 && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                                activeTab === 'reimbursements' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
-                            }`}>{pendingReimbCount}</span>
+                            <span className="tab-count-alert">{pendingReimbCount}</span>
                         )}
                     </button>
                 )}
                 {canViewAgreements && (
                     <button onClick={() => setActiveTab('requests')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            activeTab === 'requests' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}>
+                        className={`tab ${activeTab === 'requests' ? 'tab-active' : ''}`}>
                         Payment &amp; Advance Requests
                         {pendingRequestsCount > 0 && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                                activeTab === 'requests' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
-                            }`}>{pendingRequestsCount}</span>
+                            <span className="tab-count-alert">{pendingRequestsCount}</span>
                         )}
                     </button>
                 )}

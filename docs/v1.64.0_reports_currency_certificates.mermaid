@@ -1,0 +1,40 @@
+%% v1.64.0 — Account Activity report, currency-aware GL Suite, signed + point-in-time certificates
+flowchart TD
+
+    subgraph ACTIVITY["Account Activity (General Report)"]
+        direction TB
+        A["Admin/Treasurer generates\nthe General Report for a period"] --> B["reportService.generateGeneralReport\nqueries every active account's\nPOSTED transactions in range"]
+        B --> C["Per account: sum CREDIT/REVERSAL_CREDIT\n= inflow, DEBIT/REVERSAL_DEBIT = outflow\n(each account = exactly one currency)"]
+        C --> D["Account Activity table\n— on screen + in the\nemailed PDF"]
+    end
+
+    subgraph GLSUITE["Currency-aware GL Suite (glService.js)"]
+        direction TB
+        E["Trial Balance / General Ledger /\nBalance Sheet / Income Statement /\nCash Flow Statement requested"] --> F{"Scoped to one\naccount_id?"}
+        F -->|"Yes"| G["That account's own\nsingle currency —\nbyCurrency has 1 entry"]
+        F -->|"No — company-wide"| H["Every ledger line now carries\nits own currency (transactions,\ngrants, service fee agreements)"]
+        H --> I["Lines grouped by currency\nBEFORE totals are computed —\nnever blended together"]
+        I --> J["byCurrency: [ one full report\nper currency present ]"]
+        G --> K["GeneralLedgerPage.jsx renders\none labelled block per currency"]
+        J --> K
+    end
+
+    subgraph CERTS["Signed + point-in-time share certificates"]
+        direction TB
+        L["Monthly (1st) / Annual (Jan 1)\ncron fires, or Admin clicks\n'Issue Now'"] --> M["computeDefaultPeriod:\nasOfDate = last day of the\nPREVIOUS month/year"]
+        M --> N{"signature_requirements\nconfigured for\nSHARE_CERTIFICATE?"}
+        N -->|"No"| O["Issue NOTHING —\nnotify every Admin\nto configure a signatory"]
+        N -->|"Yes"| P["Issue certificates into an\nOPEN signing round, figures\nlooked up AS OF that date\n(not live)"]
+        P --> Q["Signatories notified —\nround stays OPEN,\nnothing emailed yet"]
+        Q --> R["Each required role signs\n(certificatesController.signRound)"]
+        R --> S{"Every role\nsigned?"}
+        S -->|"No"| Q
+        S -->|"Yes"| T["emailRoundCertificates —\nemailCertificateToUser refuses\nto send unless ALL signed\n(enforced in the function itself)"]
+        T --> U["PDF shows 'Shareholding As Of\n<period-end date>' — signed,\ncorrect period, correct figures"]
+    end
+
+    style D fill:#dcfce7
+    style K fill:#dcfce7
+    style O fill:#fef9c3
+    style T fill:#dcfce7
+    style U fill:#dcfce7

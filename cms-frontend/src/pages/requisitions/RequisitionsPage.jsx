@@ -16,6 +16,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { requisitionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 
 // ============================================================
 // PRIORITY BADGE
@@ -229,6 +231,12 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                     onChange={e => setForm(p => ({
                                         ...p, amount_requested: e.target.value }))}
                                     min="0.01" step="0.01" required />
+                                {isContribution && (
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        In the currency you paid in — say which currency and account in
+                                        "How you paid" below; the Treasurer records it against that account.
+                                    </p>
+                                )}
                             </div>
                             <div>
                                 <label className="label">
@@ -317,9 +325,13 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
         setError(null);
         try {
             await requisitionsAPI.approve(requisition.id, {
-                account_id: noAccountNeeded
-                    ? undefined
-                    : parseInt(form.account_id),
+                // v1.69.1 — a contribution can be received into any
+                // (non-savings) account; Primary if none is chosen.
+                account_id: isContribution
+                    ? (form.account_id ? parseInt(form.account_id) : undefined)
+                    : noAccountNeeded
+                        ? undefined
+                        : parseInt(form.account_id),
                 amount_approved: form.amount_approved
                     ? parseFloat(form.amount_approved)
                     : undefined,
@@ -369,8 +381,10 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                     </div>
                     {isContribution && (
                         <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4 text-xs text-blue-700">
-                            Approving this will credit the primary account and update this
-                            member's shareholding automatically — no account selection needed.
+                            Choose the account the member actually paid into (any currency). The amount
+                            is in that account's currency; shares are worked out by converting it to the
+                            share price's currency at the rate on the date paid. Leave it on Primary if
+                            they paid into the primary account.
                         </div>
                     )}
                     {isSideFund && (
@@ -392,6 +406,21 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         </div>
                     )}
                     <form onSubmit={handleSubmit} className="space-y-4">
+                        {isContribution && (
+                            <div>
+                                <label className="label">Received Into Account</label>
+                                <select className="input" value={form.account_id}
+                                    onChange={e => setForm(p => ({
+                                        ...p, account_id: e.target.value }))}>
+                                    <option value="">Primary Account (default)</option>
+                                    {accounts.filter(a => a.account_type !== 'SAVINGS' && a.account_type !== 'PRIMARY').map(a => (
+                                        <option key={a.id} value={a.id}>
+                                            {a.name} ({a.currency_code})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
                         {!noAccountNeeded && (
                             <div>
                                 <label className="label">Pay From Account *</label>
@@ -527,8 +556,10 @@ const RequisitionsPage = () => {
     const [loading,    setLoading]    = useState(true);
     const [error,      setError]      = useState(null);
     const [page,       setPage]       = useState(1);
-    const [activeTab,  setActiveTab]  = useState('mine');
+    const [activeTab,  setActiveTab]  = useTabParam('mine');
     const [showCreate, setShowCreate] = useState(false);
+    // v1.71.0 — opened from the "+ New" menu (?new=1)
+    useNewParam(() => { setEditingRecord(null); setShowCreate(true); });
     const [editingRecord, setEditingRecord] = useState(null);
     const [approveReq, setApproveReq] = useState(null);
     const [rejectReq,  setRejectReq]  = useState(null);
@@ -881,14 +912,10 @@ const RequisitionsPage = () => {
             {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
                 by scrolling on a narrow screen instead of overflowing with
                 no way to reach it. */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 <button
                     onClick={() => setActiveTab('mine')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium
-                        transition-colors ${activeTab === 'mine'
-                            ? 'bg-primary-700 text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}
                 >
                     My Requests
                     <span className="ml-2 text-xs opacity-70">
@@ -898,20 +925,11 @@ const RequisitionsPage = () => {
                 {canViewAll && (
                     <button
                         onClick={() => setActiveTab('all')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors ${
-                            activeTab === 'all'
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        className={`tab ${activeTab === 'all' ? 'tab-active' : ''}`}
                     >
                         All Requests
                         {pendingCount > 0 && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded-full
-                                font-bold ${activeTab === 'all'
-                                    ? 'bg-white text-primary-700'
-                                    : 'bg-red-500 text-white'
-                                }`}>
+                            <span className="tab-count-alert">
                                 {pendingCount}
                             </span>
                         )}
@@ -957,12 +975,7 @@ const RequisitionsPage = () => {
                                         setStatusFilter(s);
                                         setPage(1);
                                     }}
-                                    className={`px-3 py-1.5 rounded-lg text-sm
-                                        font-medium transition-colors ${
-                                        statusFilter === s
-                                            ? 'bg-primary-700 text-white'
-                                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                    }`}
+                                    className={`tab ${statusFilter === s ? 'tab-active' : ''}`}
                                 >
                                     {s || 'All'}
                                 </button>

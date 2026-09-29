@@ -16,7 +16,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     PencilIcon, XMarkIcon, FlagIcon, TrophyIcon, BoltIcon, HandRaisedIcon,
 } from '@heroicons/react/24/outline';
@@ -584,7 +584,7 @@ const CapitalGoalDetailPage = () => {
                             <CartesianGrid {...theme.gridProps} />
                             <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                             <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                tickFormatter={compactNumber} />
                             <Tooltip
                                 {...theme.tooltipProps}
                                 formatter={(v, name) => [

@@ -92,6 +92,14 @@ router.post('/',
             .optional()
             .isIn(['EMAIL','IN_APP','BOTH'])
             .withMessage('Invalid notification type'),
+        // v1.63.0 — online meeting + "notify everyone" audience
+        body('is_online')
+            .optional().isBoolean().withMessage('is_online must be true or false'),
+        body('meeting_link')
+            .optional({ nullable: true, checkFalsy: true })
+            .isURL({ require_protocol: true }).withMessage('Meeting link must be a valid URL (starting with https://)'),
+        body('notify_all_users')
+            .optional().isBoolean().withMessage('notify_all_users must be true or false'),
     ],
     validateRequest,
     eventsController.createEvent
@@ -122,6 +130,12 @@ router.patch('/:id',
         body('event_date').optional().isISO8601(),
         body('end_date').optional().isISO8601(),
         body('recurrence').optional().isIn(['NONE','DAILY','WEEKLY','MONTHLY','ANNUALLY']),
+        // v1.63.0
+        body('is_online').optional().isBoolean().withMessage('is_online must be true or false'),
+        body('meeting_link')
+            .optional({ nullable: true, checkFalsy: true })
+            .isURL({ require_protocol: true }).withMessage('Meeting link must be a valid URL (starting with https://)'),
+        body('notify_all_users').optional().isBoolean().withMessage('notify_all_users must be true or false'),
     ],
     validateRequest,
     eventsController.editEvent

@@ -20,6 +20,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // ============================================================
 // CREATE A GRANT RECORD
@@ -248,6 +249,8 @@ const editGrant = asyncHandler(async (req, res) => {
 // POST /api/grants/:id/approve
 // ============================================================
 const approveGrant = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'grants', req.params.id, ['created_by'], 'grant');
     const { id } = req.params;
 
     await withTransaction(async (client) => {

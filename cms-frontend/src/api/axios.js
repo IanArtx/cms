@@ -37,7 +37,20 @@ api.interceptors.request.use(
 // If a 401 is received, clears tokens and redirects to login.
 // ============================================================
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        // v1.73.0 — a money entry recorded by someone who is not the
+        // Treasurer or an Admin is held for approval (HTTP 202,
+        // data.held = true). Announce it once, app-wide
+        // (components/common/HeldEntryNotice.jsx shows it).
+        if (response?.status === 202 && response?.data?.data?.held) {
+            try {
+                window.dispatchEvent(new CustomEvent('cms:money-held', {
+                    detail: { message: response.data.message, id: response.data.data.held_entry_id },
+                }));
+            } catch (_) { /* older browsers: the page still closes normally */ }
+        }
+        return response;
+    },
     async (error) => {
         const originalRequest = error.config;
 

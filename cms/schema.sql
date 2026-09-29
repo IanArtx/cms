@@ -249,14 +249,19 @@ CREATE TABLE references_registry (
 CREATE TABLE accounts (
     id              SERIAL PRIMARY KEY,
     account_type    VARCHAR(20)    NOT NULL
-                    -- SAVINGS (v1.14.0): the single dedicated account every
+                    -- SAVINGS (v1.14.0): the dedicated account every
                     -- member-savings transaction is posted against instead of
                     -- Primary. It can NEVER take part in a transfer (the
                     -- transferController only ever allows PRIMARY<->SECONDARY
                     -- legs, so a SAVINGS account is automatically excluded —
                     -- no extra code needed for that rule) and is permanently
                     -- exempt from floor-limit enforcement, so it is allowed to
-                    -- sit at exactly zero at any time.
+                    -- sit at exactly zero at any time. v1.61.0: a company can
+                    -- now have one SAVINGS account PER CURRENCY (was: exactly
+                    -- one, ever) — see idx_one_savings_account_per_currency
+                    -- below — so members can hold and move savings across
+                    -- several currencies rather than being locked to whatever
+                    -- currency the single Savings account happened to be in.
                     CHECK (account_type IN ('PRIMARY','SECONDARY','SAVINGS')),
     name            VARCHAR(150)   NOT NULL,
     currency_id     INTEGER        NOT NULL REFERENCES currencies(id),
@@ -291,11 +296,15 @@ CREATE UNIQUE INDEX idx_one_primary_account
     ON accounts (account_type)
     WHERE account_type = 'PRIMARY' AND is_active = TRUE;
 
--- Mirrors idx_one_primary_account: exactly one active SAVINGS account can
--- exist, so every savings transaction has one unambiguous account to
--- reference.
-CREATE UNIQUE INDEX idx_one_savings_account
-    ON accounts (account_type)
+-- v1.61.0: was idx_one_savings_account — exactly one active SAVINGS
+-- account, ever. Widened to one active SAVINGS account PER CURRENCY,
+-- so every (member, currency) pair still has one unambiguous account
+-- to reference, but a company can now hold savings in several
+-- currencies at once. A new currency's SAVINGS account is created the
+-- same way the original one was (Accounts → set up Savings account),
+-- just once per currency needed.
+CREATE UNIQUE INDEX idx_one_savings_account_per_currency
+    ON accounts (account_type, currency_id)
     WHERE account_type = 'SAVINGS' AND is_active = TRUE;
 
 -- Table name is historical — as of v1.14.0 a floor limit can be set on
@@ -413,7 +422,16 @@ CREATE TABLE share_certificates (
     -- issued before this feature existed, or via the on-demand
     -- single-certificate path, which isn't part of the signing-round
     -- gate.
-    signing_round_id  INTEGER
+    signing_round_id  INTEGER,
+    -- v1.64.0 — the historical date this certificate's shares_held/
+    -- percentage/price_per_share/share_value were snapshotted AS OF,
+    -- not when it was issued/sent. NULL for the on-demand single-
+    -- certificate path (which always reflects live figures) and for
+    -- certificates issued before this feature existed. For the
+    -- monthly/annual bulk pipeline this is always set — e.g. a
+    -- MONTHLY certificate issued on 1 September carries
+    -- as_of_date = 31 August, the period it actually reports on.
+    as_of_date        DATE
 );
 
 CREATE INDEX idx_share_certs_user ON share_certificates (user_id, issued_at DESC);
@@ -1019,6 +1037,16 @@ CREATE TABLE investments (
     -- by fundInvestment / recordInvestmentTransaction — never set
     -- directly by the user.
     supplementary_budget    NUMERIC(20,4) NOT NULL DEFAULT 0,
+    -- v1.60.0: which of the standard bond durations this bond runs —
+    -- how bonds are actually categorised when bought (a company may
+    -- buy several "10yr bond" instances across different months, each
+    -- its own investments row, all sharing this same term). BOND-only,
+    -- nullable — required going forward for every NEW bond (enforced
+    -- in the controller, not here, so a legacy bond backfilled with an
+    -- ambiguous duration can sit NULL pending manual review rather
+    -- than being forced into the nearest wrong bucket).
+    bond_term_years         INTEGER
+                            CHECK (bond_term_years IS NULL OR bond_term_years IN (2, 3, 5, 10, 15, 20, 25)),
     -- v1.40.0: mid-term termination workflow. status_before_termination
     -- snapshots status at request time so a rejected termination can
     -- restore it exactly. records_confirmed_* is the investment's
@@ -1207,6 +1235,27 @@ CREATE TABLE events (
                   CHECK (status IN (
                       'DRAFT','PENDING_APPROVAL','APPROVED','CANCELLED','COMPLETED'
                   )),
+    -- v1.63.0 — online meeting support. is_online marks that people are
+    -- expected to attend remotely (regardless of whether `location` is
+    -- also filled in — a hybrid event can have both a room AND a link).
+    -- meeting_link is either auto-populated by googleCalendarService.js
+    -- (meeting_provider='GOOGLE_MEET') once the company has connected
+    -- Google Calendar (Settings > Integrations), or typed in by hand
+    -- (meeting_provider='MANUAL') when it hasn't. google_calendar_event_id
+    -- is only set for the GOOGLE_MEET case — it's what lets editEvent/
+    -- extendEvent/cancelEvent keep the underlying Calendar event (and
+    -- therefore the Meet link) in sync instead of orphaning it.
+    is_online     BOOLEAN      NOT NULL DEFAULT FALSE,
+    meeting_link  TEXT,
+    meeting_provider VARCHAR(20)
+                  CHECK (meeting_provider IN ('GOOGLE_MEET','MANUAL')),
+    google_calendar_event_id VARCHAR(255),
+    -- v1.63.0 — a fourth notification audience alongside the existing
+    -- per-person (event_notifications.user_id) and per-role
+    -- (event_notifications.role_id) targeting below: every active user
+    -- in the system, any role, checked once at send time in
+    -- approveEvent rather than needing a row per user here.
+    notify_all_users BOOLEAN   NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     created_by    INTEGER      NOT NULL REFERENCES users(id),
     approved_by   INTEGER REFERENCES users(id),
@@ -1594,31 +1643,43 @@ CREATE TABLE savings_settings (
     updated_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
--- One row per member with any FLEXIBLE savings activity — the running
--- balance that deposits/handouts and the daily accrual job all update.
+-- One row per (member, currency) with any FLEXIBLE savings activity —
+-- the running balance that deposits/handouts and the daily accrual
+-- job all update. v1.61.0: was one row per member, period (UNIQUE
+-- user_id, currency_id nullable) — a member can now hold savings in
+-- several currencies at once, each tracked as its own row here, one
+-- per SAVINGS account/currency they've ever touched. currency_id is
+-- NOT NULL going forward; every write path already supplied it even
+-- when the column allowed NULL.
 CREATE TABLE savings_balances (
     id                   SERIAL PRIMARY KEY,
-    user_id              INTEGER       NOT NULL UNIQUE REFERENCES users(id),
+    user_id              INTEGER       NOT NULL REFERENCES users(id),
     principal_balance    NUMERIC(20,4) NOT NULL DEFAULT 0,
     accrued_interest     NUMERIC(20,4) NOT NULL DEFAULT 0,  -- earned, not yet handed out
     total_interest_paid  NUMERIC(20,4) NOT NULL DEFAULT 0,
-    currency_id          INTEGER REFERENCES currencies(id),
+    currency_id          INTEGER       NOT NULL REFERENCES currencies(id),
     updated_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     CONSTRAINT non_negative_savings_balance  CHECK (principal_balance >= 0),
-    CONSTRAINT non_negative_accrued_interest CHECK (accrued_interest >= 0)
+    CONSTRAINT non_negative_accrued_interest CHECK (accrued_interest >= 0),
+    UNIQUE (user_id, currency_id)
 );
 
 -- Daily accrual ledger for FLEXIBLE savings — mirrors
--- loan_received_interest_accrual's pattern exactly.
+-- loan_received_interest_accrual's pattern exactly. v1.61.0: gained
+-- currency_id so a member with balances in more than one currency
+-- gets a separate accrual row (and a separate interest credit) per
+-- currency per day, instead of the job having no way to tell which of
+-- their several savings_balances rows a single day's entry belonged to.
 CREATE TABLE savings_interest_accrual (
     id                 SERIAL PRIMARY KEY,
     user_id            INTEGER       NOT NULL REFERENCES users(id),
+    currency_id        INTEGER       NOT NULL REFERENCES currencies(id),
     accrual_date       DATE          NOT NULL,
     rate_used          NUMERIC(8,4)  NOT NULL,
     principal_balance  NUMERIC(20,4) NOT NULL,
     interest_accrued   NUMERIC(20,4) NOT NULL,
     created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, accrual_date)
+    UNIQUE (user_id, currency_id, accrual_date)
 );
 
 -- A payout of FLEXIBLE savings (principal and/or accrued interest) to a
@@ -1698,6 +1759,50 @@ CREATE TABLE savings_capital_conversions (
 
 CREATE INDEX idx_savings_capital_conversions_user   ON savings_capital_conversions (user_id, status);
 CREATE INDEX idx_savings_capital_conversions_status ON savings_capital_conversions (status);
+
+-- v1.61.0 — a member's own savings, moved from one currency they hold
+-- into another, at a manually-entered exchange rate (same convention
+-- as transfers.exchange_rate — the currency_exchange_rates table is
+-- display-only, never used for real money), with NO bank charges —
+-- this never leaves the club's own accounts, both legs are the club's
+-- own SAVINGS-type accounts holding the same member's own money, so
+-- there is nothing for a bank to charge. Requested directly: "money
+-- come be transferred within the savings account at an exchange rate
+-- just like the normal transfer except that no charges apply here."
+-- Same "Treasurer enters it, member confirms" shape as Savings-to-
+-- Capital Conversion above — nothing moves until the member agrees,
+-- since this is still entirely their own money either way.
+CREATE TABLE savings_currency_conversions (
+    id                          SERIAL PRIMARY KEY,
+    reference_id                INTEGER       NOT NULL REFERENCES references_registry(id),
+    user_id                     INTEGER       NOT NULL REFERENCES users(id),      -- the member whose savings this is — same owner on both legs
+    from_account_id             INTEGER       NOT NULL REFERENCES accounts(id),   -- source SAVINGS account (source currency)
+    from_currency_id            INTEGER       NOT NULL REFERENCES currencies(id),
+    from_amount                 NUMERIC(20,4) NOT NULL,
+    to_account_id               INTEGER       NOT NULL REFERENCES accounts(id),   -- destination SAVINGS account (target currency)
+    to_currency_id              INTEGER       NOT NULL REFERENCES currencies(id),
+    to_amount                   NUMERIC(20,4) NOT NULL,
+    exchange_rate               NUMERIC(20,8) NOT NULL,   -- manually entered, from_currency -> to_currency
+    exchange_rate_entered_by    INTEGER       NOT NULL REFERENCES users(id),
+    conversion_date              DATE          NOT NULL,
+    notes                        TEXT,
+    status                       VARCHAR(30)   NOT NULL DEFAULT 'PENDING_CONFIRMATION'
+                                 CHECK (status IN ('PENDING_CONFIRMATION','CONFIRMED','REJECTED')),
+    from_transaction_id          INTEGER REFERENCES transactions(id),  -- the source SAVINGS account DEBIT, set once confirmed
+    to_transaction_id            INTEGER REFERENCES transactions(id),  -- the destination SAVINGS account CREDIT, set once confirmed
+    entered_by                   INTEGER       NOT NULL REFERENCES users(id),     -- Treasurer/Assistant Treasurer who initiated it
+    confirmed_at                 TIMESTAMPTZ,
+    rejected_reason               TEXT,
+    rejected_at                   TIMESTAMPTZ,
+    created_at                    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_conversion_from_amount CHECK (from_amount > 0),
+    CONSTRAINT positive_conversion_to_amount   CHECK (to_amount > 0),
+    CONSTRAINT positive_conversion_rate        CHECK (exchange_rate > 0),
+    CONSTRAINT conversion_different_currencies CHECK (from_currency_id != to_currency_id)
+);
+
+CREATE INDEX idx_savings_currency_conversions_user   ON savings_currency_conversions (user_id, status);
+CREATE INDEX idx_savings_currency_conversions_status ON savings_currency_conversions (status);
 
 
 -- ============================================================
@@ -1860,6 +1965,10 @@ CREATE INDEX idx_users_uuid      ON users (uuid);
 -- Transactions
 CREATE INDEX idx_transactions_account    ON transactions (account_id);
 CREATE INDEX idx_transactions_date       ON transactions (value_date DESC);
+-- v1.62.0 — backs postTransaction's point-in-time balance sum and
+-- cascade-shift UPDATE (both filter by account_id + value_date, tie-
+-- broken by id), which now run on every single transaction posted.
+CREATE INDEX idx_transactions_account_valuedate ON transactions (account_id, value_date, id);
 CREATE INDEX idx_transactions_status     ON transactions (status);
 CREATE INDEX idx_transactions_category   ON transactions (category_id);
 CREATE INDEX idx_transactions_inflow     ON transactions (inflow_type);
@@ -2128,6 +2237,35 @@ CREATE TABLE company_settings (
 -- even before an Admin has customised anything.
 INSERT INTO company_settings (id, company_name, company_address)
 VALUES (1, 'ZWECK TUKULA Ltd', 'WAKISO, UGANDA')
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
+-- GOOGLE CALENDAR / MEET INTEGRATION (v1.63.0)
+-- Single-row table, same singleton convention as company_settings —
+-- an Admin connects it once via Settings > Integrations, and it's
+-- consulted by googleCalendarService.js whenever an online event
+-- needs a Meet link auto-created. GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
+-- (the OAuth app's own static credentials, obtained once from Google
+-- Cloud Console) live as env vars, same pattern as S3_*/GMAIL_* —
+-- refresh_token below is different: it's generated per-installation by
+-- a live OAuth consent flow, not something you look up in a provider
+-- dashboard, so a database row (not an env var an Admin has no way to
+-- populate without a redeploy) is where it has to live. Never exposed
+-- by any GET endpoint — only ever read server-side by
+-- googleCalendarService.js.
+-- ============================================================
+CREATE TABLE google_calendar_settings (
+    id                   INTEGER      PRIMARY KEY DEFAULT 1,
+    is_connected         BOOLEAN      NOT NULL DEFAULT FALSE,
+    refresh_token        TEXT,
+    google_account_email VARCHAR(255),
+    calendar_id          VARCHAR(255) NOT NULL DEFAULT 'primary',
+    connected_by         INTEGER REFERENCES users(id),
+    connected_at         TIMESTAMPTZ,
+    CONSTRAINT single_row_only CHECK (id = 1)
+);
+
+INSERT INTO google_calendar_settings (id) VALUES (1)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO savings_settings (id, interest_rate, interest_period, interest_calculation)
@@ -2875,6 +3013,11 @@ CREATE TABLE certificate_signing_rounds (
     opened_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     opened_by         INTEGER REFERENCES users(id),
     fully_signed_at   TIMESTAMPTZ,
+    -- v1.64.0 — the historical date every certificate in this round
+    -- was snapshotted as of (see share_certificates.as_of_date above).
+    -- One value per round since every certificate in a round shares
+    -- the same period.
+    as_of_date        DATE,
     UNIQUE (certificate_type, period_label)
 );
 
@@ -4146,5 +4289,1372 @@ JOIN gl_accounts ga ON ga.code = v.gl_code
 ON CONFLICT (inflow_type) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.39.0
+-- GROUP: SAVINGS CURRENCY CONVERSION (v1.61.0)
+-- savings_currency_conversions itself is defined earlier, alongside
+-- savings_capital_conversions, so it's created in the right order
+-- relative to the tables it references. This trailing block only
+-- widens transactions.inflow_type and extends the GL mapping, same
+-- reason every other post-v1.55.0 inflow_type widening in this file
+-- lives down here.
+-- ============================================================
+DO $$
+DECLARE
+    con_name text;
+BEGIN
+    SELECT conname INTO con_name
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%';
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check
+        CHECK (inflow_type IN (
+            'CONTRIBUTION', 'GRANT', 'LOAN_RECEIVED', 'LOAN_REPAYMENT_IN',
+            'INTEREST_IN', 'INVESTMENT_RETURN', 'TRANSFER_IN', 'OTHER_INCOME',
+            'SAVINGS_DEPOSIT_IN', 'TRANSFER_OUT', 'LOAN_DISBURSED',
+            'LOAN_REPAYMENT_OUT', 'INTEREST_OUT', 'EXPENSE', 'SAVINGS_HANDOUT_OUT',
+            'GRANT_REFUND', 'SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN',
+            'SAVINGS_POOL_OTHER_IN', 'SERVICE_FEE_OUT', 'SERVICE_REIMBURSEMENT_OUT',
+            'DIVIDEND_OUT', 'DIVIDEND_SAVINGS_IN',
+            'MMF_TOPUP_OUT', 'MMF_WITHDRAWAL_IN',
+            'SIDE_FUND_PAYOUT_OUT',
+            'FINE_PAYMENT_IN',
+            'DEPOSIT_CONTRIBUTION_IN', 'DEPOSIT_REFUND_OUT',
+            'GENERAL_PAYMENT_OUT',
+            'SERVICE_FEE_ADVANCE_OUT',
+            'SAVINGS_TO_CAPITAL_OUT',
+            'SAVINGS_FINE_SETTLEMENT_OUT',
+            'SAVINGS_CURRENCY_CONV_OUT', 'SAVINGS_CURRENCY_CONV_IN'
+        ));
+END $$;
+
+-- Same liability account (2100, Member Savings Payable) on BOTH legs —
+-- this never leaves the savings pool at all, it just moves from one
+-- currency's SAVINGS account to another's, so the pool's total
+-- member-savings liability is unchanged in substance, only its
+-- currency split shifts. Unlike every other SAVINGS_*_OUT above, this
+-- is the one case where the offsetting leg is ALSO a savings-pool
+-- entry (SAVINGS_CURRENCY_CONV_IN, not a capital/fine/cash
+-- posting elsewhere), so both sides get their own mapping row here.
+-- Note: both values are deliberately abbreviated ("CONV" not
+-- "CONVERSION") to fit transactions.inflow_type's VARCHAR(30) limit —
+-- 'SAVINGS_CURRENCY_CONVERSION_OUT' (31 chars) does not fit.
+INSERT INTO gl_inflow_type_mapping (inflow_type, gl_account_id, notes)
+SELECT v.inflow_type, ga.id, v.notes
+FROM (VALUES
+    ('SAVINGS_CURRENCY_CONV_OUT', '2100', 'Money leaving one currency''s Savings account as part of an internal currency conversion — same liability account as SAVINGS_HANDOUT_OUT, since it is still the member''s own savings, just changing currency.'),
+    ('SAVINGS_CURRENCY_CONV_IN',  '2100', 'The matching credit into the destination currency''s Savings account for the same internal conversion — same liability account as SAVINGS_DEPOSIT_IN.')
+) AS v(inflow_type, gl_code, notes)
+JOIN gl_accounts ga ON ga.code = v.gl_code
+ON CONFLICT (inflow_type) DO NOTHING;
+
+-- New permission — same module/shape as SAVINGS_CAPITAL_CONVERT_CREATE.
+-- Reviewing (confirm/reject) needs no permission at all, same as every
+-- other "only the member whose money this is" review action in this
+-- module — enforced by ownership check in the controller, not a grant.
+INSERT INTO permissions (code, module, description) VALUES
+    ('SAVINGS_CURRENCY_CONVERT_CREATE', 'FINANCE', 'Convert a member''s own savings from one currency they hold into another, pending the member''s own confirmation (v1.61.0)')
+ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- GROUP: FUNCTIONAL-CURRENCY CONSOLIDATION & FX REVALUATION (v1.66.0)
+--
+-- Identical to migration_v1.66.0.sql (see that file's header for the
+-- full reasoning): company_settings functional/presentation currency
+-- and financial-year start; fx_rate_on(); transactions.functional_*
+-- columns filled by trg_transactions_functional_amount; gl_accounts
+-- .is_monetary + 2400 Side Fund Payable / 4600 FX Gains / 5600 FX
+-- Losses; the side fund reclassified as members' money (a
+-- liability); and the fx_revaluation_runs/lines month-end record.
+-- Appended here so a fresh install gets exactly what an upgraded
+-- database gets.
+-- ============================================================
+
+
+-- ------------------------------------------------------------
+-- 1. company_settings — functional / presentation currency and
+--    the first month of the financial year.
+-- ------------------------------------------------------------
+ALTER TABLE company_settings
+    ADD COLUMN IF NOT EXISTS functional_currency_id   INTEGER REFERENCES currencies(id),
+    ADD COLUMN IF NOT EXISTS presentation_currency_id INTEGER REFERENCES currencies(id),
+    ADD COLUMN IF NOT EXISTS fiscal_year_start_month  SMALLINT NOT NULL DEFAULT 7;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'company_settings_fy_start_month_check') THEN
+        ALTER TABLE company_settings
+            ADD CONSTRAINT company_settings_fy_start_month_check
+            CHECK (fiscal_year_start_month BETWEEN 1 AND 12);
+    END IF;
+END $$;
+
+UPDATE company_settings
+SET    functional_currency_id = (SELECT id FROM currencies WHERE code = 'UGX' LIMIT 1)
+WHERE  id = 1 AND functional_currency_id IS NULL;
+
+UPDATE company_settings
+SET    presentation_currency_id = (SELECT id FROM currencies WHERE code = 'EUR' LIMIT 1)
+WHERE  id = 1 AND presentation_currency_id IS NULL;
+
+-- ------------------------------------------------------------
+-- 2. fx_rate_on — the database's single rate lookup.
+--    Returns how many units of p_to one unit of p_from is worth on
+--    p_date (e.g. EUR -> UGX = 4100), or NULL if no rate covers
+--    that date in either direction.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fx_rate_on(p_from INTEGER, p_to INTEGER, p_date DATE)
+RETURNS NUMERIC
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_rate NUMERIC;
+BEGIN
+    IF p_from IS NULL OR p_to IS NULL OR p_date IS NULL THEN
+        RETURN NULL;
+    END IF;
+    IF p_from = p_to THEN
+        RETURN 1;
+    END IF;
+
+    SELECT rate INTO v_rate
+    FROM   currency_exchange_rates
+    WHERE  base_currency_id = p_from AND target_currency_id = p_to
+    AND    effective_from <= p_date
+    AND    (effective_to IS NULL OR effective_to > p_date)
+    ORDER  BY effective_from DESC, id DESC
+    LIMIT  1;
+    IF v_rate IS NOT NULL THEN
+        RETURN v_rate;
+    END IF;
+
+    SELECT 1 / rate INTO v_rate
+    FROM   currency_exchange_rates
+    WHERE  base_currency_id = p_to AND target_currency_id = p_from
+    AND    effective_from <= p_date
+    AND    (effective_to IS NULL OR effective_to > p_date)
+    ORDER  BY effective_from DESC, id DESC
+    LIMIT  1;
+    RETURN v_rate;
+END $$;
+
+-- ------------------------------------------------------------
+-- 3. transactions — the UGX (functional) value of every row.
+-- ------------------------------------------------------------
+ALTER TABLE transactions
+    ADD COLUMN IF NOT EXISTS functional_amount      NUMERIC(20,4),
+    ADD COLUMN IF NOT EXISTS functional_rate        NUMERIC(30,12),
+    ADD COLUMN IF NOT EXISTS functional_rate_source VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS functional_rate_note   TEXT,
+    ADD COLUMN IF NOT EXISTS functional_set_by      INTEGER REFERENCES users(id),
+    ADD COLUMN IF NOT EXISTS functional_set_at      TIMESTAMPTZ;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transactions_functional_rate_source_check') THEN
+        ALTER TABLE transactions
+            ADD CONSTRAINT transactions_functional_rate_source_check
+            CHECK (functional_rate_source IS NULL OR functional_rate_source IN
+                   ('SAME_CURRENCY', 'TRANSFER', 'REVERSAL', 'RATE_TABLE', 'MANUAL'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transactions_functional_rate_positive') THEN
+        ALTER TABLE transactions
+            ADD CONSTRAINT transactions_functional_rate_positive
+            CHECK (functional_rate IS NULL OR functional_rate > 0);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_functional_missing
+    ON transactions (value_date)
+    WHERE functional_amount IS NULL;
+
+-- The trigger function. Runs BEFORE the row is written, so the
+-- value is stored in the same statement that posts the money —
+-- there is never a moment where a posted transaction exists
+-- without its UGX value (unless no rate is available at all).
+CREATE OR REPLACE FUNCTION set_transaction_functional_amount()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_func   INTEGER;
+    v_rate   NUMERIC;
+    v_source VARCHAR(20);
+    v_value  NUMERIC;
+    tr       RECORD;
+BEGIN
+    SELECT functional_currency_id INTO v_func FROM company_settings WHERE id = 1;
+    IF v_func IS NULL THEN
+        -- No functional currency configured yet — nothing to value against.
+        NEW.functional_amount := NULL;
+        NEW.functional_rate := NULL;
+        NEW.functional_rate_source := NULL;
+        RETURN NEW;
+    END IF;
+
+    -- A MANUAL rate set by an Admin is kept for as long as the
+    -- transaction stays in the same currency — only the amount is
+    -- re-multiplied, in case the amount itself was corrected.
+    IF NEW.functional_rate_source = 'MANUAL'
+       AND NEW.functional_rate IS NOT NULL
+       AND (TG_OP = 'INSERT' OR NEW.currency_id = OLD.currency_id) THEN
+        NEW.functional_amount := ROUND(NEW.amount * NEW.functional_rate, 4);
+        RETURN NEW;
+    END IF;
+
+    v_rate := NULL;
+    v_source := NULL;
+
+    IF NEW.currency_id = v_func THEN
+        v_rate := 1;
+        v_source := 'SAME_CURRENCY';
+    END IF;
+
+    -- A reversal cancels its original at the ORIGINAL's rate.
+    IF v_rate IS NULL AND NEW.reversal_of IS NOT NULL THEN
+        SELECT functional_rate INTO v_rate
+        FROM   transactions
+        WHERE  id = NEW.reversal_of AND currency_id = NEW.currency_id;
+        IF v_rate IS NOT NULL THEN
+            v_source := 'REVERSAL';
+        END IF;
+    END IF;
+
+    -- A transfer leg (or a bank charge posted with the transfer)
+    -- uses the transfer's own actual rate. v_value = the UGX value
+    -- of the whole transfer; each leg's rate is v_value divided by
+    -- that leg's own amount, so both legs carry the same UGX value.
+    IF v_rate IS NULL AND NEW.transfer_id IS NOT NULL THEN
+        SELECT * INTO tr FROM transfers WHERE id = NEW.transfer_id;
+        IF FOUND THEN
+            IF tr.currency_received_id = v_func THEN
+                v_value := tr.amount_received;
+            ELSIF tr.currency_sent_id = v_func THEN
+                v_value := tr.amount_sent;
+            ELSE
+                v_value := tr.amount_sent * fx_rate_on(tr.currency_sent_id, v_func, tr.value_date);
+            END IF;
+
+            IF v_value IS NOT NULL THEN
+                IF NEW.currency_id = tr.currency_sent_id THEN
+                    v_rate := v_value / tr.amount_sent;
+                    v_source := 'TRANSFER';
+                ELSIF NEW.currency_id = tr.currency_received_id THEN
+                    v_rate := v_value / tr.amount_received;
+                    v_source := 'TRANSFER';
+                END IF;
+            END IF;
+        END IF;
+    END IF;
+
+    -- Everything else: the rate table, on the transaction's own date.
+    IF v_rate IS NULL THEN
+        v_rate := fx_rate_on(NEW.currency_id, v_func, NEW.value_date);
+        IF v_rate IS NOT NULL THEN
+            v_source := 'RATE_TABLE';
+        END IF;
+    END IF;
+
+    NEW.functional_rate := v_rate;
+    NEW.functional_rate_source := v_source;
+    NEW.functional_amount := CASE WHEN v_rate IS NULL THEN NULL
+                                  ELSE ROUND(NEW.amount * v_rate, 4) END;
+    IF v_source IS DISTINCT FROM 'MANUAL' THEN
+        NEW.functional_rate_note := NULL;
+        NEW.functional_set_by := NULL;
+        NEW.functional_set_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_transactions_functional_amount ON transactions;
+CREATE TRIGGER trg_transactions_functional_amount
+    BEFORE INSERT OR UPDATE OF amount, currency_id, value_date, transfer_id, reversal_of,
+                               functional_rate, functional_rate_source
+    ON transactions
+    FOR EACH ROW
+    EXECUTE FUNCTION set_transaction_functional_amount();
+
+-- ------------------------------------------------------------
+-- 4. Value every EXISTING transaction with the same rules.
+--    "SET functional_rate_source = functional_rate_source" changes
+--    nothing by itself — it only wakes the trigger up for each row.
+--    Originals first, reversals second (a reversal needs its
+--    original's rate to exist already).
+-- ------------------------------------------------------------
+UPDATE transactions
+SET    functional_rate_source = functional_rate_source
+WHERE  reversal_of IS NULL;
+
+UPDATE transactions
+SET    functional_rate_source = functional_rate_source
+WHERE  reversal_of IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 5. Chart of accounts — monetary flag + three new accounts.
+-- ------------------------------------------------------------
+ALTER TABLE gl_accounts
+    ADD COLUMN IF NOT EXISTS is_monetary BOOLEAN NOT NULL DEFAULT FALSE;
+
+INSERT INTO gl_accounts (code, name, account_type, normal_balance, statement_section, cash_flow_category, description, display_order) VALUES
+    ('2400', 'Side Fund Payable (Members)', 'LIABILITY', 'CREDIT', 'LIABILITIES', 'FINANCING',
+     'Members'' side fund money the company holds for them. Dues and top-ups increase it; payouts and side fund expenses reduce it. It is the members'' money, not company income (confirmed policy, v1.66.0).', 440),
+    ('4600', 'Foreign Exchange Gains', 'REVENUE', 'CREDIT', 'REVENUE', 'OPERATING',
+     'Gains from revaluing foreign-currency balances (cash, savings, loans, deposits) to the month-end closing rate. Non-cash.', 660),
+    ('5600', 'Foreign Exchange Losses', 'EXPENSE', 'DEBIT', 'EXPENSES', 'OPERATING',
+     'Losses from revaluing foreign-currency balances to the month-end closing rate. Non-cash.', 760)
+ON CONFLICT (code) DO NOTHING;
+
+-- 1050 (Inter-Account Transfers) is deliberately NOT monetary: it is a
+-- clearing account whose two legs always carry the same UGX value
+-- (the transfer's own rate), so it nets to zero in UGX by itself.
+-- Revaluing one leg of it would break that.
+UPDATE gl_accounts
+SET    is_monetary = TRUE
+WHERE  code IN ('1000', '1100', '1200', '1300', '2000', '2100', '2200', '2400');
+
+-- ------------------------------------------------------------
+-- 6. Side Fund = members' money (a liability), not income/expense.
+-- ------------------------------------------------------------
+UPDATE gl_inflow_type_mapping m
+SET    gl_account_id = ga.id,
+       notes = CASE m.inflow_type
+                   WHEN 'SIDE_FUND_PAYOUT_OUT' THEN 'v1.66.0: members'' money paid back out of the side fund — reduces Side Fund Payable (2400). Was 5200 Side Fund Payouts.'
+                   ELSE 'v1.66.0: members'' money received into the side fund — increases Side Fund Payable (2400). Was 4300 Side Fund Dues Income.'
+               END,
+       updated_at = NOW()
+FROM   gl_accounts ga
+WHERE  ga.code = '2400'
+AND    m.inflow_type IN ('SIDE_FUND_CONTRIBUTION_IN', 'SIDE_FUND_DIRECT_IN', 'SIDE_FUND_PAYOUT_OUT')
+AND    m.gl_account_id <> ga.id;
+
+UPDATE gl_accounts
+SET    is_active = FALSE,
+       description = description || ' — Inactive since v1.66.0: the side fund is members'' money, now booked to 2400 Side Fund Payable.'
+WHERE  code IN ('4300', '5200')
+AND    is_active = TRUE;
+
+-- ------------------------------------------------------------
+-- 7. Month-end FX revaluation record.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fx_revaluation_runs (
+    id                      SERIAL PRIMARY KEY,
+    period_end              DATE          NOT NULL UNIQUE,   -- always the last day of a month
+    functional_currency_id  INTEGER       NOT NULL REFERENCES currencies(id),
+    rates_used              JSONB         NOT NULL DEFAULT '[]'::jsonb,  -- [{currencyId, currencyCode, rate}] closing rates applied
+    total_gain              NUMERIC(20,4) NOT NULL DEFAULT 0,
+    total_loss              NUMERIC(20,4) NOT NULL DEFAULT 0,
+    notes                   TEXT,
+    run_by                  INTEGER       NOT NULL REFERENCES users(id),
+    run_at                  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- One row per revalued balance. account_id is the bank/cash account
+-- the balance is attributed to (the same attribution every GL line
+-- carries); NULL for company-level non-cash balances.
+CREATE TABLE IF NOT EXISTS fx_revaluation_lines (
+    id                SERIAL PRIMARY KEY,
+    run_id            INTEGER       NOT NULL REFERENCES fx_revaluation_runs(id) ON DELETE CASCADE,
+    gl_account_id     INTEGER       NOT NULL REFERENCES gl_accounts(id),
+    account_id        INTEGER REFERENCES accounts(id),
+    currency_id       INTEGER       NOT NULL REFERENCES currencies(id),
+    foreign_balance   NUMERIC(20,4) NOT NULL,   -- balance in the foreign currency (debit positive)
+    closing_rate      NUMERIC(30,12) NOT NULL,
+    carrying_before   NUMERIC(20,4) NOT NULL,   -- UGX value on the books before this run
+    revalued_balance  NUMERIC(20,4) NOT NULL,   -- foreign_balance x closing_rate
+    adjustment        NUMERIC(20,4) NOT NULL    -- revalued_balance - carrying_before (+ = debit the balance, gain on an asset / loss on a liability)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fx_revaluation_lines_run ON fx_revaluation_lines (run_id);
+
+-- ============================================================
+-- GROUP: PERSONAL DOCUMENTS — documents.owner_user_id (v1.67.0)
+--
+-- Identical to migration_v1.67.0.sql (see that file's header): a
+-- document with an owner (a member's own Share Purchase Receipt) is
+-- visible only to that member (GET /documents/mine) and to Treasury
+-- (GET /documents/share-receipts), never in "All Documents".
+-- ============================================================
+
+ALTER TABLE documents
+    ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id);
+
+CREATE INDEX IF NOT EXISTS idx_documents_owner_user
+    ON documents (owner_user_id)
+    WHERE owner_user_id IS NOT NULL;
+
+UPDATE documents d
+SET    owner_user_id = sc.user_id
+FROM   shareholder_contributions sc
+WHERE  d.related_record_type = 'shareholder_contributions'
+AND    d.related_record_id = sc.id
+AND    d.template_data ->> 'receipt_kind' = 'SHARE_PURCHASE'
+AND    d.owner_user_id IS DISTINCT FROM sc.user_id;
+
+-- ============================================================
+-- GROUP: SHARE CAPITAL — nominal value, share premium, whole-share
+-- allotments, members' share credit, refunds, returns of allotment,
+-- dual-approved share value changes (v1.69.0)
+--
+-- Identical to migration_v1.69.0.sql (see that file's header for the
+-- full explanation). On a new installation there are no contributions,
+-- so the opening conversion is marked done automatically (section 12).
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- 1. NOMINAL VALUE + REGISTERED SHARES (history)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS share_nominal_history (
+    id                 SERIAL PRIMARY KEY,
+    nominal_value      NUMERIC(20,4) NOT NULL CHECK (nominal_value > 0),
+    currency_id        INTEGER       NOT NULL REFERENCES currencies(id),
+    -- Number of shares registered with URSB (authorised). NULL = not
+    -- recorded yet (no limit is tracked until it is set).
+    registered_shares  INTEGER       CHECK (registered_shares IS NULL OR registered_shares > 0),
+    effective_from     DATE          NOT NULL,
+    effective_to       DATE,
+    change_request_id  INTEGER,
+    set_by             INTEGER REFERENCES users(id),
+    notes              TEXT,
+    created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS share_nominal_history_one_current
+    ON share_nominal_history ((TRUE)) WHERE effective_to IS NULL;
+
+-- ------------------------------------------------------------
+-- 2. SHARE ALLOTMENTS (whole shares)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS share_allotments (
+    id                        SERIAL PRIMARY KEY,
+    reference_id              INTEGER       REFERENCES references_registry(id),
+    user_id                   INTEGER       NOT NULL REFERENCES users(id),
+    contribution_id           INTEGER       REFERENCES shareholder_contributions(id),
+    change_request_id         INTEGER,
+    source                    VARCHAR(30)   NOT NULL
+                              CHECK (source IN ('CONTRIBUTION','OPENING_CONVERSION','SPLIT','CONSOLIDATION')),
+    allotment_date            DATE          NOT NULL,
+    -- Whole shares. Negative only for a CONSOLIDATION (shares taken
+    -- away when several old shares become one new share).
+    shares                    INTEGER       NOT NULL CHECK (shares <> 0),
+    nominal_value             NUMERIC(20,4) NOT NULL,
+    issue_price               NUMERIC(20,4) NOT NULL,
+    currency_id               INTEGER       NOT NULL REFERENCES currencies(id),
+    consideration_amount      NUMERIC(20,2) NOT NULL DEFAULT 0,  -- shares x issue price (what the credit paid)
+    share_capital_amount      NUMERIC(20,2) NOT NULL DEFAULT 0,  -- shares x nominal value
+    share_premium_amount      NUMERIC(20,2) NOT NULL DEFAULT 0,  -- shares x (issue price - nominal value)
+    -- Registered-capital tracking, snapshotted at allotment time.
+    registered_shares         INTEGER,
+    total_shares_after        INTEGER,
+    shares_beyond_registered  INTEGER       NOT NULL DEFAULT 0,
+    -- Return of allotment (Companies Act 2012 s.61 — within 60 days).
+    return_due_date           DATE,
+    return_filed_at           DATE,
+    return_reference          VARCHAR(100),
+    return_filed_by           INTEGER REFERENCES users(id),
+    status                    VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE'
+                              CHECK (status IN ('ACTIVE','REVERSED')),
+    reversed_at               DATE,
+    reversed_by               INTEGER REFERENCES users(id),
+    reversal_reason           TEXT,
+    notes                     TEXT,
+    created_by                INTEGER REFERENCES users(id),
+    created_at                TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT share_allotment_sign CHECK (shares > 0 OR source = 'CONSOLIDATION')
+);
+CREATE INDEX IF NOT EXISTS idx_share_allotments_user ON share_allotments (user_id, allotment_date);
+CREATE INDEX IF NOT EXISTS idx_share_allotments_contribution ON share_allotments (contribution_id);
+CREATE INDEX IF NOT EXISTS idx_share_allotments_date ON share_allotments (allotment_date);
+
+-- ------------------------------------------------------------
+-- 3. MEMBERS' SHARE CREDIT (signed ledger, share currency)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_capital_credit_entries (
+    id                 SERIAL PRIMARY KEY,
+    user_id            INTEGER       NOT NULL REFERENCES users(id),
+    entry_date         DATE          NOT NULL,
+    entry_type         VARCHAR(30)   NOT NULL
+                       CHECK (entry_type IN ('CONTRIBUTION','ALLOTMENT','REFUND','CONSOLIDATION_LEFTOVER',
+                                             'CONTRIBUTION_REVERSAL','ALLOTMENT_REVERSAL')),
+    amount             NUMERIC(20,2) NOT NULL,   -- + adds to credit, - uses it
+    currency_id        INTEGER       NOT NULL REFERENCES currencies(id),
+    contribution_id    INTEGER       REFERENCES shareholder_contributions(id),
+    allotment_id       INTEGER       REFERENCES share_allotments(id),
+    refund_id          INTEGER,
+    change_request_id  INTEGER,
+    -- How a contribution's value in the share currency was arrived at.
+    original_amount    NUMERIC(20,4),
+    original_currency_id INTEGER     REFERENCES currencies(id),
+    rate_used          NUMERIC(30,12),
+    notes              TEXT,
+    created_by         INTEGER REFERENCES users(id),
+    created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_member_credit_user ON member_capital_credit_entries (user_id, entry_date);
+CREATE INDEX IF NOT EXISTS idx_member_credit_contribution ON member_capital_credit_entries (contribution_id);
+
+-- ------------------------------------------------------------
+-- 4. SHARE CREDIT REFUNDS (maker-checker)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS capital_credit_refunds (
+    id                  SERIAL PRIMARY KEY,
+    reference_id        INTEGER       REFERENCES references_registry(id),
+    user_id             INTEGER       NOT NULL REFERENCES users(id),
+    credit_amount       NUMERIC(20,2) NOT NULL CHECK (credit_amount > 0),  -- in the share currency
+    credit_currency_id  INTEGER       NOT NULL REFERENCES currencies(id),
+    account_id          INTEGER       NOT NULL REFERENCES accounts(id),   -- paid from
+    payout_amount       NUMERIC(20,2),                                    -- in the account's currency
+    payout_currency_id  INTEGER       REFERENCES currencies(id),
+    rate_used           NUMERIC(30,12),
+    reason              TEXT          NOT NULL,
+    status              VARCHAR(20)   NOT NULL DEFAULT 'PENDING'
+                        CHECK (status IN ('PENDING','PAID','REJECTED','CANCELLED')),
+    requested_by        INTEGER       NOT NULL REFERENCES users(id),
+    requested_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    decided_by          INTEGER REFERENCES users(id),
+    decided_at          TIMESTAMPTZ,
+    decision_note       TEXT,
+    payout_date         DATE,
+    transaction_id      INTEGER REFERENCES transactions(id),
+    created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_capital_credit_refunds_user ON capital_credit_refunds (user_id);
+
+-- ------------------------------------------------------------
+-- 5. SHARE CAPITAL CHANGE REQUESTS (two different approvers)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS share_capital_change_requests (
+    id                      SERIAL PRIMARY KEY,
+    reference_id            INTEGER       REFERENCES references_registry(id),
+    change_type             VARCHAR(30)   NOT NULL
+                            CHECK (change_type IN ('ISSUE_PRICE','NOMINAL_VALUE','REGISTERED_SHARES')),
+    currency_id             INTEGER       NOT NULL REFERENCES currencies(id),
+    current_value           NUMERIC(20,4),
+    proposed_value          NUMERIC(20,4) NOT NULL CHECK (proposed_value > 0),
+    effective_date          DATE          NOT NULL,
+    resolution_document_id  INTEGER       NOT NULL REFERENCES documents(id),
+    reason                  TEXT          NOT NULL,
+    status                  VARCHAR(20)   NOT NULL DEFAULT 'PENDING'
+                            CHECK (status IN ('PENDING','APPLIED','REJECTED','CANCELLED')),
+    requested_by            INTEGER       NOT NULL REFERENCES users(id),
+    requested_role          VARCHAR(30)   NOT NULL,
+    requested_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    approved_by             INTEGER REFERENCES users(id),
+    approved_role           VARCHAR(30),
+    approved_at             TIMESTAMPTZ,
+    rejected_by             INTEGER REFERENCES users(id),
+    rejected_at             TIMESTAMPTZ,
+    decision_note           TEXT,
+    applied_at              TIMESTAMPTZ,
+    result_summary          JSONB,
+    notice_document_id      INTEGER REFERENCES documents(id),
+    created_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT share_change_two_people CHECK (approved_by IS NULL OR approved_by <> requested_by)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS share_capital_change_one_pending
+    ON share_capital_change_requests (change_type) WHERE status = 'PENDING';
+
+-- ------------------------------------------------------------
+-- 6. ONE-ROW SETTINGS (opening conversion status, filing days)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS share_capital_settings (
+    id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    allotment_return_days   INTEGER      NOT NULL DEFAULT 60,
+    opening_converted_at    TIMESTAMPTZ,
+    opening_converted_by    INTEGER REFERENCES users(id),
+    opening_summary         JSONB,
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+INSERT INTO share_capital_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 7. NOMINAL VALUE + REGISTERED SHARES ARE SET IN THE SYSTEM
+-- Nothing is seeded here. A Director or the Treasurer enters the
+-- nominal value per share, the number of registered shares and their
+-- history on the Share Capital page (Overview > Registered values).
+-- They can be edited freely until the first shares are allotted; after
+-- that, every change goes through Share Capital > Changes (board
+-- resolution + two approvers).
+-- ------------------------------------------------------------
+
+-- ------------------------------------------------------------
+-- 8. documents.audience
+-- ------------------------------------------------------------
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS audience VARCHAR(30);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_audience_check') THEN
+        ALTER TABLE documents ADD CONSTRAINT documents_audience_check
+            CHECK (audience IS NULL OR audience IN ('ALL_SHAREHOLDERS'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_documents_audience ON documents (audience) WHERE audience IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 9. Late foreign keys (tables above reference each other)
+-- ------------------------------------------------------------
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'share_nominal_history_request_fk') THEN
+        ALTER TABLE share_nominal_history ADD CONSTRAINT share_nominal_history_request_fk
+            FOREIGN KEY (change_request_id) REFERENCES share_capital_change_requests(id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'share_allotments_request_fk') THEN
+        ALTER TABLE share_allotments ADD CONSTRAINT share_allotments_request_fk
+            FOREIGN KEY (change_request_id) REFERENCES share_capital_change_requests(id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'member_credit_refund_fk') THEN
+        ALTER TABLE member_capital_credit_entries ADD CONSTRAINT member_credit_refund_fk
+            FOREIGN KEY (refund_id) REFERENCES capital_credit_refunds(id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'member_credit_request_fk') THEN
+        ALTER TABLE member_capital_credit_entries ADD CONSTRAINT member_credit_request_fk
+            FOREIGN KEY (change_request_id) REFERENCES share_capital_change_requests(id);
+    END IF;
+END $$;
+
+-- ------------------------------------------------------------
+-- 10. transactions.inflow_type gains CAPITAL_CREDIT_REFUND_OUT.
+-- Rebuilt from the constraint's CURRENT list (whatever earlier
+-- versions added), so nothing already allowed is dropped.
+-- ------------------------------------------------------------
+DO $$
+DECLARE
+    con_name text;
+    con_def  text;
+    vals     text[];
+BEGIN
+    SELECT conname, pg_get_constraintdef(oid) INTO con_name, con_def
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    contype = 'c'
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%'
+    LIMIT  1;
+
+    IF con_def IS NOT NULL AND con_def LIKE '%CAPITAL_CREDIT_REFUND_OUT%' THEN
+        RETURN;
+    END IF;
+
+    SELECT array_agg(DISTINCT m[1]) INTO vals
+    FROM   regexp_matches(COALESCE(con_def, ''), '''([A-Z_]+)''', 'g') AS m;
+    vals := COALESCE(vals, ARRAY[]::text[]) || ARRAY['CAPITAL_CREDIT_REFUND_OUT'];
+
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    EXECUTE 'ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check CHECK (inflow_type IN ('
+        || (SELECT string_agg(quote_literal(v), ', ' ORDER BY v) FROM unnest(vals) AS v)
+        || '))';
+END $$;
+
+-- ------------------------------------------------------------
+-- 11. CHART OF ACCOUNTS
+-- ------------------------------------------------------------
+UPDATE gl_accounts
+SET    name = 'Share Capital (Ordinary)',
+       description = 'Nominal (par) value of the ordinary shares allotted: whole shares x nominal value per share. Moved here from 3020 when shares are allotted.'
+WHERE  code = '3000';
+
+INSERT INTO gl_accounts (code, name, account_type, normal_balance, statement_section, cash_flow_category, description, display_order, is_monetary)
+VALUES
+    ('3010', 'Share Premium', 'EQUITY', 'CREDIT', 'EQUITY', 'FINANCING',
+     'Amount paid for allotted shares above their nominal value: whole shares x (issue price - nominal value). May only be used as the Companies Act 2012 s.67 allows (e.g. bonus shares).', 505, FALSE),
+    ('3020', 'Capital Pending Allotment (Members'' Share Credit)', 'EQUITY', 'CREDIT', 'EQUITY', 'FINANCING',
+     'Capital paid in by members that has not yet bought a whole share. Every contribution lands here; the value of shares allotted moves out to 3000/3010. Its balance equals the total of all members'' share credit. Reduced by approved credit refunds.', 507, FALSE)
+ON CONFLICT (code) DO NOTHING;
+
+UPDATE gl_inflow_type_mapping m
+SET    gl_account_id = ga.id,
+       notes = 'v1.69.0 — capital paid in lands in Capital Pending Allotment; shares allotted move it to Share Capital (3000) / Share Premium (3010).',
+       updated_at = NOW()
+FROM   gl_accounts ga
+WHERE  ga.code = '3020' AND m.inflow_type = 'CONTRIBUTION';
+
+INSERT INTO gl_inflow_type_mapping (inflow_type, gl_account_id, notes)
+SELECT 'CAPITAL_CREDIT_REFUND_OUT', ga.id, 'v1.69.0 — a member''s unused share credit paid back to them.'
+FROM   gl_accounts ga WHERE ga.code = '3020'
+ON CONFLICT (inflow_type) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 12. A database with no approved contributions has nothing to
+-- convert — mark the opening conversion as done so contributions can
+-- be recorded straight away (a brand-new installation).
+-- ------------------------------------------------------------
+UPDATE share_capital_settings
+SET    opening_converted_at = NOW(),
+       opening_summary = '{"contributions":0,"members":[],"totalShares":0,"totalCredit":0,"allottedBelowNominal":[],"note":"Nothing to convert — no approved contributions when v1.69.0 was installed."}'::jsonb,
+       updated_at = NOW()
+WHERE  id = 1
+AND    opening_converted_at IS NULL
+AND    NOT EXISTS (SELECT 1 FROM shareholder_contributions WHERE status = 'APPROVED')
+AND    NOT EXISTS (SELECT 1 FROM share_allotments);
+
+-- ============================================================
+-- GROUP: TAX — withholding tax (both directions), corporate income
+-- tax years, payments to URA, reminders, expense tax treatment,
+-- treasury bills, and re-classification of investment tax legs and
+-- bond principal (v1.70.0)
+-- Identical to migration_v1.70.0.sql (see that file's header for the
+-- full explanation); kept here so a fresh install matches an upgraded
+-- one.
+-- ============================================================
+-- ------------------------------------------------------------
+-- 1. COMPANY REGISTRATION + WHT AGENT STATUS
+-- ------------------------------------------------------------
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tin                      VARCHAR(20);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS registration_number      VARCHAR(50);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS incorporation_date       DATE;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_office               VARCHAR(100);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS wht_agent_designated     BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS wht_agent_effective_date DATE;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_settings_updated_at  TIMESTAMPTZ;
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_settings_updated_by  INTEGER REFERENCES users(id);
+
+CREATE TABLE IF NOT EXISTS wht_agent_status_history (
+    id                 SERIAL PRIMARY KEY,
+    designated         BOOLEAN      NOT NULL,
+    effective_date     DATE         NOT NULL,
+    notes              TEXT,
+    notice_document_id INTEGER      REFERENCES documents(id),
+    changed_by         INTEGER      NOT NULL REFERENCES users(id),
+    changed_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- ------------------------------------------------------------
+-- 2. MEMBERS' TAX DETAILS
+-- ------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tin           VARCHAR(20);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tax_residency VARCHAR(20) NOT NULL DEFAULT 'RESIDENT';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_tax_residency_check') THEN
+        ALTER TABLE users ADD CONSTRAINT users_tax_residency_check
+            CHECK (tax_residency IN ('RESIDENT', 'NON_RESIDENT'));
+    END IF;
+END $$;
+
+-- ------------------------------------------------------------
+-- 3. TAX RATES (dated)
+-- rate is a PERCENTAGE (30 = 30%). treatment only matters for tax
+-- deducted FROM the company: FINAL (that is the end of it — the income
+-- is left out of the corporate tax computation) or CREDITABLE (it is a
+-- prepayment, set off against the corporate tax of the year).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tax_rates (
+    id               SERIAL PRIMARY KEY,
+    code             VARCHAR(40)   NOT NULL,
+    name             VARCHAR(200)  NOT NULL,
+    rate             NUMERIC(7,4)  NOT NULL CHECK (rate >= 0 AND rate <= 100),
+    treatment        VARCHAR(15)   CHECK (treatment IS NULL OR treatment IN ('FINAL', 'CREDITABLE')),
+    threshold_amount NUMERIC(20,4),                 -- in the functional currency (UGX)
+    legal_reference  TEXT,
+    notes            TEXT,
+    effective_from   DATE          NOT NULL,
+    effective_to     DATE,
+    created_by       INTEGER       REFERENCES users(id),
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT tax_rates_code_from_unique UNIQUE (code, effective_from)
+);
+CREATE INDEX IF NOT EXISTS idx_tax_rates_code ON tax_rates (code, effective_from);
+
+INSERT INTO tax_rates (code, name, rate, treatment, threshold_amount, legal_reference, notes, effective_from)
+VALUES
+ ('CIT_RATE', 'Corporate income tax rate', 30, NULL, NULL,
+  'Income Tax Act Cap. 338, Second Schedule', 'Applied to the chargeable income of the year.', '2000-01-01'),
+ ('WHT_GOV_SECURITIES_SHORT', 'Tax on interest from government securities (term under 10 years) — treasury bills and bonds', 20, 'FINAL', NULL,
+  'Income Tax Act s.117 (as amended)', 'Deducted by Bank of Uganda / the issuer. Final tax.', '2000-01-01'),
+ ('WHT_GOV_SECURITIES_LONG', 'Tax on interest from government securities (term 10 years or more)', 10, 'FINAL', NULL,
+  'Income Tax Act s.117 (as amended)', 'Deducted by Bank of Uganda / the issuer. Final tax.', '2000-01-01'),
+ ('WHT_INTEREST_RECEIVED', 'Tax deducted from interest received (banks, other payers)', 15, 'CREDITABLE', NULL,
+  'Income Tax Act s.117', 'Creditable against the company''s corporate tax.', '2000-01-01'),
+ ('WHT_DIVIDEND_RECEIVED', 'Tax deducted from dividends received', 15, 'CREDITABLE', NULL,
+  'Income Tax Act s.118', 'Verify: a holding of 25% or more in a resident company may be exempt.', '2000-01-01'),
+ ('WHT_DIVIDEND_PAID_RESIDENT', 'Withholding tax on dividends paid to resident shareholders', 15, NULL, NULL,
+  'Income Tax Act s.118', 'Deducted by the company from each shareholder''s dividend.', '2000-01-01'),
+ ('WHT_DIVIDEND_PAID_NON_RESIDENT', 'Withholding tax on dividends paid to non-resident shareholders', 15, NULL, NULL,
+  'Income Tax Act s.83', 'Check any double tax agreement with the shareholder''s country.', '2000-01-01'),
+ ('WHT_INTEREST_PAID_RESIDENT', 'Withholding tax on interest paid to residents (e.g. members'' savings interest)', 15, NULL, NULL,
+  'Income Tax Act s.117', 'Deducted from the interest part of a savings handout.', '2000-01-01'),
+ ('WHT_INTEREST_PAID_NON_RESIDENT', 'Withholding tax on interest paid to non-residents (e.g. a foreign lender)', 15, NULL, NULL,
+  'Income Tax Act s.83', 'Check any double tax agreement with the lender''s country.', '2000-01-01'),
+ ('WHT_AGENT_PAYMENTS', 'Withholding by designated agents on payments for goods and services (above the threshold)', 6, NULL, 1000000,
+  'Income Tax Act s.119', 'Only real once URA designates the company; until then recorded as shadow.', '2000-01-01'),
+ ('WHT_NON_RESIDENT_SERVICES', 'Withholding tax on fees paid to non-residents', 15, NULL, NULL,
+  'Income Tax Act s.85', NULL, '2000-01-01'),
+ ('LATE_PAYMENT_INTEREST', 'Interest on tax paid late (per month)', 2, NULL, NULL,
+  'Tax Procedures Code Act s.43', 'Per month, simple interest on the unpaid tax.', '2000-01-01')
+ON CONFLICT (code, effective_from) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 4. TAX DEDUCTED FROM THE COMPANY (at source)
+-- cash_leg = TRUE: the tax has its own transaction (tax_transaction_id)
+--   that points at 5700 / 1500 via transactions.gl_override_account_code.
+-- cash_leg = FALSE: the tax was paid inside another amount (e.g. a
+--   treasury bill whose tax was added to the purchase price) — the
+--   ledger moves it out of contra_gl_code into 5700 / 1500 (glService).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tax_at_source (
+    id                        SERIAL PRIMARY KEY,
+    reference_id              INTEGER       REFERENCES references_registry(id),
+    source_type               VARCHAR(30)   NOT NULL
+                              CHECK (source_type IN ('BOND_COUPON', 'TREASURY_BILL', 'INVESTMENT_RETURN',
+                                                     'INVESTMENT_TAX_ENTRY', 'BANK_INTEREST', 'MMF',
+                                                     'DIVIDEND_RECEIVED', 'OTHER_INCOME', 'OTHER')),
+    payer_name                VARCHAR(200),
+    payer_tin                 VARCHAR(20),
+    investment_id             INTEGER       REFERENCES investments(id),
+    bond_coupon_id            INTEGER       REFERENCES bond_coupons(id),
+    income_transaction_id     INTEGER       REFERENCES transactions(id),
+    tax_transaction_id        INTEGER       REFERENCES transactions(id),
+    cash_leg                  BOOLEAN       NOT NULL DEFAULT TRUE,
+    contra_gl_code            VARCHAR(10),
+    tax_rate_code             VARCHAR(40),
+    rate                      NUMERIC(7,4),
+    treatment                 VARCHAR(15)   NOT NULL CHECK (treatment IN ('FINAL', 'CREDITABLE')),
+    gross_amount              NUMERIC(20,4) NOT NULL CHECK (gross_amount >= 0),
+    tax_amount                NUMERIC(20,4) NOT NULL CHECK (tax_amount > 0),
+    net_amount                NUMERIC(20,4) NOT NULL,
+    currency_id               INTEGER       NOT NULL REFERENCES currencies(id),
+    deduction_date            DATE          NOT NULL,
+    functional_rate           NUMERIC(20,8),
+    gross_functional          NUMERIC(20,2),
+    tax_functional            NUMERIC(20,2),
+    certificate_number        VARCHAR(60),
+    certificate_received_at   DATE,
+    certificate_document_id   INTEGER       REFERENCES documents(id),
+    credit_claimed_tax_year_id INTEGER,
+    status                    VARCHAR(15)   NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'REVERSED')),
+    reversed_at               DATE,
+    is_backfilled             BOOLEAN       NOT NULL DEFAULT FALSE,
+    notes                     TEXT,
+    created_by                INTEGER       REFERENCES users(id),
+    created_at                TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT tax_at_source_noncash_contra CHECK (cash_leg OR contra_gl_code IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_tax_at_source_date ON tax_at_source (deduction_date);
+CREATE UNIQUE INDEX IF NOT EXISTS tax_at_source_one_per_tax_tx
+    ON tax_at_source (tax_transaction_id) WHERE tax_transaction_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 5. TAX THE COMPANY WITHHOLDS FROM OTHERS
+-- tax_functional is what is owed to URA, in UGX, fixed at the rate on
+-- the withholding date. debit_gl_code is where the GROSS payment was
+-- charged — glService adds Dr <debit_gl_code> / Cr 2500 for the tax
+-- (the cash transaction itself only carries the NET amount paid).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS wht_remittances (
+    id                   SERIAL PRIMARY KEY,
+    reference_id         INTEGER       REFERENCES references_registry(id),
+    period_month         DATE          NOT NULL,     -- first day of the month the tax was withheld in
+    due_date             DATE          NOT NULL,     -- the 15th of the following month
+    total_tax_functional NUMERIC(20,2) NOT NULL CHECK (total_tax_functional > 0),
+    account_id           INTEGER       NOT NULL REFERENCES accounts(id),
+    transaction_id       INTEGER       REFERENCES transactions(id),
+    prn                  VARCHAR(40),
+    return_reference     VARCHAR(60),
+    paid_date            DATE          NOT NULL,
+    status               VARCHAR(15)   NOT NULL DEFAULT 'PAID' CHECK (status IN ('PAID', 'REVERSED')),
+    notes                TEXT,
+    created_by           INTEGER       NOT NULL REFERENCES users(id),
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS wht_withholdings (
+    id                       SERIAL PRIMARY KEY,
+    reference_id             INTEGER       REFERENCES references_registry(id),
+    payment_type             VARCHAR(30)   NOT NULL
+                             CHECK (payment_type IN ('DIVIDEND', 'SAVINGS_INTEREST', 'LOAN_INTEREST', 'SERVICE_FEE',
+                                                     'SUPPLIER', 'NON_RESIDENT_SERVICE', 'OTHER')),
+    payee_user_id            INTEGER       REFERENCES users(id),
+    payee_name               VARCHAR(200)  NOT NULL,
+    payee_tin                VARCHAR(20),
+    payee_residency          VARCHAR(20)   NOT NULL DEFAULT 'RESIDENT' CHECK (payee_residency IN ('RESIDENT', 'NON_RESIDENT')),
+    tax_rate_code            VARCHAR(40),
+    rate                     NUMERIC(7,4)  NOT NULL,
+    gross_amount             NUMERIC(20,4) NOT NULL CHECK (gross_amount > 0),
+    tax_amount               NUMERIC(20,4) NOT NULL CHECK (tax_amount >= 0),
+    net_amount               NUMERIC(20,4) NOT NULL,
+    currency_id              INTEGER       NOT NULL REFERENCES currencies(id),
+    withholding_date         DATE          NOT NULL,
+    functional_rate          NUMERIC(20,8),
+    tax_functional           NUMERIC(20,2),
+    debit_gl_code            VARCHAR(10),
+    source_transaction_id    INTEGER       REFERENCES transactions(id),
+    dividend_distribution_id INTEGER       REFERENCES dividend_distributions(id),
+    savings_handout_id       INTEGER       REFERENCES savings_handouts(id),
+    loan_repayment_id        INTEGER       REFERENCES loan_received_repayments(id),
+    service_fee_payment_id   INTEGER       REFERENCES service_fee_payments(id),
+    is_shadow                BOOLEAN       NOT NULL DEFAULT FALSE,
+    shadow_reason            TEXT,
+    remittance_id            INTEGER       REFERENCES wht_remittances(id),
+    status                   VARCHAR(15)   NOT NULL DEFAULT 'PENDING'
+                             CHECK (status IN ('PENDING', 'REMITTED', 'SHADOW', 'REVERSED')),
+    reversal_date            DATE,
+    certificate_document_id  INTEGER       REFERENCES documents(id),
+    notes                    TEXT,
+    created_by               INTEGER       REFERENCES users(id),
+    created_at               TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT wht_real_needs_ugx_value CHECK (is_shadow OR status = 'REVERSED' OR tax_functional IS NOT NULL),
+    CONSTRAINT wht_real_needs_debit_gl CHECK (is_shadow OR debit_gl_code IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_wht_withholdings_date   ON wht_withholdings (withholding_date);
+CREATE INDEX IF NOT EXISTS idx_wht_withholdings_status ON wht_withholdings (status);
+CREATE INDEX IF NOT EXISTS idx_wht_withholdings_payee  ON wht_withholdings (payee_user_id);
+
+-- ------------------------------------------------------------
+-- 6. TAX YEARS, ADJUSTMENTS, PAYMENTS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tax_years (
+    id                            SERIAL PRIMARY KEY,
+    label                         VARCHAR(30)   NOT NULL,
+    start_date                    DATE          NOT NULL UNIQUE,
+    end_date                      DATE          NOT NULL,
+    is_first_year                 BOOLEAN       NOT NULL DEFAULT FALSE,
+    status                        VARCHAR(15)   NOT NULL DEFAULT 'OPEN'
+                                  CHECK (status IN ('OPEN', 'PREPARED', 'APPROVED', 'FILED')),
+    include_pre_incorporation     BOOLEAN       NOT NULL DEFAULT FALSE,
+    fx_revaluation_taxable        BOOLEAN       NOT NULL DEFAULT TRUE,
+    provisional_estimate          NUMERIC(20,2),          -- estimated chargeable income (UGX)
+    provisional_tax_estimate      NUMERIC(20,2),          -- estimate x rate
+    provisional_set_by            INTEGER       REFERENCES users(id),
+    provisional_set_at            TIMESTAMPTZ,
+    computation                   JSONB,                  -- the worksheet snapshot, frozen at PREPARED
+    profit_before_tax             NUMERIC(20,2),
+    total_add_backs               NUMERIC(20,2),
+    total_deductions              NUMERIC(20,2),
+    chargeable_income             NUMERIC(20,2),
+    loss_brought_forward          NUMERIC(20,2),
+    loss_utilised                 NUMERIC(20,2),
+    taxable_income                NUMERIC(20,2),
+    loss_carried_forward          NUMERIC(20,2),
+    tax_rate                      NUMERIC(7,4),
+    gross_tax                     NUMERIC(20,2),
+    wht_credits                   NUMERIC(20,2),
+    provisional_paid              NUMERIC(20,2),
+    balance_due                   NUMERIC(20,2),
+    prepared_by                   INTEGER       REFERENCES users(id),
+    prepared_at                   TIMESTAMPTZ,
+    approved_by                   INTEGER       REFERENCES users(id),
+    approved_at                   TIMESTAMPTZ,
+    returned_reason               TEXT,
+    filed_by                      INTEGER       REFERENCES users(id),
+    filed_at                      TIMESTAMPTZ,
+    filing_date                   DATE,
+    return_reference              VARCHAR(60),
+    computation_document_id       INTEGER       REFERENCES documents(id),
+    notes                         TEXT,
+    created_at                    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT tax_years_dates CHECK (end_date > start_date)
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_at_source_claim_year_fk') THEN
+        ALTER TABLE tax_at_source ADD CONSTRAINT tax_at_source_claim_year_fk
+            FOREIGN KEY (credit_claimed_tax_year_id) REFERENCES tax_years(id);
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tax_year_adjustments (
+    id              SERIAL PRIMARY KEY,
+    tax_year_id     INTEGER       NOT NULL REFERENCES tax_years(id) ON DELETE CASCADE,
+    kind            VARCHAR(15)   NOT NULL CHECK (kind IN ('ADD_BACK', 'DEDUCTION')),
+    description     TEXT          NOT NULL,
+    amount          NUMERIC(20,2) NOT NULL CHECK (amount > 0),
+    legal_reference TEXT,
+    created_by      INTEGER       NOT NULL REFERENCES users(id),
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tax_payments (
+    id              SERIAL PRIMARY KEY,
+    reference_id    INTEGER       REFERENCES references_registry(id),
+    tax_year_id     INTEGER       REFERENCES tax_years(id),
+    payment_kind    VARCHAR(25)   NOT NULL
+                    CHECK (payment_kind IN ('PROVISIONAL', 'INCOME_TAX_BALANCE', 'LATE_INTEREST', 'REFUND_RECEIVED')),
+    instalment_no   SMALLINT,
+    amount          NUMERIC(20,2) NOT NULL CHECK (amount > 0),
+    account_id      INTEGER       NOT NULL REFERENCES accounts(id),
+    transaction_id  INTEGER       REFERENCES transactions(id),
+    prn             VARCHAR(40),
+    paid_date       DATE          NOT NULL,
+    status          VARCHAR(15)   NOT NULL DEFAULT 'PAID' CHECK (status IN ('PAID', 'REVERSED')),
+    notes           TEXT,
+    created_by      INTEGER       NOT NULL REFERENCES users(id),
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tax_reminders_sent (
+    id          SERIAL PRIMARY KEY,
+    reminder_key VARCHAR(120) NOT NULL,
+    sent_on     DATE         NOT NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT tax_reminders_sent_unique UNIQUE (reminder_key, sent_on)
+);
+
+-- ------------------------------------------------------------
+-- 7. EXPENSE TAX TREATMENT (categories + per transaction)
+-- NULL on a category = inherit from its parent (top level: DEDUCTIBLE).
+-- NULL on a transaction = use its category's.
+-- ------------------------------------------------------------
+ALTER TABLE categories   ADD COLUMN IF NOT EXISTS tax_treatment VARCHAR(20);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS tax_treatment VARCHAR(20);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gl_override_account_code VARCHAR(10);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'categories_tax_treatment_check') THEN
+        ALTER TABLE categories ADD CONSTRAINT categories_tax_treatment_check
+            CHECK (tax_treatment IS NULL OR tax_treatment IN ('DEDUCTIBLE', 'NOT_DEDUCTIBLE', 'CAPITAL'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transactions_tax_treatment_check') THEN
+        ALTER TABLE transactions ADD CONSTRAINT transactions_tax_treatment_check
+            CHECK (tax_treatment IS NULL OR tax_treatment IN ('DEDUCTIBLE', 'NOT_DEDUCTIBLE', 'CAPITAL'));
+    END IF;
+END $$;
+
+-- ------------------------------------------------------------
+-- 8. WHT SETTINGS ON THE MODULES THAT PAY PEOPLE
+-- ------------------------------------------------------------
+-- Service fees: off by default ("no ties with WHT"); switched on by an
+-- amendment with a reason and an effective date (trail below).
+ALTER TABLE service_fee_agreements ADD COLUMN IF NOT EXISTS wht_applicable     BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE service_fee_agreements ADD COLUMN IF NOT EXISTS wht_rate_code      VARCHAR(40);
+ALTER TABLE service_fee_agreements ADD COLUMN IF NOT EXISTS wht_effective_from DATE;
+CREATE TABLE IF NOT EXISTS service_fee_wht_amendments (
+    id                 SERIAL PRIMARY KEY,
+    agreement_id       INTEGER      NOT NULL REFERENCES service_fee_agreements(id),
+    previous_applicable BOOLEAN     NOT NULL,
+    new_applicable     BOOLEAN      NOT NULL,
+    previous_rate_code VARCHAR(40),
+    new_rate_code      VARCHAR(40),
+    effective_from     DATE         NOT NULL,
+    reason             TEXT         NOT NULL,
+    amended_by         INTEGER      NOT NULL REFERENCES users(id),
+    amended_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE payment_confirmations ADD COLUMN IF NOT EXISTS wht_amount    NUMERIC(20,4);
+ALTER TABLE payment_confirmations ADD COLUMN IF NOT EXISTS wht_is_shadow BOOLEAN;
+
+-- Loans received: interest paid to a lender outside Uganda has tax withheld.
+ALTER TABLE loans_received ADD COLUMN IF NOT EXISTS lender_residency VARCHAR(20) NOT NULL DEFAULT 'RESIDENT';
+ALTER TABLE loans_received ADD COLUMN IF NOT EXISTS lender_tin       VARCHAR(20);
+ALTER TABLE loans_received ADD COLUMN IF NOT EXISTS wht_applicable   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE loans_received ADD COLUMN IF NOT EXISTS wht_rate_code    VARCHAR(40);
+ALTER TABLE loan_received_repayments ADD COLUMN IF NOT EXISTS wht_amount NUMERIC(20,4) NOT NULL DEFAULT 0;
+ALTER TABLE loan_received_repayments ADD COLUMN IF NOT EXISTS cash_paid  NUMERIC(20,4);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'loans_received_lender_residency_check') THEN
+        ALTER TABLE loans_received ADD CONSTRAINT loans_received_lender_residency_check
+            CHECK (lender_residency IN ('RESIDENT', 'NON_RESIDENT'));
+    END IF;
+END $$;
+
+ALTER TABLE dividend_distributions ADD COLUMN IF NOT EXISTS wht_rate   NUMERIC(7,4);
+ALTER TABLE dividend_distributions ADD COLUMN IF NOT EXISTS wht_amount NUMERIC(20,4);
+ALTER TABLE dividend_distributions ADD COLUMN IF NOT EXISTS net_amount NUMERIC(20,4);
+
+ALTER TABLE savings_handouts ADD COLUMN IF NOT EXISTS wht_rate   NUMERIC(7,4);
+ALTER TABLE savings_handouts ADD COLUMN IF NOT EXISTS wht_amount NUMERIC(20,4) NOT NULL DEFAULT 0;
+ALTER TABLE savings_handouts ADD COLUMN IF NOT EXISTS net_amount NUMERIC(20,4);
+
+-- ------------------------------------------------------------
+-- 9. TREASURY BILLS
+-- ------------------------------------------------------------
+DO $$
+DECLARE con_name text;
+BEGIN
+    SELECT conname INTO con_name FROM pg_constraint
+    WHERE  conrelid = 'investments'::regclass AND contype = 'c'
+    AND    pg_get_constraintdef(oid) LIKE '%investment_type%' AND pg_get_constraintdef(oid) LIKE '%STANDARD%'
+    AND    pg_get_constraintdef(oid) NOT LIKE '%TREASURY_BILL%'
+    LIMIT 1;
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE investments DROP CONSTRAINT ' || quote_ident(con_name);
+        ALTER TABLE investments ADD CONSTRAINT investments_investment_type_check
+            CHECK (investment_type IN ('STANDARD', 'BOND', 'TREASURY_BILL'));
+    END IF;
+END $$;
+ALTER TABLE investments ADD COLUMN IF NOT EXISTS tbill_tax_timing VARCHAR(15);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'investments_tbill_tax_timing_check') THEN
+        ALTER TABLE investments ADD CONSTRAINT investments_tbill_tax_timing_check
+            CHECK (tbill_tax_timing IS NULL OR tbill_tax_timing IN ('AT_MATURITY', 'AT_PURCHASE'));
+    END IF;
+END $$;
+
+-- ------------------------------------------------------------
+-- 10. documents.audience gains 'ALL_MEMBERS' (every member, whether
+-- or not they hold shares — used for the WHT agent status notice).
+-- ------------------------------------------------------------
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_audience_check'
+               AND pg_get_constraintdef(oid) NOT LIKE '%ALL_MEMBERS%') THEN
+        ALTER TABLE documents DROP CONSTRAINT documents_audience_check;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_audience_check') THEN
+        ALTER TABLE documents ADD CONSTRAINT documents_audience_check
+            CHECK (audience IS NULL OR audience IN ('ALL_SHAREHOLDERS', 'ALL_MEMBERS'));
+    END IF;
+END $$;
+
+-- ------------------------------------------------------------
+-- 11. transactions.inflow_type gains the five tax payment types.
+-- Rebuilt from the constraint's CURRENT list (nothing dropped).
+-- ------------------------------------------------------------
+DO $$
+DECLARE
+    con_name text;
+    con_def  text;
+    vals     text[];
+BEGIN
+    SELECT conname, pg_get_constraintdef(oid) INTO con_name, con_def
+    FROM   pg_constraint
+    WHERE  conrelid = 'transactions'::regclass
+    AND    contype = 'c'
+    AND    pg_get_constraintdef(oid) LIKE '%inflow_type%'
+    LIMIT  1;
+
+    IF con_def IS NOT NULL AND con_def LIKE '%TAX_REFUND_IN%' THEN
+        RETURN;
+    END IF;
+
+    SELECT array_agg(DISTINCT m[1]) INTO vals
+    FROM   regexp_matches(COALESCE(con_def, ''), '''([A-Z_]+)''', 'g') AS m;
+    vals := COALESCE(vals, ARRAY[]::text[])
+         || ARRAY['WHT_REMITTANCE_OUT', 'PROVISIONAL_TAX_OUT', 'INCOME_TAX_OUT', 'TAX_PENALTY_OUT', 'TAX_REFUND_IN'];
+    SELECT array_agg(DISTINCT v) INTO vals FROM unnest(vals) AS v;
+
+    IF con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE transactions DROP CONSTRAINT ' || quote_ident(con_name);
+    END IF;
+    EXECUTE 'ALTER TABLE transactions ADD CONSTRAINT transactions_inflow_type_check CHECK (inflow_type IN ('
+        || (SELECT string_agg(quote_literal(v), ', ' ORDER BY v) FROM unnest(vals) AS v)
+        || '))';
+END $$;
+
+-- ------------------------------------------------------------
+-- 12. CHART OF ACCOUNTS
+-- ------------------------------------------------------------
+INSERT INTO gl_accounts (code, name, account_type, normal_balance, statement_section, cash_flow_category, description, display_order, is_monetary)
+VALUES
+    ('1500', 'Withholding Tax Recoverable', 'ASSET', 'DEBIT', 'TAX_ASSETS', 'OPERATING',
+     'CREDITABLE tax deducted from the company''s income by the payer (e.g. bank interest). A prepayment of corporate tax: set off against the year''s tax when the return is filed.', 220, FALSE),
+    ('1510', 'Provisional Tax Paid', 'ASSET', 'DEBIT', 'TAX_ASSETS', 'OPERATING',
+     'Provisional (instalment) corporate tax paid to URA during the year. Set off against the year''s tax when the return is filed.', 225, FALSE),
+    ('2500', 'Withholding Tax Payable (URA)', 'LIABILITY', 'CREDIT', 'TAX_LIABILITIES', 'OPERATING',
+     'Tax the company deducted from payments it made (dividends, members'' savings interest, foreign lender interest, fees) and must pay to URA by the 15th of the following month.', 445, FALSE),
+    ('2510', 'Corporate Income Tax Payable', 'LIABILITY', 'CREDIT', 'TAX_LIABILITIES', 'OPERATING',
+     'Corporate income tax of approved tax years, less what has been set off or paid. A debit balance is tax refundable.', 447, FALSE),
+    ('5700', 'Income Tax — Final Withholding Tax', 'EXPENSE', 'DEBIT', 'INCOME_TAX', 'OPERATING',
+     'FINAL tax deducted at source from income (government securities, treasury bills). Part of the income tax charge, not an operating expense.', 790, FALSE),
+    ('5710', 'Income Tax — Corporate (Current Year)', 'EXPENSE', 'DEBIT', 'INCOME_TAX', 'OPERATING',
+     'Corporate income tax on the chargeable income of each approved tax year.', 795, FALSE),
+    ('5720', 'Tax Penalties and Late Payment Interest', 'EXPENSE', 'DEBIT', 'EXPENSES', 'OPERATING',
+     'Interest and penalties charged by URA for late filing or payment. Not deductible for tax.', 770, FALSE)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO gl_inflow_type_mapping (inflow_type, gl_account_id, notes)
+SELECT v.inflow_type, ga.id, v.notes
+FROM (VALUES
+    ('WHT_REMITTANCE_OUT',  '2500', 'v1.70.0 — withheld tax paid over to URA.'),
+    ('PROVISIONAL_TAX_OUT', '1510', 'v1.70.0 — provisional corporate tax instalment paid to URA.'),
+    ('INCOME_TAX_OUT',      '2510', 'v1.70.0 — balance of corporate income tax paid to URA.'),
+    ('TAX_PENALTY_OUT',     '5720', 'v1.70.0 — late payment interest / penalty paid to URA.'),
+    ('TAX_REFUND_IN',       '2510', 'v1.70.0 — tax refunded by URA.')
+) AS v(inflow_type, code, notes)
+JOIN gl_accounts ga ON ga.code = v.code
+ON CONFLICT (inflow_type) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 13. RE-CLASSIFICATION OF EXISTING ENTRIES (reports only)
+-- a) Every investment "TAX" leg (bond coupon withholding tax and
+--    manual TAX entries) was an EXPENSE carrying investment_id, which
+--    the ledger counted as money INVESTED (1400). It is income tax
+--    deducted at source: FINAL for government securities -> 5700.
+-- ------------------------------------------------------------
+UPDATE transactions t
+SET    gl_override_account_code = '5700'
+FROM   investment_transactions it
+WHERE  it.transaction_id = t.id
+AND    it.entry_type = 'TAX'
+AND    t.gl_override_account_code IS NULL;
+
+-- Their reversals follow them.
+UPDATE transactions r
+SET    gl_override_account_code = o.gl_override_account_code
+FROM   transactions o
+WHERE  r.reversal_of = o.id
+AND    o.gl_override_account_code IS NOT NULL
+AND    r.gl_override_account_code IS NULL;
+
+-- ...and each gets a row in the register of tax deducted from us.
+INSERT INTO tax_at_source (
+    source_type, payer_name, investment_id, bond_coupon_id, income_transaction_id, tax_transaction_id,
+    cash_leg, tax_rate_code, rate, treatment, gross_amount, tax_amount, net_amount, currency_id,
+    deduction_date, functional_rate, gross_functional, tax_functional, status, is_backfilled, notes)
+SELECT
+    CASE WHEN bc.id IS NOT NULL THEN 'BOND_COUPON' ELSE 'INVESTMENT_TAX_ENTRY' END,
+    i.name,
+    i.id,
+    bc.id,
+    ir.transaction_id,
+    t.id,
+    TRUE,
+    CASE WHEN i.investment_type = 'BOND' AND COALESCE(i.bond_term_years, 0) >= 10 THEN 'WHT_GOV_SECURITIES_LONG'
+         WHEN i.investment_type = 'BOND' THEN 'WHT_GOV_SECURITIES_SHORT' ELSE NULL END,
+    NULLIF(i.tax_withholding_rate, 0),
+    'FINAL',
+    COALESCE(bc.actual_gross_amount, bc.gross_amount, t.amount),
+    t.amount,
+    COALESCE(bc.actual_gross_amount, bc.gross_amount, t.amount) - t.amount,
+    t.currency_id,
+    t.value_date,
+    t.functional_rate,
+    ROUND(COALESCE(bc.actual_gross_amount, bc.gross_amount, t.amount) * COALESCE(t.functional_rate, 0), 2),
+    t.functional_amount,
+    CASE WHEN t.is_reversed THEN 'REVERSED' ELSE 'ACTIVE' END,
+    TRUE,
+    'Recorded before v1.70.0; added to the tax register by the migration. Check the treatment (FINAL / CREDITABLE) and attach the certificate.'
+FROM   investment_transactions it
+JOIN   transactions t  ON t.id = it.transaction_id AND t.is_reversal = FALSE
+JOIN   investments  i  ON i.id = it.investment_id
+LEFT JOIN bond_coupons bc ON bc.investment_id = i.id
+       AND bc.status = 'PAID'
+       AND bc.paid_at IS NOT NULL
+       AND it.description = 'Withholding tax on bond coupon #' || bc.coupon_number
+LEFT JOIN investment_returns ir ON ir.id = bc.investment_return_id
+WHERE  it.entry_type = 'TAX'
+AND    t.amount > 0
+AND    NOT EXISTS (SELECT 1 FROM tax_at_source s WHERE s.tax_transaction_id = t.id);
+
+-- b) A bond's face value repaid at maturity (return type PRINCIPAL) is
+--    the company's own money coming back, not income: -> 1400.
+UPDATE transactions t
+SET    gl_override_account_code = '1400'
+FROM   investment_returns ir
+WHERE  ir.transaction_id = t.id
+AND    ir.return_type = 'PRINCIPAL'
+AND    t.gl_override_account_code IS NULL;
+
+UPDATE transactions r
+SET    gl_override_account_code = o.gl_override_account_code
+FROM   transactions o
+WHERE  r.reversal_of = o.id
+AND    o.gl_override_account_code IS NOT NULL
+AND    r.gl_override_account_code IS NULL;
+
+-- ============================================================
+-- v1.72.0 — reversal requests (second-person approval), "reversed"
+-- markers on money-market-fund / investment entries, and the log of
+-- automatic record corrections. (Existing databases: run
+-- migration_v1.72.0.sql, which also repairs past reversals.)
+-- ============================================================
+-- ------------------------------------------------------------
+-- 1. Reversal requests (second-person approval)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reversal_requests (
+    id                       SERIAL PRIMARY KEY,
+    transaction_id           INTEGER      NOT NULL REFERENCES transactions(id),
+    reason                   TEXT         NOT NULL,
+    status                   VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                             CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    -- What the rehearsal said would happen ("2 linked entries …; MMF
+    -- balance reduced by …"), shown to the approver.
+    effect_summary           TEXT,
+    linked_count             INTEGER      NOT NULL DEFAULT 1,
+    requested_by             INTEGER      NOT NULL REFERENCES users(id),
+    requested_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    decided_by               INTEGER      REFERENCES users(id),
+    decided_at               TIMESTAMPTZ,
+    decision_note            TEXT,
+    reversal_transaction_id  INTEGER      REFERENCES transactions(id)
+);
+-- Only one open request per transaction.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reversal_requests_pending
+    ON reversal_requests (transaction_id) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_reversal_requests_status ON reversal_requests (status, requested_at DESC);
+
+-- ------------------------------------------------------------
+-- 2. "Reversed" markers on the sub-ledger rows
+-- ------------------------------------------------------------
+ALTER TABLE mmf_transactions        ADD COLUMN IF NOT EXISTS is_reversed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE mmf_transactions        ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
+ALTER TABLE mmf_transactions        ADD COLUMN IF NOT EXISTS reversed_by INTEGER REFERENCES users(id);
+ALTER TABLE mmf_transactions        ADD COLUMN IF NOT EXISTS reversal_transaction_id INTEGER REFERENCES transactions(id);
+
+ALTER TABLE investment_funding      ADD COLUMN IF NOT EXISTS is_reversed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE investment_funding      ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
+ALTER TABLE investment_funding      ADD COLUMN IF NOT EXISTS reversed_by INTEGER REFERENCES users(id);
+ALTER TABLE investment_funding      ADD COLUMN IF NOT EXISTS reversal_transaction_id INTEGER REFERENCES transactions(id);
+
+ALTER TABLE investment_returns      ADD COLUMN IF NOT EXISTS is_reversed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE investment_returns      ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
+ALTER TABLE investment_returns      ADD COLUMN IF NOT EXISTS reversed_by INTEGER REFERENCES users(id);
+ALTER TABLE investment_returns      ADD COLUMN IF NOT EXISTS reversal_transaction_id INTEGER REFERENCES transactions(id);
+
+ALTER TABLE investment_transactions ADD COLUMN IF NOT EXISTS is_reversed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE investment_transactions ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
+ALTER TABLE investment_transactions ADD COLUMN IF NOT EXISTS reversed_by INTEGER REFERENCES users(id);
+ALTER TABLE investment_transactions ADD COLUMN IF NOT EXISTS reversal_transaction_id INTEGER REFERENCES transactions(id);
+
+-- ------------------------------------------------------------
+-- 3. Log of every automatic correction (Reports › Records check)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS record_corrections (
+    id            SERIAL PRIMARY KEY,
+    run_label     VARCHAR(40)  NOT NULL,           -- e.g. 'v1.72.0 migration'
+    record_type   VARCHAR(40)  NOT NULL,           -- mmf_accounts / investments / bond_coupons
+    record_id     INTEGER      NOT NULL,
+    record_name   TEXT,
+    field_name    VARCHAR(60),
+    old_value     TEXT,
+    new_value     TEXT,
+    note          TEXT,
+    needs_attention BOOLEAN    NOT NULL DEFAULT FALSE,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+
+-- ============================================================
+-- v1.73.0 — MONEY ENTRIES HELD FOR APPROVAL
+-- (anyone who is not the Treasurer or an Admin: held until the
+--  Treasurer or an Admin approves — see middleware/holdMoneyEntry.js)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS held_money_entries (
+    id                     SERIAL PRIMARY KEY,
+    route_key              VARCHAR(60)   NOT NULL,   -- which action, e.g. 'transactions.expense'
+    label                  VARCHAR(120)  NOT NULL,   -- plain-English name shown on the list
+    method                 VARCHAR(10)   NOT NULL,
+    path                   TEXT          NOT NULL,   -- the address it was sent to (for the record)
+    params                 JSONB         NOT NULL DEFAULT '{}',
+    body                   JSONB         NOT NULL DEFAULT '{}',  -- the checked form values
+    query_params           JSONB         NOT NULL DEFAULT '{}',
+    subject                TEXT,                      -- e.g. 'Investment: GoU 2yr bond'
+    account_name           TEXT,
+    amount                 NUMERIC(20,4),
+    currency_code          VARCHAR(10),
+    note                   TEXT,
+    status                 VARCHAR(12)   NOT NULL DEFAULT 'PENDING'
+                           CHECK (status IN ('PENDING', 'EXECUTING', 'APPROVED', 'REJECTED', 'WITHDRAWN')),
+    created_by             INTEGER       NOT NULL REFERENCES users(id),
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    decided_by             INTEGER       REFERENCES users(id),
+    decided_at             TIMESTAMPTZ,
+    decision_note          TEXT,
+    last_error             TEXT,          -- why the last approval attempt could not post it
+    last_error_at          TIMESTAMPTZ,
+    result_message         TEXT,
+    posted_transaction_ids INTEGER[]
+);
+
+CREATE INDEX IF NOT EXISTS idx_held_money_entries_status  ON held_money_entries(status);
+CREATE INDEX IF NOT EXISTS idx_held_money_entries_creator ON held_money_entries(created_by);
+
+COMMENT ON TABLE held_money_entries IS
+    'v1.73.0 — money entries recorded by someone who is not the Treasurer or an Admin, held until the Treasurer or an Admin approves them. On approval the original action is run on behalf of the recorder and the ledger rows store approved_by = the approver.';
+
+-- ============================================================
+-- END OF SCHEMA — v1.73.0
 -- ============================================================

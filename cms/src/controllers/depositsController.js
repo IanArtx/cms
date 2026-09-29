@@ -331,7 +331,7 @@ const getExitRefundPreview = asyncHandler(async (req, res) => {
 // ============================================================
 const processExitRefundHandler = asyncHandler(async (req, res) => {
     const { userId } = req.params;
-    const { exit_type, deduction_percentage, exchange_rate, notes } = req.body;
+    const { exit_type, deduction_percentage, exchange_rate, notes, target_currency_id } = req.body;
 
     await withTransaction(async (client) => {
         const result = await processExitRefund(client, {
@@ -339,6 +339,7 @@ const processExitRefundHandler = asyncHandler(async (req, res) => {
             exitType:            exit_type,
             deductionPercentage: deduction_percentage,
             exchangeRate:        exchange_rate,
+            targetCurrencyId:    target_currency_id ? parseInt(target_currency_id) : null,
             notes,
             processedByUserId:   req.user.id,
         });

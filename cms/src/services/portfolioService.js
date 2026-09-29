@@ -330,7 +330,7 @@ const getTransactionsInvolvedSection = async (userId) => {
         JOIN   accounts a   ON a.id = t.account_id
         JOIN   references_registry r ON r.id = t.reference_id
         WHERE  t.contributed_by = $1 OR t.created_by = $1 OR t.approved_by = $1
-        ORDER  BY t.transaction_date DESC, t.id DESC
+        ORDER  BY t.value_date DESC, t.id DESC
         LIMIT  100
     `, [userId]);
 

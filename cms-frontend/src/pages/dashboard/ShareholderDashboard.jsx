@@ -37,7 +37,7 @@ import { formatDate, formatCurrency, getErrorMessage } from '../../utils/helpers
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     BanknotesIcon,
     ChartPieIcon,
@@ -49,9 +49,19 @@ import {
     ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import {
-    ResponsiveContainer, AreaChart, Area, BarChart, Bar,
+    ResponsiveContainer, AreaChart, Area, LineChart, Line,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
+import PageHeader from '../../components/common/PageHeader';
+
+// Shortens a long investment/bond name for an x-axis tick label —
+// the full name still shows in the tooltip on hover. Charts whose
+// x-axis is "one point per record" rather than a fixed calendar
+// period (unlike the inflow/outflow trend above) can grow arbitrarily
+// long as more investments are added, so labels need to degrade
+// gracefully rather than overlap.
+const truncateLabel = (value, max = 14) =>
+    (value && value.length > max) ? `${value.slice(0, max)}…` : value;
 
 // ============================================================
 // INFLOW / OUTFLOW TREND — gradient area chart (v1.56.1)
@@ -95,7 +105,7 @@ const InflowOutflowChart = ({ trend, currencyCode }) => {
                             tick={{ fontSize: 11, ...theme.axisTick }}
                             tickLine={false}
                             axisLine={false}
-                            tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                            tickFormatter={compactNumber}
                         />
                         <Tooltip
                             {...theme.tooltipProps}
@@ -254,22 +264,34 @@ const PerformanceCard = ({ performance, inputVsReturn }) => {
             )}
             {hasChart && (
                 <div className={hasPerformance ? 'mt-4 pt-4 border-t border-gray-100' : ''}>
-                    <h3 className="text-xs font-semibold text-gray-500 mb-2">Input vs Return</h3>
-                    <ResponsiveContainer width="100%" height={180}>
-                        <BarChart data={inputVsReturn}>
+                    <h3 className="text-xs font-semibold text-gray-500 mb-2">
+                        Input vs Return <span className="font-normal text-gray-400">— every investment</span>
+                    </h3>
+                    <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={inputVsReturn} margin={{ top: 4, right: 8, left: 0, bottom: 8 }}>
                             <CartesianGrid {...theme.gridProps} />
-                            <XAxis dataKey="name" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false}
-                                interval={0} angle={-15} textAnchor="end" height={40} />
+                            <XAxis
+                                dataKey="name"
+                                tick={{ fontSize: 10, ...theme.axisTick }}
+                                tickLine={false}
+                                interval="preserveStartEnd"
+                                angle={-35}
+                                textAnchor="end"
+                                height={54}
+                                tickFormatter={truncateLabel}
+                            />
                             <YAxis tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                tickFormatter={compactNumber} />
                             <Tooltip
                                 {...theme.tooltipProps}
                                 formatter={(v, name) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }), name]}
                             />
-                            <Legend {...theme.legendProps} />
-                            <Bar dataKey="invested" name="Invested" fill={theme.neutral} radius={[4, 4, 0, 0]} />
-                            <Bar dataKey="returned" name="Returned" fill={theme.success} radius={[4, 4, 0, 0]} />
-                        </BarChart>
+                            <Legend {...theme.legendProps} verticalAlign="top" height={28} />
+                            <Line type="monotone" dataKey="invested" name="Invested"
+                                stroke={theme.neutral} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                            <Line type="monotone" dataKey="returned" name="Returned"
+                                stroke={theme.success} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                        </LineChart>
                     </ResponsiveContainer>
                 </div>
             )}
@@ -399,7 +421,7 @@ const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue', to = nul
 // ============================================================
 // MAIN SHAREHOLDER DASHBOARD
 // ============================================================
-const ShareholderDashboard = () => {
+const ShareholderDashboard = ({ headerActions = null }) => {
     const { user } = useAuth();
     const currentDate = new Date();
 
@@ -637,21 +659,14 @@ const ShareholderDashboard = () => {
 
     return (
         <div>
-            {/* Welcome Header */}
-            <div className="mb-6">
-                <h1 className="page-title">
-                    Welcome, {user?.first_name}
-                </h1>
-                <p className="mt-1 text-sm text-gray-500">
-                    {currentDate.toLocaleDateString('en-GB', {
-                        weekday: 'long',
-                        year:    'numeric',
-                        month:   'long',
-                        day:     'numeric',
-                    })}
-                    {currentQuarter && ` • ${currentQuarter}`}
-                </p>
-            </div>
+            {/* Welcome band (v1.71.0 — same header band as every page) */}
+            <PageHeader
+                title={`Welcome, ${user?.first_name}`}
+                subtitle={`${currentDate.toLocaleDateString('en-GB', {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                })}${currentQuarter ? ` • ${currentQuarter}` : ''}`}
+                actions={headerActions}
+            />
 
             {error && (
                 <div className="mb-4">

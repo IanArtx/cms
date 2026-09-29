@@ -1,0 +1,49 @@
+%% v1.72.0 — reversal requests, linked investment / MMF unwinding, past repair and the four-eyes rule
+flowchart TD
+
+    subgraph REQ["1 · Treasurer asks for a reversal (Transactions › Ledger › ↺)"]
+        R1["Reason typed\nPOST /transactions/:id/reverse"] --> R2{"Entry belongs to a module\nthat can't unwind yet?\n(transfer, loan, grant, fee, fine,\nsavings, tax payment, …)"}
+        R2 -- yes --> RX["Refused:\n'This entry is part of …\ncorrect it from the … page'"]
+        R2 -- no --> R3["Group the linked entries\ncoupon = interest + tax (+ face value)\nT-bill maturity = proceeds + tax\nreturn + tax · funding · expense · MMF entry"]
+        R3 --> R4{"Checks\nfund below zero? fund CLOSED?\ninvestment finished\n(and not by this event)?"}
+        R4 -- fails --> RX2["Refused with the reason"]
+        R4 -- ok --> R5["Rehearse the whole reversal\ninside a SAVEPOINT → roll back\n(no references used up)"]
+        R5 --> R6["reversal_requests row = PENDING\n+ plain-English effect\n'MMF balance restored by 1,000,000'"]
+        R6 --> R7["Ledger row shows\n'Reversal requested'\nApprovers notified"]
+    end
+
+    subgraph DEC["2 · Someone else decides (Transactions › Reversal requests)"]
+        D0{"Who is deciding?"}
+        D0 -- "the requester (not Admin)" --> DW["May only WITHDRAW"]
+        D0 -- "Treasurer / Asst Treasurer /\nDirector / Admin" --> D1{"Approve or refuse?"}
+        D1 -- refuse --> DR["REJECTED + note\nnothing posted"]
+        D1 -- approve --> D2["Post the reversal(s)\nDEBIT legs first\n(same floor-limit checks)"]
+    end
+    R7 --> D0
+
+    subgraph SUB["3 · Linked records corrected in the same database transaction"]
+        S1["MMF: balance · money put in ·\nwithdrawn · interest · fees"]
+        S2["Investment: Spent · supplementary\nbudget · Returns · project spend"]
+        S3["Coupon back to PENDING\nInvestment re-opened (ACTIVE)\nif this event completed it"]
+        S4["Linked row marked is_reversed\n(who · when · which reversal)"]
+    end
+    D2 --> SUB
+    SUB --> D3["reversal_requests = APPROVED\nrequester notified\naudit log: requester + approver"]
+
+    subgraph PAST["Past data — migration_v1.72.0.sql (runs once)"]
+        P1["Every reversal already posted\nagainst an MMF / investment entry"] --> P2["Mark the linked rows reversed"]
+        P2 --> P3["Recalculate fund / investment /\nproject figures · coupons → PENDING ·\nre-open investments"]
+        P3 --> P4["record_corrections\nold → new for every changed figure"]
+        P2 --> P5["Only half of a coupon reversed\n→ flagged 'Needs a look'\n(not changed)"]
+    end
+
+    CHK["Reports › Records check\nstored vs worked-out figures\n+ corrections log"]
+    P4 --> CHK
+    P5 --> CHK
+    SUB -.-> CHK
+
+    subgraph FOUR["Four-eyes rule on every approval (approvalGuard.js)"]
+        F1["Approver = creator / requester /\nrecorder / member who benefits?"] -- "yes, not Admin" --> F2["Refused:\n'someone else must approve it'"]
+        F1 -- "no, or Admin" --> F3["Approval continues\n(role rules still apply)"]
+    end
+    D0 -.-> FOUR

@@ -39,6 +39,7 @@ const { sendSuccess, sendCreated } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
 const { notify, notifyMany } = require('../services/notificationService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 const SOURCE_LABELS = {
     DIVIDEND:             'Dividend Payment',
@@ -371,6 +372,8 @@ const reopenAcknowledgement = asyncHandler(async (req, res) => {
 // person from the original payer.
 // ============================================================
 const finalApprove = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'payment_acknowledgements', req.params.id, ['payer_id', 'recipient_id'], 'payment acknowledgement');
     const { id } = req.params;
 
     const result = await query(`

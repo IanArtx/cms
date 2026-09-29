@@ -16,6 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { PlusIcon, CheckIcon, ArrowDownTrayIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { loanTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const BLANK_LOAN_RECEIVED_FORM = {
     account_id: '', category_id: '', lender_type: 'BANK',
@@ -699,7 +700,7 @@ const LoansPage = () => {
     const { hasPermission, user } = useAuth();
 
     // Tab state
-    const [activeTab, setActiveTab] = useState('received');
+    const [activeTab, setActiveTab] = useTabParam('received');
 
     // Shared data
     const [accounts,   setAccounts]   = useState([]);
@@ -853,14 +854,10 @@ const LoansPage = () => {
             {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
                 by scrolling on a narrow screen instead of overflowing with
                 no way to reach it. */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 <button
                     onClick={() => setActiveTab('received')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors
-                        ${activeTab === 'received'
-                            ? 'bg-primary-700 text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                    className={`tab ${activeTab === 'received' ? 'tab-active' : ''}`}
                 >
                     Loans Received
                     <span className="ml-2 text-xs opacity-70">
@@ -869,11 +866,7 @@ const LoansPage = () => {
                 </button>
                 <button
                     onClick={() => setActiveTab('given')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors
-                        ${activeTab === 'given'
-                            ? 'bg-primary-700 text-white'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                    className={`tab ${activeTab === 'given' ? 'tab-active' : ''}`}
                 >
                     Loans Given
                     <span className="ml-2 text-xs opacity-70">

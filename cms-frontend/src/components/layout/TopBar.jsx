@@ -1,14 +1,31 @@
 // ============================================================
-// TOP BAR
-// Shows current page title, live account balances,
-// approval notifications and user menu.
+// TOP BAR (v1.71.0 "Harbour")
+//
+//  ☰  Money › Transactions        [Search… Ctrl K]  Balances  + New  ☾  🔔  (you)
+//
+//  • Breadcrumb — where you are: group › page › record. Click a step
+//    to go back up. On a phone only the current page name shows.
+//  • Search (or Ctrl K / ⌘K anywhere) — finds pages by name and, for
+//    staff, records (members, transactions, documents, investments,
+//    events).
+//  • Balances — the live account balances that used to sit in the
+//    middle of this bar, now in a small panel so the bar stays calm.
+//    Shown to the same roles as before (financial roles only).
+//  • + New — quick links to the forms people use most (only the ones
+//    this person is allowed to use).
+//  • Sun / moon — switch light / dark. The profile menu also offers
+//    "Same as my device".
+//  • Bell — the same notifications as before (saved notifications plus
+//    pending approvals and events in the next 7 days).
 // ============================================================
 
-import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { useBranding } from '../../contexts/BrandingContext';
-import { accountsAPI, eventsAPI, transfersAPI, grantsAPI, loansAPI, investmentsAPI, notificationsAPI } from '../../api/endpoints';
+import { useTheme } from '../../contexts/ThemeContext';
+import { useLayout } from './LayoutContext';
+import { buildBreadcrumb } from './navConfig';
+import { accountsAPI, eventsAPI, transfersAPI, grantsAPI, loansAPI, investmentsAPI, notificationsAPI, moneyApprovalsAPI } from '../../api/endpoints';
 import GlobalSearch from './GlobalSearch';
 import Avatar from '../common/Avatar';
 import {
@@ -18,9 +35,15 @@ import {
     UserIcon,
     ArrowRightOnRectangleIcon,
     CalendarDaysIcon,
-    ExclamationTriangleIcon,
     ClockIcon,
-    CheckCircleIcon,
+    ChevronRightIcon,
+    PlusIcon,
+    SunIcon,
+    MoonIcon,
+    ComputerDesktopIcon,
+    BuildingLibraryIcon,
+    ChartBarIcon,
+    CheckIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -38,67 +61,84 @@ const timeAgo = (isoString) => {
     return new Date(isoString).toLocaleDateString('en-GB');
 };
 
-// ============================================================
-// PAGE TITLE MAP
-// ============================================================
-const PAGE_TITLES = {
-    '/':            'Dashboard',
-    '/accounts':    'Accounts',
-    '/transactions':'Transactions',
-    '/transfers':   'Transfers',
-    '/grants':      'Grants',
-    '/loans':       'Loans',
-    '/investments': 'Investments',
-    '/events':      'Events',
-    '/documents':   'Documents',
-    '/reports':     'Reports',
-    '/users':       'Members',
-    '/profile':     'My Profile',
-    '/settings':    'Settings',
-    '/dividends':   'Dividends',
+const fmtBalance = (n) => parseFloat(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+// Small popover shell used by every menu in the bar.
+const Popover = ({ open, onClose, children, width = 320, align = 'right', label }) => {
+    const ref = useRef(null);
+    useEffect(() => {
+        if (!open) return undefined;
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [open, onClose]);
+    if (!open) return null;
+    return (
+        <>
+            <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
+            <div
+                ref={ref}
+                role="dialog"
+                aria-label={label}
+                className={`absolute top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'} z-40 rounded-xl border overflow-hidden flex flex-col`}
+                style={{
+                    width, maxWidth: 'calc(100vw - 24px)', maxHeight: 'min(640px, calc(100dvh - 88px))',
+                    backgroundColor: 'var(--cms-surface)', borderColor: 'var(--cms-border)', boxShadow: 'var(--cms-shadow-pop)',
+                }}
+            >
+                {children}
+            </div>
+        </>
+    );
 };
 
-const TopBar = ({ onMenuClick, onLogoutClick }) => {
+const TopBar = ({ onLogoutClick }) => {
     const { user, hasPermission, hasRole, hasFinancialAccess } = useAuth();
-    // The Auditor role is external and non-member — the account
+    const { mode, isDark, setMode, toggle: toggleTheme } = useTheme();
+    const {
+        setMobileOpen, detailTitle, quickActions, visibleItems,
+        notifOpen, setNotifOpen, newOpen, setNewOpen,
+    } = useLayout();
+    // The Auditor role is external and non-member — company-wide
     // balances and the computed "upcoming events / pending approvals"
-    // notifications below are company-wide, not scoped to any one
-    // engagement, so they must never be fetched or shown here for an
-    // Auditor (the backend also blocks the underlying endpoints for
-    // this role — see middleware/auth.js blockFinanceRestricted — this
-    // is the matching frontend-side guard so the UI doesn't even try).
+    // feed are never fetched or shown for them (the backend blocks the
+    // underlying endpoints too).
     const isAuditor = hasRole('Auditor');
-    // Administrative Officer (v1.21.0): a hired/contracted staff role
-    // that also must never see company balances or company-wide
-    // search — but UNLIKE the Auditor, this role legitimately manages
-    // Events, so the upcoming-events fetch below stays on for them;
-    // only the balance fetch and the search button are skipped.
+    // Administrative Officer (v1.21.0): no balances, no RECORD search
+    // (page search is fine — it only lists pages they can already see).
     const isAdminOfficer = hasRole('Administrative Officer');
     const isFinanceBlockedRole = isAuditor || isAdminOfficer;
-    // v1.36.0 — the balance strip specifically now follows the same
-    // "default financial role" ALLOW-list as the rest of the app
-    // (Treasurer/Assistant Treasurer/Shareholder/Director/Admin, or an
-    // explicit FINANCE_VIEW_ALL grant), not just a deny-list of the two
-    // fully-restricted roles. isFinanceBlockedRole (above) still covers
-    // the deny-list-only cases (Search button, Auditor's early return)
-    // that aren't specifically about account balances.
+    // v1.36.0 — balances follow the default financial-role allow-list.
     const canSeeFinance = hasFinancialAccess('FINANCE_VIEW_ALL');
-    const { branding } = useBranding();
     const navigate     = useNavigate();
     const location     = useLocation();
     const [userMenuOpen,  setUserMenuOpen]  = useState(false);
-    const [notifOpen,     setNotifOpen]     = useState(false);
+    const [balancesOpen,  setBalancesOpen]  = useState(false);
     const [searchOpen,    setSearchOpen]    = useState(false);
     const [notifications, setNotifications] = useState([]);
     const [accountSummary, setAccountSummary] = useState([]);
 
-    // Persisted, per-user notifications from the generic notifications
-    // system (bell + auto-email triggers wired across the app) — distinct
-    // from the computed "action items" list above, which has no read state.
+    // Persisted, per-user notifications (bell + auto-email triggers) —
+    // distinct from the computed "action items" list, which has no
+    // read state.
     const [dbNotifs,       setDbNotifs]       = useState([]);
     const [dbUnreadCount,  setDbUnreadCount]  = useState(0);
 
-    const pageTitle = PAGE_TITLES[location.pathname] || 'Company Management System';
+    const crumbs = buildBreadcrumb(location.pathname, detailTitle);
+    const current = crumbs[crumbs.length - 1];
+
+    // Ctrl K / ⌘K opens search from anywhere (not for the Auditor).
+    useEffect(() => {
+        if (isAuditor) return undefined;
+        const onKey = (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setSearchOpen(true);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isAuditor]);
 
     // --------------------------------------------------------
     // LOAD NOTIFICATIONS
@@ -135,6 +175,27 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
                     });
                 });
             } catch {}
+
+            // v1.73.0 — money entries held for the Treasurer/Admin's approval
+            if (hasRole(['Treasurer', 'Admin'])) {
+                try {
+                    const heldRes = await moneyApprovalsAPI.getAll({ status: 'PENDING' });
+                    const held = (heldRes.data.data || []).filter(h => Number(h.created_by) !== Number(user?.id)).slice(0, 5);
+                    held.forEach(h => {
+                        notifs.push({
+                            id:      `held-${h.id}`,
+                            type:    'approval',
+                            title:   `${h.label} awaiting approval`,
+                            message: `${h.amount ? `${h.currency_code || ''} ${parseFloat(h.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} — ` : ''}recorded by ${h.created_by_name}`,
+                            urgent:  true,
+                            icon:    ClockIcon,
+                            link:    '/money-approvals',
+                            color:   '#7c3aed',
+                            bg:      '#f5f3ff',
+                        });
+                    });
+                } catch {}
+            }
 
             // Pending transfers awaiting approval
             if (hasPermission('FINANCE_TRANSFER_APPROVE')) {
@@ -305,516 +366,296 @@ const TopBar = ({ onMenuClick, onLogoutClick }) => {
         } catch {}
     };
 
-    // Opens the shared confirmation modal (rendered once in AppLayout,
-    // alongside the sidebar's own Logout button) rather than logging
-    // out immediately — v1.28.2.
-    const handleLogout = () => {
-        onLogoutClick?.();
-    };
+    const closeAll = () => { setUserMenuOpen(false); setNotifOpen(false); setBalancesOpen(false); setNewOpen(false); };
+
+    const iconBtn = 'relative inline-flex items-center justify-center w-10 h-10 rounded-[10px] border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500';
+    const iconBtnStyle = (active) => ({
+        backgroundColor: active ? 'var(--cms-surface-hover)' : 'var(--cms-surface)',
+        borderColor: 'var(--cms-border)',
+        color: 'var(--cms-text-secondary)',
+    });
+
+    const themeChoices = [
+        { id: 'light',  label: 'Light',               icon: SunIcon },
+        { id: 'dark',   label: 'Dark',                icon: MoonIcon },
+        { id: 'system', label: 'Same as my device',   icon: ComputerDesktopIcon },
+    ];
 
     return (
-        <header className="px-3 sm:px-6" style={{
-            backgroundColor: 'var(--cms-surface)',
-            borderBottom:    '1px solid var(--cms-border)',
-            height:          '64px',
-            display:         'flex',
-            alignItems:      'center',
-            justifyContent:  'space-between',
-            position:        'sticky',
-            top:             0,
-            zIndex:          10,
-            flexShrink:      0,
-        }}>
+        <header
+            className="h-16 flex-shrink-0 flex items-center gap-2 sm:gap-3 px-3 sm:px-5 lg:px-6 sticky top-0 z-30"
+            style={{ backgroundColor: 'var(--cms-surface)', borderBottom: '1px solid var(--cms-border)' }}
+        >
+            {/* ☰ — phones and tablets */}
+            <button
+                type="button"
+                onClick={() => setMobileOpen(true)}
+                className="md:hidden inline-flex items-center justify-center w-11 h-11 -ml-1 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                style={{ color: 'var(--cms-text-primary)' }}
+                aria-label="Open menu"
+            >
+                <Bars3Icon className="w-6 h-6" />
+            </button>
 
-            {/* LEFT — Mobile menu (mobile only) + Page title */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-                <button
-                    onClick={onMenuClick}
-                    className="md:hidden flex-shrink-0"
-                    style={{
-                        padding: '8px', borderRadius: '8px',
-                        border: 'none', background: 'none',
-                        cursor: 'pointer', color: 'var(--cms-text-secondary)',
-                    }}
-                    aria-label="Open menu"
-                >
-                    <Bars3Icon style={{ width: '20px', height: '20px' }} />
-                </button>
+            {/* Breadcrumb (full on sm+, current page only on phones) */}
+            <nav aria-label="Breadcrumb" className="min-w-0 flex-1">
+                <ol className="hidden sm:flex items-center gap-1.5 text-sm min-w-0" style={{ color: 'var(--cms-text-muted)' }}>
+                    {crumbs.map((c, i) => {
+                        const last = i === crumbs.length - 1;
+                        return (
+                            <li key={`${c.label}-${i}`} className={`flex items-center gap-1.5 ${last ? 'min-w-0' : 'flex-shrink-0'}`}>
+                                {i > 0 && <ChevronRightIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-70" aria-hidden="true" />}
+                                {last
+                                    ? <span aria-current="page" className="font-semibold truncate" style={{ color: 'var(--cms-text-primary)' }}>{c.label}</span>
+                                    : c.href
+                                        ? <Link to={c.href} className="hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" style={{ color: 'var(--cms-text-muted)' }}>{c.label}</Link>
+                                        : <span>{c.label}</span>}
+                            </li>
+                        );
+                    })}
+                </ol>
+                <p className="sm:hidden text-[17px] font-bold truncate" style={{ color: 'var(--cms-text-primary)' }}>{current?.label}</p>
+            </nav>
 
-                <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                    <h2 style={{
-                        fontSize: '16px', fontWeight: '600',
-                        color: 'var(--cms-text-primary)', margin: 0,
-                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>
-                        {pageTitle}
-                    </h2>
-                    <p className="hidden sm:block" style={{ fontSize: '11px', color: 'var(--cms-text-muted)', margin: 0 }}>
-                        {branding.company_name}
-                    </p>
-                </div>
-            </div>
+            {/* Search */}
+            {!isAuditor && (
+                <>
+                    <button
+                        type="button"
+                        onClick={() => setSearchOpen(true)}
+                        className="hidden lg:flex items-center gap-2 w-[300px] xl:w-[360px] h-10 px-3 rounded-[10px] border text-sm text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                        style={{ backgroundColor: 'var(--cms-bg)', borderColor: 'var(--cms-border)', color: 'var(--cms-text-muted)' }}
+                    >
+                        <MagnifyingGlassIcon className="w-4 h-4 flex-shrink-0" />
+                        <span className="flex-1 truncate">{isFinanceBlockedRole ? 'Search pages…' : 'Search pages, records, references…'}</span>
+                        <kbd className="text-[11px] font-semibold rounded-md border px-1.5 py-px font-sans" style={{ borderColor: 'var(--cms-border-strong)', color: 'var(--cms-text-secondary)' }}>Ctrl K</kbd>
+                    </button>
+                    <button type="button" onClick={() => setSearchOpen(true)} className={`${iconBtn} lg:hidden`} style={iconBtnStyle(false)} aria-label="Search">
+                        <MagnifyingGlassIcon className="w-5 h-5" />
+                    </button>
+                </>
+            )}
 
-            {/* CENTRE — Account balances (hidden on small screens — see them
-                on the Accounts page instead, there's no room here). Given
-                flex:1 so it's the section that gives way first if the page
-                title, company name, and every account balance combined are
-                wider than the window — each balance truncates with an
-                ellipsis instead of the whole row silently running off the
-                edge of the screen. */}
-            {accountSummary.length > 0 && (
-                <div className="hidden lg:flex" style={{
-                    alignItems: 'center', gap: '16px',
-                    flex: '1 1 auto', minWidth: 0, overflow: 'hidden',
-                    justifyContent: 'center', padding: '0 12px',
-                }}>
-                    {accountSummary.map((account, i) => (
-                        <div key={i} style={{ textAlign: 'center', minWidth: 0, maxWidth: '170px', flexShrink: 1 }}>
-                            <p style={{
-                                fontSize: '11px', color: 'var(--cms-text-muted)',
-                                margin: 0, whiteSpace: 'nowrap',
-                                overflow: 'hidden', textOverflow: 'ellipsis',
-                            }}>
-                                {account.name.length > 20
-                                    ? account.currency_code + ' Account'
-                                    : account.name}
-                            </p>
-                            <p style={{
-                                fontSize: '14px', fontWeight: '700',
-                                color: '#1e3a5f', margin: 0, whiteSpace: 'nowrap',
-                                overflow: 'hidden', textOverflow: 'ellipsis',
-                            }}>
-                                {account.currency_code}{' '}
-                                {parseFloat(account.current_balance).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                            </p>
+            {/* Balances */}
+            {canSeeFinance && accountSummary.length > 0 && (
+                <div className="relative hidden sm:block">
+                    <button
+                        type="button"
+                        onClick={() => { const o = !balancesOpen; closeAll(); setBalancesOpen(o); }}
+                        className={`${iconBtn} xl:w-auto xl:px-3 xl:gap-2`}
+                        style={iconBtnStyle(balancesOpen)}
+                        aria-label="Account balances"
+                        aria-expanded={balancesOpen}
+                    >
+                        <BuildingLibraryIcon className="w-5 h-5" />
+                        <span className="hidden xl:inline text-sm font-semibold">Balances</span>
+                    </button>
+                    <Popover open={balancesOpen} onClose={() => setBalancesOpen(false)} width={320} label="Account balances">
+                        <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                            <p className="text-sm font-bold" style={{ color: 'var(--cms-text-primary)' }}>Account balances</p>
+                            <p className="text-xs" style={{ color: 'var(--cms-text-muted)' }}>Live, as recorded in the system</p>
                         </div>
-                    ))}
+                        <div className="p-2 overflow-y-auto">
+                            {accountSummary.map((a, i) => (
+                                <div key={i} className="flex items-center gap-3 px-2 py-2.5 rounded-lg">
+                                    <span className="w-9 h-9 rounded-lg flex items-center justify-center text-[11px] font-bold flex-shrink-0 bg-primary-50 text-primary-700">
+                                        {a.currency_code}
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block text-sm truncate" style={{ color: 'var(--cms-text-secondary)' }}>{a.name}</span>
+                                        <span className="block text-base font-bold num" style={{ color: 'var(--cms-text-primary)' }}>
+                                            {a.currency_code} {fmtBalance(a.current_balance)}
+                                        </span>
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                        <Link to="/accounts" onClick={() => setBalancesOpen(false)} className="block text-center text-sm font-semibold py-2.5 border-t text-primary-700" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                            Open Accounts
+                        </Link>
+                    </Popover>
                 </div>
             )}
 
-            {/* RIGHT — Search + Notifications + User menu. flex-shrink: 0
-                so these controls are never the ones that get squeezed —
-                they need to stay clickable no matter how tight space gets. */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-
-                {/* Global Search — searches across company-wide records,
-                    which is exactly what a finance-restricted role
-                    (Auditor, Administrative Officer) must never reach,
-                    so it's hidden rather than shown-then-blocked — the
-                    backend fully blocks /api/search for both roles. */}
-                {!isFinanceBlockedRole && (
+            {/* + New */}
+            {quickActions.length > 0 && (
+                <div className="relative hidden md:block">
                     <button
-                        onClick={() => setSearchOpen(true)}
-                        style={{
-                            padding: '8px', borderRadius: '8px',
-                            border: 'none', background: 'none',
-                            cursor: 'pointer', color: 'var(--cms-text-secondary)',
-                        }}
-                        aria-label="Search"
+                        type="button"
+                        onClick={() => { const o = !newOpen; closeAll(); setNewOpen(o); }}
+                        className="btn-primary !px-3.5"
+                        aria-expanded={newOpen}
+                        aria-haspopup="menu"
                     >
-                        <MagnifyingGlassIcon style={{ width: '20px', height: '20px' }} />
+                        <PlusIcon className="w-4 h-4" strokeWidth={2.4} />
+                        New
                     </button>
-                )}
-
-                {/* Notifications Bell */}
-                <div style={{ position: 'relative' }}>
-                    <button
-                        onClick={() => {
-                            setNotifOpen(!notifOpen);
-                            setUserMenuOpen(false);
-                        }}
-                        style={{
-                            position: 'relative', padding: '8px',
-                            borderRadius: '8px', border: 'none',
-                            background: notifOpen ? 'var(--cms-surface-hover)' : 'none',
-                            cursor: 'pointer', color: 'var(--cms-text-secondary)',
-                        }}
-                    >
-                        <BellIcon style={{ width: '20px', height: '20px' }} />
-                        {badgeCount > 0 && (
-                            <span style={{
-                                position: 'absolute', top: '4px', right: '4px',
-                                width: '16px', height: '16px',
-                                borderRadius: '50%',
-                                backgroundColor: (urgentCount > 0 || dbUnreadCount > 0) ? '#dc2626' : '#2563eb',
-                                color: 'white', fontSize: '10px', fontWeight: '700',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}>
-                                {badgeCount > 9 ? '9+' : badgeCount}
-                            </span>
-                        )}
-                    </button>
-
-                    {/* Notifications Dropdown */}
-                    {notifOpen && (
-                        <>
-                            <div
-                                style={{ position: 'fixed', inset: 0, zIndex: 10 }}
-                                onClick={() => setNotifOpen(false)}
-                            />
-                            <div style={{
-                                position: 'absolute', right: 0,
-                                top: 'calc(100% + 8px)', width: '360px',
-                                maxWidth: 'calc(100vw - 32px)',
-                                backgroundColor: 'var(--cms-surface)', borderRadius: '12px',
-                                boxShadow: '0 10px 40px rgba(0,0,0,0.12)',
-                                border: '1px solid var(--cms-border)', zIndex: 20,
-                                // The width axis was already clamped to the viewport, but
-                                // nothing capped the overall HEIGHT — on a short/mobile
-                                // screen the header + both notification lists + footer
-                                // could add up to more than the visible viewport, with only
-                                // the two inner lists independently scrollable, pushing the
-                                // footer (and part of the second list) off-screen and
-                                // unreachable. Capping the whole panel's height relative to
-                                // the viewport and letting IT scroll as one unit fixes that,
-                                // while the inner lists keep their own scroll for the normal
-                                // (tall-viewport) case.
-                                maxHeight: 'min(640px, calc(100vh - 88px))',
-                                display: 'flex', flexDirection: 'column',
-                                overflowY: 'auto', overflowX: 'hidden',
-                                WebkitOverflowScrolling: 'touch',
-                            }}>
-                                {/* Header */}
-                                <div style={{
-                                    padding: '12px 16px',
-                                    borderBottom: '1px solid var(--cms-surface-divider)',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    flexShrink: 0,
-                                }}>
-                                    <p style={{
-                                        fontSize: '13px', fontWeight: '600',
-                                        color: 'var(--cms-text-primary)', margin: 0,
-                                    }}>
-                                        Notifications
-                                    </p>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        {dbUnreadCount > 0 && (
-                                            <button
-                                                onClick={handleMarkAllRead}
-                                                style={{
-                                                    fontSize: '11px', color: '#2563eb',
-                                                    fontWeight: '600', background: 'none',
-                                                    border: 'none', cursor: 'pointer', padding: 0,
-                                                }}
-                                            >
-                                                Mark all read
-                                            </button>
-                                        )}
-                                        {urgentCount > 0 && (
-                                            <span style={{
-                                                fontSize: '11px', color: '#dc2626',
-                                                fontWeight: '600',
-                                                backgroundColor: '#fef2f2',
-                                                padding: '2px 8px',
-                                                borderRadius: '20px',
-                                            }}>
-                                                {urgentCount} urgent
-                                            </span>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* Persisted notifications (contribution updates, approvals,
-                                    event invitations, etc.) — the auto-generated feed */}
-                                {dbNotifs.length > 0 && (
-                                    <div style={{
-                                        maxHeight: '260px', overflowY: 'auto',
-                                        borderBottom: '1px solid var(--cms-surface-divider)',
-                                    }}>
-                                        {dbNotifs.map(notif => (
-                                            <div
-                                                key={`db-${notif.id}`}
-                                                onClick={() => handleNotifClick(notif)}
-                                                style={{
-                                                    padding: '10px 16px',
-                                                    borderBottom: '1px solid var(--cms-surface-divider)',
-                                                    display: 'flex',
-                                                    alignItems: 'flex-start',
-                                                    gap: '10px',
-                                                    cursor: 'pointer',
-                                                    backgroundColor: notif.is_read ? 'var(--cms-surface)' : 'var(--cms-surface-hover)',
-                                                    transition: 'background 0.15s',
-                                                }}
-                                                onMouseEnter={e => {
-                                                    e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
-                                                }}
-                                                onMouseLeave={e => {
-                                                    e.currentTarget.style.backgroundColor =
-                                                        notif.is_read ? 'var(--cms-surface)' : 'var(--cms-surface-hover)';
-                                                }}
-                                            >
-                                                <div style={{
-                                                    width: '8px', height: '8px', borderRadius: '50%',
-                                                    backgroundColor: notif.is_read ? 'transparent' : '#2563eb',
-                                                    marginTop: '6px', flexShrink: 0,
-                                                }} />
-                                                <div style={{ flex: 1, minWidth: 0 }}>
-                                                    <p style={{
-                                                        fontSize: '13px',
-                                                        fontWeight: notif.is_read ? '500' : '700',
-                                                        color: 'var(--cms-text-primary)', margin: 0,
-                                                    }}>
-                                                        {notif.title}
-                                                    </p>
-                                                    {notif.body && (
-                                                        <p style={{
-                                                            fontSize: '12px', color: 'var(--cms-text-secondary)',
-                                                            margin: '2px 0 0', overflow: 'hidden',
-                                                            textOverflow: 'ellipsis',
-                                                            display: '-webkit-box',
-                                                            WebkitLineClamp: 2,
-                                                            WebkitBoxOrient: 'vertical',
-                                                        }}>
-                                                            {notif.body}
-                                                        </p>
-                                                    )}
-                                                    <p style={{
-                                                        fontSize: '11px', color: 'var(--cms-text-muted)',
-                                                        margin: '2px 0 0',
-                                                    }}>
-                                                        {timeAgo(notif.created_at)}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {/* Action items (computed: pending approvals, upcoming events) */}
-                                {totalCount === 0 ? (
-                                    dbNotifs.length === 0 && (
-                                        <div style={{
-                                            padding: '24px', textAlign: 'center',
-                                            color: 'var(--cms-text-muted)', fontSize: '13px',
-                                        }}>
-                                            No pending notifications
-                                        </div>
-                                    )
-                                ) : (
-                                    <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
-                                        {notifications.map((notif, i) => (
-                                            <div
-                                                key={notif.id}
-                                                onClick={() => {
-                                                    navigate(notif.link);
-                                                    setNotifOpen(false);
-                                                }}
-                                                style={{
-                                                    padding: '12px 16px',
-                                                    borderBottom: '1px solid var(--cms-surface-divider)',
-                                                    display: 'flex',
-                                                    alignItems: 'flex-start',
-                                                    gap: '12px',
-                                                    cursor: 'pointer',
-                                                    backgroundColor: 'var(--cms-surface)',
-                                                    transition: 'background 0.15s',
-                                                }}
-                                                onMouseEnter={e => {
-                                                    e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
-                                                }}
-                                                onMouseLeave={e => {
-                                                    e.currentTarget.style.backgroundColor = 'white';
-                                                }}
-                                            >
-                                                <div style={{
-                                                    width: '34px', height: '34px',
-                                                    borderRadius: '8px',
-                                                    backgroundColor: notif.bg,
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    flexShrink: 0,
-                                                }}>
-                                                    <notif.icon style={{
-                                                        width: '16px', height: '16px',
-                                                        color: notif.color,
-                                                    }} />
-                                                </div>
-                                                <div style={{ flex: 1, minWidth: 0 }}>
-                                                    <div style={{
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '6px',
-                                                        marginBottom: '2px',
-                                                    }}>
-                                                        <p style={{
-                                                            fontSize: '13px',
-                                                            fontWeight: '600',
-                                                            color: 'var(--cms-text-primary)',
-                                                            margin: 0,
-                                                        }}>
-                                                            {notif.title}
-                                                        </p>
-                                                        {notif.urgent && (
-                                                            <span style={{
-                                                                fontSize: '10px',
-                                                                color: '#dc2626',
-                                                                backgroundColor: '#fef2f2',
-                                                                padding: '1px 6px',
-                                                                borderRadius: '20px',
-                                                                fontWeight: '600',
-                                                                flexShrink: 0,
-                                                            }}>
-                                                                URGENT
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <p style={{
-                                                        fontSize: '12px',
-                                                        color: 'var(--cms-text-secondary)',
-                                                        margin: 0,
-                                                        overflow: 'hidden',
-                                                        textOverflow: 'ellipsis',
-                                                        whiteSpace: 'nowrap',
-                                                    }}>
-                                                        {notif.message}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {/* Footer */}
-                                <div style={{
-                                    padding: '10px 16px',
-                                    borderTop: '1px solid var(--cms-surface-divider)',
-                                    textAlign: 'center',
-                                    flexShrink: 0,
-                                }}>
-                                    <p style={{
-                                        fontSize: '11px', color: 'var(--cms-text-muted)', margin: 0,
-                                    }}>
-                                        {isAuditor
-                                            ? 'Showing your audit submission updates'
-                                            : 'Showing pending approvals and upcoming events'}
-                                    </p>
-                                </div>
-                            </div>
-                        </>
-                    )}
+                    <Popover open={newOpen} onClose={() => setNewOpen(false)} width={260} label="Create something new">
+                        <div className="p-1.5" role="menu">
+                            {quickActions.map(a => (
+                                <button
+                                    key={a.id}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => { setNewOpen(false); navigate(a.href); }}
+                                    className="w-full text-left flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100"
+                                    style={{ color: 'var(--cms-text-primary)' }}
+                                >
+                                    <PlusIcon className="w-4 h-4 text-primary-600" />
+                                    {a.label}
+                                </button>
+                            ))}
+                        </div>
+                    </Popover>
                 </div>
+            )}
 
-                {/* User Menu */}
-                <div style={{ position: 'relative' }}>
-                    <button
-                        onClick={() => {
-                            setUserMenuOpen(!userMenuOpen);
-                            setNotifOpen(false);
-                        }}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: '8px',
-                            padding: '6px 10px', borderRadius: '8px',
-                            border: 'none',
-                            background: userMenuOpen ? 'var(--cms-surface-hover)' : 'none',
-                            cursor: 'pointer',
-                        }}
-                    >
-                        <Avatar user={user} size={32} />
-                        <span className="hidden sm:inline" style={{
-                            fontSize: '13px', fontWeight: '500', color: 'var(--cms-text-secondary)',
-                        }}>
-                            {user?.first_name} {user?.last_name}
+            {/* Light / dark */}
+            <button
+                type="button"
+                onClick={toggleTheme}
+                className={`${iconBtn} hidden sm:inline-flex`}
+                style={{ ...iconBtnStyle(false), color: isDark ? '#fbbf24' : 'var(--cms-text-secondary)' }}
+                aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                title={isDark ? 'Light mode' : 'Dark mode'}
+            >
+                {isDark ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
+            </button>
+
+            {/* Notifications */}
+            <div className="relative">
+                <button
+                    type="button"
+                    onClick={() => { const o = !notifOpen; closeAll(); setNotifOpen(o); }}
+                    className={iconBtn}
+                    style={iconBtnStyle(notifOpen)}
+                    aria-label={badgeCount > 0 ? `Notifications, ${badgeCount} new` : 'Notifications'}
+                    aria-expanded={notifOpen}
+                >
+                    <BellIcon className="w-5 h-5" />
+                    {badgeCount > 0 && (
+                        <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-bold flex items-center justify-center text-white ${(urgentCount > 0 || dbUnreadCount > 0) ? 'bg-rose-600' : 'bg-primary-600'}`}>
+                            {badgeCount > 9 ? '9+' : badgeCount}
                         </span>
-                    </button>
-
-                    {/* User Dropdown */}
-                    {userMenuOpen && (
-                        <>
-                            <div
-                                style={{ position: 'fixed', inset: 0, zIndex: 10 }}
-                                onClick={() => setUserMenuOpen(false)}
-                            />
-                            <div style={{
-                                position: 'absolute', right: 0,
-                                top: 'calc(100% + 8px)', width: '220px',
-                                backgroundColor: 'var(--cms-surface)', borderRadius: '12px',
-                                boxShadow: '0 10px 40px rgba(0,0,0,0.12)',
-                                border: '1px solid var(--cms-border)', zIndex: 20,
-                                overflow: 'hidden',
-                            }}>
-                                <div style={{
-                                    padding: '12px 16px',
-                                    borderBottom: '1px solid var(--cms-surface-divider)',
-                                }}>
-                                    <p style={{
-                                        fontSize: '13px', fontWeight: '600',
-                                        color: 'var(--cms-text-primary)', margin: 0,
-                                    }}>
-                                        {user?.first_name} {user?.last_name}
-                                    </p>
-                                    <p style={{
-                                        fontSize: '11px', color: 'var(--cms-text-secondary)',
-                                        margin: '2px 0 0', overflow: 'hidden',
-                                        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}>
-                                        {user?.email}
-                                    </p>
-                                </div>
-
-                                <div style={{ padding: '4px' }}>
-                                    <button
-                                        onClick={() => {
-                                            setUserMenuOpen(false);
-                                            navigate('/profile');
-                                        }}
-                                        style={{
-                                            width: '100%', display: 'flex',
-                                            alignItems: 'center', gap: '10px',
-                                            padding: '8px 12px', borderRadius: '8px',
-                                            border: 'none', background: 'none',
-                                            cursor: 'pointer', fontSize: '13px',
-                                            color: 'var(--cms-text-secondary)', textAlign: 'left',
-                                        }}
-                                        onMouseEnter={e => {
-                                            e.currentTarget.style.backgroundColor = 'var(--cms-surface-hover)';
-                                        }}
-                                        onMouseLeave={e => {
-                                            e.currentTarget.style.backgroundColor = 'transparent';
-                                        }}
-                                    >
-                                        <UserIcon style={{
-                                            width: '16px', height: '16px', color: 'var(--cms-text-muted)',
-                                        }} />
-                                        My Profile
-                                    </button>
-
-                                    <div style={{
-                                        height: '1px', backgroundColor: 'var(--cms-surface-divider)', margin: '4px 0',
-                                    }} />
-
-                                    <button
-                                        onClick={handleLogout}
-                                        style={{
-                                            width: '100%', display: 'flex',
-                                            alignItems: 'center', gap: '10px',
-                                            padding: '8px 12px', borderRadius: '8px',
-                                            border: 'none', background: 'none',
-                                            cursor: 'pointer', fontSize: '13px',
-                                            color: '#dc2626', textAlign: 'left',
-                                        }}
-                                        onMouseEnter={e => {
-                                            e.currentTarget.style.backgroundColor = '#fef2f2';
-                                        }}
-                                        onMouseLeave={e => {
-                                            e.currentTarget.style.backgroundColor = 'transparent';
-                                        }}
-                                    >
-                                        <ArrowRightOnRectangleIcon style={{
-                                            width: '16px', height: '16px',
-                                        }} />
-                                        Sign Out
-                                    </button>
-                                </div>
-                            </div>
-                        </>
                     )}
-                </div>
+                </button>
+                <Popover open={notifOpen} onClose={() => setNotifOpen(false)} width={380} label="Notifications">
+                    <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                        <p className="text-sm font-bold" style={{ color: 'var(--cms-text-primary)' }}>Notifications</p>
+                        <div className="flex items-center gap-2">
+                            {dbUnreadCount > 0 && (
+                                <button type="button" onClick={handleMarkAllRead} className="text-xs font-semibold text-primary-700 hover:underline">
+                                    Mark all read
+                                </button>
+                            )}
+                            {urgentCount > 0 && <span className="badge-red">{urgentCount} urgent</span>}
+                        </div>
+                    </div>
+                    <div className="overflow-y-auto">
+                        {dbNotifs.map(notif => (
+                            <button
+                                type="button"
+                                key={`db-${notif.id}`}
+                                onClick={() => handleNotifClick(notif)}
+                                className="w-full text-left px-4 py-2.5 border-b flex items-start gap-2.5 hover:bg-gray-50"
+                                style={{ borderColor: 'var(--cms-surface-divider)', backgroundColor: notif.is_read ? undefined : 'var(--cms-surface-hover)' }}
+                            >
+                                <span className="w-2 h-2 mt-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: notif.is_read ? 'transparent' : '#2563eb' }} />
+                                <span className="flex-1 min-w-0">
+                                    <span className={`block text-[13px] ${notif.is_read ? 'font-medium' : 'font-bold'}`} style={{ color: 'var(--cms-text-primary)' }}>{notif.title}</span>
+                                    {notif.body && (
+                                        <span className="block text-xs mt-0.5 line-clamp-2" style={{ color: 'var(--cms-text-secondary)' }}>{notif.body}</span>
+                                    )}
+                                    <span className="block text-[11px] mt-0.5" style={{ color: 'var(--cms-text-muted)' }}>{timeAgo(notif.created_at)}</span>
+                                </span>
+                            </button>
+                        ))}
+                        {notifications.map(notif => (
+                            <button
+                                type="button"
+                                key={notif.id}
+                                onClick={() => { navigate(notif.link); setNotifOpen(false); }}
+                                className="w-full text-left px-4 py-3 border-b flex items-start gap-3 hover:bg-gray-50"
+                                style={{ borderColor: 'var(--cms-surface-divider)' }}
+                            >
+                                <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${notif.color}22` }}>
+                                    <notif.icon className="w-4 h-4" style={{ color: notif.color }} />
+                                </span>
+                                <span className="flex-1 min-w-0">
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="text-[13px] font-semibold" style={{ color: 'var(--cms-text-primary)' }}>{notif.title}</span>
+                                        {notif.urgent && <span className="badge-red !text-[10px] !px-1.5">URGENT</span>}
+                                    </span>
+                                    <span className="block text-xs truncate" style={{ color: 'var(--cms-text-secondary)' }}>{notif.message}</span>
+                                </span>
+                            </button>
+                        ))}
+                        {dbNotifs.length === 0 && notifications.length === 0 && (
+                            <p className="px-6 py-8 text-center text-sm" style={{ color: 'var(--cms-text-muted)' }}>You're all caught up.</p>
+                        )}
+                    </div>
+                    <p className="px-4 py-2.5 text-center text-[11px] border-t flex-shrink-0" style={{ borderColor: 'var(--cms-surface-divider)', color: 'var(--cms-text-muted)' }}>
+                        {isAuditor ? 'Showing your audit submission updates' : 'Showing pending approvals and events in the next 7 days'}
+                    </p>
+                </Popover>
             </div>
 
-            <GlobalSearch isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
+            {/* You */}
+            <div className="relative">
+                <button
+                    type="button"
+                    onClick={() => { const o = !userMenuOpen; closeAll(); setUserMenuOpen(o); }}
+                    className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
+                    aria-label="Your account menu"
+                    aria-expanded={userMenuOpen}
+                >
+                    <Avatar user={user} size={40} />
+                </button>
+                <Popover open={userMenuOpen} onClose={() => setUserMenuOpen(false)} width={260} label="Your account">
+                    <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                        <p className="text-sm font-bold truncate" style={{ color: 'var(--cms-text-primary)' }}>{user?.first_name} {user?.last_name}</p>
+                        <p className="text-xs truncate" style={{ color: 'var(--cms-text-muted)' }}>{user?.email}</p>
+                    </div>
+                    <div className="p-1.5">
+                        <button type="button" onClick={() => { setUserMenuOpen(false); navigate('/profile'); }}
+                            className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100" style={{ color: 'var(--cms-text-primary)' }}>
+                            <UserIcon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} /> My profile
+                        </button>
+                        {!isAuditor && (
+                            <button type="button" onClick={() => { setUserMenuOpen(false); navigate('/portfolio'); }}
+                                className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100" style={{ color: 'var(--cms-text-primary)' }}>
+                                <ChartBarIcon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} /> My portfolio
+                            </button>
+                        )}
+                    </div>
+                    <div className="px-4 pt-2 pb-1 border-t" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                        <p className="text-[11px] font-bold tracking-[0.08em]" style={{ color: 'var(--cms-text-muted)' }}>APPEARANCE</p>
+                    </div>
+                    <div className="p-1.5 pt-0" role="radiogroup" aria-label="Appearance">
+                        {themeChoices.map(t => (
+                            <button key={t.id} type="button" role="radio" aria-checked={mode === t.id} onClick={() => setMode(t.id)}
+                                className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100" style={{ color: 'var(--cms-text-primary)' }}>
+                                <t.icon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} />
+                                <span className="flex-1 text-left">{t.label}</span>
+                                {mode === t.id && <CheckIcon className="w-4 h-4 text-primary-600" />}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="p-1.5 border-t" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                        <button type="button" onClick={() => { setUserMenuOpen(false); onLogoutClick?.(); }}
+                            className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm font-semibold text-red-700 hover:bg-red-50">
+                            <ArrowRightOnRectangleIcon className="w-4 h-4" /> Sign out
+                        </button>
+                    </div>
+                </Popover>
+            </div>
+
+            <GlobalSearch
+                isOpen={searchOpen}
+                onClose={() => setSearchOpen(false)}
+                pages={visibleItems}
+                recordsAllowed={!isFinanceBlockedRole}
+            />
         </header>
     );
 };

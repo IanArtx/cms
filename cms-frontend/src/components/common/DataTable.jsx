@@ -35,6 +35,15 @@ const DataTable = ({
 }) => {
     const [searchTerm, setSearchTerm] = useState('');
 
+    // v1.71.0 — on a phone (< 640 px) rows are shown as cards (label:
+    // value), which is far easier to read than a table scrolled sideways.
+    const [isPhone, setIsPhone] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+    useEffect(() => {
+        const onResize = () => setIsPhone(window.innerWidth < 640);
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
+
     // --------------------------------------------------------
     // DUAL SCROLLBAR (top + bottom)
     // Long tables here can run to 10+ columns — the browser's native
@@ -104,6 +113,30 @@ const DataTable = ({
                     </div>
                 </div>
             )}
+            {isPhone && (
+                <ul className="divide-y divide-gray-100">
+                    {filteredData.length === 0 ? (
+                        <li className="px-4 py-10 text-center text-sm text-gray-500">
+                            {searchable && searchTerm.trim() ? 'No matching records on this page' : emptyMessage}
+                        </li>
+                    ) : filteredData.map((row, rowIndex) => (
+                        <li key={rowIndex} className="px-4 py-3.5">
+                            <dl className="grid grid-cols-[minmax(0,40%)_minmax(0,60%)] gap-x-3 gap-y-1.5">
+                                {columns.map((col, colIndex) => (
+                                    <div key={colIndex} className="contents">
+                                        <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500 pt-0.5 break-words">{col.header}</dt>
+                                        <dd className="text-sm text-gray-900 min-w-0 break-words">
+                                            {col.render ? col.render(row) : row[col.accessor] || '—'}
+                                        </dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </li>
+                    ))}
+                </ul>
+            )}
+
+            {!isPhone && (<>
             {/* Top scrollbar — mirrors the real one below so it's reachable
                 without scrolling past a tall table first. Purely a scroll
                 handle: 1px tall, no visible content, hidden entirely if the
@@ -154,7 +187,7 @@ const DataTable = ({
                             filteredData.map((row, rowIndex) => (
                                 <tr
                                     key={rowIndex}
-                                    className="hover:bg-gray-50 transition-colors"
+                                    className="even:bg-[color:var(--cms-zebra)] hover:bg-gray-50 transition-colors"
                                 >
                                     {columns.map((col, colIndex) => (
                                         <td
@@ -173,6 +206,7 @@ const DataTable = ({
                     </tbody>
                 </table>
             </div>
+            </>)}
 
             {/* Pagination */}
             {pagination && pagination.totalPages > 1 && (

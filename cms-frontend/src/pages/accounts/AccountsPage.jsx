@@ -5,6 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { accountsAPI, transactionsAPI, sharesAPI, exchangeRatesAPI, categoriesAPI } from '../../api/endpoints';
 import { formatCurrency, formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -12,7 +13,8 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import { ExpenseTaxFields, InflowTaxFields, expenseTaxPayload, inflowTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
 import {
     PlusIcon,
     BuildingLibraryIcon,
@@ -30,9 +32,10 @@ import {
 } from 'recharts';
 
 // ============================================================
-// CREATE ACCOUNT MODAL (Secondary, or one-time, PRIMARY/SAVINGS)
+// CREATE ACCOUNT MODAL (Secondary, one-time PRIMARY, or a SAVINGS
+// account — one per currency since v1.61.0; offered here since v1.69.1)
 // ============================================================
-const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimaryAccount, hasSavingsAccount, initialType = 'SECONDARY' }) => {
+const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimaryAccount, savingsCurrencyIds = [], initialType = 'SECONDARY' }) => {
     const [accountType, setAccountType] = useState(initialType);
     const [form, setForm]       = useState({
         name: '', currency_id: '', description: '', reference_prefix: '',
@@ -54,13 +57,15 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimary
     const isPrimary = accountType === 'PRIMARY';
 
     // Which tabs are worth showing at all — Secondary is always available
-    // (unlimited), Primary/Savings only while they don't exist yet (both
-    // are one-time, singleton accounts). If both singletons are already
-    // set up, there's nothing to toggle — the modal is Secondary-only.
+    // (unlimited), Primary only while it doesn't exist yet (one-time),
+    // Savings while some currency still has no active Savings account
+    // (v1.69.1 — the backend has allowed one Savings account PER
+    // CURRENCY since v1.61.0, but this page only ever offered the first).
+    const savingsCurrencies = currencies.filter(c => !savingsCurrencyIds.includes(c.id));
     const availableTypes = [
         'SECONDARY',
         ...(!hasPrimaryAccount ? ['PRIMARY'] : []),
-        ...(!hasSavingsAccount ? ['SAVINGS'] : []),
+        ...(savingsCurrencies.length > 0 ? ['SAVINGS'] : []),
     ];
 
     const handleSubmit = async (e) => {
@@ -151,10 +156,12 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimary
                     )}
                     {isSavings && (
                         <p className="text-xs text-gray-500 mb-4 bg-amber-50 border border-amber-100 rounded-lg p-2.5">
-                            One-time setup. This is the single dedicated account every member
-                            savings deposit/handout will be posted against instead of Primary.
-                            It can never take part in a transfer and is always exempt from
-                            floor limits.
+                            One Savings account per currency. Member savings in this currency
+                            (deposits, handouts, interest) are posted against it instead of
+                            Primary; a member can hold savings in several currencies and convert
+                            between them on the Savings page. It never takes part in an ordinary
+                            transfer and is always exempt from floor limits.
+                            {savingsCurrencyIds.length > 0 && ' Currencies that already have a Savings account are not listed.'}
                         </p>
                     )}
                     <form onSubmit={handleSubmit} className="space-y-4">
@@ -175,7 +182,7 @@ const CreateAccountModal = ({ isOpen, onClose, onSuccess, currencies, hasPrimary
                                     onChange={e => setForm(p => ({ ...p, currency_id: e.target.value }))}
                                     required>
                                     <option value="">Select currency...</option>
-                                    {currencies.map(c => (
+                                    {(isSavings ? savingsCurrencies : currencies).map(c => (
                                         <option key={c.id} value={c.id}>
                                             {c.code} — {c.name}
                                         </option>
@@ -516,10 +523,13 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
         setError(null);
         try {
             const payload = { ...form, account_id: account.id, amount: parseFloat(form.amount) };
+            // v1.70.0 — tax treatment / supplier withholding on an expense;
+            // tax deducted at source on an inflow (see TaxFields).
             if (isExpense) {
-                await transactionsAPI.recordExpense(payload);
+                const res = await transactionsAPI.recordExpense(expenseTaxPayload(payload));
+                if (res?.data?.data?.withholding) window.alert(res.data.message);
             } else {
-                await transactionsAPI.recordInflow(payload);
+                await transactionsAPI.recordInflow(inflowTaxPayload(payload));
             }
             onSuccess();
             onClose();
@@ -577,6 +587,9 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
                                 placeholder={isExpense ? 'What was this spent on?' : 'Where did this money come from?'}
                                 required />
                         </div>
+                        {isExpense
+                            ? <ExpenseTaxFields form={form} setForm={setForm} currencyCode={account.currency_code} />
+                            : <InflowTaxFields form={form} setForm={setForm} />}
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading}
@@ -813,7 +826,7 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
                                     tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
                                     formatter={(v) => [
@@ -1228,7 +1241,7 @@ const SharePriceCard = ({ sharePrice, canEdit, onEditClick }) => (
                 </div>
                 <div>
                     <p className="text-sm font-medium text-gray-500">
-                        Current Share Price
+                        Current Share (Issue) Price
                     </p>
                     <p className="text-2xl font-bold text-gray-900">
                         {sharePrice?.price_per_share
@@ -1250,7 +1263,7 @@ const SharePriceCard = ({ sharePrice, canEdit, onEditClick }) => (
                     className="btn-secondary flex items-center gap-2"
                 >
                     <PencilSquareIcon className="h-4 w-4" />
-                    {sharePrice?.price_per_share ? 'Update Price' : 'Set Price'}
+                    {sharePrice?.price_per_share ? 'Propose a Change' : 'Set Price'}
                 </button>
             )}
         </div>
@@ -1497,7 +1510,7 @@ const MarketHistoryCharts = () => {
                                 <CartesianGrid {...theme.gridProps} />
                                 <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip {...theme.tooltipProps}
                                     formatter={(v) => [
                                         `${priceCurrency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 })}`,
@@ -1522,7 +1535,7 @@ const MarketHistoryCharts = () => {
                                     <CartesianGrid {...theme.gridProps} />
                                     <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                        tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                        tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
                                     <Line type="stepAfter" dataKey="rate" stroke={color}
@@ -1554,10 +1567,11 @@ const RecalculateShareholdingCard = ({ onOpenClick }) => (
                         Shareholding Recalculate
                     </p>
                     <p className="text-xs text-gray-400 max-w-md">
-                        Recomputes every member's shares from their contribution
-                        history using the unit-price method — units bought at
-                        the price/rate in effect on each contribution's date.
-                        Always shows a full before/after preview first.
+                        Checks every member's shares on the register against
+                        their whole-share allotments (Share Capital, v1.69.0)
+                        and fixes any difference. Before the opening conversion
+                        it uses the old unit-price method. Always shows a full
+                        before/after preview first.
                     </p>
                 </div>
             </div>
@@ -1725,6 +1739,7 @@ const AccountsPage = () => {
     const [editingAccount, setEditingAccount] = useState(null);
 
     const canEditRates = hasRole(['Treasurer', 'Assistant Treasurer', 'Admin']);
+    const navigate = useNavigate();
     const isAdmin = hasRole(['Admin']);
 
     const loadData = async () => {
@@ -1781,6 +1796,12 @@ const AccountsPage = () => {
 
     const hasPrimaryAccount = accounts.some(a => a.account_type === 'PRIMARY');
     const hasSavingsAccount = accounts.some(a => a.account_type === 'SAVINGS');
+    // v1.69.1 — currencies that already have an active Savings account
+    const savingsCodes = accounts
+        .filter(a => a.account_type === 'SAVINGS' && a.is_active !== false)
+        .map(a => a.currency_code);
+    const savingsCurrencyIds = currencies.filter(c => savingsCodes.includes(c.code)).map(c => c.id);
+    const canAddSavingsCurrency = currencies.some(c => !savingsCurrencyIds.includes(c.id));
 
     return (
         <div>
@@ -1843,11 +1864,33 @@ const AccountsPage = () => {
                 </div>
             )}
 
-            {/* Share Price */}
+            {/* v1.69.1 — one Savings account per currency */}
+            {hasSavingsAccount && canAddSavingsCurrency && hasPermission('SYSTEM_CONFIG') && (
+                <div className="mb-6 flex items-center justify-between gap-4 flex-wrap
+                    bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                    <p className="text-sm text-amber-800">
+                        Savings accounts: {accounts.filter(a => a.account_type === 'SAVINGS').map(a => `${a.name} (${a.currency_code})`).join(', ')}.
+                        Members can also save in another currency by adding a Savings account for it.
+                    </p>
+                    <button onClick={() => {
+                        setCreateInitialType('SAVINGS');
+                        setShowCreate(true);
+                    }} className="btn-secondary text-sm whitespace-nowrap">
+                        Add Savings Account (another currency)
+                    </button>
+                </div>
+            )}
+
+            {/* Share Price — v1.69.0: once a price exists it can only change
+                through Share Capital > Changes (board resolution + two
+                approvers), so "Update Price" goes there. The modal is only
+                for the very first price of a new installation. */}
             <SharePriceCard
                 sharePrice={sharePrice}
-                canEdit={isTreasurer()}
-                onEditClick={() => setShowPriceModal(true)}
+                canEdit={isTreasurer() || hasRole(['Director'])}
+                onEditClick={() => (sharePrice?.price_per_share
+                    ? navigate('/share-capital?tab=changes')
+                    : setShowPriceModal(true))}
             />
 
             {/* Exchange Rates */}
@@ -1891,7 +1934,7 @@ const AccountsPage = () => {
                 onSuccess={loadData}
                 currencies={currencies}
                 hasPrimaryAccount={hasPrimaryAccount}
-                hasSavingsAccount={hasSavingsAccount}
+                savingsCurrencyIds={savingsCurrencyIds}
                 initialType={createInitialType}
             />
             <FloorLimitModal

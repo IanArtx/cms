@@ -4,7 +4,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { eventsAPI, categoriesAPI } from '../../api/endpoints';
+import { eventsAPI, categoriesAPI, usersAPI, settingsAPI } from '../../api/endpoints';
 import { formatDateTime, formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -12,20 +12,30 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
-import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, ClockIcon, FlagIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, ClockIcon, FlagIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
 import { eventTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 
 const BLANK_EVENT_FORM = {
     event_type_id: '', category_id: '', title: '',
     description: '', location: '', event_date: '',
     end_date: '', recurrence: 'NONE',
+    // v1.63.0 — online meeting
+    is_online: false, meeting_link: '',
+    // v1.63.0 — notification audience (create only — see routes/events.js:
+    // "Recipients/notifications aren't editable here — cancel and
+    // recreate if those need to change")
+    notify_all_users: false, notify_role_ids: [], notify_user_ids: [],
 };
 
 // ============================================================
 // CREATE / EDIT EVENT MODAL
 // ============================================================
-const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, editingRecord }) => {
+const CreateEventModal = ({
+    isOpen, onClose, onSuccess, categories, eventTypes, editingRecord,
+    roles, allUsers, googleStatus,
+}) => {
     const [form, setForm] = useState(BLANK_EVENT_FORM);
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -42,6 +52,14 @@ const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, 
                 event_date: editingRecord.event_date ? editingRecord.event_date.slice(0, 16) : '',
                 end_date: editingRecord.end_date ? editingRecord.end_date.slice(0, 16) : '',
                 recurrence: editingRecord.recurrence || 'NONE',
+                is_online: !!editingRecord.is_online,
+                // Only offered back for editing when it was typed in by
+                // hand — an auto-created Google link stays managed by
+                // the backend's own create/reconcile/delete flow, not
+                // hand-edited here (clearing is_online, or the field
+                // below, is still how you detach it).
+                meeting_link: editingRecord.meeting_provider === 'MANUAL' ? (editingRecord.meeting_link || '') : '',
+                notify_all_users: !!editingRecord.notify_all_users, notify_role_ids: [], notify_user_ids: [],
             });
         } else {
             setForm(BLANK_EVENT_FORM);
@@ -56,9 +74,43 @@ const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, 
         setError(null);
         try {
             if (isEdit) {
-                await eventsAPI.update(editingRecord.id, form);
+                // meeting_link is deliberately OMITTED (undefined) rather
+                // than sent as '' when the event already has a Google-
+                // created meeting and the field was left blank — the
+                // backend treats meeting_link !== undefined as "this
+                // changed," so sending '' there would read as "clear the
+                // link," delete the existing Calendar event, and
+                // immediately recreate a brand new one on every edit that
+                // touches nothing but the title or date. Only actually
+                // typing a replacement link, or editing an event that
+                // never had a Google-created one, should send a value.
+                const hadGoogleMeeting = editingRecord.meeting_provider === 'GOOGLE_MEET';
+                const meetingLinkForUpdate = !form.is_online
+                    ? ''
+                    : (form.meeting_link || (hadGoogleMeeting ? undefined : ''));
+                await eventsAPI.update(editingRecord.id, {
+                    event_type_id: form.event_type_id,
+                    category_id: form.category_id,
+                    title: form.title,
+                    description: form.description,
+                    location: form.location,
+                    event_date: form.event_date ? new Date(form.event_date).toISOString() : undefined,
+                    end_date: form.end_date ? new Date(form.end_date).toISOString() : undefined,
+                    recurrence: form.recurrence,
+                    is_online: form.is_online,
+                    meeting_link: meetingLinkForUpdate,
+                    notify_all_users: form.notify_all_users,
+                });
             } else {
-                await eventsAPI.create(form);
+                const notifications = [
+                    ...form.notify_role_ids.map(role_id => ({ role_id, notification_type: 'EMAIL' })),
+                    ...form.notify_user_ids.map(user_id => ({ user_id, notification_type: 'EMAIL' })),
+                ];
+                await eventsAPI.create({
+                    ...form,
+                    meeting_link: form.is_online ? (form.meeting_link || undefined) : undefined,
+                    notifications,
+                });
             }
             onSuccess();
             onClose();
@@ -71,6 +123,18 @@ const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, 
     };
 
     const eventCategories = categories.filter(c => c.module === 'EVENT');
+    const toggleRole = (roleId) => setForm(p => ({
+        ...p,
+        notify_role_ids: p.notify_role_ids.includes(roleId)
+            ? p.notify_role_ids.filter(id => id !== roleId)
+            : [...p.notify_role_ids, roleId],
+    }));
+    const toggleUser = (userId) => setForm(p => ({
+        ...p,
+        notify_user_ids: p.notify_user_ids.includes(userId)
+            ? p.notify_user_ids.filter(id => id !== userId)
+            : [...p.notify_user_ids, userId],
+    }));
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -166,6 +230,99 @@ const CreateEventModal = ({ isOpen, onClose, onSuccess, categories, eventTypes, 
                                 value={form.description}
                                 onChange={e => setForm(p => ({
                                     ...p, description: e.target.value }))} />
+                        </div>
+
+                        {/* v1.63.0 — online meeting */}
+                        <div className="border border-gray-200 rounded-lg p-3">
+                            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                <input type="checkbox" checked={form.is_online}
+                                    onChange={e => setForm(p => ({ ...p, is_online: e.target.checked }))} />
+                                <VideoCameraIcon className="h-4 w-4 text-gray-400" />
+                                This is an online event (or has people attending online)
+                            </label>
+                            {form.is_online && (
+                                <div className="mt-3">
+                                    {googleStatus?.connected ? (
+                                        <p className="text-xs text-gray-500">
+                                            A Google Meet link will be created automatically when this event is
+                                            {isEdit ? ' saved' : ' created'}. Leave the field below blank for that,
+                                            or paste your own link instead.
+                                        </p>
+                                    ) : (
+                                        <p className="text-xs text-amber-600">
+                                            Google Calendar isn't connected (Settings &gt; Integrations) — paste a
+                                            meeting link below by hand.
+                                        </p>
+                                    )}
+                                    <input type="url" className="input mt-2" placeholder="https://meet.google.com/..."
+                                        value={form.meeting_link}
+                                        onChange={e => setForm(p => ({ ...p, meeting_link: e.target.value }))} />
+                                </div>
+                            )}
+                        </div>
+
+                        {/* v1.63.0 — notification audience. Individual/role
+                            recipients are create-only (see routes/events.js's
+                            own comment on why editEvent doesn't touch them);
+                            "Notify Everyone" is a plain flag on the event
+                            itself, so it stays editable either way. */}
+                        <div className="border border-gray-200 rounded-lg p-3 space-y-3">
+                            <p className="text-sm font-medium text-gray-700">
+                                Notify by email once approved
+                            </p>
+                            <label className="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" checked={form.notify_all_users}
+                                    onChange={e => setForm(p => ({ ...p, notify_all_users: e.target.checked }))} />
+                                Everyone (every active member, any role)
+                            </label>
+
+                            {!isEdit && !form.notify_all_users && (
+                                <>
+                                    <div>
+                                        <p className="text-xs text-gray-500 mb-1">By role</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {roles.map(r => (
+                                                <label key={r.id}
+                                                    className={`px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer border
+                                                        ${form.notify_role_ids.includes(r.id)
+                                                            ? 'bg-primary-700 text-white border-primary-700'
+                                                            : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}
+                                                >
+                                                    <input type="checkbox" className="hidden"
+                                                        checked={form.notify_role_ids.includes(r.id)}
+                                                        onChange={() => toggleRole(r.id)} />
+                                                    {r.name}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-500 mb-1">Individual selection</p>
+                                        <select multiple className="input h-28"
+                                            value={form.notify_user_ids.map(String)}
+                                            onChange={e => {
+                                                const ids = Array.from(e.target.selectedOptions, o => parseInt(o.value));
+                                                setForm(p => ({ ...p, notify_user_ids: ids }));
+                                            }}
+                                        >
+                                            {allUsers.map(u => (
+                                                <option key={u.id} value={u.id}>
+                                                    {u.first_name} {u.last_name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <p className="text-[11px] text-gray-400 mt-1">
+                                            Ctrl/Cmd-click (or Shift-click) to select more than one.
+                                        </p>
+                                    </div>
+                                </>
+                            )}
+                            {isEdit && (
+                                <p className="text-xs text-gray-400">
+                                    Individual/role recipients can only be set when an event is first created —
+                                    cancel and recreate this event if those need to change.
+                                </p>
+                            )}
                         </div>
 
                         <div className="flex justify-end gap-3 pt-2">
@@ -292,10 +449,19 @@ const EventsPage = () => {
     const [error,       setError]       = useState(null);
     const [page,        setPage]        = useState(1);
     const [showCreate,  setShowCreate]  = useState(false);
+    // v1.71.0 — opened from the "+ New" menu (?new=1)
+    useNewParam(() => {
+        if (hasPermission('EVENT_CREATE')) { setEditingRecord(null); setShowCreate(true); }
+    });
     const [editingRecord, setEditingRecord] = useState(null);
     const [actionLoading, setActionLoading] = useState(null);
     const [preview, setPreview] = useState(null);
     const [extendingRecord, setExtendingRecord] = useState(null);
+    // v1.63.0 — audience picker (roles/users) + Google connection status,
+    // for the online-meeting + notify-audience fields on the create/edit modal
+    const [roles,        setRoles]        = useState([]);
+    const [allUsers,     setAllUsers]     = useState([]);
+    const [googleStatus, setGoogleStatus] = useState(null);
 
     const canEdit = (row) =>
         row.status === 'DRAFT' &&
@@ -333,7 +499,21 @@ const EventsPage = () => {
         loadEvents();
         categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data)).catch(() => {});
         eventsAPI.getTypes().then(r => setEventTypes(r.data.data)).catch(() => {});
-    }, [loadEvents]);
+        // v1.63.0 — Google connection status is safe/lightweight for
+        // anyone to fetch (no secrets in the response — see
+        // settingsController.getGoogleStatus); roles/all-users are only
+        // needed by someone who can actually create an event, and the
+        // full user list additionally requires USER_VIEW_ALL server-side
+        // (a Secretary may not have it) — best-effort, an empty list
+        // just means the individual-selection picker has nothing to
+        // offer, role/everyone targeting still works.
+        settingsAPI.getGoogleStatus().then(r => setGoogleStatus(r.data.data)).catch(() => {});
+        if (hasPermission('EVENT_CREATE')) {
+            usersAPI.getAllRoles().then(r => setRoles(r.data.data)).catch(() => {});
+            // v1.69.1 — names-only directory (GET /users needs USER_VIEW_ALL)
+            usersAPI.getDirectory().then(r => setAllUsers(r.data.data)).catch(() => {});
+        }
+    }, [loadEvents, hasPermission]);
 
     const handleApprove = async (id) => {
         setActionLoading(id);
@@ -418,6 +598,22 @@ const EventsPage = () => {
                         {row.event_type}
                         {row.location && ` • ${row.location}`}
                     </p>
+                    {row.is_online && (
+                        row.meeting_link ? (
+                            <a href={row.meeting_link} target="_blank" rel="noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="mt-1 inline-flex items-center gap-1 text-xs font-medium
+                                    text-primary-700 hover:underline">
+                                <VideoCameraIcon className="h-3.5 w-3.5" />
+                                {row.meeting_provider === 'GOOGLE_MEET' ? 'Join Google Meet' : 'Join online'}
+                            </a>
+                        ) : (
+                            <span className="mt-1 inline-flex items-center gap-1 text-xs text-gray-400">
+                                <VideoCameraIcon className="h-3.5 w-3.5" />
+                                Online — no link yet
+                            </span>
+                        )
+                    )}
                 </div>
             ),
         },
@@ -569,11 +765,7 @@ const EventsPage = () => {
                         <button
                             key={s}
                             onClick={() => { setStatusFilter(s); setPage(1); }}
-                            className={`px-3 py-1.5 rounded-lg text-sm font-medium
-                                transition-colors ${statusFilter === s
-                                    ? 'bg-primary-700 text-white'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                }`}
+                            className={`chip-filter ${statusFilter === s ? 'chip-filter-active' : ''}`}
                         >
                             {s || 'All'}
                         </button>
@@ -599,6 +791,9 @@ const EventsPage = () => {
                 categories={categories}
                 eventTypes={eventTypes}
                 editingRecord={editingRecord}
+                roles={roles}
+                allUsers={allUsers}
+                googleStatus={googleStatus}
             />
 
             <ExtendEventModal

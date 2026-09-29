@@ -270,7 +270,7 @@ const ChartOfAccountsPage = () => {
                     <div className="flex items-center gap-2 mb-1">
                         <CircleStackIcon className="h-5 w-5 text-primary-600" />
                         <h3 className="section-title mb-0">
-                            <Link to="/mmf" className="hover:underline">Money Market Funds</Link>
+                            <Link to="/investments" className="hover:underline">Money Market Funds</Link>
                         </h3>
                     </div>
                     <p className="text-xs text-gray-400 mb-4">Active MMF sub-accounts</p>

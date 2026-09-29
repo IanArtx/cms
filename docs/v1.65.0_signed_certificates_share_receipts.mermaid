@@ -1,0 +1,46 @@
+%% v1.65.0 — On-demand certificates always latest SIGNED batch, Share Purchase Receipts, My Documents / Shareholding Receipts
+flowchart TD
+
+    subgraph CERTDL["On-demand certificate download (POST /certificates)"]
+        direction TB
+        A["Member downloads own certificate,\nor Treasurer/Asst Treasurer/Admin\ndownloads for a member"] --> B["getLatestSignedCertificate(userId, type)\n— share_certificates JOIN\ncertificate_signing_rounds"]
+        B --> C{"Any round with\nstatus = FULLY_SIGNED\nfor this member/type?"}
+        C -->|"No"| D["404 — 'no signed\ncertificate available yet'\n(never mints a live one)"]
+        C -->|"Yes"| E["Newest by as_of_date DESC,\nissued_at DESC — with its\nreal signatures + stamps"]
+        E --> F["shareCertificateTemplate renders\nbaked-in signature image(s)\n+ 'Shareholding As Of <date>'"]
+        F --> G["Member always downloads\na SIGNED PDF, dated to the\nperiod it actually reflects"]
+        G -.->|"never touches"| H[("shareholding_registry\n— current live shareholding,\nuntouched")]
+    end
+
+    subgraph RECEIPT["Share Purchase Receipt (at contribution time)"]
+        direction TB
+        I["Treasurer records a\ncapital contribution"] --> J["creditShareholderContribution\nposts the transaction"]
+        J --> K["recalculateShareholding\n(shares_held/percentage updated,\nsame DB transaction)"]
+        K --> L["issueSharePurchaseReceipt\n(best-effort, try/catch —\nnever blocks the contribution)"]
+        L --> M["Find THIS contribution's units via\ncomputeShareUnitsPerUser's\nbreakdownByContribution"]
+        M --> N["shares_before / shares_after /\nprice_per_share computed"]
+        N --> O["Snapshot recording Treasurer's\nsaved signature image\n(storageService.copyObject)"]
+        O --> P["Insert into documents table:\ndocument_type=RECEIPT,\nreceipt_kind=SHARE_PURCHASE,\nfully_signed=TRUE, category FIN-SHR"]
+        P --> Q["Contribution acknowledgement\nemail: + 'available under\nMy Documents' line"]
+    end
+
+    subgraph ACCESS["Documents module — new access paths"]
+        direction TB
+        R["Member opens\nMy Documents tab"] --> S["GET /documents/mine\n— no DOCUMENT_VIEW needed;\nSQL join proves ownership"]
+        S --> T["template_data returned\ndirectly in the list —\nno second network call"]
+        T --> U["sharePurchaseReceiptTemplate\nrenders Preview/Print\nfrom the list response"]
+
+        V["Treasurer opens\nShareholding Receipts tab"] --> W["DOCUMENT_VIEW gate\n(Treasurer/Asst Treasurer/\nAdmin/Secretary already hold it)"]
+        W --> X["GET /documents\n?document_type=RECEIPT&\nrelated_record_type=shareholder_contributions"]
+        X --> Y["Existing openDocument()\npreview/print helper reused"]
+    end
+
+    P -.->|"visible in"| R
+    P -.->|"visible in"| V
+
+    style D fill:#fef9c3
+    style G fill:#dcfce7
+    style H fill:#e0e7ff
+    style Q fill:#dcfce7
+    style U fill:#dcfce7
+    style Y fill:#dcfce7

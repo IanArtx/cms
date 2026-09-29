@@ -24,6 +24,7 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../s
 const { notify, notifyMany } = require('../services/notificationService');
 const { getSavingsAccount, getOrCreateSavingsBalance } = require('../services/savingsService');
 const { settleFineSettlement, declineFineSettlement } = require('../services/savingsFineSettlementService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 MODULE_CODES.SAVINGS_FINE_SETTLEMENT = 'SAV';
 
@@ -48,8 +49,6 @@ const prepareSettlement = async (client, { userId, fineIds, destinationAccountId
         throw createError.badRequest('Select at least one outstanding fine to settle');
     }
 
-    const savingsAccount = await getSavingsAccount(client);
-
     const finesResult = await client.query(`
         SELECT id, amount, currency_id, status
         FROM   fines
@@ -59,21 +58,28 @@ const prepareSettlement = async (client, { userId, fineIds, destinationAccountId
     if (finesResult.rows.length !== fineIds.length) {
         throw createError.badRequest('One or more selected fines do not belong to this member or do not exist');
     }
+
+    // v1.61.0 — a company can now have more than one Savings account
+    // (one per currency), so the fines' own currency decides WHICH one
+    // this settlement draws from, rather than assuming a singleton.
+    const fineCurrencyId = finesResult.rows[0].currency_id;
     for (const fine of finesResult.rows) {
         if (fine.status !== 'OUTSTANDING') {
             throw createError.badRequest('One or more selected fines is no longer outstanding');
         }
-        if (fine.currency_id !== savingsAccount.currency_id) {
+        if (fine.currency_id !== fineCurrencyId) {
             throw createError.badRequest(
-                'Every selected fine must be in the same currency as the Savings account — ' +
+                'Every selected fine must be in the same currency — ' +
                 'this system does not automatically convert currencies when moving real money between accounts.'
             );
         }
     }
 
+    const savingsAccount = await getSavingsAccount(client, fineCurrencyId);
+
     const totalAmount = finesResult.rows.reduce((sum, f) => sum + parseFloat(f.amount), 0);
 
-    const balance = await getOrCreateSavingsBalance(client, userId, null);
+    const balance = await getOrCreateSavingsBalance(client, userId, fineCurrencyId);
     if (totalAmount > parseFloat(balance.principal_balance)) {
         throw createError.badRequest(
             `Cannot settle more than the member has saved. Selected total: ${totalAmount}. Available: ${balance.principal_balance}.`
@@ -313,6 +319,8 @@ const rejectSettlement = asyncHandler(async (req, res) => {
 // PATCH /api/fines/settlements/:id/approve
 // ============================================================
 const approveSettlement = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'savings_fine_settlements', req.params.id, ['user_id', 'initiated_by'], 'fine settlement');
     const { id } = req.params;
 
     await withTransaction(async (client) => {

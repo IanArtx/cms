@@ -198,6 +198,9 @@ app.use('/api/requisitions', require('./src/routes/requisitions'));
 app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/notifications', require('./src/routes/notifications'));
 app.use('/api/shares', require('./src/routes/shares'));
+app.use('/api/share-capital', require('./src/routes/shareCapital')); // v1.69.0
+app.use('/api/tax', require('./src/routes/tax')); // v1.70.0
+app.use('/api/money-approvals', require('./src/routes/moneyApprovals')); // v1.73.0 — held money entries
 app.use('/api/exchange-rates', require('./src/routes/exchangeRates'));
 app.use('/api/certificates', require('./src/routes/certificates'));
 app.use('/api/search', require('./src/routes/search'));

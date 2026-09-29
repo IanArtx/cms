@@ -677,6 +677,7 @@ const getMmfById = asyncHandler(async (req, res) => {
                     SELECT
                         mt.id, mt.entry_type, mt.amount, mt.interest_period,
                         mt.description, mt.entry_date, mt.created_at,
+                        mt.is_reversed, mt.reversed_at,
                         tr.reference_code,
                         txcreator.first_name || ' ' || txcreator.last_name AS recorded_by_name
                     FROM mmf_transactions mt

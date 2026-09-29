@@ -15,7 +15,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockAuditor, requirePermissions } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockAuditor, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const documentsController = require('../controllers/documentsController');
 
@@ -37,9 +37,10 @@ router.use(blockAuditor);
 // TEMPLATE ROUTES
 // ============================================================
 
-// Get all templates
+// Get all templates — v1.69.1: DOCUMENT_VIEW or DOCUMENT_GENERATE (a
+// role allowed to generate documents must be able to see the templates)
 router.get('/templates',
-    requirePermissions(['DOCUMENT_VIEW']),
+    requireAnyPermission(['DOCUMENT_VIEW', 'DOCUMENT_GENERATE']),
     documentsController.getTemplates
 );
 
@@ -138,6 +139,33 @@ router.post('/generate',
 // ============================================================
 router.get('/pending-signatures',
     documentsController.getMyPendingSignatures
+);
+
+// ============================================================
+// GET MY DOCUMENTS (v1.65.0)
+// GET /api/documents/mine
+// Open to any authenticated member, no DOCUMENT_VIEW permission
+// needed — it only ever returns documents the controller's own join
+// proves belong to the caller (currently: their own Share Purchase
+// Receipts). MUST be registered before GET /:id below, same reason as
+// /pending-signatures above.
+// ============================================================
+router.get('/mine',
+    documentsController.getMyDocuments
+);
+
+// ============================================================
+// GET SHARE PURCHASE RECEIPTS — Treasury (v1.67.0)
+// GET /api/documents/share-receipts?month=YYYY-MM&user_id=
+// Every member's personal Share Purchase Receipts, for Treasury only
+// (Treasurer / Assistant Treasurer / Admin) — deliberately NOT gated
+// on DOCUMENT_VIEW, which Secretary/Directors also hold and which
+// should not open other members' personal receipts. MUST be
+// registered before GET /:id below.
+// ============================================================
+router.get('/share-receipts',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
+    documentsController.getShareReceipts
 );
 
 // ============================================================

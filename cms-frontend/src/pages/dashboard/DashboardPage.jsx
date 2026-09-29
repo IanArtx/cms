@@ -39,7 +39,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/common/StatusBadge';
 import PageHeader from '../../components/common/PageHeader';
 import ShareholderDashboard from './ShareholderDashboard';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     BanknotesIcon,
     ChartBarIcon,
@@ -95,7 +95,7 @@ const CompanyInflowOutflowChart = ({ trend, currencyCode }) => {
                             tick={{ fontSize: 11, ...theme.axisTick }}
                             tickLine={false}
                             axisLine={false}
-                            tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                            tickFormatter={compactNumber}
                         />
                         <Tooltip
                             {...theme.tooltipProps}
@@ -339,25 +339,21 @@ const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue', to = nul
 // Shareholder dashboard at all.
 // ============================================================
 const DashboardViewToggle = ({ activeView, onChange }) => (
-    <div className="flex justify-end mb-4">
-        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+    // v1.71.0 — sits on the blue header band as a two-way switch.
+    <div role="group" aria-label="Which dashboard" className="inline-flex rounded-[10px] bg-white/15 p-1 gap-0.5">
+        {[['shareholder', 'My dashboard'], ['general', 'Company dashboard']].map(([key, label]) => (
             <button
-                onClick={() => onChange('shareholder')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                    activeView === 'shareholder' ? 'bg-primary-600 text-white' : 'text-gray-500 hover:text-gray-700'
+                key={key}
+                type="button"
+                aria-pressed={activeView === key}
+                onClick={() => onChange(key)}
+                className={`h-9 px-3.5 text-sm rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white ${
+                    activeView === key ? 'bg-white text-primary-900 font-bold' : 'text-white hover:bg-white/10'
                 }`}
             >
-                My Dashboard
+                {label}
             </button>
-            <button
-                onClick={() => onChange('general')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                    activeView === 'general' ? 'bg-primary-600 text-white' : 'text-gray-500 hover:text-gray-700'
-                }`}
-            >
-                General Dashboard
-            </button>
-        </div>
+        ))}
     </div>
 );
 
@@ -699,10 +695,7 @@ const DashboardPage = () => {
     // Holds Shareholder + another role, currently viewing "My Dashboard".
     if (canToggle && activeView === 'shareholder') {
         return (
-            <div>
-                {toggleBar}
-                <ShareholderDashboard />
-            </div>
+            <ShareholderDashboard headerActions={toggleBar} />
         );
     }
 
@@ -715,9 +708,8 @@ const DashboardPage = () => {
 
     return (
         <div>
-            {toggleBar}
-
             <PageHeader
+                actions={toggleBar}
                 title={`Welcome back, ${user?.first_name}`}
                 subtitle={`${new Date().toLocaleDateString('en-GB', {
                     weekday: 'long', year: 'numeric',

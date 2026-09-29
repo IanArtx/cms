@@ -45,6 +45,31 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { notify, notifyMany } = require('../services/notificationService');
+const taxService = require('../services/taxService');
+
+// v1.70.0 — withholding tax on a service fee payment, only when the
+// agreement has been amended to carry it (off by default: "service fees
+// are a necessary expense with no ties to WHT"). Real once the company is
+// a designated withholding agent (or the person is not resident); until
+// then SHADOW — recorded, full amount paid. Returns null when none.
+const serviceFeeWithholding = async (client, { agreementId, recipientId, amount, currencyId, date }) => {
+    if (!(await taxService.isMigrated())) return null;
+    const a = await client.query(`
+        SELECT wht_applicable, wht_rate_code, wht_effective_from::text AS wht_effective_from
+        FROM   service_fee_agreements WHERE id = $1
+    `, [agreementId]);
+    const ag = a.rows[0];
+    if (!ag || !ag.wht_applicable) return null;
+    const d = require('../services/fxService').toDateStr(date);
+    if (ag.wht_effective_from && d < ag.wht_effective_from) return null;
+    const u = await client.query(`SELECT tax_residency FROM users WHERE id = $1`, [recipientId]);
+    const residency = u.rows[0]?.tax_residency || 'RESIDENT';
+    const w = await taxService.computeWithholding(client, {
+        paymentType: residency === 'NON_RESIDENT' ? 'NON_RESIDENT_SERVICE' : 'SERVICE_FEE',
+        residency, gross: amount, currencyId, date: d, rateCode: ag.wht_rate_code || null,
+    });
+    return w.applies ? { ...w, residency } : null;
+};
 const {
     applyPaymentToPeriods,
     getAdvanceRecoverySchedule,
@@ -218,6 +243,16 @@ const createServiceFeePaymentConfirmation = async (client, {
                 VALUES ($1, $2, $3)
             `, [id, line.period_id, line.amount]);
         }
+    }
+
+    // v1.70.0 — preview of any withholding, so the recipient sees what
+    // they will actually receive (worked out again when they confirm).
+    const wht = await serviceFeeWithholding(client, {
+        agreementId: agreement.id, recipientId: agreement.user_id, amount, currencyId: agreement.currency_id, date: entryDate,
+    });
+    if (wht) {
+        await client.query(`UPDATE payment_confirmations SET wht_amount = $1, wht_is_shadow = $2 WHERE id = $3`,
+            [wht.tax, wht.isShadow, id]);
     }
 
     return { id, referenceCode };
@@ -490,14 +525,24 @@ const confirmPayment = asyncHandler(async (req, res) => {
             client, resolveModuleCode(account), txCategoryAbbrev, 'TRANSACTION', pc.payer_id
         );
 
+        // v1.70.0 — withholding on a service fee (see serviceFeeWithholding).
+        const wht = pc.source_type === 'SERVICE_FEE_PAYMENT'
+            ? await serviceFeeWithholding(client, {
+                agreementId: pc.source_id, recipientId: pc.recipient_id, amount: pc.amount,
+                currencyId: pc.currency_id, date: pc.entry_date,
+            })
+            : null;
+        const cashAmount = wht && !wht.isShadow ? wht.net : parseFloat(pc.amount);
+
         const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
             accountId:       account.id,
             transactionType: 'DEBIT',
             inflowType:      txInflowType,
-            amount:          parseFloat(pc.amount),
+            amount:          cashAmount,
             currencyId:      pc.currency_id,
             categoryId:      pc.category_id,
-            description:     `${pc.purpose} — ${methodDetail}`,
+            description:     `${pc.purpose} — ${methodDetail}` +
+                             (wht && !wht.isShadow ? ` (gross ${pc.amount}; withholding tax ${wht.tax} kept for URA)` : ''),
             valueDate:       pc.entry_date,
             createdBy:       pc.payer_id,
             referenceId:     txRefId,
@@ -517,6 +562,21 @@ const confirmPayment = asyncHandler(async (req, res) => {
                 RETURNING id
             `, [pc.source_id, pc.amount, pc.entry_date, transactionId, note || null, pc.payer_id]);
             const serviceFeePaymentId = paymentResult.rows[0].id;
+
+            if (wht) {
+                const who = await client.query(`SELECT tin FROM users WHERE id = $1`, [pc.recipient_id]);
+                await client.query(`UPDATE payment_confirmations SET wht_amount = $1, wht_is_shadow = $2 WHERE id = $3`,
+                    [wht.tax, wht.isShadow, pc.id]);
+                await taxService.recordWithholding(client, {
+                    paymentType: wht.residency === 'NON_RESIDENT' ? 'NON_RESIDENT_SERVICE' : 'SERVICE_FEE',
+                    payeeUserId: pc.recipient_id, payeeName: `${pc.first_name} ${pc.last_name}`,
+                    payeeTin: who.rows[0]?.tin || null, payeeResidency: wht.residency,
+                    rateCode: wht.rateCode, rate: wht.rate, gross: pc.amount, tax: wht.tax,
+                    currencyId: pc.currency_id, date: pc.entry_date, debitGlCode: '5300',
+                    sourceTransactionId: transactionId, servicePaymentId: serviceFeePaymentId,
+                    isShadow: wht.isShadow, shadowReason: wht.shadowReason, userId: pc.payer_id,
+                });
+            }
 
             // v1.52.0 — apply this now-confirmed payment across
             // whichever monthly period(s) were decided when the

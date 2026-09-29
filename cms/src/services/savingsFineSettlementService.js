@@ -82,7 +82,7 @@ const settleFineSettlement = async (client, { settlementId, recordedByUserId }) 
         }
     }
 
-    const balance = await getOrCreateSavingsBalance(client, settlement.user_id, null);
+    const balance = await getOrCreateSavingsBalance(client, settlement.user_id, settlement.currency_id);
     if (parseFloat(settlement.total_amount) > parseFloat(balance.principal_balance)) {
         throw createError.badRequest(
             `The savings balance has since dropped below this settlement's total. Available: ${balance.principal_balance}.`
@@ -116,8 +116,8 @@ const settleFineSettlement = async (client, { settlementId, recordedByUserId }) 
         UPDATE savings_balances
         SET    principal_balance = principal_balance - $1,
                updated_at = NOW()
-        WHERE  user_id = $2
-    `, [settlement.total_amount, settlement.user_id]);
+        WHERE  user_id = $2 AND currency_id = $3
+    `, [settlement.total_amount, settlement.user_id, settlement.currency_id]);
 
     // Leg 2 — clear each selected fine individually via the ordinary
     // core, same as any other fine-clearing path.

@@ -134,6 +134,55 @@ const generateGeneralReport = async (year, month) => {
     `);
 
     // --------------------------------------------------------
+    // SECTION 1b: Account Activity for the Period (v1.64.0)
+    // Per-account inflow/outflow/net for the selected period — every
+    // account belongs to exactly one currency (accounts.currency_id),
+    // so grouping by account is inherently currency-safe: nothing here
+    // is ever summed across two different currencies. Uses the same
+    // CREDIT/REVERSAL_CREDIT = in, DEBIT/REVERSAL_DEBIT = out
+    // convention as every other cash-direction query in this file
+    // (Section 2 below, auditController.js, glService.js's isCashIn).
+    // --------------------------------------------------------
+    const accountActivityResult = await query(`
+        SELECT
+            a.id                AS account_id,
+            a.name              AS account_name,
+            a.account_type,
+            c.code              AS currency_code,
+            c.symbol            AS currency_symbol,
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('CREDIT', 'REVERSAL_CREDIT')
+                THEN t.amount ELSE 0 END), 0) AS inflow,
+            COALESCE(SUM(CASE WHEN t.transaction_type IN ('DEBIT', 'REVERSAL_DEBIT')
+                THEN t.amount ELSE 0 END), 0) AS outflow,
+            COUNT(t.id)         AS transaction_count
+        FROM  accounts a
+        JOIN  currencies c ON c.id = a.currency_id
+        LEFT JOIN transactions t
+               ON t.account_id = a.id
+              AND t.status = 'POSTED'
+              AND t.value_date BETWEEN $1 AND $2
+        WHERE a.is_active = TRUE
+        GROUP BY a.id, a.name, a.account_type, c.code, c.symbol
+        ORDER BY a.account_type DESC, a.name ASC
+    `, [startDate, endDate]);
+
+    const accountActivity = accountActivityResult.rows.map(r => {
+        const inflow = parseFloat(r.inflow) || 0;
+        const outflow = parseFloat(r.outflow) || 0;
+        return {
+            account_id:         r.account_id,
+            account_name:       r.account_name,
+            account_type:       r.account_type,
+            currency_code:      r.currency_code,
+            currency_symbol:    r.currency_symbol,
+            inflow,
+            outflow,
+            net:                inflow - outflow,
+            transaction_count:  parseInt(r.transaction_count) || 0,
+        };
+    });
+
+    // --------------------------------------------------------
     // SECTION 2: Income Summary for the Period
     // --------------------------------------------------------
     const incomeResult = await query(`
@@ -297,6 +346,7 @@ const generateGeneralReport = async (year, month) => {
         period:         periodLabel,
         generated_at:   new Date().toISOString(),
         accounts:       accountsResult.rows,
+        account_activity: accountActivity,
         income:         incomeResult.rows,
         expenses:       expenseResult.rows,
         transfers:      transfersResult.rows,
@@ -409,6 +459,22 @@ const renderGeneralReportHTML = async (report) => {
         </tr>
     `).join('');
 
+    const accountActivityRows = (report.account_activity || []).map(aa => `
+        <tr>
+            <td style="padding:8px; border-bottom:1px solid #e5e7eb;">${aa.account_name}</td>
+            <td style="padding:8px; border-bottom:1px solid #e5e7eb;">${aa.account_type}</td>
+            <td style="padding:8px; border-bottom:1px solid #e5e7eb; text-align:right; color:#059669;">
+                ${aa.inflow ? `+${aa.currency_symbol || aa.currency_code} ${aa.inflow.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—'}
+            </td>
+            <td style="padding:8px; border-bottom:1px solid #e5e7eb; text-align:right; color:#dc2626;">
+                ${aa.outflow ? `-${aa.currency_symbol || aa.currency_code} ${aa.outflow.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—'}
+            </td>
+            <td style="padding:8px; border-bottom:1px solid #e5e7eb; text-align:right; font-weight:bold;">
+                ${aa.currency_symbol || aa.currency_code} ${aa.net.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            </td>
+        </tr>
+    `).join('');
+
     const investmentRows = report.investments.map(i => `
         <tr>
             <td style="padding:8px; border-bottom:1px solid #e5e7eb;">${i.name}</td>
@@ -461,6 +527,22 @@ const renderGeneralReportHTML = async (report) => {
                         </tr>
                     </thead>
                     <tbody>${accountRows}</tbody>
+                </table>
+
+                <h3 style="color:#1e3a5f; border-bottom:2px solid #1e3a5f; padding-bottom:8px;">
+                    Account Activity This Period
+                </h3>
+                <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
+                    <thead>
+                        <tr style="background:#f3f4f6;">
+                            <th style="padding:8px; text-align:left;">Account</th>
+                            <th style="padding:8px; text-align:left;">Type</th>
+                            <th style="padding:8px; text-align:right;">Inflow</th>
+                            <th style="padding:8px; text-align:right;">Outflow</th>
+                            <th style="padding:8px; text-align:right;">Net</th>
+                        </tr>
+                    </thead>
+                    <tbody>${accountActivityRows || '<tr><td colspan="5" style="padding:8px; text-align:center;">No accounts</td></tr>'}</tbody>
                 </table>
 
                 <h3 style="color:#1e3a5f; border-bottom:2px solid #1e3a5f; padding-bottom:8px;">

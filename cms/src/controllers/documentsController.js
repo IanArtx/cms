@@ -50,6 +50,7 @@ const extractPersonSignatories = (documentType, templateData) => {
 };
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
 const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../services/storageService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // ============================================================
 // FINANCE DOCUMENT GATE (v1.21.0)
@@ -86,6 +87,23 @@ const assertDocumentVisible = async (req, documentId, categoryFullAbbreviation) 
             'This is a financial document. Ask an Admin to grant you access to this specific document if you need it.'
         );
     }
+};
+
+// ============================================================
+// PERSONAL DOCUMENTS (v1.67.0)
+// A document with owner_user_id set (today: a Share Purchase Receipt)
+// belongs to ONE member. Only that member and Treasury may open it —
+// holding DOCUMENT_VIEW is not enough, since that permission is held
+// by roles (Secretary, Directors) who should never browse other
+// members' personal receipts.
+// ============================================================
+const TREASURY_ROLES = ['Treasurer', 'Assistant Treasurer', 'Admin'];
+const isTreasury = (req) => (req.user.roles || []).some(r => TREASURY_ROLES.includes(r));
+
+const assertPersonalDocumentAccess = (req, ownerUserId) => {
+    if (ownerUserId === null || ownerUserId === undefined) return;
+    if (ownerUserId === req.user.id || isTreasury(req)) return;
+    throw createError.forbidden('This is a personal document. Only its owner and Treasury can open it.');
 };
 
 // ============================================================
@@ -298,6 +316,8 @@ const generateDocument = asyncHandler(async (req, res) => {
 // behaviour is unchanged from before this feature existed.
 // ============================================================
 const approveDocument = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'documents', req.params.id, ['created_by', 'owner_user_id'], 'document');
     const { id } = req.params;
 
     const docResult = await query('SELECT id, title, status, document_type, template_data FROM documents WHERE id = $1', [id]);
@@ -676,6 +696,121 @@ const getMyPendingSignatures = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// GET MY DOCUMENTS (v1.65.0)
+// GET /api/documents/mine
+// Every document personally about the caller — for now, just their
+// own Share Purchase Receipts (documents with related_record_type
+// 'shareholder_contributions' whose contribution belongs to them; see
+// transactionsController.issueSharePurchaseReceipt). Deliberately a
+// SEPARATE, narrower endpoint from GET / (getAllDocuments) rather
+// than a related_record_id filter a caller could set to someone
+// else's — that one is gated behind DOCUMENT_VIEW-style permissions a
+// plain Shareholder doesn't hold; this one is open to any
+// authenticated user, but only ever returns rows this specific join
+// proves belong to them. Registered before GET /:id in
+// routes/documents.js for the same reason pending-signatures is.
+// ============================================================
+const getMyDocuments = asyncHandler(async (req, res) => {
+    const { document_type } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
+
+    // v1.67.0 — ownership is now explicit (documents.owner_user_id),
+    // not inferred through a join to shareholder_contributions.
+    // v1.69.0 — plus company notices addressed to every shareholder
+    // (documents.audience = 'ALL_SHAREHOLDERS', e.g. the auto-generated
+    // notice of a share value change), for anyone on the register.
+    const conditions = [
+        `d.status NOT IN ('SUPERSEDED', 'DELETED')`,
+        // v1.70.0 — plus notices to EVERY member (audience 'ALL_MEMBERS',
+        // e.g. a change of the company's withholding tax agent status).
+        `(d.owner_user_id = $1 OR d.audience = 'ALL_MEMBERS' OR (d.audience = 'ALL_SHAREHOLDERS' AND EXISTS (
+            SELECT 1 FROM shareholding_registry sr WHERE sr.user_id = $1 AND sr.effective_to IS NULL)))`,
+    ];
+    const params = [req.user.id];
+    let p = 1;
+
+    if (document_type) {
+        p++; conditions.push(`d.document_type = $${p}`);
+        params.push(document_type.toUpperCase());
+    }
+    const where = 'WHERE ' + conditions.join(' AND ');
+
+    const countResult = await query(`
+        SELECT COUNT(*) AS total
+        FROM   documents d
+        ${where}
+    `, params);
+    const total = parseInt(countResult.rows[0].total);
+
+    params.push(limit, offset);
+    const result = await query(`
+        SELECT
+            d.id, d.title, d.document_type, d.source, d.template_data,
+            d.version, d.status, d.fully_signed, d.created_at,
+            d.related_record_type, d.related_record_id, d.audience,
+            r.reference_code, r.public_id,
+            cat.name AS category_name, cp.full_path AS category_trail
+        FROM   documents d
+        JOIN   references_registry r ON r.id = d.reference_id
+        JOIN   categories cat        ON cat.id = d.category_id
+        LEFT JOIN category_paths cp  ON cp.category_id = d.category_id
+        ${where}
+        ORDER BY d.created_at DESC
+        LIMIT $${p + 1} OFFSET $${p + 2}
+    `, params);
+
+    sendPaginated(res, result.rows, total, page, limit);
+});
+
+// ============================================================
+// GET SHARE PURCHASE RECEIPTS — Treasury view (v1.67.0)
+// GET /api/documents/share-receipts?month=YYYY-MM&user_id=
+// Every member's Share Purchase Receipt, newest contribution first,
+// each row carrying its contribution month (YYYY-MM) so the page can
+// group them by month. Treasury only (Treasurer / Assistant Treasurer
+// / Admin — enforced in routes/documents.js). Returns template_data
+// directly, like GET /mine, so preview/print needs no second call.
+// ============================================================
+const getShareReceipts = asyncHandler(async (req, res) => {
+    const { month, user_id } = req.query;
+    const conditions = [
+        `d.status NOT IN ('SUPERSEDED', 'DELETED')`,
+        `d.owner_user_id IS NOT NULL`,
+        `d.template_data ->> 'receipt_kind' = 'SHARE_PURCHASE'`,
+    ];
+    const params = [];
+    if (month) {
+        params.push(month);
+        conditions.push(`to_char(COALESCE(sc.contribution_date, d.created_at::date), 'YYYY-MM') = $${params.length}`);
+    }
+    if (user_id) {
+        params.push(parseInt(user_id));
+        conditions.push(`d.owner_user_id = $${params.length}`);
+    }
+
+    const result = await query(`
+        SELECT
+            d.id, d.title, d.document_type, d.source, d.template_data,
+            d.status, d.fully_signed, d.created_at,
+            d.related_record_type, d.related_record_id, d.owner_user_id,
+            r.reference_code, r.public_id,
+            o.first_name || ' ' || o.last_name AS owner_name,
+            COALESCE(sc.contribution_date, d.created_at::date)::text AS contribution_date,
+            to_char(COALESCE(sc.contribution_date, d.created_at::date), 'YYYY-MM') AS month
+        FROM   documents d
+        JOIN   references_registry r ON r.id = d.reference_id
+        JOIN   users o               ON o.id = d.owner_user_id
+        LEFT JOIN shareholder_contributions sc
+               ON d.related_record_type = 'shareholder_contributions' AND sc.id = d.related_record_id
+        WHERE  ${conditions.join(' AND ')}
+        ORDER  BY COALESCE(sc.contribution_date, d.created_at::date) DESC, d.id DESC
+        LIMIT  1000
+    `, params);
+
+    sendSuccess(res, result.rows);
+});
+
+// ============================================================
 // GET ALL DOCUMENTS
 // GET /api/documents?document_type=MEETING_MINUTES&status=FINAL
 // ============================================================
@@ -689,6 +824,10 @@ const getAllDocuments = asyncHandler(async (req, res) => {
     // list and the Company Archive tab's OR-in-ARCHIVED condition
     // below, since a DELETED document is no longer ARCHIVED either).
     const conditions = ['d.status NOT IN (\'SUPERSEDED\', \'DELETED\')'];
+    // v1.67.0 — personal documents (a member's own Share Purchase
+    // Receipts) never appear in the shared list; they live in
+    // GET /mine (owner) and GET /share-receipts (Treasury) only.
+    conditions.push('d.owner_user_id IS NULL');
     const params = [];
     let p = 0;
 
@@ -854,6 +993,7 @@ const getDocumentById = asyncHandler(async (req, res) => {
         throw createError.notFound('Document not found');
     }
 
+    assertPersonalDocumentAccess(req, result.rows[0].owner_user_id);
     await assertDocumentVisible(req, id, result.rows[0].category_full_abbreviation);
 
     sendSuccess(res, result.rows[0]);
@@ -875,7 +1015,7 @@ const downloadDocument = asyncHandler(async (req, res) => {
 
     const result = await query(
         `SELECT d.id, d.title, d.source, d.document_type, d.template_data,
-                d.file_path, d.file_name, d.mime_type,
+                d.file_path, d.file_name, d.mime_type, d.owner_user_id,
                 cp.full_abbreviation AS category_full_abbreviation
          FROM   documents d
          JOIN   category_paths cp ON cp.category_id = d.category_id
@@ -888,6 +1028,7 @@ const downloadDocument = asyncHandler(async (req, res) => {
     }
     const doc = result.rows[0];
 
+    assertPersonalDocumentAccess(req, doc.owner_user_id);
     await assertDocumentVisible(req, id, doc.category_full_abbreviation);
 
     if (doc.source === 'UPLOADED') {
@@ -956,6 +1097,8 @@ module.exports = {
     createNewVersion,
     archiveDocument,
     deleteDocument,
+    getMyDocuments,
+    getShareReceipts,
     getAllDocuments,
     getDocumentById,
     downloadDocument,

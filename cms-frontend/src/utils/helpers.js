@@ -88,16 +88,19 @@ export const getStatusBadgeClass = (status) => {
         // monthly call whose target has been fully met.
         FULFILLED:        'badge-green',
 
-        // Yellow — in progress/pending
-        PENDING:              'badge-yellow',
-        AWAITING_APPROVAL:    'badge-yellow',
+        // Violet — waiting for someone's approval (v1.71.0: was yellow;
+        // the Harbour chip colours give "awaiting approval" its own colour)
+        PENDING:              'badge-purple',
+        AWAITING_APPROVAL:    'badge-purple',
+        PENDING_APPROVAL:     'badge-purple',
+
+        // Amber — in progress / partly done
         PARTIALLY_RECEIVED:   'badge-yellow',
         PARTIALLY_REPAID:     'badge-yellow',
-        PENDING_APPROVAL:     'badge-yellow',
         IN_PROGRESS:          'badge-yellow',
         DRAFT:                'badge-yellow',
         ON_HOLD:              'badge-yellow',
-        PENDING_ACK:          'badge-yellow',
+        PENDING_ACK:          'badge-purple',
         PENDING_TERMINATION:  'badge-yellow',
         // Capital Goal Calls (v1.43.0)
         PLEDGED:              'badge-yellow',
@@ -110,18 +113,21 @@ export const getStatusBadgeClass = (status) => {
         UNPAID:      'badge-red',
         OVERDUE:     'badge-red',
         REJECTED:    'badge-red',
-        CANCELLED:   'badge-red',
         DEFAULTED:   'badge-red',
         FAILED:      'badge-red',
         MISSED:      'badge-red',
-        REVERSED:    'badge-red',
         BEHIND:      'badge-red',
         DISPUTED:    'badge-red',
 
+        // Gray — finished / no longer in effect (v1.71.0: reversed and
+        // cancelled were red, closed/superseded/archived were blue)
+        CANCELLED:    'badge-gray',
+        REVERSED:     'badge-gray',
+        SUPERSEDED:   'badge-gray',
+        ARCHIVED:     'badge-gray',
+        CLOSED:       'badge-gray',
+
         // Blue — informational
-        SUPERSEDED:   'badge-blue',
-        ARCHIVED:     'badge-blue',
-        CLOSED:       'badge-blue',
         ACKNOWLEDGED: 'badge-blue',
         TERMINATED:   'badge-blue',
         // Service Fees (v1.54.0) — a month waived out of the agreement
@@ -179,20 +185,30 @@ export const getInitials = (firstName, lastName) => {
 };
 
 // ============================================================
-// GET PHOTO URL
-// Turns a stored users.photo_path (e.g. "uploads/profiles/xxx.jpg",
-// as saved by the backend's multer upload) into a full URL the
-// browser can load, using the same origin as the API but WITHOUT
-// the trailing /api — that's where server.js serves the static
-// /uploads mount from.
+// GET UPLOAD URL (v1.62.1)
+// Turns ANY backend-stored relative file path — profile photos,
+// signature snapshots, receipts, branding assets, etc, as returned
+// by storageService.js whether the underlying file lives on
+// Cloudflare R2 or local disk — into a full URL the browser can
+// load, using the same origin as the API but WITHOUT the trailing
+// /api. That's where server.js serves the static /uploads mount
+// from; a bare relative path resolves against the FRONTEND's own
+// origin instead and 404s, which is what was happening to signature
+// images (getPhotoUrl below already did this for photos, which is
+// why those "worked perfectly" while signatures didn't).
 // ============================================================
-export const getPhotoUrl = (photoPath) => {
-    if (!photoPath) return null;
+export const getUploadUrl = (path) => {
+    if (!path) return null;
+    if (/^https?:\/\//i.test(path)) return path; // already absolute — leave it
     const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
     const origin = apiBase.replace(/\/api\/?$/, '');
-    const cleanPath = String(photoPath).replace(/\\/g, '/').replace(/^\.?\/?/, '');
+    const cleanPath = String(path).replace(/\\/g, '/').replace(/^\.?\/?/, '');
     return `${origin}/${cleanPath}`;
 };
+
+// Kept as a thin alias — existing call sites (Avatar.jsx) read fine as
+// "photo url" even though the underlying resolver is now generic.
+export const getPhotoUrl = (photoPath) => getUploadUrl(photoPath);
 
 // ============================================================
 // FORMAT FILE SIZE

@@ -1,0 +1,40 @@
+%% v1.62.0 — Point-in-time ledger balance validation + reordering
+%% Top: postTransaction's new date-aware validation + cascade, the
+%% core of this version. Bottom: where the ledger-ordering fix and the
+%% Dashboard chart cleanup land, as smaller companion changes.
+flowchart TD
+
+    subgraph POST["postTransaction — the one shared choke point every module posts through"]
+        direction TB
+        A["Caller posts a transaction\nwith its own value_date\n(may be backdated)"] --> B["Lock the account row\n(SELECT ... FOR UPDATE)"]
+        B --> C["Compute balance AS OF value_date:\nSUM of already-POSTED transactions\non this account, value_date <= this one\n(ties broken by id)"]
+        C --> D{"Debit would take the\nas-of-date balance\nnegative or below the\nfloor limit in effect\non that date?"}
+        D -->|Yes| E["Reject:\n'Insufficient funds as of &lt;date&gt;'\n(quotes that date's balance,\nnot today's)"]
+        D -->|No| F["Insert transaction row —\nbalance_before/after = the\npoint-in-time values just computed"]
+        F --> G{"Any other POSTED\ntransaction on this account\ndated chronologically\nAFTER this one?"}
+        G -->|"No (ordinary same-day case)"| H["No-op"]
+        G -->|"Yes (backdated ahead\nof existing entries)"| I["Cascade UPDATE:\nshift THEIR stored\nbalance_before/after by this\ntransaction's own +/- amount\n(single delta query)"]
+        F --> J["accounts.current_balance +/- amount\n— simple order-independent\naggregate, unaffected by dating"]
+    end
+
+    subgraph ORDER["Ledger display — reordered everywhere"]
+        direction TB
+        K["Transactions page\n(getTransactions)"] --> N["ORDER BY value_date, id\n— backdated entries appear\nchronologically where they belong"]
+        L["Transfers list\n(getTransfers)"] --> N
+        M["Member Portfolio\n(portfolioService.js)"] --> N
+    end
+
+    subgraph CHART["Dashboard chart cleanup (smaller companion fix)"]
+        direction TB
+        O["Investment Performance card\n(ShareholderDashboard.jsx)"] --> P["BarChart -> LineChart\n(Invested / Returned lines)"]
+        P --> Q["Backend LIMIT 10 cap removed\n— every investment now plotted,\nnot just the top 10"]
+        Q --> R["Long names truncated on the\nx-axis (full name in tooltip)\ninstead of relying on a short list"]
+    end
+
+    I --> N
+    J --> N
+
+    style E fill:#fee2e2
+    style I fill:#fef9c3
+    style N fill:#dcfce7
+    style Q fill:#dcfce7

@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { reportsAPI, certificatesAPI } from '../../api/endpoints';
-import { formatCurrency, formatDate, getErrorMessage } from '../../utils/helpers';
+import { formatCurrency, formatDate, getErrorMessage, getUploadUrl } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -24,6 +24,7 @@ import {
     ChevronDownIcon,
     ChevronUpIcon,
     TableCellsIcon,
+    ShieldCheckIcon, // v1.72.0 — Records check link
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -169,7 +170,7 @@ const SigningRoundsPanel = () => {
                                                         </span>
                                                         {sig.status === 'SIGNED' ? (
                                                             sig.signature_url
-                                                                ? <img src={sig.signature_url} alt="Signature" className="h-6" />
+                                                                ? <img src={getUploadUrl(sig.signature_url)} alt="Signature" className="h-6" />
                                                                 : <CheckIcon className="h-4 w-4 text-green-600" />
                                                         ) : (
                                                             <span className="text-xs font-medium text-amber-600">Pending</span>
@@ -184,7 +185,7 @@ const SigningRoundsPanel = () => {
                                                 <div className="flex flex-wrap gap-3">
                                                     {expandedData.stamps.map(stamp => (
                                                         <div key={stamp.stamp_id} className="flex flex-col items-center gap-1">
-                                                            <img src={stamp.file_path} alt={stamp.name} className="h-10 w-10 object-contain" />
+                                                            <img src={getUploadUrl(stamp.file_path)} alt={stamp.name} className="h-10 w-10 object-contain" />
                                                             <span className="text-xs text-gray-500">{stamp.name}</span>
                                                         </div>
                                                     ))}
@@ -283,6 +284,31 @@ const AccountBalanceCard = ({ account }) => (
 // ============================================================
 // INCOME ROW
 // ============================================================
+// ============================================================
+// ACCOUNT ACTIVITY ROW (v1.64.0) — per-account inflow/outflow/net
+// for the selected period. Each account carries exactly one
+// currency, so this row is inherently currency-safe.
+// ============================================================
+const AccountActivityRow = ({ item }) => (
+    <div className="flex justify-between items-center py-2 border-b
+        border-gray-100 last:border-0">
+        <div>
+            <p className="text-sm text-gray-700">{item.account_name}</p>
+            <p className="text-xs text-gray-400">{item.account_type} · {item.transaction_count} transactions</p>
+        </div>
+        <div className="text-right">
+            <p className="text-xs">
+                <span className="text-green-600">+{item.currency_code} {item.inflow.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                {' / '}
+                <span className="text-red-600">-{item.currency_code} {item.outflow.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+            </p>
+            <p className="text-sm font-semibold text-gray-900">
+                Net: {item.currency_code} {item.net.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            </p>
+        </div>
+    </div>
+);
+
 const IncomeRow = ({ item }) => (
     <div className="flex justify-between items-center py-2 border-b
         border-gray-100 last:border-0">
@@ -426,11 +452,13 @@ const ReportsPage = () => {
         setError(null);
         try {
             const res = await certificatesAPI.issueNow({ certificate_type: certificateType });
-            const { issued, emailed, total, requiresSignatures } = res.data.data;
+            const { issued, total, requiresSignatures, blocked, blockedReason, periodLabel, asOfDate } = res.data.data;
             setSuccessMsg(
-                requiresSignatures
-                    ? `Certificates issued: ${issued}/${total}. Waiting on signatures before emailing — see Certificate Signing Rounds below.`
-                    : `Certificates issued: ${issued}/${total}. Emailed: ${emailed}.`
+                blocked
+                    ? blockedReason
+                    : requiresSignatures
+                        ? `Certificates issued: ${issued}/${total} for ${periodLabel} (as of ${asOfDate}). Waiting on signatures before emailing — see Certificate Signing Rounds below.`
+                        : `Certificates issued: ${issued}/${total}.`
             );
         } catch (err) {
             setError(getErrorMessage(err));
@@ -484,6 +512,11 @@ const ReportsPage = () => {
                             <Link to="/reports/general-ledger" className="btn-secondary flex items-center gap-2">
                                 <TableCellsIcon className="h-4 w-4" />
                                 Financial Statements
+                            </Link>
+                            {/* v1.72.0 — stored fund/investment figures vs their entries */}
+                            <Link to="/reports/record-checks" className="btn-secondary flex items-center gap-2">
+                                <ShieldCheckIcon className="h-4 w-4" />
+                                Records check
                             </Link>
                         </div>
                     )
@@ -716,6 +749,18 @@ const ReportsPage = () => {
                                 <AccountBalanceCard key={i} account={a} />
                             ))}
                         </div>
+                    </div>
+
+                    {/* Account Activity (v1.64.0) */}
+                    <div className="card">
+                        <h3 className="section-title mb-4">Account Activity This Period</h3>
+                        {(!generalReport.account_activity || generalReport.account_activity.length === 0) ? (
+                            <p className="text-sm text-gray-400">No accounts</p>
+                        ) : (
+                            generalReport.account_activity.map((item, i) => (
+                                <AccountActivityRow key={i} item={item} />
+                            ))
+                        )}
                     </div>
 
                     {/* Income and Expenses */}

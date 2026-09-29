@@ -30,7 +30,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import useChartTheme from '../../hooks/useChartTheme';
+import useChartTheme, { compactNumber } from '../../hooks/useChartTheme';
 import {
     CreateAgreementModal, TerminateAgreementModal, RecordPaymentModal,
     SettlePastMonthsModal, OverridePeriodModal,
@@ -42,6 +42,82 @@ import {
     ArrowLeftIcon, BanknotesIcon, PencilIcon, NoSymbolIcon, ArrowDownTrayIcon, CalendarDaysIcon,
     CheckIcon, XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
+
+// ============================================================
+// WITHHOLDING TAX (v1.70.0) — service fees carry no withholding tax
+// by default. If an agreement becomes subject to it, it is AMENDED here
+// (reason + effective date, kept as a trail); payments dated from then on
+// have the tax worked out when the recipient confirms them: 6% under the
+// agent rule (recorded as shadow only while the company is not a
+// designated agent) or 15% for a non-resident.
+// ============================================================
+const AgreementWhtCard = ({ agreementId, canManage }) => {
+    const [data, setData] = useState(null);
+    const [form, setForm] = useState(null);
+    const [error, setError] = useState(null);
+    const [msg, setMsg] = useState(null);
+    const load = useCallback(() => {
+        serviceFeesAPI.getAgreementWht(agreementId).then(res => setData(res.data.data)).catch(() => setData(false));
+    }, [agreementId]);
+    useEffect(() => { load(); }, [load]);
+    if (!data) return null;
+    const save = async () => {
+        setError(null);
+        try {
+            await serviceFeesAPI.amendAgreementWht(agreementId, { ...form, wht_rate_code: form.wht_rate_code || undefined });
+            setForm(null); setMsg('Amended'); load();
+        } catch (err) { setError(getErrorMessage(err)); }
+    };
+    return (
+        <div className="card mb-6">
+            <div className="flex justify-between items-center mb-2">
+                <h3 className="section-title">Withholding Tax</h3>
+                {canManage && !form && (
+                    <button className="btn-secondary text-sm"
+                        onClick={() => setForm({ wht_applicable: !data.wht_applicable, wht_rate_code: '', effective_from: new Date().toISOString().slice(0, 10), reason: '' })}>
+                        {data.wht_applicable ? 'Amend: stop withholding' : 'Amend: make subject to withholding tax'}
+                    </button>
+                )}
+            </div>
+            <p className="text-sm text-gray-700">
+                {data.wht_applicable
+                    ? <>Subject to withholding tax from <strong>{formatDate(data.wht_effective_from)}</strong>{data.wht_rate_code === 'WHT_NON_RESIDENT_SERVICES' ? ' (non-resident rate)' : ' (6% agent rule — shadow only while the company is not a designated agent)'}.</>
+                    : 'No withholding tax — treated as a necessary operating expense.'}
+            </p>
+            {msg && <p className="text-sm text-green-700 mt-2">{msg}</p>}
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            {form && (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <p className="sm:col-span-3 text-sm font-medium">{form.wht_applicable ? 'Make this agreement subject to withholding tax' : 'Stop withholding tax on this agreement'}</p>
+                    {form.wht_applicable && (
+                        <div><label className="label">Rule</label>
+                            <select className="input" value={form.wht_rate_code} onChange={e => setForm(p => ({ ...p, wht_rate_code: e.target.value }))}>
+                                <option value="">Automatic (6% agent rule; 15% if the person is non-resident)</option>
+                                <option value="WHT_AGENT_PAYMENTS">6% — designated agent rule</option>
+                                <option value="WHT_NON_RESIDENT_SERVICES">15% — fees to a non-resident</option>
+                            </select></div>
+                    )}
+                    <div><label className="label">Takes effect from *</label>
+                        <input type="date" className="input" value={form.effective_from} onChange={e => setForm(p => ({ ...p, effective_from: e.target.value }))} /></div>
+                    <div className={form.wht_applicable ? '' : 'sm:col-span-2'}><label className="label">Reason *</label>
+                        <input className="input" value={form.reason} onChange={e => setForm(p => ({ ...p, reason: e.target.value }))} placeholder="e.g. new contract terms" /></div>
+                    <div className="sm:col-span-3 flex justify-end gap-2">
+                        <button className="btn-secondary text-sm" onClick={() => setForm(null)}>Cancel</button>
+                        <button className="btn-primary text-sm" disabled={!form.reason || !form.effective_from} onClick={save}>Save amendment</button>
+                    </div>
+                </div>
+            )}
+            {data.history && data.history.length > 0 && (
+                <ul className="mt-3 text-xs text-gray-500 space-y-0.5">
+                    {data.history.map(h => (
+                        <li key={h.id}>{formatDate(h.effective_from)} — {h.new_applicable ? 'withholding ON' : 'withholding OFF'} · {h.reason} · {h.amended_by_name}</li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+};
 
 const ServiceFeeAgreementDetailPage = () => {
     const { id } = useParams();
@@ -50,6 +126,7 @@ const ServiceFeeAgreementDetailPage = () => {
     const canManage = hasPermission('SERVICE_FEE_MANAGE');
 
     const [agreement, setAgreement] = useState(null);
+    useBreadcrumbTitle(agreement?.user_name || null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -141,16 +218,13 @@ const ServiceFeeAgreementDetailPage = () => {
 
     return (
         <div>
-            <button
-                onClick={() => navigate('/service-fees')}
-                className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 mb-6 transition-colors"
-            >
-                <ArrowLeftIcon className="h-4 w-4" />
-                Back to Service Fees
-            </button>
 
             {/* Header */}
-            <div className="rounded-xl p-6 mb-6 text-white bg-gradient-to-r from-primary-900 to-primary-700">
+            <div className="page-banner -mx-4 -mt-4 md:-mx-6 md:-mt-6 mb-6 px-4 md:px-7 py-6">
+                <button type="button" onClick={() => navigate('/service-fees')} className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-white/90 hover:text-white rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                    <ArrowLeftIcon className="h-4 w-4" />
+                    Back to Service Fees
+                </button>
                 <div className="flex items-start justify-between flex-wrap gap-4">
                     <div>
                         <p className="text-sm opacity-70 font-mono">Agreement #{agreement.id}</p>
@@ -240,7 +314,7 @@ const ServiceFeeAgreementDetailPage = () => {
                                     <BarChart data={chartData}>
                                         <CartesianGrid {...theme.gridProps} />
                                         <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
-                                        <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
+                                        <YAxis tickFormatter={compactNumber} tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
                                         <Tooltip {...theme.tooltipProps} />
                                         <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} radius={[0, 0, 0, 0]} />
                                         <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
@@ -371,6 +445,8 @@ const ServiceFeeAgreementDetailPage = () => {
                     </div>
                 )}
             </div>
+
+            <AgreementWhtCard agreementId={id} canManage={canManage} />
 
             {/* Amendment History — effective change date + reason for
                 every change to the monthly amount, per the request. */}

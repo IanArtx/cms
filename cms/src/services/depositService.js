@@ -83,6 +83,10 @@ const computeExitRefund = (grossBalance, exitType, deductionPercentageInput) => 
 // ============================================================
 const processExitRefund = async (client, {
     userId, exitType, deductionPercentage, exchangeRate, notes, processedByUserId,
+    targetCurrencyId, // v1.61.0, optional — which of the club's Savings
+                       // accounts (one per currency now) this refund is
+                       // credited into; defaults to the source account's
+                       // own currency below (no conversion needed).
 }) => {
     const configResult = await client.query('SELECT * FROM deposit_config WHERE id = 1');
     const config = configResult.rows[0];
@@ -137,7 +141,10 @@ const processExitRefund = async (client, {
             throw createError.badRequest('The configured deposit parent account was not found or is inactive');
         }
         const sourceAccount = sourceAccountResult.rows[0];
-        const savingsAccount = await getSavingsAccount(client);
+        // v1.61.0 — defaults to the source account's own currency's
+        // Savings account (no conversion needed) unless a different
+        // target currency was deliberately chosen.
+        const savingsAccount = await getSavingsAccount(client, targetCurrencyId || sourceAccount.currency_id);
 
         const sameCurrency = sourceAccount.currency_id === savingsAccount.currency_id;
         let effectiveRate = 1;
@@ -199,10 +206,9 @@ const processExitRefund = async (client, {
         await client.query(`
             UPDATE savings_balances
             SET    principal_balance = principal_balance + $1,
-                   currency_id = COALESCE(currency_id, $2),
                    updated_at = NOW()
-            WHERE  user_id = $3
-        `, [savingsTotal, savingsAccount.currency_id, userId]);
+            WHERE  user_id = $2 AND currency_id = $3
+        `, [savingsTotal, userId, savingsAccount.currency_id]);
 
         const ack = await createPaymentAcknowledgement(client, {
             sourceType:    'DEPOSIT_REFUND',

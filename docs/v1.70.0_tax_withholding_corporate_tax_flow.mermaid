@@ -1,0 +1,60 @@
+%% v1.70.0 — Tax: withholding tax both ways, corporate income tax years, payments to URA, deadlines
+flowchart TD
+
+    subgraph SETUP["Tax > Settings (and Settings > Registration & Tax)"]
+        direction TB
+        S1["TIN · registration number ·\nincorporation date · tax office"] --> S2["tax years created:\nfirst year starts on the incorporation date,\nthen 1 July – 30 June"]
+        S3["WHT agent switch (Director / Treasurer)"] --> S4["history row + NOTICE to ALL members\n(documents.audience = ALL_MEMBERS)\n+ notification / email"]
+        S5["dated tax rates\n(new rate = new row; old records keep theirs)"]
+    end
+
+    subgraph FROMUS["1 · Tax deducted FROM the company"]
+        direction TB
+        F1["bond coupon · T-bill maturity ·\ninvestment return · bank interest (inflow)"] --> F2["income posted GROSS"]
+        F2 --> F3["tax leg transaction\n(gl_override_account_code)"]
+        F3 -->|"FINAL"| F4["5700 Income tax – final WHT\n(income left out of the computation)"]
+        F3 -->|"CREDITABLE"| F5["1500 WHT recoverable\n(set off at filing)"]
+        F2 --> F6["tax_at_source register\n(certificate no., treatment)"]
+    end
+
+    subgraph BYUS["2 · Tax the company WITHHOLDS"]
+        direction TB
+        W1["dividend · savings interest ·\nnon-resident lender interest ·\nservice fee (by amendment) · supplier"] --> W2{"which rule?"}
+        W2 -->|"dividends / interest /\nnon-residents"| W3["always real"]
+        W2 -->|"6% goods & services\n> UGX 1,000,000"| W4{"designated agent\non that date?"}
+        W4 -->|"no"| W5["SHADOW row only —\nfull amount paid, books untouched"]
+        W4 -->|"yes"| W3
+        W3 --> W6["cash leg pays the NET\nsynthetic Dr <gross account> / Cr 2500\n+ deduction certificate (My Documents)"]
+        W6 --> W7["Withheld & returns: pay the month\nby the 15th → WHT_REMITTANCE_OUT\n(UGX account) → rows REMITTED,\ncertificates get the PRN"]
+    end
+
+    subgraph CIT["3 · Corporate income tax (per year)"]
+        direction TB
+        C1["profit before tax (UGX books)"] --> C2["+ not deductible / capital /\npenalties · − final-tax income ·\n± manual adjustments · ± FX option"]
+        C2 --> C3["chargeable income − loss b/f\n× 30% = tax"]
+        C3 --> C4["− creditable WHT − provisional paid\n= balance / refund"]
+        C4 --> C5["PREPARED (Treasurer)"] --> C6["APPROVED (Director, not the preparer;\nrefused if figures moved)\nDr 5710 / Cr 2510 + computation document"]
+        C6 --> C7["FILED: Dr 2510 / Cr 1500 and 1510;\ncredits marked claimed"]
+        P1["provisional instalments\nPROVISIONAL_TAX_OUT → 1510"] --> C4
+        P2["balance INCOME_TAX_OUT → 2510\npenalty TAX_PENALTY_OUT → 5720\nrefund TAX_REFUND_IN → 2510"]
+    end
+
+    subgraph FIX["Accounting corrections the tax figures rely on (reports only)"]
+        direction TB
+        X1["savings interest accrued → Dr 5100 / Cr 2100"]
+        X2["interest part of loan repayments →\nDr 5100 / Cr 2000 (received), Dr 1100 / Cr 4000 (given)"]
+        X3["MMF interest Dr 1300 / Cr 4100 · fees Dr 5000 / Cr 1300"]
+        X4["PRINCIPAL returns → 1400 (not income);\ninvestment closed → cost left in 1400\ntaken to 4100 (T-bill discount = income)"]
+        X5["old coupon tax legs → 5700 (were 1400)"]
+    end
+
+    subgraph REM["Deadlines"]
+        R1["daily 07:50 Kampala: 7 days before, on the day,\nweekly while overdue → Treasurer, Asst Treasurer, Directors"]
+    end
+
+    SETUP --> FROMUS
+    SETUP --> BYUS
+    FROMUS --> CIT
+    BYUS --> REM
+    CIT --> REM
+    FIX --> CIT

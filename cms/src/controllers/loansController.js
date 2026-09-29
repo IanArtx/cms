@@ -21,6 +21,8 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCod
 const { postTransaction } = require('./transactionsController');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const taxService = require('../services/taxService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 const {
     generateRepaymentSchedule,
     calculateDailyAccrual,
@@ -368,6 +370,8 @@ const editLoanReceived = asyncHandler(async (req, res) => {
 // in the account as a transaction.
 // ============================================================
 const approveLoanReceived = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'loans_received', req.params.id, ['created_by'], 'loan');
     const { id } = req.params;
 
     await withTransaction(async (client) => {
@@ -532,6 +536,22 @@ const recordLoanReceivedRepayment = asyncHandler(async (req, res) => {
             parseFloat(loan.outstanding_principal)
         );
 
+        // v1.70.0 — withholding tax on the INTEREST (and penalty) part
+        // when the loan is marked for it (a lender outside Uganda —
+        // Income Tax Act s.83). The whole `amount` still settles the loan;
+        // only the net leaves the account now — the tax is owed to URA.
+        let wht = null;
+        if (loan.wht_applicable && (portions.interest_portion + portions.penalty_portion) > 0) {
+            const w = await taxService.computeWithholding(client, {
+                paymentType: 'LOAN_INTEREST', residency: loan.lender_residency || 'NON_RESIDENT',
+                gross: portions.interest_portion + portions.penalty_portion,
+                currencyId: loan.currency_id, date: payment_date, rateCode: loan.wht_rate_code || null,
+            });
+            if (w.applies) wht = w;
+        }
+        const whtAmount = wht ? wht.tax : 0;
+        const cashPaid = parseFloat((parseFloat(amount) - whtAmount).toFixed(4));
+
         // Generate repayment reference
         const { referenceId: repRefId, referenceCode: repRefCode } =
             await generateReference(
@@ -556,10 +576,11 @@ const recordLoanReceivedRepayment = asyncHandler(async (req, res) => {
             accountId:       loan.account_id,
             transactionType: 'DEBIT',
             inflowType:      'LOAN_REPAYMENT_OUT',
-            amount,
+            amount:          cashPaid,
             currencyId:      loan.currency_id,
             categoryId:      loan.category_id,
-            description:     `Loan repayment to ${loan.lender_name} — ${loan.reference_code}`,
+            description:     `Loan repayment to ${loan.lender_name} — ${loan.reference_code}` +
+                             (whtAmount > 0 ? ` (settles ${amount}; withholding tax ${whtAmount} on the interest kept for URA)` : ''),
             valueDate:       payment_date,
             createdBy:       req.user.id,
             referenceId:     txRefId,
@@ -592,6 +613,23 @@ const recordLoanReceivedRepayment = asyncHandler(async (req, res) => {
         ]);
 
         await linkReferenceToRecord(client, repRefId, repayResult.rows[0].id);
+
+        if (await taxService.isMigrated()) {
+            await client.query(`UPDATE loan_received_repayments SET wht_amount = $1, cash_paid = $2 WHERE id = $3`,
+                [whtAmount, cashPaid, repayResult.rows[0].id]);
+        }
+        if (wht) {
+            await taxService.recordWithholding(client, {
+                paymentType: 'LOAN_INTEREST', payeeName: loan.lender_name, payeeTin: loan.lender_tin || null,
+                payeeUserId: loan.is_member_lender ? loan.member_lender_id : null,
+                payeeResidency: loan.lender_residency || 'NON_RESIDENT',
+                rateCode: wht.rateCode, rate: wht.rate,
+                gross: portions.interest_portion + portions.penalty_portion, tax: whtAmount,
+                currencyId: loan.currency_id, date: payment_date, debitGlCode: '2000',
+                sourceTransactionId: transactionId, loanRepaymentId: repayResult.rows[0].id, userId: req.user.id,
+                notes: `Interest on loan ${loan.reference_code} (repayment ${repRefCode})`,
+            });
+        }
 
         // Update outstanding balances on loan. A payoff clamps both to
         // exactly zero rather than trusting subtraction to land there —
@@ -645,6 +683,8 @@ const recordLoanReceivedRepayment = asyncHandler(async (req, res) => {
         sendCreated(res, {
             repayment_reference:  repRefCode,
             amount_paid:          amount,
+            withholding_tax:      whtAmount,
+            cash_paid:            cashPaid,
             principal_cleared:    portions.principal_portion,
             interest_cleared:     portions.interest_portion,
             penalty_cleared:      portions.penalty_portion,
@@ -655,6 +695,41 @@ const recordLoanReceivedRepayment = asyncHandler(async (req, res) => {
             balance_after:        balanceAfter,
         }, `Repayment recorded. Reference: ${repRefCode}`);
     });
+});
+
+// ============================================================
+// LOAN RECEIVED — TAX DETAILS (v1.70.0)
+// PATCH /api/loans/received/:id/tax
+// Whether the lender is resident in Uganda, their TIN, and whether tax
+// is withheld from the interest paid to them (always for a lender
+// outside Uganda, unless a tax treaty says otherwise). Applies to
+// repayments recorded from now on; earlier repayments are not changed.
+// ============================================================
+const updateLoanReceivedTax = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { lender_residency, lender_tin, wht_applicable, wht_rate_code } = req.body;
+    await taxService.assertMigrated();
+    const updated = await withTransaction(async (client) => {
+        const existing = await client.query('SELECT * FROM loans_received WHERE id = $1 FOR UPDATE', [id]);
+        if (!existing.rows.length) throw createError.notFound('Loan not found');
+        const r = await client.query(`
+            UPDATE loans_received
+            SET    lender_residency = COALESCE($1, lender_residency), lender_tin = $2,
+                   wht_applicable = COALESCE($3, wht_applicable), wht_rate_code = $4
+            WHERE  id = $5 RETURNING id, lender_residency, lender_tin, wht_applicable, wht_rate_code
+        `, [lender_residency || null, lender_tin || null,
+            wht_applicable === undefined ? null : (wht_applicable === true || wht_applicable === 'true'),
+            wht_rate_code || null, id]);
+        await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.LOANS, {
+            ipAddress: req.ip, recordType: 'loans_received', recordId: parseInt(id),
+            oldValues: { lender_residency: existing.rows[0].lender_residency, wht_applicable: existing.rows[0].wht_applicable },
+            newValues: r.rows[0],
+            description: `Loan received ${id}: tax details updated (lender ${r.rows[0].lender_residency}, WHT on interest ${r.rows[0].wht_applicable ? 'ON' : 'OFF'})`,
+            client,
+        });
+        return r.rows[0];
+    });
+    sendSuccess(res, updated, 'Loan tax details updated');
 });
 
 // ============================================================
@@ -1060,6 +1135,8 @@ const editLoanGiven = asyncHandler(async (req, res) => {
 // POST /api/loans/given/:id/approve
 // ============================================================
 const approveLoanGiven = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'loans_given', req.params.id, ['created_by'], 'loan');
     const { id } = req.params;
 
     await withTransaction(async (client) => {
@@ -1424,6 +1501,7 @@ module.exports = {
     editLoanReceived,
     approveLoanReceived,
     recordLoanReceivedRepayment,
+    updateLoanReceivedTax,
     amendPenaltyRate,
     getAllLoansReceived,
     getLoanReceivedById,

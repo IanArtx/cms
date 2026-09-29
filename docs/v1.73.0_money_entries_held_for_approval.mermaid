@@ -1,0 +1,24 @@
+%% v1.73.0 — money entries by anyone who is not the Treasurer or an Admin wait for approval
+flowchart TD
+    A["Someone records money\n(expense, contribution, MMF top-up,\ncoupon, loan repayment, tax payment … — 27 actions)"] --> B["Input checks\n(validateRequest)"]
+    B --> C{"holdMoneyEntry:\nTreasurer or Admin?"}
+    C -- yes --> D["Controller runs now\nledger posted as before"]
+    C -- "no (e.g. Assistant Treasurer,\nDirector with INVESTMENT_MANAGE)" --> E["held_money_entries = PENDING\nform values · what · account · amount\nNOTHING posted · no reference used"]
+    E --> F["202 'Sent for approval'\napp-wide notice → Awaiting approval page"]
+    E --> G["Treasurer(s) + Admins notified\n(bell list + notification)"]
+
+    subgraph PAGE["Money › Awaiting approval (/money-approvals)"]
+        H{"Who is looking?"}
+        H -- "recorder" --> W["Withdraw → WITHDRAWN"]
+        H -- "Treasurer / Admin\n(not their own)" --> I{"Approve or refuse?"}
+        I -- "refuse (reason required)" --> R["REJECTED\nrecorder notified"]
+        I -- approve --> J["Claim: PENDING → EXECUTING\n(no double posting)"]
+    end
+    G --> H
+
+    J --> K["Run the original action again\non behalf of the recorder\n(roles re-loaded; same checks,\nreferences, notifications)"]
+    K --> L{"Checks pass?\n(balance on that date,\nfloor limit, module rules)"}
+    L -- no --> M["Nothing posted\nback to PENDING + reason shown"]
+    M --> H
+    L -- yes --> N["Ledger rows: created_by = recorder\napproved_by = approver\n(moneyApprovalContext)"]
+    N --> O["APPROVED · posted references saved\nrecorder notified"]

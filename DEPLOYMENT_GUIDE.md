@@ -185,6 +185,89 @@ unrecoverable by the time you're reading this section.
 
 ---
 
+## Step 3c — Google Calendar (Meet auto-creation) — optional
+
+**Why this step exists:** on the Events page, marking an event "online"
+can automatically create a real Google Meet link for it (`v1.63.0`) —
+no manual link needed, and it's kept in sync if the event's date
+changes or it gets cancelled. This is entirely optional: skip this step
+and online events still work fine, you'll just paste a meeting link in
+by hand each time instead. Unlike the file-storage step above, this one
+needs two separate things set up before it works: the OAuth app's own
+credentials (this step, in Google Cloud Console), and a one-time
+"Connect" click inside the app itself (Settings → Integrations) — the
+second part needs the first part done first.
+
+1. **Create a Google Cloud project.** Go to
+   [console.cloud.google.com](https://console.cloud.google.com) and sign
+   in with the Google account you want the company's Meet links created
+   under (a shared company account, or whoever's account is acting as
+   Secretary/Treasurer day to day — any Meet links created later belong
+   to this account's calendar). Click the project dropdown at the top of
+   the page → **New Project**. Give it a name like `CMS Meet
+   Integration` and click **Create**. Wait a few seconds for Google to
+   finish creating it, then make sure it's selected in the project
+   dropdown before continuing.
+2. **Enable the Google Calendar API.** With your new project selected,
+   go to **APIs & Services** → **Library** (left sidebar, or search
+   "API Library" in the top search bar). Search for `Google Calendar
+   API`, click it, then click **Enable**.
+3. **Configure the OAuth consent screen.** Go to **APIs & Services** →
+   **OAuth consent screen**. Choose **External** (unless you have a
+   Google Workspace organization and want to restrict this to your own
+   domain, in which case **Internal** is fine too — either works for
+   this app). Fill in the required fields — App name (e.g. your
+   company's name), User support email, Developer contact email — and
+   click through **Save and Continue** on each remaining screen
+   (Scopes, Test users) without needing to add anything extra; you can
+   leave scopes blank here since the app requests the specific scope it
+   needs at connect time.
+   - **If you chose External**: Google will show the app as
+     "unverified" to anyone who tries to authorize it, which is fine
+     for this use case — only your own company account will ever
+     authorize it (add that account under **Test users** on the
+     consent screen so it's allowed to proceed past the "unverified
+     app" warning without needing Google's full verification review).
+4. **Create the OAuth Client ID.** Go to **APIs & Services** →
+   **Credentials** → **Create Credentials** → **OAuth client ID**.
+   - **Application type**: **Web application**.
+   - **Name**: anything, e.g. `CMS Backend`.
+   - **Authorized redirect URIs**: click **Add URI** and paste in your
+     backend's own callback address — it must be *exactly*
+     `https://YOUR-BACKEND-ADDRESS/api/settings/google/callback`
+     (replace `YOUR-BACKEND-ADDRESS` with the backend service's real
+     Render address, e.g. `cms-backend-xxxx.onrender.com` — the exact
+     value is also shown, once deployed, on Settings → Integrations in
+     the app itself, so you can copy it from there instead of typing it
+     by hand). Click **Create**.
+   - Google shows a **Client ID** and **Client Secret** — copy both
+     somewhere safe (a password manager, not a plain text file).
+5. **Add the credentials to Render.** In the Render dashboard, open the
+   **cms-backend** service (or **cms-b-backend** for Company B) →
+   **Environment** tab, and fill in the two blank values `render.yaml`
+   already left waiting for you:
+   - `GOOGLE_CLIENT_ID` — the Client ID from step 4
+   - `GOOGLE_CLIENT_SECRET` — the Client Secret from step 4
+   - (`BACKEND_URL` can stay blank — Render already provides the
+     backend's own address automatically at runtime. Only fill it in if
+     this backend is later given its own custom domain.)
+
+   Click **Save Changes** — Render redeploys the backend automatically.
+6. **Connect it from inside the app.** Log in to the CMS as an Admin,
+   go to **Settings → Integrations**, and click **Connect Google
+   Calendar**. You'll be sent to Google's own consent screen — sign in
+   with the same account from step 1 if prompted, and click **Allow**.
+   You'll land back on Settings → Integrations showing "Connected."
+   From this point on, marking any event "online" on the Events page
+   auto-creates a real Meet link for it.
+
+**If you ever want to stop this** — click **Disconnect** on Settings →
+Integrations. Events that already have a Meet link keep it; new online
+events just go back to needing a manual link, same as before this step
+was ever done.
+
+---
+
 ## Step 4 — Load the database schema (one-time)
 
 The database exists now, but it's empty — no tables yet. This is a
@@ -364,6 +447,14 @@ unchanged, just add the equivalent lines to `render.yaml` and
 - **Every future code change**: push to the `main` branch on GitHub —
   Render redeploys every service watching that branch automatically
   (both companies' backends/frontends, if you've set up a second one).
+- **Updating a live system that is several versions behind** (v1.73.0):
+  use `cms/update_live_database.js` from your own computer — no psql
+  needed. `node update_live_database.js --url "<External Database URL>"`
+  shows which migrations a database already has (read-only);
+  add `--apply --confirm=<database name>` to run the missing ones in
+  order; `--script <backfill file> …` runs a one-time script against
+  that same database. The full walkthrough for the v1.59.0 → v1.73.0
+  update is in `UPDATE_GUIDE_v1.59_to_v1.73.md`.
 - **Every future schema change**: a new `migration_vX.X.0.sql` file
   gets added to `cms/` (matching the pattern already established this
   session) — run it against **every** live database you have (`cms-db`,

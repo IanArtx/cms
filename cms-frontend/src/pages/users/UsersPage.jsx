@@ -16,6 +16,7 @@ import Avatar from '../../components/common/Avatar';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { UserPlusIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // ASSIGN ROLE MODAL
@@ -454,7 +455,7 @@ const UsersPage = () => {
     const [loading,      setLoading]      = useState(true);
     const [error,        setError]        = useState(null);
     const [page,         setPage]         = useState(1);
-    const [activeTab,    setActiveTab]    = useState('members');
+    const [activeTab,    setActiveTab]    = useTabParam('members');
     const [manageUser,   setManageUser]   = useState(null);
     const [deletingUser, setDeletingUser] = useState(null);
     const [search,       setSearch]       = useState('');
@@ -659,16 +660,12 @@ const UsersPage = () => {
 
             {/* Tabs — overflow-x-auto (v1.32.5) for consistency with every
                 other tabbed page, though only two tabs live here today. */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 {['members', 'requests'].map(tab => (
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium
-                            transition-colors capitalize ${activeTab === tab
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                            }`}
+                        className={`tab ${activeTab === tab ? 'tab-active' : ''}`}
                     >
                         {tab === 'requests'
                             ? `Role Requests ${roleRequests.length > 0

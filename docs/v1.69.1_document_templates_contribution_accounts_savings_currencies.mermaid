@@ -1,0 +1,29 @@
+%% v1.69.1 — Templates for non-Admin generators, contributions into any account/currency, one Savings account per currency
+flowchart TD
+
+    subgraph DOCS["Generate Document / Events"]
+        direction TB
+        D1["Page opens"] --> D2["templates (DOCUMENT_VIEW or DOCUMENT_GENERATE)"]
+        D1 --> D3["categories"]
+        D1 --> D4["GET /users/directory\nnames only — DOCUMENT_GENERATE,\nEVENT_CREATE or USER_VIEW_ALL"]
+        D2 --> D5["each loads on its own:\none refusal no longer\nhides the templates"]
+        D3 --> D5
+        D4 --> D5
+    end
+
+    subgraph CONTRIB["Capital contribution"]
+        direction TB
+        C1["Transactions > Record Contribution\nor member acknowledgement approved\n(Received Into Account)"] --> C2["amount is in the chosen account's\ncurrency (Primary if none)"]
+        C2 --> C3{"slices?"}
+        C3 -->|"savings"| C4["Savings account in the SAME currency\n(refused if none / different currency)"]
+        C3 -->|"side fund / deposit"| C5{"its account in the\nsame currency?"}
+        C5 -->|"no"| C6["refused with a clear message"]
+        C5 -->|"yes"| C7["posted"]
+        C2 --> C8["capital part → shareCapitalService:\nsame currency as share price → no conversion\nelse converted at the rate on the date"]
+    end
+
+    subgraph SAV["Savings accounts"]
+        direction TB
+        S1["Accounts page"] --> S2["'Add Savings Account (another currency)'\nNew Account > Savings lists only currencies\nwithout a Savings account"]
+        S2 --> S3["one active Savings account per currency\n(backend rule since v1.61.0)"]
+    end

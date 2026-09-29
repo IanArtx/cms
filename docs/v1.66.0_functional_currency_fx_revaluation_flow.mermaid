@@ -1,0 +1,58 @@
+%% v1.66.0 — Official statements consolidated in UGX (functional currency), month-end FX revaluation, Side Fund as members' money
+flowchart TD
+
+    subgraph VALUE["Every transaction valued in UGX on its own date (DB trigger)"]
+        direction TB
+        A["postTransaction inserts a\ntransactions row\n(any module)"] --> B["trg_transactions_functional_amount\n(BEFORE INSERT)"]
+        B --> C{"Currency =\nfunctional (UGX)?"}
+        C -->|"Yes"| D["rate 1\nSAME_CURRENCY"]
+        C -->|"No"| E{"reversal_of set?"}
+        E -->|"Yes"| F["original's rate\nREVERSAL"]
+        E -->|"No"| G{"transfer_id set?"}
+        G -->|"Yes"| H["transfer's own actual rate —\nboth legs + bank charge carry\nthe same UGX value\nTRANSFER"]
+        G -->|"No"| I["fx_rate_on(currency, UGX,\nvalue_date) from\ncurrency_exchange_rates\nRATE_TABLE"]
+        I -->|"no rate covers the date"| J["functional_amount NULL —\nleft OUT of the official\nstatements, listed on the\nFX & Revaluation tab"]
+        K["System Admin sets the\nrate from a bank proof"] --> L["MANUAL — kept on any\nlater recalculation"]
+    end
+
+    subgraph RATES["Settings > Exchange Rates (exchangeRatesController)"]
+        direction TB
+        M["Rate entered for any date\n(past dates allowed)"] --> N["slotted into the pair's history:\nrate covering that date ends there,\nnew rate runs to the next one"]
+        N --> O["recomputeFunctionalAmounts —\nmissing values anywhere +\nopen-month RATE_TABLE values"]
+        O -.->|"never touches"| P[("months already closed")]
+        Q["backfill_v1.66.0_fx_rates.js\n(CSV of historical BoU rates)"] --> N
+    end
+
+    subgraph CLOSE["Month-end close (fxRevaluationService.runRevaluation)"]
+        direction TB
+        R["Treasurer: Run revaluation\nthrough <month end>"] --> S["each pending month end,\noldest first"]
+        S --> T{"any posted transaction\n<= month end without\na UGX value?"}
+        T -->|"Yes"| U["stop — say which date/rate\nis missing"]
+        T -->|"No"| V["ledger in UGX to month end\n(incl. earlier closed months)"]
+        V --> W["monetary GL balances in a foreign\ncurrency (cash, savings owed, loans,\ndeposits, MMF, side fund):\nforeign balance x closing rate\n- UGX carrying value"]
+        W --> X["store fx_revaluation_runs +\nfx_revaluation_lines\n(with rates used) — month frozen"]
+        Y["Reopen from <month>"] --> Z["delete that run and\nevery later one"]
+    end
+
+    subgraph REPORTS["Financial Statements (glService, basis=FUNCTIONAL default)"]
+        direction TB
+        AA["getLedgerLines — UGX lines,\ncumulative to report date"] --> AB["+ stored revaluation lines\n(4600 FX Gains / 5600 FX Losses)"]
+        AB --> AC["+ PROVISIONAL revaluation at the\nreport date if it is after the\nlast closed month (flagged)"]
+        AC --> AD["Trial Balance / GL / Balance Sheet /\nIncome Statement / Cash Flow —\none set, in UGX"]
+        AD --> AE["Cash Flow adds 'effect of exchange-\nrate changes on cash' (IAS 7)"]
+        AD --> AF["'Show in EUR' — convenience\ntranslation at the report-date rate"]
+        AG["basis=CURRENCY"] --> AH["v1.64.0 per-currency view,\nkept as a supporting schedule"]
+    end
+
+    subgraph SIDEFUND["Side Fund = members' money"]
+        direction TB
+        BA["SIDE_FUND_CONTRIBUTION_IN /\nSIDE_FUND_DIRECT_IN /\nSIDE_FUND_PAYOUT_OUT"] --> BB["2400 Side Fund Payable\n(was 4300 income / 5200 expense)"]
+        BC["Side fund expense\n(EXPENSE + side_fund_expenses row)"] --> BB
+    end
+
+    D --> AA
+    F --> AA
+    H --> AA
+    I --> AA
+    L --> AA
+    X --> AB

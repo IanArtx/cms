@@ -70,4 +70,24 @@ const getOrCreateCategory = async (client, { module, name, abbreviation, descrip
     return categoryId;
 };
 
-module.exports = { getOrCreateCategory };
+// v1.70.0 — the same, one level down (e.g. Taxation > Provisional Tax),
+// so a system-posted transaction still carries a full category trail.
+const getOrCreateChildCategory = async (client, { parentId, module, name, abbreviation, description, createdBy }) => {
+    const existing = await client.query(
+        `SELECT id FROM categories WHERE module = $1 AND name = $2 AND parent_id = $3 LIMIT 1`,
+        [module, name, parentId]
+    );
+    if (existing.rows.length > 0) return existing.rows[0].id;
+
+    const created = await client.query(`
+        INSERT INTO categories (parent_id, module, name, abbreviation, description, is_active, created_by)
+        VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+        RETURNING id
+    `, [parentId, module, name, abbreviation, description || null, createdBy || null]);
+
+    const categoryId = created.rows[0].id;
+    await rebuildCategoryPath(client, categoryId);
+    return categoryId;
+};
+
+module.exports = { getOrCreateCategory, getOrCreateChildCategory, rebuildCategoryPath };

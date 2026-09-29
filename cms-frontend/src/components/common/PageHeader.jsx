@@ -1,25 +1,28 @@
 // ============================================================
-// PAGE HEADER
-// Consistent header used at the top of every page — now rendered as
-// a gradient banner (brand blue -> indigo -> teal) rather than plain
-// text, so every page carries the same colourful "top of page" feel.
+// PAGE HEADER (v1.71.0 "Harbour")
+// The blue → teal band at the top of every page. It runs edge to edge
+// under the top bar (it pulls itself out over the page padding), holds
+// the page title, an optional one-line description and the page's main
+// buttons on the right.
 //
-// Back button (v1.27.0): pass showBack to render an arrow at the
-// left of the title. Sub-pages (a detail view reached by drilling
-// into a list — e.g. one investment, one loan) should set this;
-// top-level list pages (Accounts, Loans, Investments themselves)
-// should not, since there's nowhere meaningful to go "back" to other
-// than the sidebar they're already in. Defaults to browser history
-// (navigate(-1)); pass backTo to force a specific destination
-// instead (useful when a detail page can be reached from more than
-// one place and history isn't reliable).
+// Buttons passed in `actions` are restyled automatically while they sit
+// on the band (index.css): .btn-primary turns white with navy text and
+// .btn-secondary becomes an outlined white button, so the page's main
+// action is always the brightest thing on the band.
+//
+// Back button: pass showBack on a detail page (one investment, one
+// loan …). It goes back in history, or to `backTo` when given. A
+// detail page's title also becomes the last step of the breadcrumb in
+// the top bar (Investments › Portfolio › <this title>).
 // ============================================================
 
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { useBreadcrumbTitle } from '../layout/LayoutContext';
 
-const PageHeader = ({ title, subtitle = null, actions = null, showBack = false, backTo = null }) => {
+const PageHeader = ({ title, subtitle = null, actions = null, showBack = false, backTo = null, children = null }) => {
     const navigate = useNavigate();
+    useBreadcrumbTitle(showBack && typeof title === 'string' ? title : null);
 
     const handleBack = () => {
         if (backTo) navigate(backTo);
@@ -27,31 +30,35 @@ const PageHeader = ({ title, subtitle = null, actions = null, showBack = false, 
     };
 
     return (
-        <div className="page-banner flex items-start justify-between gap-4 flex-wrap mb-6">
-            <div className="flex items-start gap-3 min-w-0">
-                {showBack && (
-                    <button
-                        onClick={handleBack}
-                        aria-label="Go back"
-                        className="mt-0.5 flex-shrink-0 p-1.5 rounded-lg bg-white/15
-                                   hover:bg-white/25 focus:outline-none focus:ring-2
-                                   focus:ring-white/40 transition-colors"
-                    >
-                        <ArrowLeftIcon className="h-5 w-5 text-white" />
-                    </button>
-                )}
-                <div className="min-w-0">
-                    <h1 className="text-2xl font-bold text-white truncate">{title}</h1>
-                    {subtitle && (
-                        <p className="mt-1 text-sm text-white/80">{subtitle}</p>
+        <div className="page-banner -mx-4 -mt-4 md:-mx-6 md:-mt-6 mb-6 px-4 md:px-7 pt-5 pb-5">
+            <div className="flex items-start sm:items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-start gap-3 min-w-0">
+                    {showBack && (
+                        <button
+                            type="button"
+                            onClick={handleBack}
+                            aria-label="Go back"
+                            className="mt-0.5 flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-[10px]
+                                       bg-white/15 hover:bg-white/25 focus:outline-none focus-visible:ring-2
+                                       focus-visible:ring-white transition-colors"
+                        >
+                            <ArrowLeftIcon className="h-5 w-5 text-white" />
+                        </button>
                     )}
+                    <div className="min-w-0">
+                        <h1 className="text-xl sm:text-2xl font-bold text-white leading-tight break-words">{title}</h1>
+                        {subtitle && (
+                            <p className="mt-1 text-sm text-blue-50/90 max-w-3xl">{subtitle}</p>
+                        )}
+                    </div>
                 </div>
+                {actions && (
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                        {actions}
+                    </div>
+                )}
             </div>
-            {actions && (
-                <div className="flex items-center gap-3 flex-wrap">
-                    {actions}
-                </div>
-            )}
+            {children}
         </div>
     );
 };

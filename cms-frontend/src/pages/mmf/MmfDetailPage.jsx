@@ -15,7 +15,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     ArrowUpCircleIcon,
     ArrowDownCircleIcon,
@@ -332,9 +332,14 @@ const MmfDetailPage = () => {
     const canManage = hasPermission('MMF_MANAGE');
     const canClose = canManage && mmf.status === 'ACTIVE' && parseFloat(mmf.current_balance) === 0;
 
+    // v1.72.0 — reversed entries stay in the history (marked "Reversed")
+    // but no longer count towards the charts, exactly as the fund's
+    // balance no longer counts them.
+    const standing = transactions.filter(t => !t.is_reversed);
+
     // ---- Running balance over time (funding chart) ----
     let running = 0;
-    const balanceChartData = transactions.map(t => {
+    const balanceChartData = standing.map(t => {
         const isCredit = t.entry_type === 'TOPUP' || t.entry_type === 'INTEREST';
         running += isCredit ? parseFloat(t.amount) : -parseFloat(t.amount);
         return { date: formatDate(t.entry_date), balance: running };
@@ -342,7 +347,7 @@ const MmfDetailPage = () => {
 
     // ---- Interest vs Management Fee by month (return chart) ----
     const monthTotals = {};
-    transactions.forEach(t => {
+    standing.forEach(t => {
         if (t.entry_type !== 'INTEREST' && t.entry_type !== 'MANAGEMENT_FEE') return;
         const monthKey = (t.interest_period || t.entry_date).slice(0, 7);
         if (!monthTotals[monthKey]) monthTotals[monthKey] = { month: monthKey, Interest: 0, Fees: 0 };
@@ -450,7 +455,7 @@ const MmfDetailPage = () => {
                                 <CartesianGrid {...theme.gridProps} />
                                 <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
@@ -473,7 +478,7 @@ const MmfDetailPage = () => {
                                 <CartesianGrid {...theme.gridProps} />
                                 <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 0 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
@@ -517,12 +522,18 @@ const MmfDetailPage = () => {
                                 {[...transactions].reverse().map(t => {
                                     const meta = ENTRY_META[t.entry_type] || {};
                                     return (
-                                        <tr key={t.id} className="border-b border-gray-50 last:border-0">
+                                        <tr key={t.id} className={`border-b border-gray-50 last:border-0 ${t.is_reversed ? 'opacity-60' : ''}`}>
                                             <td className="px-2 py-2 text-gray-700">{formatDate(t.entry_date)}</td>
                                             <td className="px-2 py-2">
                                                 <span className={`text-xs ${meta.badge || 'badge-gray'}`}>
                                                     {meta.label || t.entry_type}
                                                 </span>
+                                                {t.is_reversed && (
+                                                    <span className="ml-1.5 text-xs badge-gray"
+                                                        title={`Reversed ${formatDate(t.reversed_at)} — no longer counts in the balance`}>
+                                                        Reversed
+                                                    </span>
+                                                )}
                                             </td>
                                             <td className="px-2 py-2 font-mono text-xs text-gray-500">
                                                 {t.reference_code}
@@ -531,7 +542,7 @@ const MmfDetailPage = () => {
                                             <td className={`px-2 py-2 text-right font-medium ${
                                                 meta.sign === '+' ? 'text-green-600' : 'text-red-600'
                                             }`}>
-                                                {meta.sign}{currency} {parseFloat(t.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                                <span className={t.is_reversed ? 'line-through' : ''}>{meta.sign}{currency} {parseFloat(t.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
                                             </td>
                                             <td className="px-2 py-2 text-gray-500">{t.recorded_by_name}</td>
                                         </tr>

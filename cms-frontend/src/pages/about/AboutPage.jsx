@@ -309,17 +309,12 @@ const AboutPage = () => {
             />
 
             {/* Section Tabs */}
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 {sections.map(s => (
                     <button
                         key={s.key}
                         onClick={() => setActiveSection(s.key)}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors ${
-                            activeSection === s.key
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        className={`tab ${activeSection === s.key ? 'tab-active' : ''}`}
                     >
                         <s.icon className="h-4 w-4" />
                         {s.label}

@@ -13,6 +13,7 @@ const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireFinancialAccess } = require('../middleware/auth');
 const mmfController = require('../controllers/mmfController');
+const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
 // All routes require login
 router.use(authenticate);
@@ -65,6 +66,7 @@ router.post('/',
             .optional().isISO8601().withMessage('Invalid entry date').custom(notFutureDate),
     ],
     validateRequest,
+    holdMoneyEntry('mmf.create', mmfController.createMmfAccount, { label: 'New money market fund with first top-up', account: b => b.parent_account_id, when: r => parseFloat(r.body.initial_amount) > 0 }), // v1.73.0 — held for approval unless Treasurer/Admin
     mmfController.createMmfAccount
 );
 
@@ -86,6 +88,7 @@ router.post('/:id/topup',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('mmf.topup', mmfController.topUpMmfAccount, { label: 'Money market fund top-up', subject: { type: 'mmf', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     mmfController.topUpMmfAccount
 );
 
@@ -107,6 +110,7 @@ router.post('/:id/withdraw',
             .optional().trim(),
     ],
     validateRequest,
+    holdMoneyEntry('mmf.withdraw', mmfController.withdrawFromMmfAccount, { label: 'Money market fund withdrawal', subject: { type: 'mmf', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
     mmfController.withdrawFromMmfAccount
 );
 

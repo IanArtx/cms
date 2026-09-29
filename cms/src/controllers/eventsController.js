@@ -18,6 +18,9 @@ const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../s
 const { sendEmail, sendBulkEmail } = require('../config/email');
 const { notify } = require('../services/notificationService');
 const { getBranding } = require('../services/emailTemplates');
+const googleCalendarService = require('../services/googleCalendarService');
+const logger = require('../config/logger');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // ============================================================
 // CREATE EVENT
@@ -34,7 +37,16 @@ const createEvent = asyncHandler(async (req, res) => {
         end_date,
         recurrence,
         notifications,
+        // v1.63.0 — online meeting + "notify everyone" audience
+        is_online,
+        meeting_link,      // manual override — if given, no Google Meet auto-creation is attempted
+        notify_all_users,
     } = req.body;
+
+    // Captured inside the transaction, used just after it commits —
+    // the Google Meet call below is a slow external network request
+    // that must never happen while holding the transaction's DB client.
+    let created = null;
 
     await withTransaction(async (client) => {
         // Verify event type exists
@@ -68,9 +80,13 @@ const createEvent = asyncHandler(async (req, res) => {
                 end_date,
                 recurrence,
                 status,
+                is_online,
+                meeting_link,
+                meeting_provider,
+                notify_all_users,
                 created_by
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', $10
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', $10, $11, $12, $13, $14
             )
             RETURNING id
         `, [
@@ -83,6 +99,10 @@ const createEvent = asyncHandler(async (req, res) => {
             event_date,
             end_date || null,
             recurrence || 'NONE',
+            !!is_online,
+            meeting_link || null,
+            meeting_link ? 'MANUAL' : null, // a link typed in here is always manual — auto-created ones are added after commit, below
+            !!notify_all_users,
             req.user.id,
         ]);
 
@@ -122,19 +142,60 @@ const createEvent = asyncHandler(async (req, res) => {
             ipAddress:   req.ip,
             recordType:  'events',
             recordId:    eventId,
-            newValues:   { referenceCode, title, event_date },
+            newValues:   { referenceCode, title, event_date, is_online: !!is_online },
             description: `Event created: ${referenceCode} — ${title}`,
             client,
         });
 
-        sendCreated(res, {
-            event_id:  eventId,
-            reference: referenceCode,
-            title,
-            event_date,
-            status:    'DRAFT',
-        }, `Event created. Reference: ${referenceCode}`);
+        created = { eventId, referenceCode, title: title.trim(), description, event_date, end_date };
     });
+
+    // --------------------------------------------------------
+    // AUTO-CREATE GOOGLE MEET LINK (v1.63.0) — best-effort, after the
+    // event itself is already safely committed. Only attempted when
+    // the event is online AND no manual link was already given above.
+    // A Google-side failure (not connected, API error, revoked
+    // consent) never fails event creation — it just leaves
+    // meeting_link/meeting_provider unset, same as an ordinary
+    // in-person event, and the Secretary can paste a link in by hand
+    // via PATCH /events/:id while it's still DRAFT.
+    // --------------------------------------------------------
+    let finalMeetingLink = meeting_link || null;
+    let finalMeetingProvider = meeting_link ? 'MANUAL' : null;
+    if (is_online && !meeting_link) {
+        try {
+            if (await googleCalendarService.isGoogleConfigured()) {
+                const { meetingLink, googleCalendarEventId } = await googleCalendarService.createMeetingForEvent({
+                    title: created.title,
+                    description: created.description,
+                    startTime: created.event_date,
+                    endTime: created.end_date,
+                });
+                await query(`
+                    UPDATE events
+                    SET    meeting_link = $1, meeting_provider = 'GOOGLE_MEET', google_calendar_event_id = $2
+                    WHERE  id = $3
+                `, [meetingLink, googleCalendarEventId, created.eventId]);
+                finalMeetingLink = meetingLink;
+                finalMeetingProvider = 'GOOGLE_MEET';
+            }
+        } catch (err) {
+            logger.error('Failed to auto-create Google Meet link for event', {
+                eventId: created.eventId, error: err.message,
+            });
+        }
+    }
+
+    sendCreated(res, {
+        event_id:  created.eventId,
+        reference: created.referenceCode,
+        title:     created.title,
+        event_date: created.event_date,
+        status:    'DRAFT',
+        is_online: !!is_online,
+        meeting_link: finalMeetingLink,
+        meeting_provider: finalMeetingProvider,
+    }, `Event created. Reference: ${created.referenceCode}`);
 });
 
 // ============================================================
@@ -149,7 +210,11 @@ const editEvent = asyncHandler(async (req, res) => {
     const {
         event_type_id, category_id, title, description,
         location, event_date, end_date, recurrence,
+        // v1.63.0
+        is_online, meeting_link, notify_all_users,
     } = req.body;
+
+    let event, updatedEvent;
 
     await withTransaction(async (client) => {
         const existing = await client.query(
@@ -158,7 +223,7 @@ const editEvent = asyncHandler(async (req, res) => {
         if (existing.rows.length === 0) {
             throw createError.notFound('Event not found');
         }
-        const event = existing.rows[0];
+        event = existing.rows[0];
 
         if (event.status !== 'DRAFT') {
             throw createError.badRequest('Only a draft event can be edited');
@@ -181,6 +246,23 @@ const editEvent = asyncHandler(async (req, res) => {
             }
         }
 
+        // v1.63.0 — a manually-typed meeting_link always wins over
+        // whatever's already there (including a prior Google-created
+        // one — see the reconciliation block after commit, which
+        // deletes the old Calendar event when that happens). Leaving
+        // meeting_link out of the request body entirely means "no
+        // change"; explicitly clearing is_online is what removes it.
+        const nextIsOnline = is_online !== undefined ? !!is_online : event.is_online;
+        let nextMeetingLink = event.meeting_link;
+        let nextMeetingProvider = event.meeting_provider;
+        if (!nextIsOnline) {
+            nextMeetingLink = null;
+            nextMeetingProvider = null;
+        } else if (meeting_link !== undefined) {
+            nextMeetingLink = meeting_link || null;
+            nextMeetingProvider = meeting_link ? 'MANUAL' : null;
+        }
+
         const updated = await client.query(`
             UPDATE events
             SET    event_type_id = COALESCE($1, event_type_id),
@@ -190,29 +272,100 @@ const editEvent = asyncHandler(async (req, res) => {
                    location      = COALESCE($5, location),
                    event_date    = COALESCE($6, event_date),
                    end_date      = $7,
-                   recurrence    = COALESCE($8, recurrence)
-            WHERE  id = $9
+                   recurrence    = COALESCE($8, recurrence),
+                   is_online     = $9,
+                   meeting_link  = $10,
+                   meeting_provider = $11,
+                   notify_all_users = COALESCE($12, notify_all_users),
+                   -- A manual link (or turning is_online off) always
+                   -- detaches any previously auto-created Calendar
+                   -- event — the reconciliation block below is what
+                   -- actually deletes it on Google's side; this just
+                   -- stops our own row from still pointing at it.
+                   google_calendar_event_id = CASE
+                       WHEN $11 = 'GOOGLE_MEET' THEN google_calendar_event_id
+                       ELSE NULL
+                   END
+            WHERE  id = $13
             RETURNING *
         `, [
             event_type_id || null, category_id || null,
             title ? title.trim() : null, description !== undefined ? description : null,
             location !== undefined ? location : null, event_date || null,
             end_date !== undefined ? end_date : event.end_date,
-            recurrence || null, id,
+            recurrence || null,
+            nextIsOnline, nextMeetingLink, nextMeetingProvider,
+            notify_all_users !== undefined ? !!notify_all_users : null,
+            id,
         ]);
+        updatedEvent = updated.rows[0];
 
         await logAction(req.user.id, ACTIONS.EVENT_UPDATED, MODULES.EVENTS, {
             ipAddress:   req.ip,
             recordType:  'events',
             recordId:    id,
             oldValues:   event,
-            newValues:   updated.rows[0],
+            newValues:   updatedEvent,
             description: `Event edited before approval: ID ${id}`,
             client,
         });
-
-        sendSuccess(res, updated.rows[0], 'Event updated');
     });
+
+    // --------------------------------------------------------
+    // GOOGLE CALENDAR RECONCILIATION (v1.63.0) — best-effort, after
+    // commit, same reasoning as createEvent above. Three cases:
+    //   1. Had a Google meeting, no longer should (turned offline, or
+    //      replaced with a manual link) -> delete the old Calendar event.
+    //   2. Newly online with no manual link and nothing auto-created
+    //      yet -> create one now.
+    //   3. Still on the same Google meeting, but the date/time or
+    //      title changed -> patch it in place instead of recreating.
+    // --------------------------------------------------------
+    try {
+        const hadGoogleMeeting = event.meeting_provider === 'GOOGLE_MEET' && event.google_calendar_event_id;
+        const stillWantsThatGoogleMeeting = updatedEvent.meeting_provider === 'GOOGLE_MEET'
+            && updatedEvent.google_calendar_event_id === event.google_calendar_event_id;
+
+        if (hadGoogleMeeting && !stillWantsThatGoogleMeeting) {
+            await googleCalendarService.deleteMeetingForEvent(event.google_calendar_event_id);
+        }
+
+        if (updatedEvent.is_online && !updatedEvent.meeting_link && await googleCalendarService.isGoogleConfigured()) {
+            // Online, no link at all yet (manual or Google) — create one.
+            const { meetingLink, googleCalendarEventId } = await googleCalendarService.createMeetingForEvent({
+                title: updatedEvent.title,
+                description: updatedEvent.description,
+                startTime: updatedEvent.event_date,
+                endTime: updatedEvent.end_date,
+            });
+            await query(`
+                UPDATE events
+                SET    meeting_link = $1, meeting_provider = 'GOOGLE_MEET', google_calendar_event_id = $2
+                WHERE  id = $3
+            `, [meetingLink, googleCalendarEventId, id]);
+            updatedEvent.meeting_link = meetingLink;
+            updatedEvent.meeting_provider = 'GOOGLE_MEET';
+            updatedEvent.google_calendar_event_id = googleCalendarEventId;
+        } else if (hadGoogleMeeting && stillWantsThatGoogleMeeting) {
+            const dateChanged = String(event.event_date) !== String(updatedEvent.event_date)
+                || String(event.end_date) !== String(updatedEvent.end_date);
+            const titleChanged = event.title !== updatedEvent.title;
+            if (dateChanged || titleChanged) {
+                await googleCalendarService.updateMeetingForEvent(event.google_calendar_event_id, {
+                    title: titleChanged ? updatedEvent.title : undefined,
+                    startTime: dateChanged ? updatedEvent.event_date : undefined,
+                    endTime: dateChanged ? updatedEvent.end_date : undefined,
+                });
+            }
+        }
+    } catch (err) {
+        logger.error('Google Calendar reconciliation failed while editing event', {
+            eventId: id, error: err.message,
+        });
+        // Best-effort — the event edit itself already committed successfully above.
+    }
+
+    sendSuccess(res, updatedEvent, 'Event updated');
 });
 
 // ============================================================
@@ -221,6 +374,8 @@ const editEvent = asyncHandler(async (req, res) => {
 // On approval, emails are sent to all prescribed parties.
 // ============================================================
 const approveEvent = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'events', req.params.id, ['created_by'], 'event');
     const { id } = req.params;
 
     await withTransaction(async (client) => {
@@ -300,6 +455,21 @@ const approveEvent = asyncHandler(async (req, res) => {
             AND   en.role_id IS NOT NULL
         `, [id]);
 
+        // v1.63.0 — "Notify Everyone" audience: every active user in
+        // the system, any role, except Auditor (external, scoped to a
+        // specific audit engagement — not a general company-event
+        // audience, per the chosen answer when this was built).
+        const everyoneResult = event.notify_all_users
+            ? await client.query(`
+                SELECT DISTINCT u.id, u.email, u.first_name, u.last_name
+                FROM   users u
+                JOIN   user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+                JOIN   roles r       ON r.id = ur.role_id
+                WHERE  u.is_active = TRUE
+                AND    r.name != 'Auditor'
+            `)
+            : { rows: [] };
+
         // Build recipients list
         const recipients = [];
 
@@ -327,6 +497,20 @@ const approveEvent = asyncHandler(async (req, res) => {
 
         // Role-based notifications
         roleNotifResult.rows.forEach(u => {
+            if (!recipients.find(r => r.email === u.email)) {
+                recipients.push({
+                    email:      u.email,
+                    first_name: u.first_name,
+                    last_name:  u.last_name,
+                    user_id:    u.id || null,
+                });
+            }
+        });
+
+        // "Notify Everyone" — same dedupe-by-email as the role-based
+        // block above, so someone already on the individual/role list
+        // never gets a second email just because this is also checked.
+        everyoneResult.rows.forEach(u => {
             if (!recipients.find(r => r.email === u.email)) {
                 recipients.push({
                     email:      u.email,
@@ -393,6 +577,25 @@ const approveEvent = asyncHandler(async (req, res) => {
                                     Location
                                 </td>
                                 <td style="padding:8px;">${event.location}</td>
+                            </tr>` : ''}
+                            ${event.is_online && event.meeting_link ? `
+                            <tr>
+                                <td style="padding:8px; background:#f3f4f6; font-weight:bold;">
+                                    Join Online
+                                </td>
+                                <td style="padding:8px;">
+                                    <a href="${event.meeting_link}" style="color:#1e3a5f;font-weight:bold;">
+                                        ${event.meeting_provider === 'GOOGLE_MEET' ? 'Join Google Meet' : 'Join Meeting'}
+                                    </a>
+                                </td>
+                            </tr>` : event.is_online ? `
+                            <tr>
+                                <td style="padding:8px; background:#f3f4f6; font-weight:bold;">
+                                    Join Online
+                                </td>
+                                <td style="padding:8px;color:#6b7280;">
+                                    This is an online event — a meeting link will be shared separately.
+                                </td>
                             </tr>` : ''}
                             ${event.description ? `
                             <tr>
@@ -486,11 +689,27 @@ const cancelEvent = asyncHandler(async (req, res) => {
         SET    status = 'CANCELLED'
         WHERE  id = $1
         AND    status NOT IN ('COMPLETED', 'CANCELLED')
-        RETURNING id, title, status
+        RETURNING id, title, status, meeting_provider, google_calendar_event_id
     `, [id]);
 
     if (result.rows.length === 0) {
         throw createError.badRequest('Event cannot be cancelled or not found');
+    }
+
+    // v1.63.0 — best-effort: don't leave an orphaned meeting sitting on
+    // the connected Google account's calendar once the event itself is
+    // cancelled. A failure here (not connected, already deleted by
+    // someone directly on Google, API error) never blocks the
+    // cancellation, which has already committed above.
+    const cancelled = result.rows[0];
+    if (cancelled.meeting_provider === 'GOOGLE_MEET' && cancelled.google_calendar_event_id) {
+        try {
+            await googleCalendarService.deleteMeetingForEvent(cancelled.google_calendar_event_id);
+        } catch (err) {
+            logger.error('Failed to delete Google Calendar meeting for cancelled event', {
+                eventId: id, error: err.message,
+            });
+        }
     }
 
     await logAction(req.user.id, ACTIONS.EVENT_CANCELLED, MODULES.EVENTS, {
@@ -523,6 +742,8 @@ const extendEvent = asyncHandler(async (req, res) => {
     if (!event_date && !end_date) {
         throw createError.badRequest('Provide a new event_date and/or end_date to extend to');
     }
+
+    let extendedEvent;
 
     await withTransaction(async (client) => {
         const existing = await client.query(`
@@ -566,13 +787,14 @@ const extendEvent = asyncHandler(async (req, res) => {
             WHERE  id = $3
             RETURNING *
         `, [newEventDate, newEndDate, id]);
+        extendedEvent = updated.rows[0];
 
         await logAction(req.user.id, ACTIONS.EVENT_EXTENDED, MODULES.EVENTS, {
             ipAddress:   req.ip,
             recordType:  'events',
             recordId:    parseInt(id),
             oldValues:   { event_date: event.event_date, end_date: event.end_date },
-            newValues:   { event_date: updated.rows[0].event_date, end_date: updated.rows[0].end_date },
+            newValues:   { event_date: extendedEvent.event_date, end_date: extendedEvent.end_date },
             description: `Event extended: ${event.reference_code}${reason ? ` — ${reason}` : ''}`,
             client,
         });
@@ -594,7 +816,7 @@ const extendEvent = asyncHandler(async (req, res) => {
             WHERE  en.event_id = $1 AND en.role_id IS NOT NULL
         `, [id]);
 
-        const newEventDateStr = new Date(updated.rows[0].event_date).toLocaleString('en-GB', {
+        const newEventDateStr = new Date(extendedEvent.event_date).toLocaleString('en-GB', {
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
         });
         for (const row of notifResult.rows) {
@@ -603,7 +825,7 @@ const extendEvent = asyncHandler(async (req, res) => {
                 type:       'EVENT_EXTENDED',
                 title:      `Event rescheduled: ${event.title}`,
                 body:       `This event now runs ${newEventDateStr}` +
-                    (updated.rows[0].end_date ? ` until ${new Date(updated.rows[0].end_date).toLocaleString('en-GB', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}` : '') +
+                    (extendedEvent.end_date ? ` until ${new Date(extendedEvent.end_date).toLocaleString('en-GB', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}` : '') +
                     (reason ? ` — ${reason}` : ''),
                 link:       `/events`,
                 module:     'EVENTS',
@@ -611,9 +833,27 @@ const extendEvent = asyncHandler(async (req, res) => {
                 recordId:   parseInt(id),
             });
         }
-
-        sendSuccess(res, updated.rows[0], 'Event extended');
     });
+
+    // v1.63.0 — keep an auto-created Meet link's underlying Calendar
+    // event pointed at the new time, after the extension itself has
+    // already committed above. Best-effort, same reasoning as
+    // everywhere else in this file — a Google-side failure never
+    // blocks the extension.
+    if (extendedEvent.meeting_provider === 'GOOGLE_MEET' && extendedEvent.google_calendar_event_id) {
+        try {
+            await googleCalendarService.updateMeetingForEvent(extendedEvent.google_calendar_event_id, {
+                startTime: extendedEvent.event_date,
+                endTime: extendedEvent.end_date,
+            });
+        } catch (err) {
+            logger.error('Failed to update Google Calendar meeting time for extended event', {
+                eventId: id, error: err.message,
+            });
+        }
+    }
+
+    sendSuccess(res, extendedEvent, 'Event extended');
 });
 
 // ============================================================
@@ -700,6 +940,10 @@ const getAllEvents = asyncHandler(async (req, res) => {
             e.end_date,
             e.recurrence,
             e.status,
+            e.is_online,
+            e.meeting_link,
+            e.meeting_provider,
+            e.notify_all_users,
             e.created_at,
             e.created_by,
             e.category_id,
@@ -799,6 +1043,9 @@ const getUpcomingEvents = asyncHandler(async (req, res) => {
             e.end_date,
             e.location,
             e.status,
+            e.is_online,
+            e.meeting_link,
+            e.meeting_provider,
             r.reference_code,
             et.name AS event_type,
             EXTRACT(DAY FROM e.event_date - NOW())::integer AS days_until_event

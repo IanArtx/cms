@@ -20,6 +20,8 @@ const { postTransaction } = require('./transactionsController');
 const { generateBondCouponSchedule } = require('../utils/bondSchedule');
 const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const taxService = require('../services/taxService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // ============================================================
 // v1.40.0 SHARED HELPERS
@@ -55,6 +57,14 @@ function round2(n) {
     return Math.round((parseFloat(n) + Number.EPSILON) * 100) / 100;
 }
 
+// v1.70.0 — a DATE column (read by pg as local midnight) as 'YYYY-MM-DD',
+// without the one-day shift toISOString() gives on a server ahead of UTC.
+function dateOnly(d) {
+    if (!d) return null;
+    if (typeof d === 'string') return d.slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // ============================================================
 // CREATE INVESTMENT
 // POST /api/investments
@@ -76,9 +86,33 @@ const createInvestment = asyncHandler(async (req, res) => {
         tax_withholding_rate,
         first_coupon_date,
         settlement_value,
+        bond_term_years,
+        tbill_tax_timing,
     } = req.body;
 
     const isBond = investment_type === 'BOND';
+    // v1.70.0 — a treasury bill: bought below its face value (the
+    // settlement value is the price paid), repaid at face value on the
+    // maturity date; the difference (the discount) is interest income,
+    // taxed as FINAL tax (20% for bills) — either added to the purchase
+    // price (AT_PURCHASE) or deducted from the maturity proceeds.
+    const isTbill = investment_type === 'TREASURY_BILL';
+    if (isTbill) {
+        if (!face_value || face_value <= 0) throw createError.badRequest('A treasury bill needs its face value (what is repaid at maturity)');
+        if (!settlement_value || settlement_value <= 0) throw createError.badRequest('A treasury bill needs its settlement value (the price paid, before any tax)');
+        if (parseFloat(settlement_value) >= parseFloat(face_value)) throw createError.badRequest('The price paid for a treasury bill must be below its face value');
+        if (!start_date || !expected_end_date) throw createError.badRequest('A treasury bill needs its purchase (issue) date and maturity date');
+        if (tbill_tax_timing && !['AT_MATURITY', 'AT_PURCHASE'].includes(tbill_tax_timing)) throw createError.badRequest('Tax timing must be AT_MATURITY or AT_PURCHASE');
+    }
+
+    // v1.60.0 — how bonds are actually categorised when bought (2/3/5/
+    // 10/15/20/25yr). Also enforced by the DB's CHECK constraint on
+    // the column itself (once set, it can only ever be one of these
+    // seven values or NULL) — required here specifically so every NEW
+    // bond always carries one, while a legacy bond backfilled by
+    // migration_v1.60.0.sql can still sit at NULL pending manual
+    // review (see the "Set Term" action on the investment's own page).
+    const BOND_TERMS = [2, 3, 5, 10, 15, 20, 25];
 
     if (isBond) {
         // These are also enforced by the DB's bond_fields_required
@@ -95,6 +129,11 @@ const createInvestment = asyncHandler(async (req, res) => {
         }
         if (!start_date || !expected_end_date) {
             throw createError.badRequest('Bond investments require both an issue date and a maturity date');
+        }
+        if (!BOND_TERMS.includes(parseInt(bond_term_years))) {
+            throw createError.badRequest(
+                `Bond investments require a term — one of: ${BOND_TERMS.map(t => t + 'yr').join(', ')}`
+            );
         }
     }
 
@@ -148,10 +187,11 @@ const createInvestment = asyncHandler(async (req, res) => {
                 coupon_frequency,
                 tax_withholding_rate,
                 first_coupon_date,
-                settlement_value
+                settlement_value,
+                bond_term_years
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, 0, $5, 0,
-                'PENDING', $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                'PENDING', $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
             )
             RETURNING id
         `, [
@@ -167,16 +207,24 @@ const createInvestment = asyncHandler(async (req, res) => {
             responsible_user_id || null,
             req.user.id,
             investment_type || 'STANDARD',
-            isBond ? face_value : null,
+            (isBond || isTbill) ? face_value : null,
             isBond ? coupon_rate : null,
             isBond ? coupon_frequency : null,
-            isBond ? (tax_withholding_rate || 0) : 0,
+            isBond ? (tax_withholding_rate || 0)
+                : isTbill ? (tax_withholding_rate !== undefined && tax_withholding_rate !== null && tax_withholding_rate !== ''
+                    ? tax_withholding_rate : (await taxService.getRateOn(client, 'WHT_GOV_SECURITIES_SHORT', start_date)).rate)
+                : 0,
             isBond ? (first_coupon_date || null) : null,
-            isBond ? (settlement_value || null) : null,
+            (isBond || isTbill) ? (settlement_value || null) : null,
+            isBond ? parseInt(bond_term_years) : null,
         ]);
 
         const investmentId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, investmentId);
+        if (isTbill) {
+            await client.query(`UPDATE investments SET tbill_tax_timing = $1 WHERE id = $2`,
+                [tbill_tax_timing || 'AT_MATURITY', investmentId]);
+        }
 
         // Bonds get their full coupon (interest payment) schedule
         // generated up front, so the detail page can show expected
@@ -253,7 +301,7 @@ const editInvestment = asyncHandler(async (req, res) => {
         name, description, category_id, funding_account_id,
         planned_budget, start_date, expected_end_date, responsible_user_id,
         face_value, coupon_rate, coupon_frequency, tax_withholding_rate, first_coupon_date,
-        settlement_value,
+        settlement_value, bond_term_years, tbill_tax_timing,
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -278,6 +326,7 @@ const editInvestment = asyncHandler(async (req, res) => {
         }
 
         const isBond = investment.investment_type === 'BOND';
+        const isTbill = investment.investment_type === 'TREASURY_BILL';
 
         let currencyId = investment.currency_id;
         let newFundingAccountId = investment.funding_account_id;
@@ -298,14 +347,21 @@ const editInvestment = asyncHandler(async (req, res) => {
             newFundingAccountId = funding_account_id;
         }
 
-        const newFaceValue    = isBond ? (face_value           !== undefined ? face_value           : investment.face_value)           : null;
+        const newFaceValue    = (isBond || isTbill) ? (face_value !== undefined ? face_value : investment.face_value) : null;
         const newCouponRate   = isBond ? (coupon_rate           !== undefined ? coupon_rate           : investment.coupon_rate)          : null;
         const newFrequency    = isBond ? (coupon_frequency      || investment.coupon_frequency)                                          : null;
-        const newTaxRate      = isBond ? (tax_withholding_rate  !== undefined ? tax_withholding_rate  : investment.tax_withholding_rate)  : 0;
+        const newTaxRate      = (isBond || isTbill) ? (tax_withholding_rate !== undefined ? tax_withholding_rate : investment.tax_withholding_rate) : 0;
         const newStartDate    = start_date        || investment.start_date;
         const newEndDate      = expected_end_date || investment.expected_end_date;
         const newFirstCoupon  = first_coupon_date !== undefined ? first_coupon_date : investment.first_coupon_date;
-        const newSettlement   = isBond ? (settlement_value !== undefined ? settlement_value : investment.settlement_value) : null;
+        const newSettlement   = (isBond || isTbill) ? (settlement_value !== undefined ? settlement_value : investment.settlement_value) : null;
+        if (isTbill && newSettlement !== null && newFaceValue !== null && parseFloat(newSettlement) >= parseFloat(newFaceValue)) {
+            throw createError.badRequest('The price paid for a treasury bill must be below its face value');
+        }
+        const newBondTerm     = isBond ? (bond_term_years  !== undefined ? parseInt(bond_term_years) : investment.bond_term_years) : null;
+        if (isBond && newBondTerm !== null && ![2, 3, 5, 10, 15, 20, 25].includes(newBondTerm)) {
+            throw createError.badRequest('Bond term must be one of: 2yr, 3yr, 5yr, 10yr, 15yr, 20yr, 25yr');
+        }
 
         const bondScheduleFieldsChanged = isBond && (
             face_value          !== undefined ||
@@ -334,8 +390,9 @@ const editInvestment = asyncHandler(async (req, res) => {
                    coupon_frequency     = $12,
                    tax_withholding_rate = $13,
                    first_coupon_date    = $14,
-                   settlement_value     = $15
-            WHERE  id = $16
+                   settlement_value     = $15,
+                   bond_term_years      = $16
+            WHERE  id = $17
             RETURNING *
         `, [
             name ? name.trim() : null, description !== undefined ? description : investment.description,
@@ -343,8 +400,14 @@ const editInvestment = asyncHandler(async (req, res) => {
             planned_budget || null, newStartDate, newEndDate,
             responsible_user_id !== undefined ? responsible_user_id : investment.responsible_user_id,
             newFaceValue, newCouponRate, newFrequency, newTaxRate, newFirstCoupon, newSettlement,
+            newBondTerm,
             id,
         ]);
+
+        if (isTbill && tbill_tax_timing) {
+            if (!['AT_MATURITY', 'AT_PURCHASE'].includes(tbill_tax_timing)) throw createError.badRequest('Tax timing must be AT_MATURITY or AT_PURCHASE');
+            await client.query(`UPDATE investments SET tbill_tax_timing = $1 WHERE id = $2`, [tbill_tax_timing, id]);
+        }
 
         if (bondScheduleFieldsChanged) {
             await client.query('DELETE FROM bond_coupons WHERE investment_id = $1', [id]);
@@ -389,6 +452,8 @@ const editInvestment = asyncHandler(async (req, res) => {
 // POST /api/investments/:id/approve
 // ============================================================
 const approveInvestment = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'investments', req.params.id, ['created_by'], 'investment');
     const { id } = req.params;
 
     await withTransaction(async (client) => {
@@ -440,17 +505,34 @@ const approveInvestment = asyncHandler(async (req, res) => {
         // an unpaid-for bond. If settlement_value isn't known yet, the
         // investment still activates — see setSettlementValue below for
         // the "fill it in later" path once it's available.
+        // v1.70.0 — a TREASURY BILL is funded the same way; when its tax
+        // is paid with the purchase (AT_PURCHASE) the funding is the price
+        // plus the tax on the discount.
         let settlementFunded = null;
         const isBond = investment.investment_type === 'BOND';
-        if (isBond && investment.settlement_value !== null && parseFloat(investment.settlement_value) > 0) {
+        const isTbill = investment.investment_type === 'TREASURY_BILL';
+        if ((isBond || isTbill) && investment.settlement_value !== null && parseFloat(investment.settlement_value) > 0) {
+            let fundAmount = parseFloat(investment.settlement_value);
+            if (isTbill && investment.tbill_tax_timing === 'AT_PURCHASE') {
+                const discount = parseFloat(investment.face_value) - fundAmount;
+                fundAmount = round2(fundAmount + round2(discount * (parseFloat(investment.tax_withholding_rate) || 0) / 100));
+            }
             const funding = await postInvestmentFunding(client, investment, {
-                amount:      parseFloat(investment.settlement_value),
-                description: `Bond settlement value, auto-funded on approval — ${investment.name} (${investment.reference_code})`,
-                valueDate:   new Date().toISOString().slice(0, 10),
+                amount:      fundAmount,
+                description: isTbill
+                    ? `Treasury bill purchase${investment.tbill_tax_timing === 'AT_PURCHASE' ? ' (price + tax on the discount)' : ''}, auto-funded on approval — ${investment.name} (${investment.reference_code})`
+                    : `Bond settlement value, auto-funded on approval — ${investment.name} (${investment.reference_code})`,
+                // A bill is paid for on its purchase date (never a future one).
+                valueDate:   (() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    if (!isTbill || !investment.start_date) return today;
+                    const start = dateOnly(investment.start_date);
+                    return start < today ? start : today;
+                })(),
                 userId:      req.user.id,
             });
             settlementFunded = {
-                amount:         parseFloat(investment.settlement_value),
+                amount:         fundAmount,
                 reference_code: funding.referenceCode,
                 balance_after:  funding.balanceAfter,
             };
@@ -559,6 +641,60 @@ const setSettlementValue = asyncHandler(async (req, res) => {
             balance_before:        funding.balanceBefore,
             balance_after:         funding.balanceAfter,
         }, `Settlement value recorded and funded. Reference: ${funding.referenceCode}`);
+    });
+});
+
+// ============================================================
+// SET / CORRECT BOND TERM (v1.60.0)
+// PATCH /api/investments/:id/bond-term
+// Every NEW bond requires this at creation time (see createInvestment
+// above); this endpoint exists for two cases: (1) a legacy bond that
+// migration_v1.60.0.sql's auto-backfill left at NULL because its
+// duration didn't cleanly match one of the 7 standard terms, and (2)
+// correcting a bond that was backfilled or entered with the wrong
+// term. No status restriction — unlike settlement value or the coupon
+// schedule, the term is purely a categorical label and doesn't drive
+// any money movement or schedule generation, so it's safe to set or
+// change at any point in the bond's life.
+// ============================================================
+const setBondTerm = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { bond_term_years } = req.body;
+
+    const BOND_TERMS = [2, 3, 5, 10, 15, 20, 25];
+    const term = parseInt(bond_term_years);
+    if (!BOND_TERMS.includes(term)) {
+        throw createError.badRequest(
+            `Bond term must be one of: ${BOND_TERMS.map(t => t + 'yr').join(', ')}`
+        );
+    }
+
+    await withTransaction(async (client) => {
+        const existing = await client.query(
+            'SELECT id, investment_type, bond_term_years FROM investments WHERE id = $1 FOR UPDATE', [id]
+        );
+        if (existing.rows.length === 0) {
+            throw createError.notFound('Investment not found');
+        }
+        const investment = existing.rows[0];
+
+        if (investment.investment_type !== 'BOND') {
+            throw createError.badRequest('Only bond investments have a term');
+        }
+
+        await client.query('UPDATE investments SET bond_term_years = $1 WHERE id = $2', [term, id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_UPDATED, MODULES.INVESTMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'investments',
+            recordId:    parseInt(id),
+            oldValues:   { bond_term_years: investment.bond_term_years },
+            newValues:   { bond_term_years: term },
+            description: `Bond term set to ${term}yr (investment ID ${id})`,
+            client,
+        });
+
+        sendSuccess(res, { bond_term_years: term }, `Bond term set to ${term}yr`);
     });
 });
 
@@ -685,7 +821,18 @@ const fundInvestment = asyncHandler(async (req, res) => {
 // ============================================================
 const recordReturn = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { amount, return_type, return_date, notes } = req.body;
+    // v1.70.0 — tax_deducted / tax_treatment: the payer kept back tax
+    // from this return (amount is then the GROSS return). A PRINCIPAL
+    // return is the company's own money coming back — booked against the
+    // investment (1400), never as income.
+    const { amount, return_type, return_date, notes, tax_deducted, tax_treatment, payer_name, tax_certificate_number } = req.body;
+    const taxDeducted = tax_deducted ? parseFloat(tax_deducted) : 0;
+    if (taxDeducted > 0 && return_type === 'PRINCIPAL') {
+        throw createError.badRequest('Tax is not deducted from a return of principal — record the tax with the income it was taken from.');
+    }
+    if (taxDeducted > 0 && !(taxDeducted < parseFloat(amount))) {
+        throw createError.badRequest('The tax deducted must be less than the gross return.');
+    }
 
     await withTransaction(async (client) => {
         const investResult = await client.query(`
@@ -736,9 +883,35 @@ const recordReturn = asyncHandler(async (req, res) => {
             createdBy:       req.user.id,
             referenceId:     txRefId,
             investmentId:    investment.id,
+            glOverrideAccountCode: return_type === 'PRINCIPAL' ? '1400' : null,
         });
 
         await linkReferenceToRecord(client, txRefId, transactionId);
+
+        let balanceAfterAll = balanceAfter;
+        let taxRecord = null;
+        if (taxDeducted > 0) {
+            const treatment = tax_treatment === 'CREDITABLE' ? 'CREDITABLE' : 'FINAL';
+            const leg = await taxService.postTaxLeg(client, {
+                accountId: investment.returns_account_id, currencyId: investment.currency_id, amount: taxDeducted,
+                date: return_date, treatment, categoryId: investment.category_id, investmentId: investment.id,
+                description: `Tax deducted at source (${treatment.toLowerCase()}) — ${return_type} return, ${investment.name} (${investment.reference_code})`,
+                userId: req.user.id,
+            });
+            balanceAfterAll = leg.balanceAfter;
+            await client.query(`
+                INSERT INTO investment_transactions (reference_id, investment_id, transaction_id, entry_type, amount, description, entry_date, created_by)
+                SELECT $1, $2, $3, 'TAX', $4, $5, $6, $7
+            `, [(await generateReference(client, MODULE_CODES.INVESTMENT, 'INV-OP', 'INVESTMENT_TRANSACTION', req.user.id)).referenceId,
+                id, leg.transactionId, taxDeducted, `Tax deducted at source on ${return_type.toLowerCase()} return`, return_date, req.user.id]);
+            taxRecord = await taxService.recordTaxAtSource(client, {
+                sourceType: 'INVESTMENT_RETURN', payerName: payer_name || investment.name, investmentId: investment.id,
+                incomeTransactionId: transactionId, taxTransactionId: leg.transactionId, cashLeg: true,
+                rate: Math.round((taxDeducted / parseFloat(amount)) * 1000000) / 10000, treatment,
+                gross: amount, tax: taxDeducted, currencyId: investment.currency_id, date: return_date,
+                certificateNumber: tax_certificate_number || null, userId: req.user.id,
+            });
+        }
 
         // Record the return
         const returnResult = await client.query(`
@@ -800,9 +973,11 @@ const recordReturn = asyncHandler(async (req, res) => {
             return_reference: retRefCode,
             return_type,
             amount,
+            tax_deducted:     taxDeducted || 0,
+            tax_record:       taxRecord ? taxRecord.referenceCode : null,
             total_returns:    parseFloat(investment.total_returns) + parseFloat(amount),
             balance_before:   balanceBefore,
-            balance_after:    balanceAfter,
+            balance_after:    balanceAfterAll,
         }, `Return recorded. Reference: ${retRefCode}`);
     });
 });
@@ -820,7 +995,12 @@ const recordReturn = asyncHandler(async (req, res) => {
 // ============================================================
 const recordInvestmentTransaction = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { entry_type, amount, description, entry_date, category_id } = req.body;
+    // v1.70.0 — a TAX entry is tax deducted at source from this
+    // investment's income: FINAL (default — government securities) goes
+    // to 5700, CREDITABLE to 1500; either way it is added to the register
+    // of tax deducted from the company. gross_amount (optional) is the
+    // income it was deducted from.
+    const { entry_type, amount, description, entry_date, category_id, tax_treatment, gross_amount, tax_certificate_number } = req.body;
 
     if (!['EXPENSE', 'INFLOW', 'TAX'].includes(entry_type)) {
         throw createError.badRequest('entry_type must be EXPENSE, INFLOW, or TAX');
@@ -888,9 +1068,25 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
             createdBy:       req.user.id,
             referenceId:     txRefId,
             investmentId:    investment.id,
+            glOverrideAccountCode: entry_type === 'TAX'
+                ? (tax_treatment === 'CREDITABLE' ? taxService.TAX_GL.WHT_RECOVERABLE : taxService.TAX_GL.FINAL_TAX)
+                : null,
         });
 
         await linkReferenceToRecord(client, txRefId, transactionId);
+
+        if (entry_type === 'TAX') {
+            const gross = gross_amount && parseFloat(gross_amount) > parseFloat(amount) ? parseFloat(gross_amount) : parseFloat(amount);
+            await taxService.recordTaxAtSource(client, {
+                sourceType: 'INVESTMENT_TAX_ENTRY', payerName: investment.name, investmentId: investment.id,
+                taxTransactionId: transactionId, cashLeg: true,
+                rate: gross > parseFloat(amount) ? Math.round((parseFloat(amount) / gross) * 1000000) / 10000 : null,
+                treatment: tax_treatment === 'CREDITABLE' ? 'CREDITABLE' : 'FINAL',
+                gross, tax: amount, currencyId: investment.currency_id, date: entry_date,
+                certificateNumber: tax_certificate_number || null, userId: req.user.id,
+                notes: gross === parseFloat(amount) ? 'Gross income not entered — the gross shown equals the tax.' : null,
+            });
+        }
 
         const opResult = await client.query(`
             INSERT INTO investment_transactions (
@@ -1196,6 +1392,7 @@ const getAllInvestments = asyncHandler(async (req, res) => {
             i.created_at,
             i.created_by,
             i.investment_type,
+            i.bond_term_years,
             i.supplementary_budget,
             r.reference_code,
             r.public_id,
@@ -1303,13 +1500,18 @@ const getPerformanceSummary = asyncHandler(async (req, res) => {
 // INPUT vs RETURN — per-investment chart data
 // GET /api/investments/input-vs-return
 // v1.56.0 — feeds the Shareholder Dashboard's "Investment
-// Performance" section addition: a bar chart of amount invested vs
+// Performance" section addition: a chart of amount invested vs
 // amount returned, per investment (and per MMF sub-account, same
 // UNION pattern as getPerformanceSummary above). Same
 // ACTIVE/COMPLETED + funded-only filter as performance-summary, so
 // the two sections always agree on which investments are "live"
-// enough to chart. Ordered by amount invested, largest first, and
-// capped at 10 so the chart stays readable.
+// enough to chart. Ordered by amount invested, largest first.
+// v1.62.0: dropped the LIMIT 10 cap — charts must represent every
+// record, not just a page/subset of them (per direct request); the
+// frontend line chart this feeds (ShareholderDashboard.jsx) now
+// truncates long x-axis labels instead of relying on a short list to
+// stay readable, since a bar chart's "one bar per record" layout was
+// what actually needed the cap, not the underlying data.
 // ============================================================
 const getInputVsReturn = asyncHandler(async (req, res) => {
     const result = await query(`
@@ -1333,7 +1535,6 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
             AND   m.total_principal_in > 0
         ) combined
         ORDER BY invested DESC
-        LIMIT 10
     `);
 
     sendSuccess(res, result.rows.map(r => ({
@@ -1347,7 +1548,7 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
 
 // ============================================================
 // PORTFOLIO SUMMARY — headline figures + status breakdown (v1.57.0,
-// currency fix in v1.57.1)
+// currency fix in v1.57.1, unified with MMF in v1.60.0)
 // GET /api/investments/portfolio-summary
 // Feeds the new "Portfolio Overview" section at the top of the
 // Investments page: total planned budget/spent/returns, overall
@@ -1375,33 +1576,61 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
 // will have that portion excluded from the money totals, a known,
 // documented simplification (same class of limitation as every other
 // single-base-currency summary this session), not a silent zero.
+//
+// v1.60.0: folds in Money Market Fund sub-accounts (mmf_accounts) so
+// this headline summary treats Investments and MMF as one pool —
+// "the stats shall also be treated as one category not two," per the
+// direct request. Mirrors the UNION pattern getPerformanceSummary/
+// getInputVsReturn already used for MMF: an MMF's total_principal_in
+// stands in for actual_expenditure/"invested", and
+// (total_interest - total_management_fees) stands in for
+// total_returns — MMF has no planned_budget equivalent, so that
+// figure stays investments-only. mmf_accounts.status only ever has
+// two values (ACTIVE/CLOSED), both of which also appear on
+// investments, so the byStatus breakdown below is a genuine combined
+// count per status, not two separate lists stitched together.
 // ============================================================
 const getPortfolioSummary = asyncHandler(async (req, res) => {
     const countsResult = await query(`
         SELECT
-            COUNT(*) AS total_count,
-            COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_count,
-            COUNT(*) FILTER (WHERE investment_type = 'BOND') AS bond_count
-        FROM investments
+            (SELECT COUNT(*) FROM investments) +
+            (SELECT COUNT(*) FROM mmf_accounts)                          AS total_count,
+            (SELECT COUNT(*) FROM investments WHERE status = 'ACTIVE') +
+            (SELECT COUNT(*) FROM mmf_accounts WHERE status = 'ACTIVE')  AS active_count,
+            (SELECT COUNT(*) FROM investments WHERE investment_type = 'BOND') AS bond_count,
+            (SELECT COUNT(*) FROM mmf_accounts)                          AS mmf_count
     `);
     const c = countsResult.rows[0];
 
     const byStatusResult = await query(`
         SELECT status, COUNT(*) AS count
-        FROM   investments
+        FROM (
+            SELECT status FROM investments
+            UNION ALL
+            SELECT status FROM mmf_accounts
+        ) combined
         GROUP  BY status
         ORDER  BY count DESC
     `);
 
-    // Whichever currency the portfolio's money is actually denominated
-    // in, by total amount spent — not an unrelated account's currency.
+    // Whichever currency the combined portfolio's money is actually
+    // denominated in, by total amount invested (investments'
+    // actual_expenditure + MMF's total_principal_in) — not an
+    // unrelated account's currency.
     const dominantCurrencyResult = await query(`
-        SELECT i.currency_id, cur.code AS currency_code
-        FROM   investments i
-        JOIN   currencies cur ON cur.id = i.currency_id
-        GROUP  BY i.currency_id, cur.code
-        ORDER  BY SUM(i.actual_expenditure) DESC
-        LIMIT  1
+        SELECT currency_id, cur.code AS currency_code
+        FROM (
+            SELECT currency_id, SUM(amt) AS total_invested
+            FROM (
+                SELECT currency_id, actual_expenditure AS amt FROM investments
+                UNION ALL
+                SELECT currency_id, total_principal_in AS amt FROM mmf_accounts
+            ) combined
+            GROUP BY currency_id
+        ) totals
+        JOIN currencies cur ON cur.id = totals.currency_id
+        ORDER BY total_invested DESC
+        LIMIT 1
     `);
     const dominantCurrency = dominantCurrencyResult.rows[0] || null;
 
@@ -1409,11 +1638,14 @@ const getPortfolioSummary = asyncHandler(async (req, res) => {
     if (dominantCurrency) {
         const totalsResult = await query(`
             SELECT
-                COALESCE(SUM(planned_budget), 0)     AS total_planned_budget,
-                COALESCE(SUM(actual_expenditure), 0) AS total_actual_expenditure,
-                COALESCE(SUM(total_returns), 0)      AS total_returns
-            FROM   investments
-            WHERE  currency_id = $1
+                COALESCE((SELECT SUM(planned_budget) FROM investments WHERE currency_id = $1), 0)
+                    AS total_planned_budget,
+                COALESCE((SELECT SUM(actual_expenditure) FROM investments WHERE currency_id = $1), 0) +
+                COALESCE((SELECT SUM(total_principal_in) FROM mmf_accounts WHERE currency_id = $1), 0)
+                    AS total_actual_expenditure,
+                COALESCE((SELECT SUM(total_returns) FROM investments WHERE currency_id = $1), 0) +
+                COALESCE((SELECT SUM(total_interest - total_management_fees) FROM mmf_accounts WHERE currency_id = $1), 0)
+                    AS total_returns
         `, [dominantCurrency.currency_id]);
         const t = totalsResult.rows[0];
         totalPlannedBudget     = parseFloat(t.total_planned_budget);
@@ -1430,6 +1662,7 @@ const getPortfolioSummary = asyncHandler(async (req, res) => {
         totalCount:             parseInt(c.total_count),
         activeCount:            parseInt(c.active_count),
         bondCount:              parseInt(c.bond_count),
+        mmfCount:               parseInt(c.mmf_count),
         totalPlannedBudget,
         totalActualExpenditure,
         totalReturns,
@@ -1519,6 +1752,7 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                     SELECT
                         ir.id, ir.return_type, ir.amount,
                         ir.return_date, ir.notes, ir.created_at,
+                        ir.is_reversed, ir.reversed_at,
                         rr.reference_code AS return_reference,
                         retcreator.first_name || ' ' || retcreator.last_name AS recorded_by_name
                     FROM investment_returns ir
@@ -1551,6 +1785,7 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                     SELECT
                         it.id, it.entry_type, it.amount, it.description,
                         it.entry_date, it.created_at,
+                        it.is_reversed, it.reversed_at,
                         opr.reference_code AS reference_code,
                         opcreator.first_name || ' ' || opcreator.last_name AS recorded_by_name
                     FROM investment_transactions it
@@ -1565,15 +1800,15 @@ const getInvestmentById = asyncHandler(async (req, res) => {
             -- gives the running balance of unspent operating capital.
             COALESCE((
                 SELECT SUM(it.amount) FROM investment_transactions it
-                WHERE it.investment_id = i.id AND it.entry_type = 'INFLOW'
+                WHERE it.investment_id = i.id AND it.entry_type = 'INFLOW' AND it.is_reversed = FALSE
             ), 0) AS operational_inflows,
             COALESCE((
                 SELECT SUM(it.amount) FROM investment_transactions it
-                WHERE it.investment_id = i.id AND it.entry_type = 'EXPENSE'
+                WHERE it.investment_id = i.id AND it.entry_type = 'EXPENSE' AND it.is_reversed = FALSE
             ), 0) AS operational_expenses,
             COALESCE((
                 SELECT SUM(it.amount) FROM investment_transactions it
-                WHERE it.investment_id = i.id AND it.entry_type = 'TAX'
+                WHERE it.investment_id = i.id AND it.entry_type = 'TAX' AND it.is_reversed = FALSE
             ), 0) AS operational_tax
         FROM  investments i
         JOIN  references_registry r    ON r.id  = i.reference_id
@@ -1785,6 +2020,10 @@ const payBondCoupon = asyncHandler(async (req, res) => {
                 req.user.id
             );
 
+            // v1.70.0 — the coupon's withholding tax is income tax deducted
+            // at source (FINAL for government bonds), booked to 5700 — not
+            // money invested (1400) as before — and kept in the register of
+            // tax deducted from the company.
             const taxPosted = await postTransaction(client, {
                 accountId:       investment.returns_account_id,
                 transactionType: 'DEBIT',
@@ -1798,10 +2037,21 @@ const payBondCoupon = asyncHandler(async (req, res) => {
                 createdBy:       req.user.id,
                 referenceId:     taxTxRefId,
                 investmentId:    investment.id,
+                glOverrideAccountCode: taxService.TAX_GL.FINAL_TAX,
             });
             finalBalanceAfter = taxPosted.balanceAfter;
 
             await linkReferenceToRecord(client, taxTxRefId, taxPosted.transactionId);
+
+            await taxService.recordTaxAtSource(client, {
+                sourceType: 'BOND_COUPON', payerName: investment.name, investmentId: investment.id,
+                bondCouponId: coupon.id, incomeTransactionId: transactionId, taxTransactionId: taxPosted.transactionId,
+                cashLeg: true,
+                rateCode: parseInt(investment.bond_term_years) >= 10 ? 'WHT_GOV_SECURITIES_LONG' : 'WHT_GOV_SECURITIES_SHORT',
+                rate: taxRate || null, treatment: 'FINAL',
+                gross: grossAmount, tax: taxAmount, currencyId: investment.currency_id, date: paymentDate,
+                userId: req.user.id,
+            });
 
             const taxOpResult = await client.query(`
                 INSERT INTO investment_transactions (
@@ -1894,6 +2144,8 @@ const payBondCoupon = asyncHandler(async (req, res) => {
                 createdBy:       req.user.id,
                 referenceId:     prinTxRefId,
                 investmentId:    investment.id,
+                // v1.70.0 — the company's own money back, not income.
+                glOverrideAccountCode: '1400',
             });
             finalBalanceAfter = prinPosted.balanceAfter;
 
@@ -1980,6 +2232,148 @@ const payBondCoupon = asyncHandler(async (req, res) => {
         }, principalRepaid
             ? `Coupon #${coupon.coupon_number} marked paid, and face value ${principalRepaid.amount} repaid at maturity. Reference: ${retRefCode}`
             : `Coupon #${coupon.coupon_number} marked paid. Reference: ${retRefCode}`);
+    });
+});
+
+// ============================================================
+// TREASURY BILL MATURITY (v1.70.0)
+// POST /api/investments/:id/treasury-bill-maturity
+// A treasury bill is bought below its face value and repaid at face
+// value on its maturity date. The difference (the discount) is interest
+// income; tax on it (20% for bills, FINAL tax) is taken either
+//   AT_MATURITY — out of the maturity proceeds (the company receives
+//                 face value minus the tax), or
+//   AT_PURCHASE — added to the price when the bill was bought (the
+//                 funding then included it; the company receives the
+//                 full face value).
+// Posted here:
+//   - the proceeds, as a PRINCIPAL return (the company's own money back,
+//     1400), gross of any tax taken at maturity;
+//   - AT_MATURITY: the tax as its own leg (5700), AT_PURCHASE: the tax is
+//     moved out of the bill's cost (Dr 5700 / Cr 1400, no cash);
+//   - a row in the register of tax deducted from the company (FINAL).
+// The bill is then COMPLETED; the ledger's investment closure entry turns
+// what is left in 1400 (face value above the price paid) into investment
+// income — the discount.
+// ============================================================
+const recordTreasuryBillMaturity = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { maturity_date, amount_received, tax_amount, notes, tax_certificate_number } = req.body;
+
+    await withTransaction(async (client) => {
+        const investResult = await client.query(`
+            SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code
+            FROM   investments i
+            JOIN   accounts a ON a.id = i.funding_account_id
+            JOIN   references_registry r ON r.id = i.reference_id
+            WHERE  i.id = $1
+            FOR UPDATE OF i
+        `, [id]);
+        if (investResult.rows.length === 0) throw createError.notFound('Investment not found');
+        const inv = investResult.rows[0];
+        if (inv.investment_type !== 'TREASURY_BILL') throw createError.badRequest('This investment is not a treasury bill');
+        if (!MUTABLE_INVESTMENT_STATUSES.includes(inv.status)) {
+            throw createError.badRequest('Maturity can only be recorded on an active treasury bill (or one under termination review)');
+        }
+        const already = await client.query(`SELECT 1 FROM investment_returns WHERE investment_id = $1 AND return_type = 'PRINCIPAL' AND is_reversed = FALSE`, [id]);
+        if (already.rows.length) throw createError.badRequest('The maturity of this treasury bill has already been recorded');
+
+        const date = maturity_date || dateOnly(inv.expected_end_date);
+        if (date > new Date().toISOString().slice(0, 10)) {
+            throw createError.badRequest(`This bill matures on ${date}; its maturity can't be recorded before then.`);
+        }
+        if (!date) throw createError.badRequest('Enter the maturity date');
+        const face = parseFloat(inv.face_value);
+        const price = parseFloat(inv.settlement_value);
+        const rate = parseFloat(inv.tax_withholding_rate) || 0;
+        const timing = inv.tbill_tax_timing || 'AT_MATURITY';
+        const discount = round2(face - price);
+        const tax = tax_amount !== undefined && tax_amount !== null && tax_amount !== ''
+            ? round2(parseFloat(tax_amount)) : round2(discount * rate / 100);
+        if (tax < 0) throw createError.badRequest('Tax cannot be negative');
+
+        // Gross proceeds = what was repaid before any tax taken at maturity.
+        const received = amount_received !== undefined && amount_received !== null && amount_received !== ''
+            ? parseFloat(amount_received) : (timing === 'AT_MATURITY' ? round2(face - tax) : face);
+        const grossProceeds = timing === 'AT_MATURITY' ? round2(received + tax) : round2(received);
+        const discountEarned = round2(grossProceeds - price);
+
+        const { referenceId: retRefId, referenceCode: retRefCode } =
+            await generateReference(client, MODULE_CODES.INVESTMENT, 'PRINCIPAL', 'INVESTMENT_RETURN', req.user.id);
+        const { referenceId: txRefId } =
+            await generateReference(client, resolveModuleCode(inv), 'INVEST-IN', 'TRANSACTION', req.user.id);
+        const posted = await postTransaction(client, {
+            accountId: inv.returns_account_id, transactionType: 'CREDIT', inflowType: 'INVESTMENT_RETURN',
+            amount: grossProceeds, currencyId: inv.currency_id, categoryId: inv.category_id,
+            description: `Treasury bill matured — face value repaid: ${inv.name} (${inv.reference_code})`,
+            valueDate: date, createdBy: req.user.id, referenceId: txRefId, investmentId: inv.id,
+            glOverrideAccountCode: '1400',
+        });
+        await linkReferenceToRecord(client, txRefId, posted.transactionId);
+        let balanceAfter = posted.balanceAfter;
+
+        const ret = await client.query(`
+            INSERT INTO investment_returns (reference_id, investment_id, transaction_id, return_type, amount, return_date, notes, created_by)
+            VALUES ($1, $2, $3, 'PRINCIPAL', $4, $5, $6, $7) RETURNING id
+        `, [retRefId, id, posted.transactionId, grossProceeds, date,
+            notes || `Treasury bill maturity: face ${face}, price paid ${price}, discount ${discountEarned}, tax ${tax} (${timing === 'AT_MATURITY' ? 'deducted from the proceeds' : 'paid with the purchase'})`,
+            req.user.id]);
+        await linkReferenceToRecord(client, retRefId, ret.rows[0].id);
+
+        let taxRecord = null;
+        if (tax > 0) {
+            let taxTxId = null;
+            if (timing === 'AT_MATURITY') {
+                const leg = await taxService.postTaxLeg(client, {
+                    accountId: inv.returns_account_id, currencyId: inv.currency_id, amount: tax, date,
+                    treatment: 'FINAL', categoryId: inv.category_id, investmentId: inv.id,
+                    description: `Treasury bill tax deducted at maturity (final) — ${inv.name} (${inv.reference_code})`,
+                    userId: req.user.id,
+                });
+                taxTxId = leg.transactionId;
+                balanceAfter = leg.balanceAfter;
+                const { referenceId: opRef } = await generateReference(client, MODULE_CODES.INVESTMENT, 'INV-OP', 'INVESTMENT_TRANSACTION', req.user.id);
+                await client.query(`
+                    INSERT INTO investment_transactions (reference_id, investment_id, transaction_id, entry_type, amount, description, entry_date, created_by)
+                    VALUES ($1, $2, $3, 'TAX', $4, $5, $6, $7)
+                `, [opRef, id, leg.transactionId, tax, 'Tax on treasury bill discount (deducted at maturity)', date, req.user.id]);
+            }
+            taxRecord = await taxService.recordTaxAtSource(client, {
+                sourceType: 'TREASURY_BILL', payerName: inv.name, investmentId: inv.id,
+                incomeTransactionId: posted.transactionId, taxTransactionId: taxTxId,
+                cashLeg: timing === 'AT_MATURITY', contraGlCode: timing === 'AT_MATURITY' ? null : '1400',
+                rateCode: 'WHT_GOV_SECURITIES_SHORT', rate: rate || null, treatment: 'FINAL',
+                gross: discountEarned > 0 ? discountEarned : tax, tax, currencyId: inv.currency_id, date,
+                certificateNumber: tax_certificate_number || null, userId: req.user.id,
+                notes: timing === 'AT_PURCHASE' ? 'Tax was paid with the purchase price (included in the funding).' : null,
+            });
+        }
+
+        // The discount is the bill's income (for its ROI figures).
+        await client.query(`
+            UPDATE investments
+            SET    total_returns = total_returns + $1,
+                   status = CASE WHEN status = 'ACTIVE' THEN 'COMPLETED' ELSE status END,
+                   actual_end_date = CASE WHEN status = 'ACTIVE' THEN $2::date ELSE actual_end_date END
+            WHERE  id = $3
+        `, [Math.max(0, discountEarned), date, id]);
+
+        await logAction(req.user.id, ACTIONS.INVESTMENT_PRINCIPAL_REPAID, MODULES.INVESTMENTS, {
+            ipAddress: req.ip, recordType: 'investment_returns', recordId: ret.rows[0].id,
+            newValues: { retRefCode, face, price, grossProceeds, discountEarned, tax, timing },
+            description: `Treasury bill matured: ${retRefCode} — proceeds ${grossProceeds}, discount ${discountEarned}, tax ${tax} (${timing})`,
+            client,
+        });
+
+        sendSuccess(res, {
+            return_reference: retRefCode,
+            gross_proceeds: grossProceeds,
+            discount_income: discountEarned,
+            tax_amount: tax,
+            tax_timing: timing,
+            tax_record: taxRecord ? taxRecord.referenceCode : null,
+            balance_after: balanceAfter,
+        }, `Treasury bill maturity recorded. Reference: ${retRefCode}`);
     });
 });
 
@@ -2226,6 +2620,8 @@ const confirmTerminationRecords = asyncHandler(async (req, res) => {
 });
 
 const approveTermination = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'investments', req.params.id, ['termination_requested_by'], 'termination request');
     const { id } = req.params;
     const { closing_note } = req.body;
 
@@ -2383,7 +2779,7 @@ const getProjectById = asyncHandler(async (req, res) => {
                 SELECT json_agg(f_data ORDER BY f_data.amount DESC)
                 FROM (
                     SELECT
-                        inf.amount,
+                        inf.amount, inf.is_reversed,
                         tr.reference_code AS transaction_reference,
                         t.value_date,
                         t.description
@@ -2417,8 +2813,10 @@ module.exports = {
     recordReturn,
     recordInvestmentTransaction,
     payBondCoupon,
+    recordTreasuryBillMaturity,
     updateCouponSchedule,
     setSettlementValue,
+    setBondTerm,
     requestTermination,
     confirmTerminationRecords,
     approveTermination,

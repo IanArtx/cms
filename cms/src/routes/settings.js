@@ -25,6 +25,22 @@ router.get('/company',
     settingsController.getCompanySettings
 );
 
+// ------------------------------------------------------------
+// GOOGLE CALENDAR / MEET — OAUTH CALLBACK (v1.63.0) — deliberately
+// PUBLIC, same reasoning as GET /company above: this is Google itself
+// navigating the Admin's browser here after they grant consent, a
+// plain top-level redirect with no Authorization header to check —
+// there is no session to authenticate against on this specific
+// request. It's still safe: `state` (verified inside
+// googleCalendarService.handleOAuthCallback) is a signed JWT minted
+// only by GET /google/connect below (which IS Admin-gated), so a
+// request here with a missing/invalid/expired state is rejected
+// regardless of who sends it.
+// ------------------------------------------------------------
+router.get('/google/callback',
+    settingsController.googleOAuthCallback
+);
+
 router.use(authenticate);
 
 // Write — restricted to the "Admin" role directly, not the
@@ -154,6 +170,30 @@ router.put('/fiscal-quarters/:id',
 router.delete('/fiscal-quarters/:id',
     requireRoles(['Admin']),
     settingsController.deleteFiscalQuarter
+);
+
+// ------------------------------------------------------------
+// GOOGLE CALENDAR / MEET INTEGRATION (v1.63.0) — Section 4.20
+// addendum. Status is open to any authenticated user (no secrets in
+// the response — just connected/not, which account, who connected
+// it) since anyone who can create an online event (Secretary,
+// Assistant Secretary, Directors — see events.js) needs to know
+// whether an auto-created Meet link is available or they should paste
+// one in by hand. Connect/disconnect stay Admin-only, same treatment
+// as every other foundational Settings write in this file.
+// ------------------------------------------------------------
+router.get('/google/status',
+    settingsController.getGoogleStatus
+);
+
+router.get('/google/connect',
+    requireRoles(['Admin']),
+    settingsController.startGoogleConnect
+);
+
+router.post('/google/disconnect',
+    requireRoles(['Admin']),
+    settingsController.disconnectGoogle
 );
 
 module.exports = router;

@@ -1,0 +1,37 @@
+%% v1.61.0 — Multi-currency Savings + internal Currency Conversion
+%% Top half: the architecture shift (one SAVINGS account per currency,
+%% one savings_balances row per member-per-currency) and how an
+%% ordinary Savings action now resolves which currency it hits.
+%% Bottom half: the new Currency Conversion request/confirm flow.
+flowchart TD
+
+    subgraph ARCH["Per-currency accounts & balances (FLEXIBLE only)"]
+        direction TB
+        A["Treasurer sets up a SAVINGS\naccount per currency needed\n(Accounts page)"] --> B[("accounts\nUNIQUE(account_type, currency_id)\nWHERE SAVINGS + active")]
+        B --> C["GET /savings/currencies\n(any Savings-permission holder)\n→ currencies WITH an active\nSAVINGS account"]
+        C --> D["Every action modal's\ncurrency picker\n(Deposit / Handout / Capital\nConversion / Pool Inflow /\nConvert Currency)"]
+        D --> E["getSavingsAccount(client, currencyId)\ngetOrCreateSavingsBalance(client, userId, currencyId)\n— the one choke point every\nSavings-touching call goes through"]
+        E --> F[("savings_balances\nUNIQUE(user_id, currency_id)\none row per currency held")]
+        F --> G["getMySavingsBalance /\ngetSavingsBalanceByUser\nreturns balances[] —\none card per currency\non SavingsPage.jsx"]
+    end
+
+    subgraph FX["Internal Currency Conversion — Treasurer enters, member confirms"]
+        direction TB
+        H["Treasurer opens\nConvertCurrencyModal"] --> I["Picks member, From currency,\nTo currency, amount,\nmanually-entered exchange_rate\n(no bank charges)"]
+        I --> J["POST /savings/currency-conversions\n(SAVINGS_CURRENCY_CONVERT_CREATE)\nchecks: currencies differ,\nboth have an active SAVINGS account,\nmember holds enough in From currency"]
+        J --> K[("savings_currency_conversions\nstatus = PENDING_CONFIRMATION")]
+        K --> L{Member reviews}
+        L -->|Confirm| M["confirmSavingsCurrencyConversion\n— re-checks balance,\nposts BOTH legs atomically"]
+        L -->|Reject| N["status = REJECTED\nnothing moves"]
+        M --> O["DEBIT From-currency SAVINGS account\ninflow_type = SAVINGS_CURRENCY_CONV_OUT"]
+        M --> P["CREDIT To-currency SAVINGS account\ninflow_type = SAVINGS_CURRENCY_CONV_IN"]
+        O --> Q["Both legs → GL 2100\n(Member Savings Payable)"]
+        P --> Q
+        O --> F
+        P --> F
+    end
+
+    style F fill:#dcfce7
+    style Q fill:#dcfce7
+    style N fill:#fee2e2
+    style K fill:#fef9c3

@@ -15,6 +15,7 @@ const { createPendingFlexibleDeposit } = require('./savingsController');
 const { clearFine } = require('../services/finesService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 MODULE_CODES.REQUISITION = 'REQ';
 
@@ -173,6 +174,8 @@ const createRequisition = asyncHandler(async (req, res) => {
 // Treasurer or Director approves and posts a transaction.
 // ============================================================
 const approveRequisition = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'requisitions', req.params.id, ['requested_by'], 'requisition');
     const { id }  = req.params;
     const {
         account_id,
@@ -222,6 +225,10 @@ const approveRequisition = asyncHandler(async (req, res) => {
                 categoryId:        req_.category_id,
                 notes:             review_notes || req_.purpose,
                 recordedByUserId:  req.user.id,
+                // v1.69.1 — the account the member actually paid into
+                // (any currency; shares are valued by conversion at the
+                // rate on the contribution date). Primary if not chosen.
+                accountId:         account_id ? parseInt(account_id) : undefined,
             });
 
             await client.query(`

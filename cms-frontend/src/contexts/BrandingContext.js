@@ -6,12 +6,15 @@
 // a different company through Settings > Company, with the change
 // taking effect immediately for every logged-in user, no redeploy.
 //
-// Two things happen with the loaded settings:
-//   1. primary/accent colors are written onto :root as CSS custom
-//      properties (--brand-primary / --brand-accent), which the
-//      sidebar and a few other spots read instead of a hardcoded hex.
-//   2. exportUtils.setBranding() is called so every generated/
-//      previewed document (letterhead, colors) uses the same values.
+// What happens with the loaded settings:
+//   • The company name and logo show in the sidebar, the browser tab
+//     and the login pages.
+//   • exportUtils.setBranding() is called so every generated/previewed
+//     document (letterhead, colours) uses them.
+// v1.71.0: the primary/accent colours NO LONGER colour the app's own
+// screens (one fixed "Harbour" design, see index.css). They are used
+// only for documents and emails. The --brand-primary / --brand-accent
+// CSS variables are still set for any document preview that reads them.
 // ============================================================
 
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';

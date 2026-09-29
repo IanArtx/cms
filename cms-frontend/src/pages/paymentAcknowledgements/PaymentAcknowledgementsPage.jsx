@@ -35,6 +35,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { CheckIcon, XMarkIcon, PrinterIcon, ArrowPathIcon, EyeIcon, PlusIcon, NoSymbolIcon } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 const SOURCE_LABELS = {
     DIVIDEND:            'Dividend Payment',
@@ -466,7 +467,7 @@ const PaymentAcknowledgementsPage = () => {
     const canViewAll = hasPermission('PAYMENT_ACK_VIEW');
     const canManage = hasPermission('PAYMENT_ACK_MANAGE');
 
-    const [activeTab, setActiveTab] = useState('mine');
+    const [activeTab, setActiveTab] = useTabParam('mine');
     const [mine, setMine] = useState([]);
     const [all, setAll] = useState([]);
     const [statusFilter, setStatusFilter] = useState('');
@@ -776,40 +777,28 @@ const PaymentAcknowledgementsPage = () => {
 
             {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
 
-            <div className="flex gap-2 mb-6 flex-wrap">
+            <div className="tab-bar" role="tablist">
                 <button onClick={() => setActiveTab('mine')}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activeTab === 'mine' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}>
+                    className={`tab ${activeTab === 'mine' ? 'tab-active' : ''}`}>
                     My Acknowledgements
                     {pendingMineCount > 0 && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                            activeTab === 'mine' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
-                        }`}>{pendingMineCount}</span>
+                        <span className="tab-count-alert">{pendingMineCount}</span>
                     )}
                 </button>
                 {canViewAll && (
                     <button onClick={() => setActiveTab('all')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            activeTab === 'all' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}>
+                        className={`tab ${activeTab === 'all' ? 'tab-active' : ''}`}>
                         All (Treasury)
                         {needsApprovalCount > 0 && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                                activeTab === 'all' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
-                            }`}>{needsApprovalCount}</span>
+                            <span className="tab-count-alert">{needsApprovalCount}</span>
                         )}
                     </button>
                 )}
                 <button onClick={() => setActiveTab('confirmations')}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activeTab === 'confirmations' ? 'bg-primary-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}>
+                    className={`tab ${activeTab === 'confirmations' ? 'tab-active' : ''}`}>
                     Payment Confirmations
                     {pendingMyConfirmationsCount > 0 && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                            activeTab === 'confirmations' ? 'bg-white text-primary-700' : 'bg-red-500 text-white'
-                        }`}>{pendingMyConfirmationsCount}</span>
+                        <span className="tab-count-alert">{pendingMyConfirmationsCount}</span>
                     )}
                 </button>
             </div>
@@ -832,11 +821,7 @@ const PaymentAcknowledgementsPage = () => {
                             {['', 'PENDING_ACK', 'ACKNOWLEDGED', 'DISPUTED', 'FINAL_APPROVED'].map(s => (
                                 <button key={s}
                                     onClick={() => setStatusFilter(s)}
-                                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                                        statusFilter === s
-                                            ? 'bg-primary-700 text-white'
-                                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                    }`}>
+                                    className={`tab ${statusFilter === s ? 'tab-active' : ''}`}>
                                     {s ? s.replace(/_/g, ' ') : 'All'}
                                 </button>
                             ))}
@@ -881,11 +866,7 @@ const PaymentAcknowledgementsPage = () => {
                                     {['', 'PENDING_CONFIRMATION', 'CONFIRMED', 'DISPUTED', 'CANCELLED'].map(s => (
                                         <button key={s}
                                             onClick={() => setConfirmationStatusFilter(s)}
-                                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                                                confirmationStatusFilter === s
-                                                    ? 'bg-primary-700 text-white'
-                                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                            }`}>
+                                            className={`tab ${confirmationStatusFilter === s ? 'tab-active' : ''}`}>
                                             {s ? s.replace(/_/g, ' ') : 'All'}
                                         </button>
                                     ))}

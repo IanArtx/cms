@@ -13,7 +13,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { useChartTheme } from '../../hooks/useChartTheme';
+import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     ArrowLeftIcon,
     ArrowTrendingUpIcon,
@@ -33,6 +33,14 @@ import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
     Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
+
+// v1.60.0 — the fixed set of standard bond durations, matching how
+// bonds are actually categorised when bought. Same list enforced
+// server-side (investmentsController.js) and used for the quick-pick
+// buttons on both the creation modal (InvestmentsPage.jsx) and the
+// "Set Bond Term" modal below.
+const BOND_TERMS = [2, 3, 5, 10, 15, 20, 25];
 
 // ============================================================
 // RECORD EXPENSE MODAL
@@ -162,6 +170,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
 const RecordReturnModal = ({ isOpen, onClose, onSuccess, investment }) => {
     const [form, setForm] = useState({
         amount: '', return_type: 'PROFIT_SHARE', return_date: '', notes: '',
+        tax_deducted: '', tax_treatment: 'FINAL', tax_certificate_number: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -173,10 +182,15 @@ const RecordReturnModal = ({ isOpen, onClose, onSuccess, investment }) => {
         setLoading(true);
         setError(null);
         try {
-            await investmentsAPI.recordReturn(investment.id, form);
+            // v1.70.0 — tax kept back by the payer (amount is then the gross)
+            const payload = { ...form };
+            if (!(parseFloat(payload.tax_deducted) > 0)) {
+                delete payload.tax_deducted; delete payload.tax_treatment; delete payload.tax_certificate_number;
+            }
+            await investmentsAPI.recordReturn(investment.id, payload);
             onSuccess();
             onClose();
-            setForm({ amount: '', return_type: 'PROFIT_SHARE', return_date: '', notes: '' });
+            setForm({ amount: '', return_type: 'PROFIT_SHARE', return_date: '', notes: '', tax_deducted: '', tax_treatment: 'FINAL', tax_certificate_number: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -220,8 +234,26 @@ const RecordReturnModal = ({ isOpen, onClose, onSuccess, investment }) => {
                                 <option value="INTEREST">Interest</option>
                                 <option value="RENTAL">Rental</option>
                                 <option value="OTHER">Other</option>
+                                <option value="PRINCIPAL">Principal — the company's own capital coming back (not income)</option>
                             </select>
                         </div>
+                        {form.return_type !== 'PRINCIPAL' && (
+                            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 space-y-3">
+                                <p className="text-xs text-gray-500">If the payer kept back tax, enter the <strong>gross</strong> return above and the tax here —
+                                    it is recorded as its own entry and in the Tax register.</p>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div><label className="label">Tax kept back</label>
+                                        <input type="number" className="input" min="0" step="0.01" value={form.tax_deducted}
+                                            onChange={e => setForm(p => ({ ...p, tax_deducted: e.target.value }))} /></div>
+                                    <div><label className="label">Treatment</label>
+                                        <select className="input" value={form.tax_treatment} onChange={e => setForm(p => ({ ...p, tax_treatment: e.target.value }))}>
+                                            <option value="FINAL">Final tax</option><option value="CREDITABLE">Creditable</option>
+                                        </select></div>
+                                    <div><label className="label">Certificate no.</label>
+                                        <input className="input" value={form.tax_certificate_number} onChange={e => setForm(p => ({ ...p, tax_certificate_number: e.target.value }))} /></div>
+                                </div>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Date *</label>
                             <input type="date" className="input"
@@ -265,6 +297,7 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
     const [form, setForm] = useState({
         entry_type: 'EXPENSE', amount: '', entry_date: '',
         description: '', category_id: '',
+        tax_treatment: 'FINAL', gross_amount: '', tax_certificate_number: '',
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -276,15 +309,20 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
         setLoading(true);
         setError(null);
         try {
+            const isTax = form.entry_type === 'TAX';
             await investmentsAPI.recordTransaction(investment.id, {
                 ...form,
                 amount:      parseFloat(form.amount),
                 category_id: form.category_id || undefined,
+                // v1.70.0 — a TAX entry is tax deducted at source
+                tax_treatment: isTax ? form.tax_treatment : undefined,
+                gross_amount: isTax && form.gross_amount ? parseFloat(form.gross_amount) : undefined,
+                tax_certificate_number: isTax && form.tax_certificate_number ? form.tax_certificate_number : undefined,
             });
             onSuccess();
             onClose();
             setForm({ entry_type: 'EXPENSE', amount: '', entry_date: '',
-                description: '', category_id: '' });
+                description: '', category_id: '', tax_treatment: 'FINAL', gross_amount: '', tax_certificate_number: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -296,7 +334,7 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
     const typeLabels = {
         EXPENSE: 'Operational Expense — a running cost of this investment',
         INFLOW:  'Extra Inflow — income beyond the scheduled/manual returns',
-        TAX:     'Tax — tax withheld or paid on this investment',
+        TAX:     'Tax — tax deducted at source from this investment\'s income (recorded in the Tax register)',
     };
 
     return (
@@ -345,6 +383,19 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
                                     ...p, amount: e.target.value }))}
                                 min="0.01" step="0.01" required />
                         </div>
+                        {form.entry_type === 'TAX' && (
+                            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div><label className="label">Treatment</label>
+                                    <select className="input" value={form.tax_treatment} onChange={e => setForm(p => ({ ...p, tax_treatment: e.target.value }))}>
+                                        <option value="FINAL">Final tax (e.g. government securities)</option>
+                                        <option value="CREDITABLE">Creditable (set off against corporate tax)</option>
+                                    </select></div>
+                                <div><label className="label">Gross income it was taken from</label>
+                                    <input type="number" className="input" min="0" step="0.01" value={form.gross_amount} onChange={e => setForm(p => ({ ...p, gross_amount: e.target.value }))} /></div>
+                                <div><label className="label">Certificate no.</label>
+                                    <input className="input" value={form.tax_certificate_number} onChange={e => setForm(p => ({ ...p, tax_certificate_number: e.target.value }))} /></div>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Date *</label>
                             <input type="date" className="input"
@@ -483,7 +534,7 @@ const OperatingBudgetCard = ({ investment }) => {
                         </thead>
                         <tbody>
                             {[...operations].reverse().map(op => (
-                                <tr key={op.id} className="border-b border-gray-50 last:border-0">
+                                <tr key={op.id} className={`border-b border-gray-50 last:border-0 ${op.is_reversed ? 'opacity-60' : ''}`}>
                                     <td className="px-2 py-2 text-gray-700">{formatDate(op.entry_date)}</td>
                                     <td className="px-2 py-2">
                                         <span className={`text-xs ${
@@ -492,13 +543,21 @@ const OperatingBudgetCard = ({ investment }) => {
                                             {op.entry_type === 'INFLOW' ? 'Inflow' :
                                              op.entry_type === 'TAX' ? 'Tax' : 'Expense'}
                                         </span>
+                                        {op.is_reversed && (
+                                            <span className="ml-1.5 text-xs badge-gray"
+                                                title={`Reversed ${formatDate(op.reversed_at)} — no longer counted`}>
+                                                Reversed
+                                            </span>
+                                        )}
                                     </td>
                                     <td className="px-2 py-2 text-gray-600">{op.description || '—'}</td>
                                     <td className={`px-2 py-2 text-right font-medium ${
                                         op.entry_type === 'INFLOW' ? 'text-green-600' : 'text-red-600'
                                     }`}>
+                                        <span className={op.is_reversed ? 'line-through' : ''}>
                                         {op.entry_type === 'INFLOW' ? '+' : '-'}
                                         {currency} {parseFloat(op.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                        </span>
                                     </td>
                                     <td className="px-2 py-2 text-gray-500">{op.recorded_by_name}</td>
                                     <td className="px-2 py-2 text-right">
@@ -535,6 +594,7 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
     const [adjustingCoupon, setAdjustingCoupon] = useState(null);
     const [showRescheduleModal, setShowRescheduleModal] = useState(false);
     const [showSettlementModal, setShowSettlementModal] = useState(false);
+    const [showTermModal, setShowTermModal] = useState(false);
     const [error, setError] = useState(null);
     const coupons = investment.coupons || [];
     const currency = investment.currency_code;
@@ -601,6 +661,29 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
                 <div>
+                    <p className="text-gray-400 text-xs">Term</p>
+                    <p className="text-sm font-semibold text-gray-900 mt-0.5">
+                        {investment.bond_term_years ? (
+                            <>
+                                {investment.bond_term_years} Years
+                                {canManage && (
+                                    <button onClick={() => setShowTermModal(true)}
+                                        className="ml-2 text-xs font-normal text-primary-700 hover:text-primary-800 underline">
+                                        Change
+                                    </button>
+                                )}
+                            </>
+                        ) : canManage ? (
+                            <button onClick={() => setShowTermModal(true)}
+                                className="text-xs font-medium text-amber-700 hover:text-amber-800 underline">
+                                Set Term
+                            </button>
+                        ) : (
+                            <span className="text-gray-300">Not set</span>
+                        )}
+                    </p>
+                </div>
+                <div>
                     <p className="text-gray-400 text-xs">Face Value</p>
                     <p className="text-sm font-semibold text-gray-900 mt-0.5">
                         {currency} {parseFloat(investment.face_value).toLocaleString('en-US', { maximumFractionDigits: 2 })}
@@ -658,6 +741,25 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
                         className="text-xs text-amber-900 hover:text-amber-950 font-semibold underline"
                     >
                         Record Settlement Value
+                    </button>
+                </div>
+            )}
+
+            {/* v1.60.0 — a legacy bond migration_v1.60.0.sql's auto-
+                backfill couldn't confidently match to one of the 7
+                standard terms (its duration didn't cleanly fit any
+                bucket) sits with no term until assigned by hand here. */}
+            {!investment.bond_term_years && canManage && (
+                <div className="mb-5 p-3 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-xs text-amber-900">
+                        This bond has no term assigned yet — its duration didn't cleanly match one of the
+                        standard terms (2/3/5/10/15/20/25yr) when this was auto-checked. Set it by hand.
+                    </p>
+                    <button
+                        onClick={() => setShowTermModal(true)}
+                        className="text-xs text-amber-900 hover:text-amber-950 font-semibold underline"
+                    >
+                        Set Bond Term
                     </button>
                 </div>
             )}
@@ -775,6 +877,12 @@ const BondScheduleCard = ({ investment, canManage, onPaid }) => {
             <RecordSettlementValueModal
                 isOpen={showSettlementModal}
                 onClose={() => setShowSettlementModal(false)}
+                onSuccess={onPaid}
+                investment={investment}
+            />
+            <SetBondTermModal
+                isOpen={showTermModal}
+                onClose={() => setShowTermModal(false)}
                 onSuccess={onPaid}
                 investment={investment}
             />
@@ -1031,6 +1139,87 @@ const RecordSettlementValueModal = ({ isOpen, onClose, onSuccess, investment }) 
     );
 };
 
+// v1.60.0 — assign (or correct) the categorical term for a bond,
+// either a legacy record the migration's auto-backfill couldn't
+// confidently match, or simply to fix a mistaken pick later. Mirrors
+// RecordSettlementValueModal's shape; quick-pick buttons instead of
+// a free-text field since the term is a fixed 7-value set.
+const SetBondTermModal = ({ isOpen, onClose, onSuccess, investment }) => {
+    const [term, setTerm] = useState(investment.bond_term_years || '');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!term) {
+            setError('Select a term.');
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+            await investmentsAPI.setBondTerm(investment.id, { bond_term_years: term });
+            onSuccess();
+            onClose();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Set Bond Term</h2>
+                    <p className="text-xs text-gray-400 mb-4">
+                        Which of the standard bond durations this bond runs — how it was categorised when bought.
+                        This lets the company track how much is invested in, say, "10yr bonds" as a whole.
+                    </p>
+                    {error && (
+                        <div className="mb-4">
+                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="label">Term *</label>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                                {BOND_TERMS.map(t => (
+                                    <button
+                                        key={t}
+                                        type="button"
+                                        onClick={() => setTerm(t)}
+                                        className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                                            term === t
+                                                ? 'bg-primary-600 text-white border-primary-600'
+                                                : 'bg-white text-gray-700 border-gray-200 hover:border-primary-300'
+                                        }`}
+                                    >
+                                        {t}yr
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose}
+                                className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading || !term}
+                                className="btn-primary">
+                                {loading ? 'Saving...' : 'Save Term'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // ============================================================
 // REQUEST TERMINATION MODAL
 // Step 1 of the mid-term termination workflow — states the reason a
@@ -1242,6 +1431,86 @@ const RejectTerminationModal = ({ isOpen, onClose, onSuccess, investment }) => {
 // ============================================================
 // MAIN INVESTMENT DETAIL PAGE
 // ============================================================
+// ============================================================
+// TREASURY BILL (v1.70.0) — face value, price paid, discount, the tax
+// on it (FINAL, taken at purchase or at maturity), and "Record
+// maturity" once the maturity date has come.
+// ============================================================
+const TreasuryBillCard = ({ investment, canManage, onDone }) => {
+    const [open, setOpen] = useState(false);
+    const [form, setForm] = useState({ maturity_date: '', amount_received: '', tax_amount: '', tax_certificate_number: '' });
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const [done, setDone] = useState(null);
+    const face = parseFloat(investment.face_value) || 0;
+    const price = parseFloat(investment.settlement_value) || 0;
+    const rate = parseFloat(investment.tax_withholding_rate) || 0;
+    const discount = face - price;
+    const tax = Math.round(discount * rate) / 100;
+    const atPurchase = investment.tbill_tax_timing === 'AT_PURCHASE';
+    const maturity = investment.expected_end_date ? String(investment.expected_end_date).slice(0, 10) : null;
+    const due = maturity && maturity <= new Date().toISOString().slice(0, 10);
+    const matured = investment.status === 'COMPLETED';
+    const cur = investment.currency_code;
+    const n = (v) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+    const submit = async (e) => {
+        e.preventDefault(); setBusy(true); setError(null);
+        try {
+            const payload = {};
+            Object.entries(form).forEach(([k, v]) => { if (v !== '') payload[k] = v; });
+            const res = await investmentsAPI.recordTreasuryBillMaturity(investment.id, payload);
+            setDone(res.data.message); setOpen(false); onDone();
+        } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
+    };
+    return (
+        <div className="card mb-6">
+            <h3 className="section-title mb-3">Treasury Bill</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
+                <div><p className="text-gray-500 text-xs">Face value</p><p className="font-semibold">{cur} {n(face)}</p></div>
+                <div><p className="text-gray-500 text-xs">Price paid</p><p className="font-semibold">{cur} {n(price)}</p></div>
+                <div><p className="text-gray-500 text-xs">Discount (income)</p><p className="font-semibold text-green-700">{cur} {n(discount)}</p></div>
+                <div><p className="text-gray-500 text-xs">Tax {rate}% (final)</p><p className="font-semibold">{cur} {n(tax)}</p>
+                    <p className="text-[11px] text-gray-400">{atPurchase ? 'paid with the purchase' : 'deducted at maturity'}</p></div>
+                <div><p className="text-gray-500 text-xs">Matures</p><p className="font-semibold">{maturity ? formatDate(maturity) : '—'}</p>
+                    <p className="text-[11px] text-gray-400">receive {cur} {n(atPurchase ? face : face - tax)}</p></div>
+            </div>
+            {done && <p className="text-sm text-green-700 mt-3">{done}</p>}
+            {matured && <p className="text-sm text-gray-500 mt-3">Matured and closed. The discount is in investment income; the tax is in the Tax register.</p>}
+            {!matured && canManage && ['ACTIVE', 'PENDING_TERMINATION'].includes(investment.status) && (
+                <div className="mt-4">
+                    {!open ? (
+                        <button className="btn-primary text-sm" disabled={!due} title={due ? '' : 'Available on the maturity date'} onClick={() => setOpen(true)}>
+                            Record maturity
+                        </button>
+                    ) : (
+                        <form onSubmit={submit} className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-3">
+                            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+                            <p className="text-xs text-gray-500">Leave the fields empty to use the expected figures. Change them only if the bank statement shows something different.</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                                <div><label className="label">Maturity date</label>
+                                    <input type="date" className="input" value={form.maturity_date} placeholder={maturity || ''} max={new Date().toISOString().slice(0, 10)}
+                                        onChange={e => setForm(p => ({ ...p, maturity_date: e.target.value }))} /></div>
+                                <div><label className="label">Amount received ({cur})</label>
+                                    <input type="number" step="0.01" className="input" placeholder={n(atPurchase ? face : face - tax)} value={form.amount_received}
+                                        onChange={e => setForm(p => ({ ...p, amount_received: e.target.value }))} /></div>
+                                <div><label className="label">Tax ({cur})</label>
+                                    <input type="number" step="0.01" className="input" placeholder={n(tax)} value={form.tax_amount}
+                                        onChange={e => setForm(p => ({ ...p, tax_amount: e.target.value }))} /></div>
+                                <div><label className="label">Certificate no.</label>
+                                    <input className="input" value={form.tax_certificate_number} onChange={e => setForm(p => ({ ...p, tax_certificate_number: e.target.value }))} /></div>
+                            </div>
+                            <div className="flex justify-end gap-2">
+                                <button type="button" className="btn-secondary text-sm" onClick={() => setOpen(false)}>Cancel</button>
+                                <button className="btn-primary text-sm" disabled={busy}>{busy ? 'Saving…' : 'Record maturity'}</button>
+                            </div>
+                        </form>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const InvestmentDetailPage = () => {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -1249,6 +1518,7 @@ const InvestmentDetailPage = () => {
     const theme = useChartTheme();
 
     const [investment, setInvestment] = useState(null);
+    useBreadcrumbTitle(investment?.name || null);
     const [categories, setCategories] = useState([]);
     const [loading,    setLoading]    = useState(true);
     const [error,      setError]      = useState(null);
@@ -1320,7 +1590,9 @@ const InvestmentDetailPage = () => {
         : [theme.danger, theme.primary];
 
     // ---- Returns over time ----
-    const returnsChartData = returns.map(r => ({
+    // v1.72.0 — reversed returns stay in the history (marked "Reversed")
+    // but are left out of the chart, as they are left out of Returns.
+    const returnsChartData = returns.filter(r => !r.is_reversed).map(r => ({
         date:   formatDate(r.return_date),
         amount: parseFloat(r.amount),
         type:   r.return_type,
@@ -1366,19 +1638,13 @@ const InvestmentDetailPage = () => {
 
     return (
         <div>
-            {/* Back button */}
-            <button
-                onClick={() => navigate('/investments')}
-                className="flex items-center gap-2 text-sm text-gray-500
-                    hover:text-gray-700 mb-6 transition-colors"
-            >
-                <ArrowLeftIcon className="h-4 w-4" />
-                Back to Investments
-            </button>
 
             {/* Investment Header */}
-            <div className="rounded-xl p-6 mb-6 text-white
-                bg-gradient-to-r from-primary-900 to-primary-700">
+            <div className="page-banner -mx-4 -mt-4 md:-mx-6 md:-mt-6 mb-6 px-4 md:px-7 py-6">
+                <button type="button" onClick={() => navigate('/investments')} className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-white/90 hover:text-white rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                    <ArrowLeftIcon className="h-4 w-4" />
+                    Back to Investments
+                </button>
                 <div className="flex items-start justify-between flex-wrap gap-4">
                     <div className="flex items-center gap-3">
                         <ChartBarIcon className="h-8 w-8 opacity-80" />
@@ -1597,6 +1863,10 @@ const InvestmentDetailPage = () => {
                 />
             )}
 
+            {investment.investment_type === 'TREASURY_BILL' && (
+                <TreasuryBillCard investment={investment} canManage={canManage} onDone={loadInvestment} />
+            )}
+
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                 {/* Budget Usage */}
@@ -1640,7 +1910,7 @@ const InvestmentDetailPage = () => {
                                     tickLine={false} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
-                                    tickFormatter={v => v.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
+                                    tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
                                     formatter={(v, n, p) => [
@@ -1748,8 +2018,8 @@ const InvestmentDetailPage = () => {
                     ) : (
                         <div className="space-y-3">
                             {[...returns].reverse().map((r, i) => (
-                                <div key={i} className="flex items-center justify-between
-                                    py-2 border-b border-gray-100 last:border-0">
+                                <div key={i} className={`flex items-center justify-between
+                                    py-2 border-b border-gray-100 last:border-0 ${r.is_reversed ? 'opacity-60' : ''}`}>
                                     <div className="flex items-center gap-3">
                                         <div className="p-2 rounded-lg bg-green-50
                                             text-green-600">
@@ -1758,6 +2028,12 @@ const InvestmentDetailPage = () => {
                                         <div>
                                             <p className="text-sm font-medium text-gray-900">
                                                 {r.return_type.replace(/_/g, ' ')}
+                                                {r.is_reversed && (
+                                                    <span className="ml-1.5 text-xs badge-gray"
+                                                        title={`Reversed ${formatDate(r.reversed_at)} — no longer counted in Returns`}>
+                                                        Reversed
+                                                    </span>
+                                                )}
                                             </p>
                                             <p className="text-xs text-gray-400">
                                                 {r.return_reference} •{' '}
@@ -1766,7 +2042,7 @@ const InvestmentDetailPage = () => {
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-3">
-                                        <p className="text-sm font-semibold text-green-600">
+                                        <p className={`text-sm font-semibold text-green-600 ${r.is_reversed ? 'line-through' : ''}`}>
                                             +{currency} {parseFloat(r.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                                         </p>
                                         <button

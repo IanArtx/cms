@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { accountsAPI, usersAPI, categoriesAPI, settingsAPI, systemAPI, capitalGoalsAPI } from '../../api/endpoints';
-import { getErrorMessage, formatDate } from '../../utils/helpers';
+import { getErrorMessage, formatDate, getUploadUrl } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -14,7 +14,11 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useBranding } from '../../contexts/BrandingContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import api from '../../api/axios';
+// v1.70.0 — the company's TIN / registration number / incorporation date
+// and withholding agent status are edited here too (same cards as Tax > Settings).
+import { TaxRegistrationCard, AgentStatusCard } from '../tax/TaxPage';
 import {
+    ReceiptPercentIcon,
     PlusIcon,
     BanknotesIcon,
     UserGroupIcon,
@@ -29,7 +33,10 @@ import {
     TrashIcon,
     CalendarDaysIcon,
     ScaleIcon,
+    VideoCameraIcon,
+    LinkIcon,
 } from '@heroicons/react/24/outline';
+import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
 // PERMISSIONS MODAL — grant/revoke permissions for a single role
@@ -540,7 +547,7 @@ const CategoriesTab = () => {
     const [editCategory, setEditCategory] = useState(null);
     const [moduleFilter, setModuleFilter] = useState('FINANCE');
     const [form, setForm] = useState({
-        module: 'FINANCE', parent_id: '', name: '', abbreviation: '', description: '',
+        module: 'FINANCE', parent_id: '', name: '', abbreviation: '', description: '', tax_treatment: '',
     });
 
     const load = useCallback(async () => {
@@ -559,7 +566,7 @@ const CategoriesTab = () => {
 
     const openAdd = () => {
         setEditCategory(null);
-        setForm({ module: moduleFilter, parent_id: '', name: '', abbreviation: '', description: '' });
+        setForm({ module: moduleFilter, parent_id: '', name: '', abbreviation: '', description: '', tax_treatment: '' });
         setShowForm(true);
     };
 
@@ -571,6 +578,7 @@ const CategoriesTab = () => {
             name: cat.name,
             abbreviation: cat.abbreviation,
             description: cat.description || '',
+            tax_treatment: cat.tax_treatment || '',
         });
         setShowForm(true);
     };
@@ -585,16 +593,18 @@ const CategoriesTab = () => {
                     name: form.name,
                     abbreviation: form.abbreviation,
                     description: form.description,
+                    tax_treatment: form.tax_treatment || 'INHERIT',
                 });
                 setSuccess(`Category "${form.name}" updated successfully`);
             } else {
                 await categoriesAPI.create({
                     ...form,
                     parent_id: form.parent_id ? parseInt(form.parent_id) : undefined,
+                    tax_treatment: form.tax_treatment || undefined,
                 });
                 setSuccess(`Category "${form.name}" added successfully`);
             }
-            setForm({ module: moduleFilter, parent_id: '', name: '', abbreviation: '', description: '' });
+            setForm({ module: moduleFilter, parent_id: '', name: '', abbreviation: '', description: '', tax_treatment: '' });
             setShowForm(false);
             setEditCategory(null);
             load();
@@ -613,11 +623,7 @@ const CategoriesTab = () => {
                 <div className="flex gap-2 flex-wrap">
                     {modules.map(m => (
                         <button key={m} onClick={() => setModuleFilter(m)}
-                            className={`px-3 py-1 rounded-lg text-xs font-medium
-                                transition-colors ${moduleFilter === m
-                                    ? 'bg-primary-700 text-white'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                }`}>
+                            className={`chip-filter ${moduleFilter === m ? 'chip-filter-active' : ''}`}>
                             {m}
                         </button>
                     ))}
@@ -673,6 +679,22 @@ const CategoriesTab = () => {
                                 <input type="text" className="input" value={form.description}
                                     onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
                             </div>
+                            {/* v1.70.0 — how expenses in this category are treated in
+                                the corporate tax computation. Empty = same as the
+                                parent category (top level: deductible). A single
+                                expense can still override it when recorded. */}
+                            {(form.module === 'FINANCE' || form.module === 'INVESTMENT') && (
+                                <div className="col-span-2">
+                                    <label className="label">Tax treatment of expenses in this category</label>
+                                    <select className="input" value={form.tax_treatment}
+                                        onChange={e => setForm(p => ({ ...p, tax_treatment: e.target.value }))}>
+                                        <option value="">Same as parent category (default: deductible)</option>
+                                        <option value="DEDUCTIBLE">Deductible — reduces taxable profit</option>
+                                        <option value="NOT_DEDUCTIBLE">Not deductible — added back (e.g. fines, entertainment, personal)</option>
+                                        <option value="CAPITAL">Capital — an asset, not an expense (claim capital allowances instead)</option>
+                                    </select>
+                                </div>
+                            )}
                         </div>
                         <div className="flex justify-end gap-2">
                             <button type="button"
@@ -695,13 +717,14 @@ const CategoriesTab = () => {
                             <th className="table-header">Full Path</th>
                             <th className="table-header">Abbreviation</th>
                             <th className="table-header">Depth</th>
+                            <th className="table-header">Tax treatment</th>
                             <th className="table-header">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                         {categories.length === 0 ? (
                             <tr>
-                                <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-400">
+                                <td colSpan={6} className="px-6 py-8 text-center text-sm text-gray-400">
                                     No categories found for {moduleFilter}
                                 </td>
                             </tr>
@@ -726,6 +749,15 @@ const CategoriesTab = () => {
                                 <td className="table-cell text-sm text-gray-500">
                                     {c.depth || 0}
                                 </td>
+                                <td className="table-cell text-xs">
+                                    {c.effective_tax_treatment ? (
+                                        <span className={c.effective_tax_treatment === 'DEDUCTIBLE' ? 'text-gray-500'
+                                            : c.effective_tax_treatment === 'CAPITAL' ? 'text-indigo-700 font-medium' : 'text-red-700 font-medium'}>
+                                            {{ DEDUCTIBLE: 'Deductible', NOT_DEDUCTIBLE: 'Not deductible', CAPITAL: 'Capital' }[c.effective_tax_treatment]}
+                                            {!c.tax_treatment && <span className="text-gray-400"> (inherited)</span>}
+                                        </span>
+                                    ) : '—'}
+                                </td>
                                 <td className="table-cell">
                                     <button
                                         onClick={() => openEdit(c)}
@@ -749,9 +781,11 @@ const CategoriesTab = () => {
 // ============================================================
 // COMPANY TAB
 // Lets a System Admin rebrand the whole installation — name,
-// address, logo, and the two brand colors used across the sidebar,
-// buttons, badges, and every generated document's letterhead.
-// Changes take effect immediately for every user, no redeploy.
+// address, logo, and the two company colours.
+// v1.71.0: the system's own screens now use one fixed design, so the
+// two colours below only style generated documents and emails
+// (letterheads, certificates, statements, reports). The logo and name
+// still appear in the sidebar and on the login page.
 // ============================================================
 const CompanyTab = () => {
     const { branding, refresh } = useBranding();
@@ -885,6 +919,13 @@ const CompanyTab = () => {
                         onChange={e => setForm(p => ({ ...p, company_address: e.target.value }))}
                         placeholder="Full registered address — shown on every document's letterhead" />
                 </div>
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <h4 className="text-sm font-semibold text-gray-800">Document colours</h4>
+                    <p className="text-xs text-gray-500 mt-0.5 mb-3">
+                        Used only on documents and emails the system produces (letterheads,
+                        certificates, statements, reports). The system's own screens use a fixed
+                        design in light and dark mode and do not change with these colours.
+                    </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                         <label className="label">Primary Color</label>
@@ -895,7 +936,7 @@ const CompanyTab = () => {
                             <input type="text" className="input" value={form.primary_color}
                                 onChange={e => setForm(p => ({ ...p, primary_color: e.target.value }))} />
                         </div>
-                        <p className="text-xs text-gray-400 mt-1">Sidebar, headings, document letterhead</p>
+                        <p className="text-xs text-gray-400 mt-1">Document letterhead and headings</p>
                     </div>
                     <div>
                         <label className="label">Accent Color</label>
@@ -908,6 +949,7 @@ const CompanyTab = () => {
                         </div>
                         <p className="text-xs text-gray-400 mt-1">Document trail highlights</p>
                     </div>
+                </div>
                 </div>
 
                 {/* About content */}
@@ -1335,7 +1377,7 @@ const StampsTab = () => {
                         {stamps.map(stamp => (
                             <div key={stamp.id} className={`border rounded-lg p-3 flex flex-col items-center gap-2 w-32
                                 ${stamp.is_active ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>
-                                <img src={stamp.file_path} alt={stamp.name}
+                                <img src={getUploadUrl(stamp.file_path)} alt={stamp.name}
                                     className="h-16 w-16 object-contain" />
                                 <span className="text-xs text-gray-700 text-center">{stamp.name}</span>
                                 {stamp.is_active ? (
@@ -1875,11 +1917,169 @@ const MembershipAgreementTab = () => {
 };
 
 // ============================================================
+// INTEGRATIONS TAB (v1.63.0) — Google Calendar / Meet
+// Lets an Admin connect the company's Google account once so online
+// events (Events page) can get a Meet link auto-created. See
+// googleCalendarService.js for the full OAuth mechanics — this is
+// just status + a Connect/Disconnect button.
+// ============================================================
+const IntegrationsTab = () => {
+    const [status,  setStatus]  = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [busy,    setBusy]    = useState(false);
+    const [error,   setError]   = useState(null);
+    const [notice,  setNotice]  = useState(null);
+    const confirm = useConfirm();
+
+    const loadStatus = useCallback(() => {
+        setLoading(true);
+        settingsAPI.getGoogleStatus()
+            .then(r => setStatus(r.data.data))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setLoading(false));
+    }, []);
+
+    useEffect(() => {
+        // Landing back here from Google's own consent redirect (see
+        // settingsController.googleOAuthCallback) — read the outcome
+        // from the URL once, show it, then clean the address bar so a
+        // page refresh doesn't re-show the same banner.
+        const params = new URLSearchParams(window.location.search);
+        const google = params.get('google');
+        if (google === 'connected') {
+            setNotice({ type: 'success', text: 'Google Calendar connected.' });
+        } else if (google === 'denied') {
+            setNotice({ type: 'info', text: 'Google connection cancelled — nothing was changed.' });
+        } else if (google === 'error') {
+            setNotice({ type: 'error', text: params.get('message') || 'Could not connect Google Calendar.' });
+        }
+        if (google) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('google');
+            url.searchParams.delete('message');
+            window.history.replaceState({}, '', url.toString());
+        }
+        loadStatus();
+    }, [loadStatus]);
+
+    const handleConnect = async () => {
+        setBusy(true);
+        setError(null);
+        try {
+            const res = await settingsAPI.startGoogleConnect();
+            window.location.href = res.data.data.auth_url;
+        } catch (err) {
+            setError(getErrorMessage(err));
+            setBusy(false);
+        }
+    };
+
+    const handleDisconnect = async () => {
+        const ok = await confirm({
+            title: 'Disconnect Google Calendar',
+            message: 'Online events will stop getting an automatic Meet link — Secretaries will need to paste one in by hand. Events that already have a link keep it.',
+            confirmLabel: 'Disconnect',
+            danger: true,
+        });
+        if (!ok) return;
+        setBusy(true);
+        setError(null);
+        try {
+            await settingsAPI.disconnectGoogle();
+            loadStatus();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    if (loading) return <LoadingSpinner />;
+
+    return (
+        <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Google Calendar / Meet</h3>
+            <p className="text-sm text-gray-500 mb-4">
+                When connected, marking an Events page event "online" automatically creates a
+                Google Meet link on the connected account's calendar — no manual link needed.
+            </p>
+
+            {notice && (
+                <div className={`mb-4 rounded-lg p-3 text-sm ${
+                    notice.type === 'success' ? 'bg-green-50 text-green-700' :
+                    notice.type === 'error'   ? 'bg-red-50 text-red-700' :
+                                                 'bg-gray-50 text-gray-600'
+                }`}>
+                    {notice.text}
+                </div>
+            )}
+            {error && (
+                <div className="mb-4">
+                    <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                </div>
+            )}
+
+            <div className="border border-gray-200 rounded-lg p-4 max-w-xl">
+                <div className="flex items-start gap-3">
+                    <VideoCameraIcon className="h-8 w-8 text-gray-400 flex-shrink-0" />
+                    <div className="flex-1">
+                        {status?.connected ? (
+                            <>
+                                <p className="text-sm font-medium text-gray-900">Connected</p>
+                                <p className="text-sm text-gray-500">
+                                    {status.google_account_email || 'Google account'}
+                                    {status.connected_by_name && (
+                                        <> — connected by {status.connected_by_name}</>
+                                    )}
+                                </p>
+                                {status.connected_at && (
+                                    <p className="text-xs text-gray-400">
+                                        Since {formatDate(status.connected_at)}
+                                    </p>
+                                )}
+                                <button onClick={handleDisconnect} disabled={busy}
+                                    className="btn-secondary text-sm mt-3">
+                                    {busy ? 'Disconnecting...' : 'Disconnect'}
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <p className="text-sm font-medium text-gray-900">Not connected</p>
+                                <p className="text-sm text-gray-500 mb-3">
+                                    Online events currently need a meeting link pasted in by hand.
+                                </p>
+                                <button onClick={handleConnect} disabled={busy}
+                                    className="btn-primary text-sm">
+                                    {busy ? 'Redirecting...' : 'Connect Google Calendar'}
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {!status?.connected && (
+                <div className="mt-4 max-w-xl text-xs text-gray-400 flex items-start gap-2">
+                    <LinkIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span>
+                        First time setting this up? In Google Cloud Console, the OAuth Client ID's
+                        "Authorized redirect URI" must be set to:{' '}
+                        <code className="bg-gray-100 px-1 py-0.5 rounded">
+                            {status?.redirect_uri || '(backend URL)/api/settings/google/callback'}
+                        </code>
+                    </span>
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN SETTINGS PAGE
 // ============================================================
 const SettingsPage = () => {
-    const { isAdmin } = useAuth();
-    const [activeTab, setActiveTab] = useState('currencies');
+    const { isAdmin, hasRole } = useAuth();
+    const [activeTab, setActiveTab] = useTabParam('currencies');
 
     if (!isAdmin()) {
         return (
@@ -1903,9 +2103,11 @@ const SettingsPage = () => {
         { key: 'categories', label: 'Categories', icon: TagIcon },
         { key: 'signatories', label: 'Signatories', icon: DocumentCheckIcon },
         { key: 'stamps',      label: 'Stamps',      icon: CheckBadgeIcon },
+        { key: 'integrations', label: 'Integrations', icon: VideoCameraIcon },
         { key: 'fiscal-quarters', label: 'Fiscal Quarters', icon: CalendarDaysIcon },
         { key: 'capital-call-fines', label: 'Capital Goals', icon: ScaleIcon },
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
+        { key: 'tax', label: 'Registration & Tax', icon: ReceiptPercentIcon },
     ];
 
     return (
@@ -1922,18 +2124,12 @@ const SettingsPage = () => {
                 the last tab, was the one users actually got stuck unable
                 to reach). flex-shrink-0 + whitespace-nowrap on each button
                 stop them from getting squashed/wrapped instead of scrolling. */}
-            <div className="flex gap-2 mb-6 overflow-x-auto scrollbar-hidden pb-1">
+            <div className="tab-bar" role="tablist">
                 {tabs.map(tab => (
                     <button
                         key={tab.key}
                         onClick={() => setActiveTab(tab.key)}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg
-                            text-sm font-medium transition-colors flex-shrink-0
-                            whitespace-nowrap ${
-                            activeTab === tab.key
-                                ? 'bg-primary-700 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
+                        className={`tab ${activeTab === tab.key ? 'tab-active' : ''}`}
                     >
                         <tab.icon className="h-4 w-4" />
                         {tab.label}
@@ -1948,9 +2144,17 @@ const SettingsPage = () => {
                 {activeTab === 'categories' && <CategoriesTab />}
                 {activeTab === 'signatories' && <SignatoriesTab />}
                 {activeTab === 'stamps' && <StampsTab />}
+                {activeTab === 'integrations' && <IntegrationsTab />}
                 {activeTab === 'fiscal-quarters' && <FiscalQuartersTab />}
                 {activeTab === 'capital-call-fines' && <CapitalCallFinesTab />}
                 {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
+                {activeTab === 'tax' && (
+                    <div className="space-y-6">
+                        <TaxRegistrationCard canEdit />
+                        <AgentStatusCard canToggle={hasRole(['Director', 'Treasurer'])} />
+                        <p className="text-xs text-gray-500">Rates, withholdings, returns and the corporate tax computation are on the Tax page.</p>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -42,8 +42,15 @@ const createError = {
 //       res.json(users);
 //   }));
 // ============================================================
-const asyncHandler = (fn) => (req, res, next) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
+const asyncHandler = (fn) => {
+    const wrapped = (req, res, next) => {
+        Promise.resolve(fn(req, res, next)).catch(next);
+    };
+    // v1.73.0 — keep the original function so an approved held money
+    // entry (middleware/holdMoneyEntry.js) can run it and wait for it to
+    // finish completely, errors included.
+    wrapped.__inner = fn;
+    return wrapped;
 };
 
 // ============================================================

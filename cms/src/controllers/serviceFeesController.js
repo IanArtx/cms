@@ -44,6 +44,7 @@ const { uploadBuffer, generateKey, sendFileDownload, toKey } = require('../servi
 const { createPaymentAcknowledgement } = require('./paymentAcknowledgementsController');
 const { createServiceFeePaymentConfirmation, createServiceFeeAdvanceConfirmation } = require('./paymentConfirmationsController');
 const serviceFeeService = require('../services/serviceFeeService');
+const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 MODULE_CODES.SERVICE_FEE = 'SVC';
 
@@ -363,6 +364,72 @@ const updateAgreement = asyncHandler(async (req, res) => {
     });
 
     sendSuccess(res, updated, 'Service fee agreement updated');
+});
+
+// ============================================================
+// WITHHOLDING TAX AMENDMENT (v1.70.0)
+// PATCH /api/service-fees/agreements/:id/wht
+// Service fees carry no withholding tax by default. If an agreement
+// becomes subject to it, it is AMENDED here — with a reason and the date
+// it takes effect — and every payment dated on or after that date has
+// the tax worked out when the recipient confirms it (6% under the agent
+// rule — shadow-only until URA designates the company — or 15% for a
+// non-resident). Earlier payments are not changed. Each amendment is
+// kept in service_fee_wht_amendments.
+// ============================================================
+const amendAgreementWht = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { wht_applicable, wht_rate_code, effective_from, reason } = req.body;
+    const result = await withTransaction(async (client) => {
+        const existing = await client.query('SELECT * FROM service_fee_agreements WHERE id = $1 FOR UPDATE', [id]);
+        if (!existing.rows.length) throw createError.notFound('Service fee agreement not found');
+        const before = existing.rows[0];
+        const applicable = wht_applicable === true || wht_applicable === 'true';
+        if (!!before.wht_applicable === applicable && (before.wht_rate_code || null) === (wht_rate_code || null)) {
+            throw createError.badRequest('Nothing to change — the agreement already has this withholding tax setting.');
+        }
+        await client.query(`
+            UPDATE service_fee_agreements
+            SET    wht_applicable = $1, wht_rate_code = $2, wht_effective_from = $3
+            WHERE  id = $4
+        `, [applicable, applicable ? (wht_rate_code || null) : null, effective_from, id]);
+        await client.query(`
+            INSERT INTO service_fee_wht_amendments
+                (agreement_id, previous_applicable, new_applicable, previous_rate_code, new_rate_code, effective_from, reason, amended_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [id, !!before.wht_applicable, applicable, before.wht_rate_code || null, applicable ? (wht_rate_code || null) : null,
+            effective_from, reason.trim(), req.user.id]);
+        await logAction(req.user.id, ACTIONS.SERVICE_FEE_AGREEMENT_UPDATED, MODULES.STAFF, {
+            ipAddress: req.ip, recordType: 'service_fee_agreements', recordId: parseInt(id),
+            oldValues: { wht_applicable: before.wht_applicable, wht_rate_code: before.wht_rate_code },
+            newValues: { wht_applicable: applicable, wht_rate_code, effective_from },
+            description: `Service fee agreement ${id} amended: withholding tax ${applicable ? 'ON' : 'OFF'} from ${effective_from} (${reason.trim()})`,
+            client,
+        });
+        const hist = await client.query(`
+            SELECT h.*, h.effective_from::text AS effective_from, u.first_name || ' ' || u.last_name AS amended_by_name
+            FROM   service_fee_wht_amendments h JOIN users u ON u.id = h.amended_by
+            WHERE  h.agreement_id = $1 ORDER BY h.amended_at DESC
+        `, [id]);
+        return { wht_applicable: applicable, wht_rate_code: applicable ? (wht_rate_code || null) : null, wht_effective_from: effective_from, history: hist.rows };
+    });
+    sendSuccess(res, result, 'Withholding tax setting amended');
+});
+
+// GET /api/service-fees/agreements/:id/wht — current setting + trail
+const getAgreementWht = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const a = await query(`
+        SELECT wht_applicable, wht_rate_code, wht_effective_from::text AS wht_effective_from
+        FROM service_fee_agreements WHERE id = $1
+    `, [id]);
+    if (!a.rows.length) throw createError.notFound('Service fee agreement not found');
+    const hist = await query(`
+        SELECT h.*, h.effective_from::text AS effective_from, u.first_name || ' ' || u.last_name AS amended_by_name
+        FROM   service_fee_wht_amendments h JOIN users u ON u.id = h.amended_by
+        WHERE  h.agreement_id = $1 ORDER BY h.amended_at DESC
+    `, [id]);
+    sendSuccess(res, { ...a.rows[0], history: hist.rows });
 });
 
 // POST /api/service-fees/agreements/:id/pay
@@ -831,6 +898,8 @@ const listPaymentRequests = asyncHandler(async (req, res) => {
 // payment_confirmations two-step flow a Treasurer-initiated payment
 // already uses.
 const approvePaymentRequest = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'service_fee_payment_requests', req.params.id, ['requested_by'], 'payment request');
     const { id } = req.params;
     const { breakdown, payment_date, payment_method, mobile_money_provider, external_reference, review_notes } = req.body;
 
@@ -1111,6 +1180,8 @@ const getAdvanceRecoveryPreview = asyncHandler(async (req, res) => {
 // uses — the recovery itself is only actually applied once the
 // recipient confirms they received the advance.
 const approveAdvance = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'service_fee_advances', req.params.id, ['requested_by'], 'advance');
     const { id } = req.params;
     const { recovery_breakdown, payment_date, payment_method, mobile_money_provider, external_reference, review_notes } = req.body;
 
@@ -1454,6 +1525,8 @@ const previewReceipt = asyncHandler(async (req, res) => {
 
 // POST /api/service-fees/reimbursements/:id/approve
 const approveReimbursement = asyncHandler(async (req, res) => {
+    // v1.72.0 — four-eyes rule: the creator (or the member it benefits) can't approve it; an Admin can.
+    await assertNotOwnRecord(req, null, 'service_reimbursement_requests', req.params.id, ['user_id'], 'reimbursement');
     const { id } = req.params;
     const { account_id, review_notes } = req.body;
 
@@ -1600,6 +1673,8 @@ module.exports = {
     listAgreements,
     getAgreementById,
     updateAgreement,
+    amendAgreementWht,
+    getAgreementWht,
     recordPayment,
     getOutstandingPeriods,
     settlePastMonths,

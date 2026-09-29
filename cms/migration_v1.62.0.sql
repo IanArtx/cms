@@ -1,0 +1,49 @@
+-- ============================================================
+-- MIGRATION v1.62.0 — Point-in-Time Ledger Balance Validation
+--
+-- Requested directly, alongside a chart-cleanup request: "i would like
+-- that the records and financial entry follows dates and balance
+-- dates i.e. when one enter a record that was on Tuesday last week or
+-- any previous date, the system should track of how much was
+-- available then and what came after before it is posted e.g. if the
+-- transaction of UGX 4M was made then but the balance at the time was
+-- two million then the system should not accept it. Then system
+-- should still keep record of when that transaction was recorded but
+-- the date of the transaction should align with the date balances and
+-- keep the ledgers in an order according to the date of transaction
+-- not entry."
+--
+-- Two clarifying questions were asked and answered, both recommended
+-- options chosen:
+--   - Strictness: POINT-IN-TIME ONLY — a backdated debit is checked
+--     against the account's balance as of its own date (summing
+--     everything already on record up to and including that date),
+--     not a full re-check of every day between then and now.
+--   - Ledger order: REORDER EVERYWHERE — every transaction list/report
+--     (Transactions page, Transfers list, Member Portfolio) now sorts
+--     by the transaction's own value_date, not when it was entered.
+--
+-- This migration is PURELY AN INDEX ADDITION. Every other change is
+-- application code (transactionsController.js's postTransaction — the
+-- one shared choke point every module already posts every transaction
+-- through — now computes and validates a point-in-time balance and
+-- cascades a delta shift to any already-posted transaction that falls
+-- chronologically after a backdated entry, so the ledger's own stored
+-- running-balance column stays internally consistent regardless of
+-- entry order). No table/column changes were needed: value_date
+-- already existed on every transaction, and floor limits were already
+-- tracked as a dated history (effective_from/effective_to) — both were
+-- simply never consulted point-in-time before this.
+--
+-- Idempotent — safe to run against a database that already has this
+-- index.
+-- ============================================================
+
+-- postTransaction now runs a "balance as of this date" SUM and a
+-- cascade UPDATE on every single transaction posted, both filtered by
+-- (account_id, value_date, tie-broken by id) — this composite index
+-- lets both use a single efficient index scan instead of combining
+-- the separate idx_transactions_account / idx_transactions_date
+-- indexes on every write.
+CREATE INDEX IF NOT EXISTS idx_transactions_account_valuedate
+    ON transactions (account_id, value_date, id);

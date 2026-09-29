@@ -307,7 +307,7 @@ const TopBar = ({ onLogoutClick }) => {
         } else {
             setAccountSummary([]);
         }
-    }, [location.pathname, hasPermission, isAuditor, canSeeFinance]);
+    }, [location.pathname, hasPermission, hasRole, user?.id, isAuditor, canSeeFinance]);
 
     // --------------------------------------------------------
     // LOAD & POLL PERSISTED NOTIFICATIONS

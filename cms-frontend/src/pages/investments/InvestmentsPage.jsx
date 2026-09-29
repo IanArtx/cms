@@ -19,15 +19,16 @@ import {
     ArrowTrendingUpIcon, TrophyIcon, ChartPieIcon,
 } from '@heroicons/react/24/outline';
 
+import {
+    ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
+    XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+} from 'recharts';
+
 // Bonds are only ever bought in these standard terms — categorical,
 // not a free-typed duration. Requested directly: "each bond
 // identifies its running period categorically since this is how they
 // are already categorised as such when buying them."
 const BOND_TERMS = [2, 3, 5, 10, 15, 20, 25];
-import {
-    ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
-    XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-} from 'recharts';
 
 // ============================================================
 // PORTFOLIO OVERVIEW (v1.57.0) — a casual, at-a-glance summary

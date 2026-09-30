@@ -310,6 +310,18 @@ const setManualRate = async ({ transactionId, rate, note, userId, ipAddress = nu
     }
     await assertNotInClosedMonth(tx.value_date);
 
+    // v1.76.0 — a fixed-rate company decision covers this date: the
+    // transaction is valued at that rate, not a rate of its own.
+    if (settings.functionalCurrency) {
+        const fixedRule = await fxService.fixedRateRuleFor(tx.currency_id, settings.functionalCurrency.id, tx.value_date);
+        if (fixedRule && !fxService.matchesFixedRule(fixedRule, tx.currency_id, rate)) {
+            throw createError.badRequest(
+                `This transaction is dated ${tx.value_date}, where the rate is fixed by company decision ` +
+                `(${fxService.describeFixedRule(fixedRule)}). It can't be given a different rate.`
+            );
+        }
+    }
+
     return withTransaction(async (client) => {
         const updated = await client.query(`
             UPDATE transactions

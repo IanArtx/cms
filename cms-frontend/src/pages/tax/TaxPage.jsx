@@ -202,9 +202,9 @@ const OverviewTab = ({ overview, onGo }) => {
                 {overview.upcoming.length === 0 ? <p className="text-sm text-gray-400">No open deadlines.</p> : (
                     <ul className="divide-y divide-gray-100">
                         {overview.upcoming.map(d => (
-                            <li key={d.key} className="py-2 flex justify-between gap-4 text-sm">
+                            <li key={d.key} className="py-2 flex justify-between gap-4 text-sm min-w-0">
                                 <span>{d.title}{d.detail ? <span className="block text-xs text-gray-400">{d.detail}</span> : null}</span>
-                                <span className={`whitespace-nowrap ${d.overdue ? 'text-red-600 font-semibold' : d.daysLeft <= 7 ? 'text-amber-600 font-medium' : 'text-gray-600'}`}>
+                                <span className={`text-right sm:whitespace-nowrap ${d.overdue ? 'text-red-600 font-semibold' : d.daysLeft <= 7 ? 'text-amber-600 font-medium' : 'text-gray-600'}`}>
                                     {formatDate(d.dueDate)}{d.amount ? ` · UGX ${money(d.amount)}` : ''}{d.overdue ? ' · OVERDUE' : d.daysLeft >= 0 ? ` · ${d.daysLeft} day(s)` : ''}
                                 </span>
                             </li>

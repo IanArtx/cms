@@ -12,7 +12,7 @@
 // 1) CHECK (read-only — changes nothing):
 //       node update_live_database.js --url "postgresql://…"
 //    Shows which company/database it reached, and for every version
-//    from 1.58.0 to 1.75.0 whether its migration is already applied.
+//    from 1.58.0 to 1.76.0 whether its migration is already applied.
 //
 // 2) APPLY the missing migrations, oldest first:
 //       node update_live_database.js --url "postgresql://…" --apply --confirm=<database name>
@@ -65,6 +65,7 @@ const VERSIONS = [
     { v: '1.73.0', file: 'migration_v1.73.0.sql', what: 'money entries held for approval', check: tbl('held_money_entries') },
     { v: '1.74.0', file: 'migration_v1.74.0.sql', what: 'maintenance mode', check: tbl('system_maintenance') },
     { v: '1.75.0', file: 'migration_v1.75.0.sql', what: 'password & email changes', check: tbl('email_change_requests') },
+    { v: '1.76.0', file: 'migration_v1.76.0.sql', what: 'fixed EUR rate before 20 Aug 2025 (then run apply_fixed_rates_v1.76.0.js)', check: tbl('fx_fixed_rate_periods') },
 ];
 
 // ---- arguments ------------------------------------------------------
@@ -186,7 +187,7 @@ const printStatus = (rows) => {
         }
 
         if (!missing.length) {
-            console.log('\n✅ This database is up to date (1.75.0). Nothing to apply.');
+            console.log('\n✅ This database is up to date (1.76.0). Nothing to apply.');
             return;
         }
         console.log(`\n${missing.length} migration(s) to apply, in this order: ${missing.map(m => m.v).join(' → ')}`);
@@ -241,7 +242,7 @@ const printStatus = (rows) => {
             console.log('\n⚠️  Still missing: ' + missing.map(m => m.v).join(', '));
             process.exitCode = 1;
         } else {
-            console.log('\n✅ Database is now at 1.75.0.');
+            console.log('\n✅ Database is now at 1.76.0.');
             try {
                 const rc = await client.query(`SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE needs_attention) AS a FROM record_corrections`);
                 console.log(`   Automatic corrections logged by the v1.72.0 repair: ${rc.rows[0].n} (needing a look: ${rc.rows[0].a}) — see Reports › Records check after the code is live.`);

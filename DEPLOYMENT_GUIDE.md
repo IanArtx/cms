@@ -453,6 +453,14 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Fixed exchange rate before 20 Aug 2025** (v1.76.0): 1 EUR = UGX 4,000
+  for every date before 20 August 2025, in both companies. After pushing and
+  applying `migration_v1.76.0.sql`, run on each database:
+  `node update_live_database.js --url "…" --script apply_fixed_rates_v1.76.0.js --dry-run`,
+  read the report, then the same without `--dry-run`. Do this **before** the
+  opening share conversion (it refuses afterwards). Then re-run the FX
+  revaluation if it reopened any months. Transfers keep their own rate.
+  Full walkthrough: `UPDATE_GUIDE_v1.76_fixed_rate.md`.
 - **Password and email changes** (v1.75.0): run `cms/migration_v1.75.0.sql`
   on every database. Deploying the code before or after the migration is
   safe — nobody is signed out by the update itself — but changing a

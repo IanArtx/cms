@@ -423,6 +423,17 @@ const generateIndividualReport = async (userId, year, month) => {
         WHERE  user_id = $1 AND status = 'APPROVED'
     `, [userId]);
 
+    // v1.77.0 — the same total split by currency, so a screen never
+    // adds euros and shillings together under one label.
+    const totalByCurrencyResult = await query(`
+        SELECT c.code AS currency_code, c.symbol AS currency_symbol, COALESCE(SUM(sc.amount), 0) AS total
+        FROM   shareholder_contributions sc
+        JOIN   currencies c ON c.id = sc.currency_id
+        WHERE  sc.user_id = $1 AND sc.status = 'APPROVED'
+        GROUP  BY c.code, c.symbol
+        ORDER  BY SUM(sc.amount) DESC
+    `, [userId]);
+
     return {
         period:              periodLabel,
         generated_at:        new Date().toISOString(),
@@ -430,6 +441,7 @@ const generateIndividualReport = async (userId, year, month) => {
         shareholding:        shareholdingResult.rows[0] || null,
         contributions_period: contributionsResult.rows,
         total_contributed:   totalContribResult.rows[0].total,
+        total_contributed_by_currency: totalByCurrencyResult.rows,
     };
 };
 

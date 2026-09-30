@@ -600,6 +600,14 @@ const ShareholderDashboard = ({ headerActions = null }) => {
 
     const myShareholding = profile?.shareholding;
     const totalContributed = report?.total_contributed || 0;
+    // v1.77.0 — money is always shown with ITS OWN currency, never a
+    // fixed "EUR" label.
+    const money = (currency, amount) =>
+        `${currency ? `${currency} ` : ''}${parseFloat(amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+    const contributedByCurrency = report?.total_contributed_by_currency || null;
+    const totalContributedLabel = contributedByCurrency && contributedByCurrency.length > 0
+        ? contributedByCurrency.map(t => money(t.currency_code, t.total)).join(' + ')
+        : money(report?.currency_code || 'EUR', totalContributed);
     const contributions = report?.contributions_period || [];
     const primaryAccount = accounts.find(a => a.account_type === 'PRIMARY');
     const nextEvent = events[0] || null;
@@ -607,13 +615,20 @@ const ShareholderDashboard = ({ headerActions = null }) => {
     // My holding's value = shares_held × current price per share.
     // Falls back to the old "percentage of primary account balance"
     // estimate only if no share price has been set yet.
-    const myShareValue = (myShareholding?.shares_held && sharePrice?.price_per_share)
+    const valuedByPrice = !!(myShareholding?.shares_held && sharePrice?.price_per_share);
+    const myShareValue = valuedByPrice
         ? (parseFloat(myShareholding.shares_held) *
            parseFloat(sharePrice.price_per_share)).toFixed(2)
         : (myShareholding?.percentage && primaryAccount
             ? (parseFloat(primaryAccount.current_balance) *
                parseFloat(myShareholding.percentage) / 100).toFixed(2)
             : null);
+    // v1.77.0 — the value is in the currency it was worked out in: the
+    // share price's currency (UGX), or the primary account's for the
+    // fallback estimate. It used to always say "EUR".
+    const myShareValueCurrency = valuedByPrice
+        ? sharePrice?.currency_code
+        : primaryAccount?.currency_code;
 
     // v1.56.0 — the nearest unpaid/partial pledge with a real deadline,
     // for the top-of-page notification banner. "Due date before fines"
@@ -681,7 +696,7 @@ const ShareholderDashboard = ({ headerActions = null }) => {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 <StatCard
                     title="My Total Contributions"
-                    value={`EUR ${parseFloat(totalContributed).toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                    value={totalContributedLabel}
                     subtitle="All time contributions"
                     icon={BanknotesIcon}
                     color="blue"
@@ -702,11 +717,11 @@ const ShareholderDashboard = ({ headerActions = null }) => {
                 <StatCard
                     title="My Share Value"
                     value={myShareValue
-                        ? `EUR ${parseFloat(myShareValue).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+                        ? money(myShareValueCurrency, myShareValue)
                         : '—'
                     }
                     subtitle={sharePrice?.price_per_share
-                        ? `${parseFloat(sharePrice.price_per_share).toLocaleString('en-US', { maximumFractionDigits: 2 })} per share`
+                        ? `${money(sharePrice.currency_code, sharePrice.price_per_share)} per share`
                         : 'Based on primary account balance'
                     }
                     icon={ArrowTrendingUpIcon}
@@ -727,9 +742,9 @@ const ShareholderDashboard = ({ headerActions = null }) => {
                     <StatCard
                         title="My Side Fund"
                         value={sideFundOverdue?.overdue_amount > 0
-                            ? `EUR ${parseFloat(sideFundOverdue.overdue_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} overdue`
+                            ? `${money(sideFund?.currency_code, sideFundOverdue.overdue_amount)} overdue`
                             : sideFundCredit?.credit_balance > 0
-                                ? `EUR ${parseFloat(sideFundCredit.credit_balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credit`
+                                ? `${money(sideFund?.currency_code, sideFundCredit.credit_balance)} credit`
                                 : 'Up to date'
                         }
                         subtitle={sideFundOverdue?.overdue_count > 0

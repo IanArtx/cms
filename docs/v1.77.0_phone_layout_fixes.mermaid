@@ -1,0 +1,21 @@
+%% v1.77.0 — share value currency + phone layout fixes
+flowchart TD
+    subgraph CUR["Dashboard money labels"]
+        C1["/shares/price → currency_code (UGX)"] --> C2["My Share Value = shares × price, in UGX\n'UGX 60,000 per share'"]
+        C3["reportService: total_contributed_by_currency"] --> C4["My Total Contributions: 'EUR 1,550' (+ 'UGX …' if any)"]
+        C5["side fund currency_code"] --> C6["My Side Fund card"]
+    end
+
+    subgraph POP["Top-bar panels (notifications, balances, New, account)"]
+        P1{"screen < 640px?"} -- no --> P2["hangs under its button (as before)"]
+        P1 -- yes --> P3["fixed 12px from each edge,\n8px under the top bar,\nstops above the bottom menu, scrolls inside"]
+    end
+
+    subgraph SCR["Sideways scrolling on a phone"]
+        S1["PageHeader buttons (.page-actions)\n→ full width, wrap onto more lines"]
+        S2["Tab rows (.tab-bar)\n→ momentum, contained swipe, snap"]
+        S3["useScrollHints (once, in AppLayout)"] --> S4["fade where more tabs are hidden"]
+        S3 --> S5["selected tab scrolled into view"]
+        S3 --> S6["table wider than its space → swipeable"]
+        S7["Phone cards (.dt-cell) → contents wrap"]
+    end

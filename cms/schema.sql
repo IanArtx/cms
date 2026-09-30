@@ -5735,5 +5735,35 @@ CREATE INDEX IF NOT EXISTS idx_email_change_confirm_hash ON email_change_request
 CREATE INDEX IF NOT EXISTS idx_email_change_cancel_hash  ON email_change_requests(cancel_token_hash);
 
 -- ============================================================
--- END OF SCHEMA — v1.75.0
+-- v1.76.0 — fixed exchange rate before a cut-off (company decision:
+-- 1 EUR = 4,000 UGX for every date before 20 Aug 2025). On a fresh
+-- install the rate table is empty, so there is nothing to correct:
+-- load fx_rates.csv as usual (it already starts with the fixed rate).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS fx_fixed_rate_periods (
+    id                  SERIAL        PRIMARY KEY,
+    base_currency_id    INTEGER       NOT NULL REFERENCES currencies(id),
+    target_currency_id  INTEGER       NOT NULL REFERENCES currencies(id),
+    rate                NUMERIC(20,6) NOT NULL,
+    valid_before        DATE          NOT NULL,     -- the rule covers every date BEFORE this one
+    reason              TEXT          NOT NULL,
+    created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    applied_at          TIMESTAMPTZ,                -- set by apply_fixed_rates_v1.76.0.js
+    applied_summary     JSONB,
+    CONSTRAINT fx_fixed_rate_positive   CHECK (rate > 0),
+    CONSTRAINT fx_fixed_rate_two_ccys   CHECK (base_currency_id <> target_currency_id),
+    CONSTRAINT fx_fixed_rate_one_per_pair UNIQUE (base_currency_id, target_currency_id)
+);
+
+-- The rule asked for. Skipped (no error) on a database that has no
+-- EUR or UGX currency.
+INSERT INTO fx_fixed_rate_periods (base_currency_id, target_currency_id, rate, valid_before, reason)
+SELECT e.id, u.id, 4000, DATE '2025-08-20',
+       'Company decision (v1.76.0): 1 EUR is valued at UGX 4,000 for every date before 20 August 2025, in both companies.'
+FROM   currencies e, currencies u
+WHERE  e.code = 'EUR' AND u.code = 'UGX'
+ON CONFLICT (base_currency_id, target_currency_id) DO NOTHING;
+
+-- ============================================================
+-- END OF SCHEMA — v1.76.0
 -- ============================================================

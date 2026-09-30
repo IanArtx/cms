@@ -39,6 +39,12 @@ router.get('/history',
 );
 
 // ============================================================
+// FIXED-RATE RULES (v1.76.0)
+// GET /api/exchange-rates/fixed
+// ============================================================
+router.get('/fixed', requireFinancialAccess('FINANCE_VIEW_ALL'), exchangeRatesController.getFixedRates);
+
+// ============================================================
 // SET A MONTHLY EXCHANGE RATE
 // POST /api/exchange-rates
 // Treasurer / Assistant Treasurer / Admin only

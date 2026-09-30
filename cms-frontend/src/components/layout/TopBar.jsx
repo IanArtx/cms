@@ -19,7 +19,7 @@
 //    pending approvals and events in the next 7 days).
 // ============================================================
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -64,15 +64,47 @@ const timeAgo = (isoString) => {
 const fmtBalance = (n) => parseFloat(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 // Small popover shell used by every menu in the bar.
+// v1.77.0 — on a phone (narrower than 640px) the panel no longer hangs
+// off the button it belongs to (which pushed it off the left edge of
+// the screen): it spans the screen with a 12px margin each side, starts
+// just under the top bar and stops above the bottom menu bar, scrolling
+// inside itself.
+const PHONE_QUERY = '(max-width: 639px)';
 const Popover = ({ open, onClose, children, width = 320, align = 'right', label }) => {
     const ref = useRef(null);
+    const [phone, setPhone] = useState(() => typeof window !== 'undefined' && window.matchMedia
+        ? window.matchMedia(PHONE_QUERY).matches : false);
+    const [top, setTop] = useState(64);
     useEffect(() => {
         if (!open) return undefined;
         const onKey = (e) => { if (e.key === 'Escape') onClose(); };
         document.addEventListener('keydown', onKey);
         return () => document.removeEventListener('keydown', onKey);
     }, [open, onClose]);
+    useEffect(() => {
+        if (!window.matchMedia) return undefined;
+        const mq = window.matchMedia(PHONE_QUERY);
+        const onChange = () => setPhone(mq.matches);
+        onChange();
+        if (mq.addEventListener) mq.addEventListener('change', onChange); else mq.addListener(onChange);
+        return () => { if (mq.removeEventListener) mq.removeEventListener('change', onChange); else mq.removeListener(onChange); };
+    }, []);
+    // Where the top bar ends — the panel starts 8px below it.
+    useLayoutEffect(() => {
+        if (!open || !phone || !ref.current) return;
+        const bar = ref.current.closest('header') || ref.current.parentElement;
+        const bottom = bar ? bar.getBoundingClientRect().bottom : 56;
+        setTop(Math.max(8, Math.round(bottom + 8)));
+    }, [open, phone]);
     if (!open) return null;
+    const phoneStyle = {
+        position: 'fixed', left: 12, right: 12, top, width: 'auto', maxWidth: 'none',
+        // 88px keeps it clear of the bottom menu bar (and the phone's own home bar).
+        maxHeight: `calc(100dvh - ${top}px - 88px - env(safe-area-inset-bottom, 0px))`,
+    };
+    const desktopStyle = {
+        width, maxWidth: 'calc(100vw - 24px)', maxHeight: 'min(640px, calc(100dvh - 88px))',
+    };
     return (
         <>
             <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
@@ -80,9 +112,9 @@ const Popover = ({ open, onClose, children, width = 320, align = 'right', label 
                 ref={ref}
                 role="dialog"
                 aria-label={label}
-                className={`absolute top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'} z-40 rounded-xl border overflow-hidden flex flex-col`}
+                className={`${phone ? '' : `absolute top-[calc(100%+8px)] ${align === 'right' ? 'right-0' : 'left-0'}`} z-40 rounded-xl border overflow-hidden flex flex-col`}
                 style={{
-                    width, maxWidth: 'calc(100vw - 24px)', maxHeight: 'min(640px, calc(100dvh - 88px))',
+                    ...(phone ? phoneStyle : desktopStyle),
                     backgroundColor: 'var(--cms-surface)', borderColor: 'var(--cms-border)', boxShadow: 'var(--cms-shadow-pop)',
                 }}
             >

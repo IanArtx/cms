@@ -39,6 +39,11 @@
 // screen does: the rate covering that date is cut off there, and the
 // new rate runs until the next later one.
 //
+// FIXED RATES (v1.76.0): if a company decision fixes a rate for dates
+// before a cut-off (fx_fixed_rate_periods — e.g. 1 EUR = 4,000 UGX
+// before 2025-08-20), a line giving that pair a DIFFERENT rate before
+// the cut-off stops the whole load with the line number.
+//
 // The whole file is loaded in ONE database transaction — if any line
 // is invalid, nothing is saved and the script says which line.
 //
@@ -162,6 +167,21 @@ const readRows = () => {
         const setBy = (setter.rows[0] || fallback.rows[0] || {}).id;
         if (!setBy) throw new Error('No user exists to record as the person who set these rates.');
 
+        // v1.76.0 — fixed-rate rules, if that migration has run.
+        let fixedRules = [];
+        try {
+            fixedRules = (await client.query(`
+                SELECT f.base_currency_id, f.target_currency_id, f.rate, f.valid_before::text AS valid_before,
+                       b.code AS base_code, t.code AS target_code
+                FROM fx_fixed_rate_periods f
+                JOIN currencies b ON b.id = f.base_currency_id JOIN currencies t ON t.id = f.target_currency_id
+            `)).rows;
+        } catch (e) {
+            if (e.code !== '42P01') throw e;
+            await client.query('ROLLBACK');       // the failed read aborted the transaction —
+            await client.query('BEGIN');          // start again (nothing had been written yet)
+        }
+
         let inserted = 0;
         let skipped = 0;
         for (const r of rows) {
@@ -170,6 +190,20 @@ const readRows = () => {
             if (!baseId) throw new Error(`Line ${r.line}: unknown currency code "${r.base}"`);
             if (!targetId) throw new Error(`Line ${r.line}: unknown currency code "${r.target}"`);
             if (baseId === targetId) throw new Error(`Line ${r.line}: base and target are the same currency`);
+
+            // v1.76.0 — a fixed-rate company decision (fx_fixed_rate_periods)
+            // covers this date: only that rate may be loaded for it.
+            const fixed = fixedRules.find(f => r.date < f.valid_before
+                && ((f.base_currency_id === baseId && f.target_currency_id === targetId)
+                 || (f.base_currency_id === targetId && f.target_currency_id === baseId)));
+            if (fixed) {
+                const expected = fixed.base_currency_id === baseId ? parseFloat(fixed.rate) : 1 / parseFloat(fixed.rate);
+                if (Math.abs(r.rate - expected) > Math.max(1e-9, expected * 1e-6)) {
+                    throw new Error(`Line ${r.line}: ${r.base}->${r.target} ${r.rate} on ${r.date} — by company decision the rate before ` +
+                        `${fixed.valid_before} is fixed at 1 ${fixed.base_code} = ${parseFloat(fixed.rate)} ${fixed.target_code} (v1.76.0). ` +
+                        `Remove this line or give it that rate.`);
+                }
+            }
 
             const dup = await client.query(`
                 SELECT rate FROM currency_exchange_rates

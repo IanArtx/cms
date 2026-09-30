@@ -21,6 +21,7 @@ import MobileNav from './MobileNav';
 import { LayoutProvider } from './LayoutContext';
 import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
 import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74.0
+import useScrollHints from '../../hooks/useScrollHints'; // v1.77.0
 
 // Auto-logout after this many minutes of no mouse/keyboard/touch/
 // scroll activity anywhere in the app — see hooks/useIdleLogout.js.
@@ -35,6 +36,10 @@ const AppLayout = () => {
     // Idle timeout logs out directly (no confirmation prompt — the
     // whole point is that nobody's there to answer one); a manual
     // click on either Logout button always confirms first, below.
+    // v1.77.0 — tab rows: fades where more tabs are hidden, selected tab
+    // scrolled into view (every page).
+    useScrollHints('main-content');
+
     useIdleLogout(IDLE_LOGOUT_MINUTES * 60 * 1000, () => {
         logout();
     });

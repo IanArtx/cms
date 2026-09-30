@@ -1,0 +1,26 @@
+%% v1.76.0 — 1 EUR = UGX 4,000 for every date before 20 Aug 2025 (both companies)
+flowchart TD
+    M["migration_v1.76.0.sql\nfx_fixed_rate_periods: EUR→UGX 4,000, valid_before 2025-08-20\n(rule only — no amounts change)"]
+
+    subgraph GUARDS["The rule is enforced wherever a rate is written"]
+        G1["Accounts › Set rate\ndifferent rate before the cut-off → 409"]
+        G2["Manual rate on one transaction\ndated before the cut-off → 400"]
+        G3["backfill_v1.66.0_fx_rates.js\ncontradicting CSV line → whole load stops"]
+    end
+    M --> GUARDS
+
+    M --> A["apply_fixed_rates_v1.76.0.js --dry-run  →  then without --dry-run\n(one database transaction; refuses once shares are allotted)"]
+
+    subgraph APPLY["What the script does"]
+        R["Rate table\n• rows ending ≤ 20 Aug 2025 removed (kept in audit log)\n• row across the cut-off now starts 20 Aug 2025\n• + 4,000 from 2000-01-01 to 2025-08-20"]
+        V["Month-end revaluations from the first\naffected date reopened (run again)"]
+        T["Transactions before the cut-off re-valued\nby the usual trigger → EUR × 4,000\nreversals follow their original"]
+        K["Kept as recorded:\ntransfer legs (own rate) · UGX amounts ·\nMANUAL rates (unless --include-manual)"]
+        X["Tax records (WHT / at source) and\npledge-payment conversions → 4,000"]
+        C{"Checks: rate = 4,000 before the cut-off ·\n20 Aug keeps its rate · transfers unchanged ·\nevery posted entry has a UGX value"}
+    end
+    A --> R --> V --> T --> X --> C
+    T -.-> K
+    C -- "all pass" --> S["Saved + audit log FX_FIXED_RATE_APPLIED"]
+    C -- "any fails" --> N["Nothing saved"]
+    S --> NEXT["Run FX revaluations again\n→ then the opening share conversion (C2)\nbuilt from the corrected UGX values"]

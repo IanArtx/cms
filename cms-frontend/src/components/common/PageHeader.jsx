@@ -53,7 +53,10 @@ const PageHeader = ({ title, subtitle = null, actions = null, showBack = false, 
                     </div>
                 </div>
                 {actions && (
-                    <div className="flex items-center gap-2.5 flex-wrap">
+                    // v1.77.0 — page-actions: on a phone the buttons take the full
+                    // width and wrap onto more lines (they used to run off the
+                    // screen where they could not be reached).
+                    <div className="page-actions flex items-center gap-2.5 flex-wrap">
                         {actions}
                     </div>
                 )}

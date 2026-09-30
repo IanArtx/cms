@@ -18,10 +18,19 @@
 //   <SignaturePad onChange={(dataUrl) => setSignature(dataUrl)} />
 // ============================================================
 
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react';
 
 const SignaturePad = ({ onChange, width = 400, height = 160 }) => {
     const canvasRef = useRef(null);
+    // v1.77.0 — never wider than the space it sits in (a 400px pad ran
+    // off a phone screen). Measured once when it appears, so turning the
+    // phone never wipes a signature being drawn.
+    const boxRef = useRef(null);
+    const [drawWidth, setDrawWidth] = useState(width);
+    useLayoutEffect(() => {
+        const room = boxRef.current?.parentElement?.clientWidth;
+        if (room) setDrawWidth(Math.max(200, Math.min(width, room - 4)));
+    }, [width]);
     const drawingRef = useRef(false);
     const [hasDrawn, setHasDrawn] = useState(false);
 
@@ -32,19 +41,19 @@ const SignaturePad = ({ onChange, width = 400, height = 160 }) => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ratio = window.devicePixelRatio || 1;
-        canvas.width = width * ratio;
+        canvas.width = drawWidth * ratio;
         canvas.height = height * ratio;
-        canvas.style.width = `${width}px`;
+        canvas.style.width = `${drawWidth}px`;
         canvas.style.height = `${height}px`;
         const ctx = canvas.getContext('2d');
         ctx.scale(ratio, ratio);
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, width, height);
+        ctx.fillRect(0, 0, drawWidth, height);
         ctx.strokeStyle = '#1a1a1a';
         ctx.lineWidth = 2.2;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-    }, [width, height]);
+    }, [drawWidth, height]);
 
     useEffect(() => { setupCanvas(); }, [setupCanvas]);
 
@@ -88,7 +97,7 @@ const SignaturePad = ({ onChange, width = 400, height = 160 }) => {
 
     return (
         <div>
-            <div className="border-2 border-dashed border-gray-300 rounded-lg inline-block bg-white touch-none">
+            <div ref={boxRef} className="border-2 border-dashed border-gray-300 rounded-lg inline-block max-w-full bg-white touch-none">
                 <canvas
                     ref={canvasRef}
                     onPointerDown={handlePointerDown}

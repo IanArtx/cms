@@ -335,14 +335,14 @@ const LedgerAccountsTab = () => {
                 </p>
                 <div className="space-y-1">
                     {data.mappings.map(m => (
-                        <div key={m.inflow_type} className="flex items-center justify-between text-sm py-2 border-b border-gray-50 last:border-0">
-                            <div>
+                        <div key={m.inflow_type} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm py-2 border-b border-gray-50 last:border-0">
+                            <div className="min-w-0">
                                 <p className="text-gray-900">{m.inflow_type.replace(/_/g, ' ')}</p>
                                 {m.notes && <p className="text-xs text-gray-400">{m.notes}</p>}
                             </div>
                             {editingType === m.inflow_type ? (
-                                <div className="flex items-center gap-2">
-                                    <select className="input text-sm" value={pendingAccountId} onChange={e => setPendingAccountId(e.target.value)}>
+                                <div className="flex flex-wrap items-center gap-2 max-w-full">
+                                    <select className="input text-sm max-w-full" value={pendingAccountId} onChange={e => setPendingAccountId(e.target.value)}>
                                         {data.accounts.map(a => (
                                             <option key={a.id} value={a.id}>{a.code} — {a.name}</option>
                                         ))}
@@ -353,7 +353,7 @@ const LedgerAccountsTab = () => {
                                     <button onClick={() => setEditingType(null)} className="btn-secondary text-xs">Cancel</button>
                                 </div>
                             ) : (
-                                <button onClick={() => startEdit(m)} className="text-xs text-primary-700 hover:text-primary-800 hover:underline">
+                                <button onClick={() => startEdit(m)} className="text-xs text-left text-primary-700 hover:text-primary-800 hover:underline">
                                     {m.gl_account_code} — {m.gl_account_name}
                                 </button>
                             )}

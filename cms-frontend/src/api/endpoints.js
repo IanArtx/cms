@@ -820,6 +820,7 @@ export const exchangeRatesAPI = {
     getCurrent: ()       => api.get('/exchange-rates/current'),
     setRate:    (data)   => api.post('/exchange-rates', data),
     getHistory: (params) => api.get('/exchange-rates/history', { params }),
+    getFixed:   ()       => api.get('/exchange-rates/fixed'),   // v1.76.0 — company fixed-rate decisions
 };
 
 // ============================================================

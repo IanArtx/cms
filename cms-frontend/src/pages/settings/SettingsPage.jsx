@@ -889,10 +889,10 @@ const CompanyTab = () => {
                             onError={e => { e.target.style.display = 'none'; }}
                         />
                     </div>
-                    <div className="flex-1">
+                    <div className="flex-1 min-w-0">
                         <input type="file" accept="image/png,image/jpeg,image/gif"
                             onChange={handleLogoChange}
-                            className="text-sm text-gray-500" />
+                            className="text-sm text-gray-500 w-full max-w-full" />
                         {logoFile && (
                             <button
                                 onClick={handleLogoUpload}
@@ -2061,12 +2061,12 @@ const IntegrationsTab = () => {
             </div>
 
             {!status?.connected && (
-                <div className="mt-4 max-w-xl text-xs text-gray-400 flex items-start gap-2">
+                <div className="mt-4 max-w-xl text-xs text-gray-400 flex items-start gap-2 min-w-0">
                     <LinkIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
                     <span>
                         First time setting this up? In Google Cloud Console, the OAuth Client ID's
                         "Authorized redirect URI" must be set to:{' '}
-                        <code className="bg-gray-100 px-1 py-0.5 rounded">
+                        <code className="bg-gray-100 px-1 py-0.5 rounded break-all">
                             {status?.redirect_uri || '(backend URL)/api/settings/google/callback'}
                         </code>
                     </span>

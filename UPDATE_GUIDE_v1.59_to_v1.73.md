@@ -207,6 +207,22 @@ it again. It never overwrites a rate that's already there.
 
 (Single rates can also be added in **Settings → Exchange Rates**.)
 
+### C1b. Fixed rate before 20 Aug 2025 (v1.76.0) — before C2
+**Full step-by-step (with what each output should look like): `UPDATE_GUIDE_v1.76_fixed_rate.md`.** In short:
+By company decision, 1 EUR = UGX 4,000 for every date before 20 August 2025.
+Push the v1.76.0 code, apply its migration (`node update_live_database.js --url "PASTE_URL" --apply --confirm=<database name>`),
+then put the rule into the books, dry run first:
+
+```
+node update_live_database.js --url "PASTE_URL" --script apply_fixed_rates_v1.76.0.js --dry-run
+node update_live_database.js --url "PASTE_URL" --script apply_fixed_rates_v1.76.0.js
+```
+
+It must end with **✅ Every date before the cut-off uses the fixed rate; transfers unchanged; every posted transaction has a UGX value.**
+If it lists entries that keep a MANUAL rate and those should be 4,000 too, run it again with `--include-manual`.
+If it says it reopened FX revaluation months, run them again on Financial Statements › FX & Revaluation.
+(A new database needs none of this: `fx_rates.csv` already starts with the 4,000 rate.)
+
 ### C2. Registered share values → opening share conversion
 Since v1.69 the system works in **whole shares plus share credit**,
 and **refuses new contributions until the opening conversion has run.**
@@ -290,6 +306,7 @@ Awaiting approval**, and that reversals now need a second person.
 - [ ] B4 pushed; four services Live
 - [ ] B5 health, version, balances, balance sheet ✅ (both)
 - [ ] C1 exchange rates ✅ (both)
+- [ ] C1b fixed 4,000 rate before 20 Aug 2025 applied (both) — v1.76.0
 - [ ] C2 registered values + opening conversion (both)
 - [ ] C3 share receipts (both)
 - [ ] C4 tax settings (both)

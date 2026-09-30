@@ -76,6 +76,16 @@ const setExchangeRate = asyncHandler(async (req, res) => {
     }
     const effectiveDate = effective_from ? String(effective_from).slice(0, 10) : fxService.todayStr();
 
+    // v1.76.0 — a fixed-rate company decision covers this date: only
+    // the fixed rate itself may be entered for it (either direction).
+    const fixedRule = await fxService.fixedRateRuleFor(parseInt(base_currency_id, 10), parseInt(target_currency_id, 10), effectiveDate);
+    if (fixedRule && !fxService.matchesFixedRule(fixedRule, parseInt(base_currency_id, 10), rate)) {
+        throw createError.conflict(
+            `By company decision the rate is fixed at ${fxService.describeFixedRule(fixedRule)}. ` +
+            `A different rate can only start on or after ${fixedRule.valid_before}.`
+        );
+    }
+
     const newRate = await withTransaction(async (client) => {
         const duplicate = await client.query(`
             SELECT id, rate FROM currency_exchange_rates
@@ -164,8 +174,25 @@ const getRateHistory = asyncHandler(async (req, res) => {
     sendPaginated(res, result.rows, total, page, limit);
 });
 
+// ============================================================
+// FIXED-RATE RULES (v1.76.0)
+// GET /api/exchange-rates/fixed — the company's fixed-rate decisions
+// (e.g. 1 EUR = 4,000 UGX before 20 Aug 2025), shown on the Accounts
+// page next to the current rates.
+// ============================================================
+const getFixedRates = asyncHandler(async (req, res) => {
+    const rules = await fxService.listFixedRateRules();
+    sendSuccess(res, rules.map(f => ({
+        id: f.id, base_currency_id: f.base_currency_id, base_currency_code: f.base_code,
+        target_currency_id: f.target_currency_id, target_currency_code: f.target_code,
+        rate: f.rate, valid_before: f.valid_before, reason: f.reason,
+        applied: !!f.applied_at, applied_at: f.applied_at, description: fxService.describeFixedRule(f),
+    })));
+});
+
 module.exports = {
     getCurrentRates,
     setExchangeRate,
     getRateHistory,
+    getFixedRates,
 };

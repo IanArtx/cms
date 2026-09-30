@@ -125,7 +125,7 @@ const DataTable = ({
                                 {columns.map((col, colIndex) => (
                                     <div key={colIndex} className="contents">
                                         <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500 pt-0.5 break-words">{col.header}</dt>
-                                        <dd className="text-sm text-gray-900 min-w-0 break-words">
+                                        <dd className="dt-cell text-sm text-gray-900 min-w-0 break-words">
                                             {col.render ? col.render(row) : row[col.accessor] || '—'}
                                         </dd>
                                     </div>

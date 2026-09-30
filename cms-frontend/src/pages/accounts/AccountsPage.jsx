@@ -1279,7 +1279,7 @@ const SharePriceCard = ({ sharePrice, canEdit, onEditClick }) => (
 // many units (shares) it bought. Keep this history accurate and
 // dated correctly; it directly affects every member's shareholding.
 // ============================================================
-const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies }) => {
+const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies, fixedRates = [] }) => {
     const [form, setForm] = useState({
         base_currency_id: '',
         target_currency_id: '',
@@ -1320,6 +1320,12 @@ const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies }) => {
                         does affect how future contributions in this
                         currency pair convert into shares.
                     </p>
+                    {fixedRates.length > 0 && (
+                        <p className="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
+                            {fixedRates.map(f => f.description).join('; ')} — fixed by company decision, so a
+                            different rate for that pair can only start on or after that date.
+                        </p>
+                    )}
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -1389,7 +1395,7 @@ const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies }) => {
 // ============================================================
 // EXCHANGE RATES CARD
 // ============================================================
-const ExchangeRatesCard = ({ rates, canEdit, onEditClick }) => (
+const ExchangeRatesCard = ({ rates, fixedRates = [], canEdit, onEditClick }) => (
     <div className="card mb-6">
         <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-3">
@@ -1416,6 +1422,18 @@ const ExchangeRatesCard = ({ rates, canEdit, onEditClick }) => (
                 </button>
             )}
         </div>
+        {/* v1.76.0 — company fixed-rate decisions */}
+        {fixedRates.map(f => (
+            <div key={f.id} className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                <span className="font-semibold">Fixed by company decision:</span> {f.description}.
+                {' '}Every entry dated before then is valued at this rate; transfers keep their own recorded rate.
+                {!f.applied && (
+                    <span className="block text-xs text-amber-800 mt-1">
+                        Not yet applied to the books — run apply_fixed_rates_v1.76.0.js (see the deployment guide).
+                    </span>
+                )}
+            </div>
+        ))}
         {rates.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-4">
                 No exchange rates set yet
@@ -1557,8 +1575,8 @@ const MarketHistoryCharts = () => {
 // ============================================================
 const RecalculateShareholdingCard = ({ onOpenClick }) => (
     <div className="card mb-6">
-        <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
                 <div className="p-3 rounded-xl bg-indigo-50 text-indigo-700">
                     <ArrowsRightLeftIcon className="h-6 w-6" />
                 </div>
@@ -1727,6 +1745,7 @@ const AccountsPage = () => {
     const [currencies,    setCurrencies]    = useState([]);
     const [sharePrice,    setSharePrice]    = useState(null);
     const [exchangeRates, setExchangeRates] = useState([]);
+    const [fixedRates,    setFixedRates]    = useState([]); // v1.76.0
     const [loading,       setLoading]       = useState(true);
     const [error,         setError]         = useState(null);
     const [showCreate,    setShowCreate]    = useState(false);
@@ -1759,6 +1778,10 @@ const AccountsPage = () => {
             setCurrencies(currenciesRes.data.data);
             setSharePrice(sharePriceRes.data.data);
             setExchangeRates(exchangeRatesRes.data.data || []);
+            // v1.76.0 — fixed-rate decisions (optional: older servers lack the endpoint)
+            exchangeRatesAPI.getFixed()
+                .then(r => setFixedRates(r.data.data || []))
+                .catch(() => setFixedRates([]));
             // Keep the open detail view in sync with any edits just made
             setSelectedAccount(prev => prev ? (loadedAccounts.find(a => a.id === prev.id) || prev) : null);
         } catch (err) {
@@ -1896,6 +1919,7 @@ const AccountsPage = () => {
             {/* Exchange Rates */}
             <ExchangeRatesCard
                 rates={exchangeRates}
+                fixedRates={fixedRates}
                 canEdit={canEditRates}
                 onEditClick={() => setShowRateModal(true)}
             />
@@ -1955,6 +1979,7 @@ const AccountsPage = () => {
                 onClose={() => setShowRateModal(false)}
                 onSuccess={loadData}
                 currencies={currencies}
+                fixedRates={fixedRates}
             />
             <RecalculateShareholdingModal
                 isOpen={showRecalcModal}

@@ -259,6 +259,56 @@
     @apply flex items-end gap-1 mb-6 overflow-x-auto border-b;
     border-color: var(--cms-border);
     scrollbar-width: thin;
+    /* v1.77.0 — smooth finger scrolling on phones: momentum on older
+       iPhones, the swipe stays inside the tab row instead of dragging
+       the page, and a tab settles neatly at the edge. */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: 16px;
+  }
+  .tab-bar > * { flex-shrink: 0; scroll-snap-align: start; }
+  /* v1.77.0 — a soft fade on the side(s) where more tabs are hidden, so
+     it is obvious the row can be swiped (set by useScrollHints). */
+  .tab-bar.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+  .tab-bar.more-left  { -webkit-mask-image: linear-gradient(to left,  #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to left,  #000 calc(100% - 40px), transparent); }
+  .tab-bar.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
+
+  /* v1.77.0 — buttons in a page's header band: on a phone they take the
+     full width and wrap onto more lines, however the page grouped them. */
+  @media (max-width: 639px) {
+    .page-actions { width: 100%; }
+    .page-actions > div, .page-actions > span { flex-wrap: wrap; max-width: 100%; }
+    .page-actions .btn-primary, .page-actions .btn-secondary, .page-actions .btn-danger { white-space: normal; }
+  }
+
+  /* v1.77.0 — phone cards (DataTable rows shown as label: value): a
+     row of buttons, a no-wrap label or a fixed minimum width inside a
+     value used to push past the card's edge and get cut off. */
+  .dt-cell { overflow-wrap: anywhere; }
+  .dt-cell .flex { flex-wrap: wrap; }
+  .dt-cell .whitespace-nowrap { white-space: normal; }
+  .dt-cell [class*="min-w-"] { min-width: 0 !important; }
+
+  /* v1.77.0 — a table wider than its space (found by useScrollHints)
+     scrolls sideways by finger instead of being cut off. */
+  table.cms-table-scroll {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  /* v1.77.0 — any wide block (table, button row) given .scroll-x scrolls
+     sideways by finger on a phone instead of being cut off. */
+  .scroll-x {
+    @apply overflow-x-auto max-w-full;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
   }
   .tab {
     @apply relative inline-flex items-center gap-2 whitespace-nowrap px-4 h-11 text-sm font-medium

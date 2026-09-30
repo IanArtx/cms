@@ -379,6 +379,64 @@ const recomputeFunctionalAmounts = async (client, { fromDate = null } = {}) => {
     };
 };
 
+
+// ============================================================
+// FIXED-RATE RULES (v1.76.0) — fx_fixed_rate_periods.
+// A company decision that one currency pair is worth a set rate for
+// every date BEFORE a cut-off (e.g. 1 EUR = 4,000 UGX before
+// 20 Aug 2025). The rate table itself holds that rate for those dates
+// (apply_fixed_rates_v1.76.0.js puts it there); these helpers let the
+// places that WRITE rates refuse anything that would contradict it.
+// Missing table (migration not run yet) = no rules, never an error.
+// ============================================================
+const listFixedRateRules = async (client = null) => {
+    const run = client ? (t, p) => client.query(t, p) : (t, p) => query(t, p);
+    try {
+        const r = await run(`
+            SELECT f.id, f.base_currency_id, f.target_currency_id, f.rate,
+                   f.valid_before::text AS valid_before, f.reason, f.applied_at,
+                   b.code AS base_code, t.code AS target_code
+            FROM   fx_fixed_rate_periods f
+            JOIN   currencies b ON b.id = f.base_currency_id
+            JOIN   currencies t ON t.id = f.target_currency_id
+            ORDER  BY f.valid_before, f.id
+        `);
+        return r.rows.map(x => ({ ...x, rate: parseFloat(x.rate) }));
+    } catch (err) {
+        if (err.code === '42P01') return [];
+        throw err;
+    }
+};
+
+// The rule covering (fromId -> toId) on `date`, in either direction,
+// or null. `rate` is always expressed as 1 fromId = rate toId.
+const fixedRateRuleFor = async (fromId, toId, date, client = null) => {
+    if (!fromId || !toId || !date) return null;
+    const d = toDateStr(date);
+    const rules = await listFixedRateRules(client);
+    for (const f of rules) {
+        if (d >= f.valid_before) continue;
+        if (f.base_currency_id === Number(fromId) && f.target_currency_id === Number(toId)) return { ...f, directRate: f.rate };
+        if (f.base_currency_id === Number(toId) && f.target_currency_id === Number(fromId)) return { ...f, directRate: 1 / f.rate };
+    }
+    return null;
+};
+
+// "1 EUR = 4,000 UGX for every date before 20 Aug 2025" — for messages.
+const describeFixedRule = (f) => {
+    const [y, m, d] = f.valid_before.split('-').map(Number);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `1 ${f.base_code} = ${f.rate.toLocaleString('en-US', { maximumFractionDigits: 6 })} ${f.target_code} ` +
+           `for every date before ${d} ${months[m - 1]} ${y}`;
+};
+
+// True when `rate` (1 fromId = rate toId) matches the rule, allowing
+// for rounding of an inverse rate.
+const matchesFixedRule = (f, fromId, rate) => {
+    const direct = f.base_currency_id === Number(fromId) ? f.rate : 1 / f.rate;
+    return Math.abs(parseFloat(rate) - direct) <= Math.max(1e-9, Math.abs(direct) * 1e-6);
+};
+
 module.exports = {
     BASIS,
     FX_GAIN_GL_CODE,
@@ -399,4 +457,8 @@ module.exports = {
     getStoredRevaluationLines,
     computeRevaluation,
     recomputeFunctionalAmounts,
+    listFixedRateRules,
+    fixedRateRuleFor,
+    describeFixedRule,
+    matchesFixedRule,
 };

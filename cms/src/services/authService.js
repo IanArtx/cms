@@ -32,6 +32,9 @@ const comparePassword = async (plaintext, hash) => {
 // ============================================================
 const generateTokens = (user) => {
     const sessionId = crypto.randomUUID();
+    // v1.75.0 — the account's session version. Changing or resetting the
+    // password adds 1 to it, which ends every sign-in issued before.
+    const sv = parseInt(user.session_version, 10) || 0;
 
     const accessToken = jwt.sign(
         {
@@ -39,6 +42,7 @@ const generateTokens = (user) => {
             uuid:      user.uuid,
             email:     user.email,
             sessionId,
+            sv,
             twoFactorVerified: false, // must complete 2FA separately if enabled
         },
         process.env.JWT_SECRET,
@@ -46,7 +50,7 @@ const generateTokens = (user) => {
     );
 
     const refreshToken = jwt.sign(
-        { userId: user.id, sessionId },
+        { userId: user.id, sessionId, sv },
         process.env.JWT_REFRESH_SECRET,
         { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
     );

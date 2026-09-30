@@ -94,7 +94,10 @@ api.interceptors.response.use(
                         localStorage.removeItem('accessToken');
                         localStorage.removeItem('refreshToken');
                         localStorage.removeItem('user');
-                        window.location.href = '/login';
+                        // v1.75.0 — signed out because the password was changed
+                        // (or reset) somewhere else: say so on the sign-in page.
+                        const revoked = refreshErr?.response?.data?.error === 'SESSION_REVOKED';
+                        window.location.href = revoked ? '/login?signedOut=password' : '/login';
                     }
                 }
             } else {

@@ -445,8 +445,134 @@ const DeletePermanentlyModal = ({ isOpen, user, onClose, onSuccess }) => {
     );
 };
 
+// ============================================================
+// ADMIN: CHANGE A MEMBER'S EMAIL (v1.75.0)
+// For a member who can no longer get into their old inbox. Safeguards:
+//   • the change still only happens when the member clicks the link
+//     sent to the NEW address;
+//   • the member's current address is told (with the reason) and can
+//     stop it — or undo it for 7 days;
+//   • a reason is required and everything is audit-logged.
+// ============================================================
+const ChangeEmailModal = ({ isOpen, user, onClose, onSuccess }) => {
+    const [pending,  setPending]  = useState(null);
+    const [checking, setChecking] = useState(false);
+    const [newEmail, setNewEmail] = useState('');
+    const [reason,   setReason]   = useState('');
+    const [saving,   setSaving]   = useState(false);
+    const [error,    setError]    = useState(null);
+    const [done,     setDone]     = useState(null);
+
+    useEffect(() => {
+        if (!isOpen || !user) return;
+        setPending(null); setNewEmail(''); setReason(''); setError(null); setDone(null);
+        setChecking(true);
+        usersAPI.adminGetEmailChange(user.id)
+            .then(res => setPending(res.data.data || null))
+            .catch(err => setError(getErrorMessage(err)))
+            .finally(() => setChecking(false));
+    }, [isOpen, user]);
+
+    if (!isOpen || !user) return null;
+
+    const handleSend = async (e) => {
+        e.preventDefault();
+        setSaving(true); setError(null); setDone(null);
+        try {
+            const res = await usersAPI.adminRequestEmailChange(user.id, { new_email: newEmail.trim(), reason: reason.trim() });
+            setPending(res.data.data || null);
+            setDone(res.data.message);
+            setNewEmail(''); setReason('');
+            if (onSuccess) onSuccess();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleCancel = async () => {
+        setSaving(true); setError(null); setDone(null);
+        try {
+            const res = await usersAPI.adminCancelEmailChange(user.id);
+            setPending(null);
+            setDone(res.data.message);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">Change Email Address</h2>
+                    <p className="text-sm text-gray-500 mb-4">
+                        {user.first_name} {user.last_name} — currently <strong>{user.email}</strong>
+                    </p>
+
+                    {error && (
+                        <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>
+                    )}
+                    {done && (
+                        <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">{done}</div>
+                    )}
+
+                    {checking ? (
+                        <div className="py-6 text-center text-sm text-gray-400">Checking…</div>
+                    ) : (
+                        <>
+                            {pending && (
+                                <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-900">
+                                    <p className="font-medium">Waiting for confirmation: {pending.new_email}</p>
+                                    <p className="text-amber-800 mt-1">
+                                        Started by {pending.requested_by_name || 'the member'} {formatRelativeTime(pending.created_at)}
+                                        {pending.admin_reason ? <> — reason: “{pending.admin_reason}”</> : null}.
+                                        The link expires {formatDate(pending.expires_at)}.
+                                    </p>
+                                    <button type="button" onClick={handleCancel} disabled={saving} className="btn-secondary mt-2">
+                                        Cancel this change
+                                    </button>
+                                </div>
+                            )}
+
+                            <form onSubmit={handleSend} className="space-y-4">
+                                <div>
+                                    <label className="label" htmlFor="adm-em">New email address</label>
+                                    <input id="adm-em" type="email" className="input" value={newEmail}
+                                        onChange={e => setNewEmail(e.target.value)} required />
+                                </div>
+                                <div>
+                                    <label className="label" htmlFor="adm-reason">Reason (the member sees this; it is kept in the audit log)</label>
+                                    <textarea id="adm-reason" className="input" rows={2} value={reason}
+                                        onChange={e => setReason(e.target.value)}
+                                        placeholder="e.g. Lost access to the old inbox — asked in person at the meeting" required />
+                                </div>
+                                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 space-y-1">
+                                    <p>• Nothing changes yet: the member must press the link we email to the new address (within 48 hours).</p>
+                                    <p>• Their current address is told, with your reason, and can stop it — or undo it for 7 days.</p>
+                                    <p>• Their password and sign-ins are not touched.</p>
+                                </div>
+                                <div className="flex gap-3 justify-end">
+                                    <button type="button" onClick={onClose} className="btn-secondary">Close</button>
+                                    <button type="submit" disabled={saving || !newEmail.trim() || !reason.trim()} className="btn-primary">
+                                        {saving ? 'Sending…' : pending ? 'Send a new link instead' : 'Send confirmation link'}
+                                    </button>
+                                </div>
+                            </form>
+                        </>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const UsersPage = () => {
-    const { hasPermission, user } = useAuth();
+    const { hasPermission, hasRole, user } = useAuth();
     const confirm = useConfirm();
     const [users,        setUsers]        = useState([]);
     const [roles,        setRoles]        = useState([]);
@@ -458,6 +584,7 @@ const UsersPage = () => {
     const [activeTab,    setActiveTab]    = useTabParam('members');
     const [manageUser,   setManageUser]   = useState(null);
     const [deletingUser, setDeletingUser] = useState(null);
+    const [emailUser,    setEmailUser]    = useState(null); // v1.75.0
     const [search,       setSearch]       = useState('');
     const [actionLoading, setActionLoading] = useState(false);
 
@@ -619,6 +746,17 @@ const UsersPage = () => {
                             Manage Roles
                         </button>
                     )}
+                    {/* v1.75.0 — Admin role only (the server checks too) */}
+                    {hasRole('Admin') && row.is_active && row.id !== user?.id && (
+                        <button
+                            onClick={() => setEmailUser(row)}
+                            className="text-xs text-gray-600 hover:text-gray-800
+                                font-medium px-2 py-1 rounded border border-gray-200
+                                hover:bg-gray-50 transition-colors"
+                        >
+                            Change Email
+                        </button>
+                    )}
                     {hasPermission('USER_MANAGE') && row.is_active && (
                         <button
                             onClick={() => handleDeactivate(row.id)}
@@ -720,6 +858,13 @@ const UsersPage = () => {
                 onClose={() => setManageUser(null)}
                 onSuccess={handleRoleChange}
                 roles={roles}
+            />
+
+            {/* Change Email Modal (v1.75.0) */}
+            <ChangeEmailModal
+                isOpen={!!emailUser}
+                user={emailUser}
+                onClose={() => setEmailUser(null)}
             />
 
             {/* Delete Permanently Modal (v1.35.0) */}

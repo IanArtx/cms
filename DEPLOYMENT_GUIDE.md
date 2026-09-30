@@ -453,6 +453,13 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Password and email changes** (v1.75.0): run `cms/migration_v1.75.0.sql`
+  on every database. Deploying the code before or after the migration is
+  safe — nobody is signed out by the update itself — but changing a
+  password from the profile and changing an email address only work once
+  the migration has run. The links in these emails use `FRONTEND_URL`
+  (already set in `render.yaml` / `render.company-b.yaml`), so they always
+  point at the live site.
 - **Updating a live system that is several versions behind** (v1.73.0):
   use `cms/update_live_database.js` from your own computer — no psql
   needed. `node update_live_database.js --url "<External Database URL>"`

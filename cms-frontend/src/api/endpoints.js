@@ -24,6 +24,11 @@ export const authAPI = {
     setup2FA:        ()     => api.post('/auth/2fa/setup'),
     activate2FA:     (data) => api.post('/auth/2fa/activate', data),
     verify2FA:       (data) => api.post('/auth/2fa/verify', data),
+    // v1.75.0 — change password while signed in (other devices signed out;
+    // returns fresh tokens for this device) and the two email-change links
+    changePassword:     (data)  => api.post('/auth/change-password', data),
+    confirmEmailChange: (token) => api.post('/auth/email-change/confirm', { token }),
+    cancelEmailChange:  (token) => api.post('/auth/email-change/cancel', { token }),
 };
 
 // ============================================================
@@ -54,6 +59,13 @@ export const usersAPI = {
     updateSignature:         (dataUrl) => api.patch('/users/me/signature', { signature_data_url: dataUrl }),
     getMembershipAgreement:  ()        => api.get('/users/me/membership-agreement'),
     giveConsent:             ()        => api.post('/users/me/consent'),
+    // v1.75.0 — email-address change (confirmed from the new address)
+    getMyEmailChange:        ()        => api.get('/users/me/email-change'),
+    requestEmailChange:      (data)    => api.post('/users/me/email-change', data),
+    cancelMyEmailChange:     ()        => api.delete('/users/me/email-change'),
+    adminGetEmailChange:     (id)       => api.get(`/users/${id}/email-change`),
+    adminRequestEmailChange: (id, data) => api.post(`/users/${id}/email-change`, data),
+    adminCancelEmailChange:  (id)       => api.delete(`/users/${id}/email-change`),
 };
 
 // ============================================================

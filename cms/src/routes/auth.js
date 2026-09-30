@@ -8,6 +8,7 @@ const { body } = require('express-validator');
 const { validateRequest } = require('../middleware/validate');
 const { authenticate } = require('../middleware/auth');
 const authController = require('../controllers/authController');
+const accountSecurity = require('../controllers/accountSecurityController'); // v1.75.0
 
 // --- REGISTER ---
 router.post('/register',
@@ -80,6 +81,34 @@ router.post('/reset-password',
     ],
     validateRequest,
     authController.resetPassword
+);
+
+// --- CHANGE PASSWORD while signed in (v1.75.0) ---
+// Current password + new password; other devices are signed out.
+router.post('/change-password',
+    authenticate,
+    [
+        body('current_password').notEmpty().withMessage('Enter your current password'),
+        body('new_password')
+            .isLength({ min: 8 }).withMessage('The new password must be at least 8 characters')
+            .matches(/[A-Z]/).withMessage('The new password needs an uppercase letter')
+            .matches(/[0-9]/).withMessage('The new password needs a number')
+            .matches(/[^A-Za-z0-9]/).withMessage('The new password needs a special character'),
+    ],
+    validateRequest,
+    accountSecurity.changePassword
+);
+
+// --- EMAIL CHANGE LINKS (v1.75.0) — public: opened from an email ---
+router.post('/email-change/confirm',
+    [body('token').isLength({ min: 32, max: 128 }).withMessage('The link is incomplete')],
+    validateRequest,
+    accountSecurity.confirmEmailChange
+);
+router.post('/email-change/cancel',
+    [body('token').isLength({ min: 32, max: 128 }).withMessage('The link is incomplete')],
+    validateRequest,
+    accountSecurity.cancelEmailChangeByLink
 );
 
 // --- 2FA SETUP (requires login) ---

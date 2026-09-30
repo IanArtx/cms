@@ -10,6 +10,7 @@ import { authAPI } from '../../api/endpoints';
 import { useBranding } from '../../contexts/BrandingContext';
 import { getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../../components/common/ErrorMessage';
+import PasswordRules, { passwordMeetsRules } from '../../components/common/PasswordRules'; // v1.75.0
 
 const ResetPasswordPage = () => {
     const { branding } = useBranding();
@@ -31,8 +32,8 @@ const ResetPasswordPage = () => {
             setError('Passwords do not match.');
             return;
         }
-        if (password.length < 8) {
-            setError('Password must be at least 8 characters.');
+        if (!passwordMeetsRules(password)) {
+            setError('The new password does not meet all the rules yet (see the list under it).');
             return;
         }
 
@@ -112,8 +113,8 @@ const ResetPasswordPage = () => {
                                 Password Reset
                             </h2>
                             <p className="text-sm text-gray-500">
-                                Your password has been changed. Redirecting you to login
-                                in 3 seconds...
+                                Your password has been changed and every device was signed out.
+                                Redirecting you to sign in in 3 seconds...
                             </p>
                         </div>
                     ) : (
@@ -136,9 +137,6 @@ const ResetPasswordPage = () => {
                                         required
                                         autoFocus
                                     />
-                                    <p className="text-xs text-gray-400 mt-1">
-                                        At least 8 characters, with an uppercase letter, a number, and a special character
-                                    </p>
                                 </div>
 
                                 <div>
@@ -151,6 +149,8 @@ const ResetPasswordPage = () => {
                                         placeholder="••••••••"
                                         required
                                     />
+                                    {/* v1.75.0 — live checklist of the rules */}
+                                    <PasswordRules password={password} confirm={confirmPassword} showMatch />
                                 </div>
 
                                 <button

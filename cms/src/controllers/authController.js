@@ -148,7 +148,8 @@ const login = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT id, uuid, email, first_name, last_name,
                password_hash, is_active, is_email_verified,
-               two_factor_enabled, two_factor_secret
+               two_factor_enabled, two_factor_secret,
+               COALESCE((to_jsonb(users)->>'session_version')::int, 0) AS session_version
         FROM users WHERE email = $1
     `, [email.toLowerCase()]);
 
@@ -324,11 +325,19 @@ const refreshToken = asyncHandler(async (req, res) => {
     }
 
     const result = await query(
-        'SELECT id, uuid, email, first_name, last_name, is_active FROM users WHERE id = $1',
+        `SELECT id, uuid, email, first_name, last_name, is_active,
+                COALESCE((to_jsonb(users)->>'session_version')::int, 0) AS session_version
+         FROM users WHERE id = $1`,
         [decoded.userId]
     );
     const user = result.rows[0];
     if (!user || !user.is_active) throw createError.unauthorized('Account not found or deactivated');
+    // v1.75.0 — refused once the password has been changed since this sign-in.
+    if ((parseInt(decoded.sv, 10) || 0) !== (parseInt(user.session_version, 10) || 0)) {
+        const e = createError.unauthorized('You were signed out because the password on this account was changed. Please sign in again.');
+        e.error = 'SESSION_REVOKED';
+        throw e;
+    }
 
     const { accessToken, refreshToken: newRefresh } = generateTokens(user);
     sendSuccess(res, { accessToken, refreshToken: newRefresh });
@@ -394,6 +403,8 @@ const resetPassword = asyncHandler(async (req, res) => {
                password_reset_expires = NULL
         WHERE  id = $2
     `, [passwordHash, user.id]);
+    // v1.75.0 — a reset signs out every device that was signed in.
+    await require('../services/accountSecurityService').endAllSessions(user.id);
 
     await logAction(user.id, ACTIONS.USER_PASSWORD_RESET, MODULES.AUTH, {
         ipAddress:   req.ip,
@@ -402,7 +413,7 @@ const resetPassword = asyncHandler(async (req, res) => {
         description: `Password reset for ${user.email}`,
     });
 
-    sendSuccess(res, null, 'Password reset successful. You can now log in with your new password.');
+    sendSuccess(res, null, 'Password reset successful. Every device was signed out — sign in with your new password.');
 });
 
 // ============================================================

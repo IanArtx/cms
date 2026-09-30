@@ -9,6 +9,7 @@ const { validateRequest, validators } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles, isSelfOrHasPermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const usersController = require('../controllers/usersController');
+const accountSecurity = require('../controllers/accountSecurityController'); // v1.75.0
 const { asyncHandler } = require('../utils/errors');
 const { query } = require('../config/database');
 const { sendSuccess } = require('../utils/response');
@@ -70,6 +71,19 @@ router.patch('/me',
     validateRequest,
     usersController.updateMyProfile
 );
+
+// v1.75.0 — change my email address (confirmed from the new address)
+router.get('/me/email-change', accountSecurity.getMyEmailChange);
+router.post('/me/email-change',
+    [
+        body('new_email').trim().isEmail().withMessage('Please enter a valid email address'),
+        body('current_password').notEmpty().withMessage('Enter your current password'),
+        body('two_factor_code').optional({ values: 'falsy' }).isLength({ min: 6, max: 6 }),
+    ],
+    validateRequest,
+    accountSecurity.requestMyEmailChange
+);
+router.delete('/me/email-change', accountSecurity.cancelMyEmailChange);
 
 router.patch('/me/photo',
     ...uploadSingle('photo', 'profiles'),
@@ -172,6 +186,29 @@ router.get('/:id',
 
 // v1.34.0 — full "Member Portfolio" snapshot (Section 6.x). Same
 // self-or-permitted gate as the plain profile lookup above.
+// v1.75.0 — Admin starts an email change for a member (the member must
+// still confirm from the new address; both addresses are told).
+router.get('/:id/email-change',
+    requireConsent, requireRoles(['Admin']),
+    [param('id').isInt({ min: 1 })], validateRequest,
+    accountSecurity.adminGetEmailChange
+);
+router.post('/:id/email-change',
+    requireConsent, requireRoles(['Admin']),
+    [
+        param('id').isInt({ min: 1 }),
+        body('new_email').trim().isEmail().withMessage('Please enter a valid email address'),
+        body('reason').trim().notEmpty().withMessage('Please give a reason').isLength({ max: 500 }),
+    ],
+    validateRequest,
+    accountSecurity.adminRequestEmailChange
+);
+router.delete('/:id/email-change',
+    requireConsent, requireRoles(['Admin']),
+    [param('id').isInt({ min: 1 })], validateRequest,
+    accountSecurity.adminCancelEmailChange
+);
+
 router.get('/:id/portfolio',
     validators.idParam('id'),
     validateRequest,

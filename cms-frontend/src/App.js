@@ -17,6 +17,7 @@ import LoginPage       from './pages/auth/LoginPage';
 import RegisterPage    from './pages/auth/RegisterPage';
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage';
 import ResetPasswordPage  from './pages/auth/ResetPasswordPage';
+import EmailChangeLinkPage from './pages/auth/EmailChangeLinkPage'; // v1.75.0
 
 // App Pages
 import DashboardPage    from './pages/dashboard/DashboardPage';
@@ -93,6 +94,10 @@ function App() {
                         <Route path="/register" element={<RegisterPage />} />
                         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                         <Route path="/reset-password"  element={<ResetPasswordPage />} />
+                        {/* v1.75.0 — the two links an email change sends (public: the
+                            person may be signed out, or on another device) */}
+                        <Route path="/confirm-email-change" element={<EmailChangeLinkPage mode="confirm" />} />
+                        <Route path="/cancel-email-change"  element={<EmailChangeLinkPage mode="cancel" />} />
                         {/* Also public — was previously nested inside the protected
                             layout below, which meant an unauthenticated user
                             clicking their verification email link got bounced to

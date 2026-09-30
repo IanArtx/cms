@@ -5699,5 +5699,41 @@ CREATE INDEX IF NOT EXISTS idx_maintenance_skipped_pending
     ON maintenance_skipped_jobs(caught_up_at) WHERE caught_up_at IS NULL;
 
 -- ============================================================
--- END OF SCHEMA — v1.74.0
+-- v1.75.0 — PASSWORD & EMAIL CHANGES (sessions + email change requests)
+-- ============================================================
+-- Every sign-in carries the account's session_version. Changing or
+-- resetting the password adds 1, which ends every older sign-in.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version     INTEGER     NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_changed_at    TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS email_change_requests (
+    id                   SERIAL       PRIMARY KEY,
+    user_id              INTEGER      NOT NULL REFERENCES users(id),
+    old_email            VARCHAR(255) NOT NULL,
+    new_email            VARCHAR(255) NOT NULL,
+    -- Only SHA-256 hashes of the two link tokens are stored, never the
+    -- tokens themselves (someone reading the database can't use them).
+    confirm_token_hash   CHAR(64)     NOT NULL,
+    cancel_token_hash    CHAR(64)     NOT NULL,
+    status               VARCHAR(12)  NOT NULL DEFAULT 'PENDING'
+                         CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'EXPIRED', 'SUPERSEDED', 'REVERTED')),
+    requested_by         INTEGER      NOT NULL REFERENCES users(id),
+    requested_by_admin   BOOLEAN      NOT NULL DEFAULT FALSE,
+    admin_reason         TEXT,
+    expires_at           TIMESTAMPTZ  NOT NULL,           -- confirm link: 48 hours
+    undo_until           TIMESTAMPTZ,                     -- old-address "this wasn't me": 7 days
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    confirmed_at         TIMESTAMPTZ,
+    cancelled_at         TIMESTAMPTZ,
+    cancelled_by         INTEGER      REFERENCES users(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_email_change_one_pending
+    ON email_change_requests(user_id) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_email_change_confirm_hash ON email_change_requests(confirm_token_hash);
+CREATE INDEX IF NOT EXISTS idx_email_change_cancel_hash  ON email_change_requests(cancel_token_hash);
+
+-- ============================================================
+-- END OF SCHEMA — v1.75.0
 -- ============================================================

@@ -58,7 +58,10 @@ const authenticate = async (req, res, next) => {
                 -- (member_consents.user_id is UNIQUE, so this is a
                 -- plain 1:1 join; bool_or is only needed because the
                 -- roles/permissions joins above force a GROUP BY)
-                bool_or(mc.id IS NOT NULL) AS has_consented
+                bool_or(mc.id IS NOT NULL) AS has_consented,
+                -- v1.75.0 — read through to_jsonb so this still works on a
+                -- database that hasn't run migration_v1.75.0.sql yet
+                COALESCE((to_jsonb(u)->>'session_version')::int, 0) AS session_version
             FROM users u
             LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
             LEFT JOIN roles r       ON r.id = ur.role_id AND r.is_active = TRUE
@@ -78,6 +81,14 @@ const authenticate = async (req, res, next) => {
         // Check account is still active
         if (!user.is_active) {
             return next(createError.unauthorized('Your account has been deactivated'));
+        }
+
+        // v1.75.0 — a sign-in from before the last password change/reset
+        // is no longer valid ("sign out other devices").
+        if ((parseInt(decoded.sv, 10) || 0) !== (parseInt(user.session_version, 10) || 0)) {
+            const e = createError.unauthorized('You were signed out because the password on this account was changed. Please sign in again.');
+            e.error = 'SESSION_REVOKED';
+            return next(e);
         }
 
         // Attach user and session context to the request

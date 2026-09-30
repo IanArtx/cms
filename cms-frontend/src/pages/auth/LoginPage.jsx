@@ -16,6 +16,8 @@ const LoginPage = () => {
     const navigate  = useNavigate();
     const location  = useLocation();
     const from      = location.state?.from?.pathname || '/';
+    // v1.75.0 — sent here because the password was changed on another device
+    const signedOutByPassword = new URLSearchParams(location.search).get('signedOut') === 'password';
 
     const [step, setStep]       = useState('login'); // 'login' or '2fa'
     const [loading, setLoading] = useState(false);
@@ -108,6 +110,15 @@ const LoginPage = () => {
 
                 {/* Card */}
                 <div className="bg-white rounded-2xl shadow-xl p-8">
+
+                    {/* v1.75.0 — why this person was signed out */}
+                    {signedOutByPassword && !error && (
+                        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                            You were signed out because the password on this account was changed.
+                            Please sign in with the new password. If you did not change it, use
+                            <strong> Forgot password</strong> below straight away.
+                        </div>
+                    )}
 
                     {/* Error */}
                     {error && (

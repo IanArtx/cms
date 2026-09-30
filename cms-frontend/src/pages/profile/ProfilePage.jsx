@@ -16,6 +16,8 @@ import Avatar, { AVATAR_OPTIONS, IllustratedAvatar } from '../../components/comm
 import PhotoCropModal from '../../components/common/PhotoCropModal';
 import SignaturePad from '../../components/common/SignaturePad';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
+import PasswordRules, { PasswordInput, passwordMeetsRules } from '../../components/common/PasswordRules'; // v1.75.0
 import {
     UserCircleIcon,
     KeyIcon,
@@ -147,45 +149,49 @@ const EditProfileForm = ({ user, onSuccess, onCancel }) => {
 };
 
 // ============================================================
-// CHANGE PASSWORD FORM
+// CHANGE PASSWORD FORM (v1.75.0)
+// Current password + new password (twice), with a live checklist of
+// the rules. When it succeeds, every OTHER device signed in to this
+// account is signed out; this device gets fresh sign-in tokens and
+// stays signed in. An email tells the member it happened (with a
+// "wasn't me" reset link).
+// Forgot the current password? A reset link is emailed instead.
 // ============================================================
 const ChangePasswordForm = () => {
     const { user } = useAuth();
-    const [form, setForm] = useState({
-        token: '', password: '', confirm_password: ''
-    });
+    const empty = { current_password: '', new_password: '', confirm_password: '' };
+    const [form,     setForm]     = useState(empty);
     const [loading,  setLoading]  = useState(false);
     const [error,    setError]    = useState(null);
-    const [success,  setSuccess]  = useState(false);
+    const [success,  setSuccess]  = useState(null);
     const [sending,  setSending]  = useState(false);
-    const [codeSent, setCodeSent] = useState(false);
+    const [linkSent, setLinkSent] = useState(false);
 
-    const sendResetCode = async () => {
-        setSending(true);
-        setError(null);
-        try {
-            await authAPI.forgotPassword({ email: user.email });
-            setCodeSent(true);
-        } catch (err) {
-            setError(getErrorMessage(err));
-        } finally {
-            setSending(false);
-        }
-    };
+    const set = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
+    const rulesOk = passwordMeetsRules(form.new_password);
+    const matches = form.new_password && form.new_password === form.confirm_password;
+    const canSubmit = form.current_password && rulesOk && matches && !loading;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        if (form.password !== form.confirm_password) {
-            setError('Passwords do not match');
-            return;
-        }
+        if (!rulesOk)  { setError('The new password does not meet all the rules yet (see the list under it).'); return; }
+        if (!matches)  { setError('The two new passwords are not the same.'); return; }
+        if (form.new_password === form.current_password) { setError('The new password must be different from the current one.'); return; }
         setLoading(true);
         setError(null);
+        setSuccess(null);
         try {
-            await authAPI.resetPassword({ token: form.token, password: form.password });
-            setSuccess(true);
-            setForm({ token: '', password: '', confirm_password: '' });
-            setCodeSent(false);
+            const res = await authAPI.changePassword({
+                current_password: form.current_password,
+                new_password: form.new_password,
+            });
+            // The old sign-in on this device was ended along with the
+            // others — keep this device signed in with the new tokens.
+            const { accessToken, refreshToken } = res.data.data || {};
+            if (accessToken)  localStorage.setItem('accessToken', accessToken);
+            if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
+            setSuccess(res.data.message || 'Password changed.');
+            setForm(empty);
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -193,61 +199,200 @@ const ChangePasswordForm = () => {
         }
     };
 
+    const sendResetLink = async () => {
+        setSending(true);
+        setError(null);
+        try {
+            await authAPI.forgotPassword({ email: user.email });
+            setLinkSent(true);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setSending(false);
+        }
+    };
+
     return (
-        <div className="space-y-4">
+        <div className="space-y-4 max-w-xl">
             {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
             {success && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-3
-                    text-sm text-green-700">
-                    Password changed successfully.
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">
+                    {success}
                 </div>
             )}
-            {!codeSent ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                    <p className="text-sm text-gray-500 mb-4">
-                        A reset code will be sent to:{' '}
-                        <strong>{user?.email}</strong>
+                    <label className="label" htmlFor="pw-current">Current password</label>
+                    <PasswordInput id="pw-current" value={form.current_password} onChange={set('current_password')}
+                        autoComplete="current-password" />
+                </div>
+                <div>
+                    <label className="label" htmlFor="pw-new">New password</label>
+                    <PasswordInput id="pw-new" value={form.new_password} onChange={set('new_password')}
+                        autoComplete="new-password" />
+                </div>
+                <div>
+                    <label className="label" htmlFor="pw-confirm">Type the new password again</label>
+                    <PasswordInput id="pw-confirm" value={form.confirm_password} onChange={set('confirm_password')}
+                        autoComplete="new-password" />
+                    <PasswordRules password={form.new_password} confirm={form.confirm_password} showMatch />
+                </div>
+                <p className="text-xs text-gray-500">
+                    After the change, any other phone or computer signed in to your account is signed out.
+                    You stay signed in here.
+                </p>
+                <button type="submit" disabled={!canSubmit} className="btn-primary">
+                    {loading ? 'Changing…' : 'Change password'}
+                </button>
+            </form>
+
+            <div className="border-t border-gray-200 pt-4">
+                <p className="text-sm font-medium text-gray-700">Forgot your current password?</p>
+                {linkSent ? (
+                    <p className="text-sm text-green-700 mt-1">
+                        A link to set a new password was sent to <strong>{user?.email}</strong>. It works for one hour.
                     </p>
-                    <button onClick={sendResetCode} disabled={sending}
-                        className="btn-secondary">
-                        {sending ? 'Sending...' : 'Send Reset Code to My Email'}
+                ) : (
+                    <>
+                        <p className="text-sm text-gray-500 mt-1">
+                            We can email a link to <strong>{user?.email}</strong> that lets you set a new one.
+                        </p>
+                        <button type="button" onClick={sendResetLink} disabled={sending} className="btn-secondary mt-2">
+                            {sending ? 'Sending…' : 'Email me a reset link'}
+                        </button>
+                    </>
+                )}
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
+// CHANGE EMAIL FORM (v1.75.0)
+// The new address only takes effect when the member clicks the link
+// we email to it (within 48 hours). The current address is told and
+// gets a link to stop it — or undo it for 7 days after it went through.
+// ============================================================
+const ChangeEmailForm = ({ profile, onChanged }) => {
+    const [pending,  setPending]  = useState(null);
+    const [loaded,   setLoaded]   = useState(false);
+    const [form,     setForm]     = useState({ new_email: '', current_password: '', two_factor_code: '' });
+    const [loading,  setLoading]  = useState(false);
+    const [error,    setError]    = useState(null);
+    const [success,  setSuccess]  = useState(null);
+    const confirm = useConfirm();
+
+    useEffect(() => {
+        usersAPI.getMyEmailChange()
+            .then(res => setPending(res.data.data || null))
+            .catch(() => setPending(null))
+            .finally(() => setLoaded(true));
+    }, []);
+
+    const set = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
+    const needs2FA = !!profile?.two_factor_enabled;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+        setSuccess(null);
+        try {
+            const body = { new_email: form.new_email.trim(), current_password: form.current_password };
+            if (needs2FA) body.two_factor_code = form.two_factor_code.trim();
+            const res = await usersAPI.requestEmailChange(body);
+            setPending(res.data.data || null);
+            setSuccess(res.data.message);
+            setForm({ new_email: '', current_password: '', two_factor_code: '' });
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const cancelPending = async () => {
+        const ok = await confirm({
+            title: 'Cancel email change',
+            message: `Stop the change to ${pending?.new_email}? Your address stays ${profile?.email}.`,
+            confirmLabel: 'Cancel the change',
+        });
+        if (!ok) return;
+        setError(null);
+        try {
+            const res = await usersAPI.cancelMyEmailChange();
+            setPending(null);
+            setSuccess(res.data.message);
+            if (onChanged) onChanged();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    };
+
+    return (
+        <div className="space-y-4 max-w-xl">
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            {success && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">
+                    {success}
+                </div>
+            )}
+
+            <p className="text-sm text-gray-600">
+                You sign in with <strong>{profile?.email}</strong>.
+            </p>
+
+            {loaded && pending && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
+                    <p className="font-medium text-amber-900">
+                        Waiting for confirmation: {pending.new_email}
+                    </p>
+                    <p className="text-amber-800 mt-1">
+                        {pending.requested_by_admin
+                            ? <>Started by {pending.requested_by_name || 'an Admin'}{pending.admin_reason ? <> — reason: “{pending.admin_reason}”</> : null}. </>
+                            : null}
+                        Open the email we sent to <strong>{pending.new_email}</strong> and press the link
+                        before {formatDate(pending.expires_at)} ({formatRelativeTime(pending.expires_at)}).
+                        Nothing changes until then.
+                    </p>
+                    <p className="text-amber-800 mt-1">
+                        Didn't get it? Check the spam folder, or ask again below — a new link replaces the old one.
+                    </p>
+                    <button type="button" onClick={cancelPending} className="btn-secondary mt-3">
+                        Cancel this change
                     </button>
                 </div>
-            ) : (
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <p className="text-sm text-green-600">
-                        Check your inbox at {user?.email} for the reset code.
-                    </p>
-                    <div>
-                        <label className="label">Reset Code</label>
-                        <input type="text" className="input" value={form.token}
-                            onChange={e => setForm(p => ({ ...p, token: e.target.value }))}
-                            placeholder="Paste code from email" required />
-                    </div>
-                    <div>
-                        <label className="label">New Password</label>
-                        <input type="password" className="input" value={form.password}
-                            onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
-                            minLength={8} required />
-                    </div>
-                    <div>
-                        <label className="label">Confirm New Password</label>
-                        <input type="password" className="input"
-                            value={form.confirm_password}
-                            onChange={e => setForm(p => ({
-                                ...p, confirm_password: e.target.value }))}
-                            required />
-                    </div>
-                    <div className="flex gap-3">
-                        <button type="submit" disabled={loading} className="btn-primary">
-                            {loading ? 'Changing...' : 'Change Password'}
-                        </button>
-                        <button type="button"
-                            onClick={() => setCodeSent(false)}
-                            className="btn-secondary">Back</button>
-                    </div>
-                </form>
             )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                    <label className="label" htmlFor="em-new">New email address</label>
+                    <input id="em-new" type="email" className="input" value={form.new_email}
+                        onChange={set('new_email')} autoComplete="email" required />
+                </div>
+                <div>
+                    <label className="label" htmlFor="em-pw">Your current password</label>
+                    <PasswordInput id="em-pw" value={form.current_password} onChange={set('current_password')}
+                        autoComplete="current-password" />
+                    <p className="text-xs text-gray-500 mt-1">Asked so nobody using an unlocked device can move your account to their own address.</p>
+                </div>
+                {needs2FA && (
+                    <div>
+                        <label className="label" htmlFor="em-2fa">6-digit code from your authenticator app</label>
+                        <input id="em-2fa" type="text" inputMode="numeric" maxLength={6} className="input w-40 tracking-widest"
+                            value={form.two_factor_code}
+                            onChange={e => setForm(p => ({ ...p, two_factor_code: e.target.value.replace(/\D/g, '') }))}
+                            autoComplete="one-time-code" required />
+                    </div>
+                )}
+                <p className="text-xs text-gray-500">
+                    We email a confirmation link to the new address (it works for 48 hours). Your current address
+                    is told too, with a link to stop the change — or undo it within 7 days.
+                </p>
+                <button type="submit" disabled={loading} className="btn-primary">
+                    {loading ? 'Sending…' : 'Send confirmation link'}
+                </button>
+            </form>
         </div>
     );
 };
@@ -731,7 +876,7 @@ const ProfilePage = () => {
                     { key: 'summary',   label: 'Summary',          icon: UserCircleIcon },
                     { key: 'personal',  label: 'Personal Info',     icon: PencilIcon },
                     { key: 'signature', label: 'Signature',         icon: PencilSquareIcon },
-                    { key: 'password',  label: 'Password',          icon: KeyIcon },
+                    { key: 'password',  label: 'Password & Email',  icon: KeyIcon },
                     { key: '2fa',       label: 'Security',          icon: ShieldCheckIcon },
                 ].map(tab => (
                     <button
@@ -1046,6 +1191,9 @@ const ProfilePage = () => {
                     <>
                         <h3 className="section-title mb-4">Change Password</h3>
                         <ChangePasswordForm />
+                        {/* v1.75.0 — email address change */}
+                        <h3 className="section-title mt-8 pt-6 border-t border-gray-200 mb-4">Change Email Address</h3>
+                        <ChangeEmailForm profile={profile} onChanged={reloadProfile} />
                     </>
                 )}
 

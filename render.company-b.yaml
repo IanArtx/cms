@@ -88,6 +88,14 @@ services:
     startCommand: FRONTEND_URL="https://cms.iamininvest.com" EXTRA_ORIGINS="https://${FRONTEND_HOST}.onrender.com" npm start
     healthCheckPath: /health
     envVars:
+      # v1.74.0 — MAINTENANCE MODE backup switch. Normally maintenance is
+      # switched on/off by an Admin in Settings › Maintenance. If the
+      # database itself is being worked on (or broken), add an
+      # environment variable MAINTENANCE_MODE = on to this service in the
+      # Render dashboard: every member then sees the maintenance page,
+      # even if the database can't be reached. Delete it afterwards.
+      # (Deliberately NOT declared here, so a Blueprint sync never turns
+      # it on or off by itself.)
       - key: NODE_ENV
         value: production
       - key: FRONTEND_HOST
@@ -226,7 +234,7 @@ services:
       # Keep this in sync with render.yaml's copy — same codebase,
       # same version, both companies.
       - key: REACT_APP_VERSION
-        value: "1.73.0"
+        value: "1.74.0"
       # Fill in after first deploy — see DEPLOYMENT_GUIDE.md
       - key: REACT_APP_COMPANY_ADDRESS
         sync: false

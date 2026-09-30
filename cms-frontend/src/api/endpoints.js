@@ -106,6 +106,16 @@ export const transactionsAPI = {
 };
 
 // ============================================================
+// MAINTENANCE MODE (v1.74.0) — Admin switch in Settings › Maintenance.
+// (The public status check is read by MaintenanceGate with plain
+// fetch(), deliberately not through this client.)
+// ============================================================
+export const maintenanceAPI = {
+    getAdmin: ()     => api.get('/maintenance'),
+    set:      (data) => api.put('/maintenance', data),
+};
+
+// ============================================================
 // MONEY APPROVALS (v1.73.0) — money entries recorded by anyone who is
 // not the Treasurer or an Admin wait here until the Treasurer or an
 // Admin approves them.

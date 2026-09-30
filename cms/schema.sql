@@ -5656,5 +5656,48 @@ COMMENT ON TABLE held_money_entries IS
     'v1.73.0 — money entries recorded by someone who is not the Treasurer or an Admin, held until the Treasurer or an Admin approves them. On approval the original action is run on behalf of the recorder and the ledger rows store approved_by = the approver.';
 
 -- ============================================================
--- END OF SCHEMA — v1.73.0
+-- v1.74.0 — MAINTENANCE MODE
+-- (Settings › Maintenance; MAINTENANCE_MODE=on in Render forces it on)
+-- ============================================================
+-- The switch itself — one row only (id = 1).
+CREATE TABLE IF NOT EXISTS system_maintenance (
+    id               INTEGER      PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    is_on            BOOLEAN      NOT NULL DEFAULT FALSE,
+    message          TEXT,                         -- shown to members on the maintenance page
+    expected_end     TIMESTAMPTZ,                  -- optional "back by"
+    started_at       TIMESTAMPTZ,
+    started_by       INTEGER      REFERENCES users(id),
+    ended_at         TIMESTAMPTZ,
+    ended_by         INTEGER      REFERENCES users(id),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+INSERT INTO system_maintenance (id, is_on) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING;
+
+-- History of every switch on/off.
+CREATE TABLE IF NOT EXISTS maintenance_events (
+    id              SERIAL       PRIMARY KEY,
+    event           VARCHAR(10)  NOT NULL CHECK (event IN ('ON', 'OFF', 'UPDATE')),
+    message         TEXT,
+    expected_end    TIMESTAMPTZ,
+    emailed_members BOOLEAN      NOT NULL DEFAULT FALSE,
+    user_id         INTEGER      REFERENCES users(id),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Nightly jobs that were skipped because maintenance was on, and when
+-- they were caught up afterwards.
+CREATE TABLE IF NOT EXISTS maintenance_skipped_jobs (
+    id              SERIAL       PRIMARY KEY,
+    job_name        VARCHAR(80)  NOT NULL,
+    run_date        DATE         NOT NULL,     -- the date the job would have processed
+    skipped_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    caught_up_at    TIMESTAMPTZ,
+    result          TEXT,                      -- 'done' or the error message
+    UNIQUE (job_name, run_date)
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_skipped_pending
+    ON maintenance_skipped_jobs(caught_up_at) WHERE caught_up_at IS NULL;
+
+-- ============================================================
+-- END OF SCHEMA — v1.74.0
 -- ============================================================

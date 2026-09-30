@@ -35,7 +35,9 @@ import {
     ScaleIcon,
     VideoCameraIcon,
     LinkIcon,
+    WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline';
+import MaintenanceSettings from '../../components/maintenance/MaintenanceSettings'; // v1.74.0
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
@@ -2108,6 +2110,7 @@ const SettingsPage = () => {
         { key: 'capital-call-fines', label: 'Capital Goals', icon: ScaleIcon },
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
         { key: 'tax', label: 'Registration & Tax', icon: ReceiptPercentIcon },
+        { key: 'maintenance', label: 'Maintenance', icon: WrenchScrewdriverIcon }, // v1.74.0
     ];
 
     return (
@@ -2148,6 +2151,7 @@ const SettingsPage = () => {
                 {activeTab === 'fiscal-quarters' && <FiscalQuartersTab />}
                 {activeTab === 'capital-call-fines' && <CapitalCallFinesTab />}
                 {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
+                {activeTab === 'maintenance' && <MaintenanceSettings />}
                 {activeTab === 'tax' && (
                     <div className="space-y-6">
                         <TaxRegistrationCard canEdit />

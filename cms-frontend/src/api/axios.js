@@ -105,6 +105,13 @@ api.interceptors.response.use(
             }
         }
 
+        // v1.74.0 — the server turned this request away because the
+        // system is under maintenance: tell MaintenanceGate to check now
+        // (it then shows the maintenance page).
+        if (error.response?.status === 503 && error.response?.data?.maintenance) {
+            try { window.dispatchEvent(new CustomEvent('cms:maintenance')); } catch (_) {}
+        }
+
         return Promise.reject(error);
     }
 );

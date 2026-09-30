@@ -1,0 +1,29 @@
+%% v1.74.0 — maintenance mode: switch, gate, pages and paused nightly jobs
+flowchart TD
+    SW1["Settings › Maintenance (Admin)\nmessage · expected back by · email tick box"] --> T["system_maintenance (one row)"]
+    SW2["Render: MAINTENANCE_MODE=on\n(backup — database down or rebuilt)"] --> ST
+    T --> ST["maintenanceService.getState()\ncached 5 s · never throws"]
+
+    subgraph SERVER["Server (every /api request)"]
+        R1{"/api/auth/* or\n/api/maintenance/*?"} -- yes --> OK1["passes"]
+        R1 -- no --> R2{"maintenance on?"}
+        R2 -- no --> OK2["module routes as normal"]
+        R2 -- yes --> R3{"token = Admin?"}
+        R3 -- yes --> OK2
+        R3 -- no --> B["503 { maintenance: true }"]
+    end
+    ST --> R2
+
+    subgraph APP["Browser — MaintenanceGate (outside the whole app)"]
+        G1["fetch /api/maintenance/status\non load · every 30 s · sign-in/out ·\ntab back · after any 503"] --> G2{"answer"}
+        G2 -- "off, or on + Admin" --> A1["the app\n(Admin: amber status bar + Turn off)"]
+        G2 -- "on + not Admin" --> A2["Maintenance page\nmessage · back by · Check now ·\nAdministrator sign-in"]
+        G2 -- "no answer (2 tries)" --> A3["'Temporarily unavailable'\nkeeps retrying"]
+    end
+    B -. "cms:maintenance event" .-> G1
+
+    subgraph JOBS["Nightly jobs (scheduler.scheduleJob)"]
+        J1{"maintenance on at run time?"} -- yes --> J2["skip + record in\nmaintenance_skipped_jobs"]
+        J1 -- no --> J3["run as normal"]
+        J2 --> J4["Turned OFF → catch-up:\ndaily interest once per missed date,\nother jobs once"]
+    end

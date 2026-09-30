@@ -447,6 +447,12 @@ unchanged, just add the equivalent lines to `render.yaml` and
 - **Every future code change**: push to the `main` branch on GitHub —
   Render redeploys every service watching that branch automatically
   (both companies' backends/frontends, if you've set up a second one).
+- **Maintenance mode while you update** (v1.74.0): an Admin turns on
+  **Settings › Maintenance** before starting (optionally emailing all
+  members) and turns it off afterwards. If the database itself is being
+  rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
+  service's **Environment** in Render instead — members then see the
+  maintenance page even without a database. Delete it when finished.
 - **Updating a live system that is several versions behind** (v1.73.0):
   use `cms/update_live_database.js` from your own computer — no psql
   needed. `node update_live_database.js --url "<External Database URL>"`

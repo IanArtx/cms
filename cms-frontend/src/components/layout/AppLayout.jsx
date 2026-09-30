@@ -20,6 +20,7 @@ import ConfirmModal from '../common/ConfirmModal';
 import MobileNav from './MobileNav';
 import { LayoutProvider } from './LayoutContext';
 import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
+import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74.0
 
 // Auto-logout after this many minutes of no mouse/keyboard/touch/
 // scroll activity anywhere in the app — see hooks/useIdleLogout.js.
@@ -89,6 +90,8 @@ const AppLayout = () => {
 
             {/* Main column */}
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                {/* v1.74.0 — Admin reminder while maintenance mode is on */}
+                <MaintenanceStatusBar />
                 <TopBar onLogoutClick={() => setShowLogoutConfirm(true)} />
 
                 {/* Page content. Extra space at the bottom on phones so the

@@ -63,6 +63,7 @@ import ServiceFeeAgreementDetailPage from './pages/serviceFees/ServiceFeeAgreeme
 import AuditManagementPage from './pages/audit/AuditManagementPage';
 import AuditorPortalPage from './pages/audit/AuditorPortalPage';
 import AuditReviewPage from './pages/audit/AuditReviewPage';
+import MaintenanceGate from './components/maintenance/MaintenanceGate'; // v1.74.0
 
 const queryClient = new QueryClient({
     defaultOptions: {
@@ -76,6 +77,10 @@ const queryClient = new QueryClient({
 
 function App() {
     return (
+        // v1.74.0 — outermost on purpose: while the system is under
+        // maintenance, members get only the maintenance page and nothing
+        // below this line even loads.
+        <MaintenanceGate>
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
             <AuthProvider>
@@ -205,6 +210,7 @@ function App() {
             </AuthProvider>
           </ThemeProvider>
         </QueryClientProvider>
+        </MaintenanceGate>
     );
 }
 

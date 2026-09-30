@@ -91,7 +91,10 @@ const globalLimiter = rateLimit({
     message: { success: false, message: 'Too many requests. Please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => req.path === '/health',
+    // v1.74.0 — the maintenance status check is asked every 30 s by
+    // every open page and is cached server-side; it must never be what
+    // uses up a person's allowance.
+    skip: (req) => req.path === '/health' || req.path === '/api/maintenance/status',
 });
 app.use(globalLimiter);
 
@@ -170,6 +173,16 @@ app.get('/health', (req, res) => {
 // API ROUTES
 // All routes are versioned under /api
 // ============================================================
+// ============================================================
+// MAINTENANCE MODE (v1.74.0) — must stay ABOVE every module's routes.
+// /api/maintenance/status answers "is the system under maintenance?"
+// for the app (no sign-in needed). The gate then turns away every
+// non-Admin request with 503 while maintenance is on; it depends on
+// nothing but the database pool, so it works whatever else is broken.
+// ============================================================
+app.use('/api/maintenance', require('./src/routes/maintenance'));
+app.use('/api', require('./src/middleware/maintenanceGate').maintenanceGate);
+
 app.use('/api/auth',        authLimiter,                    require('./src/routes/auth'));
 app.use('/api/users',                                       require('./src/routes/users'));
 app.use('/api/categories',                                  require('./src/routes/categories'));
@@ -232,6 +245,14 @@ const startServer = async () => {
     // Verify database connection before accepting requests
     const dbOk = await checkConnection();
     if (!dbOk) {
+        // v1.74.0 — with MAINTENANCE_MODE=on the server still starts, so
+        // members see the maintenance page instead of "site unavailable"
+        // while the database is being worked on. Nothing else runs.
+        if (require('./src/services/maintenanceService').envForced()) {
+            logger.warn('Database not reachable — starting in MAINTENANCE MODE only (MAINTENANCE_MODE=on). Scheduled jobs not started.');
+            app.listen(PORT, () => logger.info(`🛠  Server running in maintenance-only mode on port ${PORT}`));
+            return;
+        }
         logger.error('Cannot start server — database connection failed');
         process.exit(1);
     }

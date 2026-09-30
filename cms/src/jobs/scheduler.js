@@ -34,6 +34,31 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateDuesForPeriod } = require('../services/sideFundService');
 const { processIteration1Deadline, processIteration2Deadline, isCapitalGoalTrackingEnabled } = require('../services/capitalGoalCallService');
 const serviceFeeService = require('../services/serviceFeeService');
+const maintenance = require('../services/maintenanceService'); // v1.74.0
+
+// ============================================================
+// v1.74.0 — every job is registered by name through scheduleJob():
+//   • while maintenance mode is on, a due run is SKIPPED and recorded
+//     (maintenance_skipped_jobs) instead of touching the database
+//     while it may be changing;
+//   • when maintenance is turned off, maintenanceService runs the
+//     skipped ones through getJobRunner() — the two daily interest
+//     jobs once for each missed date, so no day of interest is lost.
+// ============================================================
+const JOB_RUNNERS = new Map();
+
+const scheduleJob = (name, expression, fn, options) => {
+    JOB_RUNNERS.set(name, fn);
+    return cron.schedule(expression, async () => {
+        if (await maintenance.isOn()) {
+            await maintenance.recordSkippedJob(name);
+            return;
+        }
+        return fn();
+    }, options);
+};
+
+const getJobRunner = (name) => JOB_RUNNERS.get(name) || null;
 
 // ============================================================
 // JOB 1: MONTHLY GENERAL REPORT
@@ -43,7 +68,7 @@ const serviceFeeService = require('../services/serviceFeeService');
 const scheduleMonthlyGeneralReport = () => {
     const cronExpression = process.env.MONTHLY_REPORT_CRON || '0 8 1 * *';
 
-    cron.schedule(cronExpression, async () => {
+    scheduleJob('MonthlyGeneralReport', cronExpression, async () => {
         logger.info('Starting monthly general report job...');
         try {
             const now   = new Date();
@@ -90,7 +115,7 @@ const scheduleMonthlyIndividualReports = () => {
     // One hour after the general report
     const cronExpression = '0 9 1 * *';
 
-    cron.schedule(cronExpression, async () => {
+    scheduleJob('MonthlyIndividualReports', cronExpression, async () => {
         logger.info('Starting monthly individual reports job...');
         try {
             const now   = new Date();
@@ -119,9 +144,10 @@ const scheduleMonthlyIndividualReports = () => {
 // Calculates and records interest on all active loans
 // ============================================================
 const scheduleDailyInterestAccrual = () => {
-    cron.schedule('0 0 * * *', async () => {
+    scheduleJob('DailyInterestAccrual', '0 0 * * *', async (runDate) => {
         logger.info('Starting daily interest accrual job...');
-        const today = new Date().toISOString().split('T')[0];
+        // v1.74.0 — a maintenance catch-up passes the missed date
+        const today = runDate || new Date().toISOString().split('T')[0];
 
         try {
             // Get all active loans received
@@ -258,7 +284,7 @@ const scheduleDailyInterestAccrual = () => {
 // Also switches interest rate from fixed to penalty
 // ============================================================
 const scheduleDailyOverdueCheck = () => {
-    cron.schedule('5 0 * * *', async () => {
+    scheduleJob('DailyOverdueCheck', '5 0 * * *', async () => {
         logger.info('Starting daily overdue check job...');
         const today = new Date().toISOString().split('T')[0];
 
@@ -318,9 +344,10 @@ const scheduleDailyOverdueCheck = () => {
 // one day's interest amount to every currency a member holds.
 // ============================================================
 const scheduleDailySavingsAccrual = () => {
-    cron.schedule('10 0 * * *', async () => {
+    scheduleJob('DailySavingsAccrual', '10 0 * * *', async (runDate) => {
         logger.info('Starting daily savings interest accrual job...');
-        const today = new Date().toISOString().split('T')[0];
+        // v1.74.0 — a maintenance catch-up passes the missed date
+        const today = runDate || new Date().toISOString().split('T')[0];
 
         try {
             const settingsResult = await query('SELECT * FROM savings_settings WHERE id = 1');
@@ -395,7 +422,7 @@ const scheduleDailySavingsAccrual = () => {
 // banked; this step only reallocates it to a specific due.
 // ============================================================
 const scheduleSideFundDueGeneration = () => {
-    cron.schedule('15 0 1 * *', async () => {
+    scheduleJob('SideFundDueGeneration', '15 0 1 * *', async () => {
         logger.info('Starting monthly side fund due generation job...');
         try {
             const now = new Date();
@@ -431,7 +458,7 @@ const scheduleSideFundDueGeneration = () => {
 // it later; recordDuePayment doesn't check status beyond "not PAID".
 // ============================================================
 const scheduleSideFundDefaultCheck = () => {
-    cron.schedule('20 0 1 * *', async () => {
+    scheduleJob('SideFundDefaultCheck', '20 0 1 * *', async () => {
         logger.info('Starting monthly side fund default check job...');
         try {
             const now = new Date();
@@ -467,7 +494,7 @@ const scheduleSideFundDefaultCheck = () => {
 const scheduleMonthlyShareCertificates = () => {
     const cronExpression = process.env.MONTHLY_CERTIFICATE_CRON || '0 10 1 * *';
 
-    cron.schedule(cronExpression, async () => {
+    scheduleJob('MonthlyShareCertificates', cronExpression, async () => {
         logger.info('Starting monthly share certificate job...');
         try {
             const result = await issueCertificatesForAllShareholders('MONTHLY');
@@ -491,7 +518,7 @@ const scheduleMonthlyShareCertificates = () => {
 const scheduleAnnualShareCertificates = () => {
     const cronExpression = process.env.ANNUAL_CERTIFICATE_CRON || '10 10 1 1 *';
 
-    cron.schedule(cronExpression, async () => {
+    scheduleJob('AnnualShareCertificates', cronExpression, async () => {
         logger.info('Starting annual share certificate job...');
         try {
             const result = await issueCertificatesForAllShareholders('ANNUAL');
@@ -519,7 +546,7 @@ const scheduleAnnualShareCertificates = () => {
 // PENDING slot to be reminded about.
 // ============================================================
 const scheduleCertificateSigningReminders = () => {
-    cron.schedule('0 8 24-31 * *', async () => {
+    scheduleJob('CertificateSigningReminders', '0 8 24-31 * *', async () => {
         logger.info('Starting certificate signing round reminder job...');
         try {
             const openRounds = await query(`
@@ -587,7 +614,7 @@ const scheduleCertificateSigningReminders = () => {
 // reminded about.
 // ============================================================
 const scheduleDocumentSignatureReminders = () => {
-    cron.schedule('30 8 * * *', async () => {
+    scheduleJob('DocumentSignatureReminders', '30 8 * * *', async () => {
         logger.info('Starting document signature reminder job...');
         try {
             const openDocs = await query(`
@@ -635,7 +662,7 @@ const scheduleDocumentSignatureReminders = () => {
 const AUDIT_REMINDER_DAY_THRESHOLDS = [7, 3, 1];
 
 const scheduleAuditAccessExpiryReminders = () => {
-    cron.schedule('0 7 * * *', async () => {
+    scheduleJob('AuditAccessExpiryReminders', '0 7 * * *', async () => {
         logger.info('Starting audit access-expiry reminder job...');
         try {
             const engagements = await query(`
@@ -734,7 +761,7 @@ const scheduleAuditAccessExpiryReminders = () => {
 // block the rest of the sweep.
 // ============================================================
 const scheduleCapitalGoalCallDeadlines = () => {
-    cron.schedule('30 0 * * *', async () => {
+    scheduleJob('CapitalGoalCallDeadlines', '30 0 * * *', async () => {
         // v1.51.0 — Capital Goal Tracking is an admin-toggleable
         // feature, not compulsory. When switched off, the sweep skips
         // entirely (part of the "full pause" — no iteration/deadline
@@ -810,7 +837,7 @@ const scheduleCapitalGoalCallDeadlines = () => {
 // rest of the sweep.
 // ============================================================
 const scheduleServiceFeePeriodGeneration = () => {
-    cron.schedule('35 0 * * *', async () => {
+    scheduleJob('ServiceFeePeriodGeneration', '35 0 * * *', async () => {
         logger.info('Starting service fee monthly period generation job...');
         try {
             const agreements = await query(`
@@ -856,7 +883,7 @@ const scheduleServiceFeePeriodGeneration = () => {
 // until resolved" reminder pattern rather than a one-time notice.)
 // ============================================================
 const scheduleServiceFeeDueReminders = () => {
-    cron.schedule('45 8 * * *', async () => {
+    scheduleJob('ServiceFeeDueReminders', '45 8 * * *', async () => {
         logger.info('Starting service fee due-date reminder job...');
         const today = new Date().toISOString().split('T')[0];
 
@@ -931,7 +958,7 @@ const scheduleServiceFeeDueReminders = () => {
 // annual return with the balance of tax. See taxService.getCalendar.
 // ============================================================
 const scheduleTaxDeadlineReminders = () => {
-    cron.schedule('50 7 * * *', async () => {
+    scheduleJob('TaxDeadlineReminders', '50 7 * * *', async () => {
         logger.info('Starting tax deadline reminder job...');
         try {
             const taxService = require('../services/taxService');
@@ -971,4 +998,4 @@ const startAllJobs = () => {
     logger.info('All scheduled jobs started successfully');
 };
 
-module.exports = { startAllJobs };
+module.exports = { startAllJobs, getJobRunner, JOB_RUNNERS };

@@ -142,6 +142,25 @@ If instead you see a line starting with **❌**, nothing has been changed. Copy 
 
 **Please send me the dry-run output (a copy or screenshots) before step 8**, so we can confirm the numbers together.
 
+### Step 7b — Only if the rates were never loaded on this database
+**How you recognise it:** in the dry run, section **1)** shows only the line `+ added  EUR→UGX  4,000.00  2000-01-01 → 2025-08-20` (nothing "removed" or "moved"), every *old UGX* value in section **3)** is `—`, and it ends with:
+```
+Check: 1 EUR on 2025-08-19 = 4,000.00 UGX;  on 2025-08-20 = NO RATE UGX
+❌ A check failed, so nothing was saved:
+   - 20+ posted transaction(s) have no UGX value: #185 2025-08-20 …
+```
+That means step **C1** (loading `fx_rates.csv`) never ran on this database, so entries from 20 Aug 2025 on have no rate at all. Nothing was changed. Load the rates file now. It already starts with the 4,000 rule, so it does the whole job:
+```
+node update_live_database.js --script backfill_v1.66.0_fx_rates.js fx_rates.csv --dry-run
+```
+It should say `Rates: 15 added, 0 skipped` and `✅ Every posted transaction now has a UGX value.` Then run it for real:
+```
+node update_live_database.js --script backfill_v1.66.0_fx_rates.js fx_rates.csv
+```
+It ends with `✅ Saved.` Now repeat **step 7**. This time section 1 says `Already correct`, section 3 says `Already correct`, and the check line shows `on 2025-08-20 = 4,154.70 UGX` and `✅ Every date before the cut-off uses the fixed rate…`. Then continue with **step 8**, which records the rule as applied.
+
+(Entries listed as *"keep the MANUAL rate an Admin gave them … at 4,000.0000"* are already at 4,000, so `--include-manual` isn't needed for them.)
+
 ### Step 8 — Run it for real
 If you want entries with a manual rate to become 4,000 as well, add `--include-manual` at the end. Otherwise use it exactly as shown:
 ```
@@ -201,6 +220,7 @@ Do exactly the same, with these differences:
 | `❌ The table fx_fixed_rate_periods is missing` | step 5 was skipped | do step 5, then step 7 again |
 | `❌ The opening share conversion has already run` | C2 was done | stop — nothing was changed; tell me |
 | `❌ … already paid over to URA …` | a WHT payment would change value | stop — nothing was changed; send me the ids |
+| `on 2025-08-20 = NO RATE` and `❌ … have no UGX value` | the rates file (C1) was never loaded on this database | step **7b**, then step 7 again |
 | `❌ Failed, nothing was saved: …` | an unexpected error | copy the whole message to me; nothing was changed |
 | The Accounts note says *"Not yet applied"* | step 8 wasn't run (or was a dry run) | run step 8 |
 | Members still see the maintenance page | Maintenance mode is on | Settings → Maintenance → Turn off |

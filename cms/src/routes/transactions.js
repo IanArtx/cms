@@ -17,9 +17,17 @@
 const router = require('express').Router();
 const { body, param, query } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
+const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireRoles } = require('../middleware/auth');
 const transactionsController = require('../controllers/transactionsController');
 const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
+const { trackPostings } = require('../services/postingTracker'); // v1.78.0
+const documentLinksController = require('../controllers/documentLinksController'); // v1.78.0
+
+// v1.78.0 — optional documents to connect to the new transaction(s).
+const documentIdsValidators = [
+    body('document_ids').optional().isArray({ max: 20 }).withMessage('document_ids must be a list (at most 20)'),
+    body('document_ids.*').optional().isInt({ min: 1 }).withMessage('Invalid document'),
+];
 
 // All routes require login
 router.use(authenticate);
@@ -149,8 +157,10 @@ router.post('/contributions',
         body('account_id')
             .optional().isInt({ min: 1 }).withMessage('Invalid account'),
     ],
+    documentIdsValidators,
     validateRequest,
     holdMoneyEntry('transactions.contribution', transactionsController.recordContribution, { label: 'Shareholder contribution', account: b => b.account_id, subject: { type: 'member', id: r => r.body.contributed_by } }), // v1.73.0 — held for approval unless Treasurer/Admin
+    trackPostings, // v1.78.0
     transactionsController.recordContribution
 );
 
@@ -180,8 +190,10 @@ router.post('/expenses',
         body('payee_residency').optional({ values: 'falsy' }).isIn(['RESIDENT', 'NON_RESIDENT']),
         body('apply_wht').optional().isBoolean(),
     ],
+    documentIdsValidators,
     validateRequest,
     holdMoneyEntry('transactions.expense', transactionsController.recordExpense, { label: 'Expense', account: b => b.account_id }), // v1.73.0 — held for approval unless Treasurer/Admin
+    trackPostings, // v1.78.0
     transactionsController.recordExpense
 );
 
@@ -213,9 +225,49 @@ router.post('/inflows',
         body('payer_tin').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
         body('tax_certificate_number').optional({ values: 'falsy' }).trim().isLength({ max: 60 }),
     ],
+    documentIdsValidators,
     validateRequest,
     holdMoneyEntry('transactions.inflow', transactionsController.recordInflow, { label: 'Other income', account: b => b.account_id }), // v1.73.0 — held for approval unless Treasurer/Admin
+    trackPostings, // v1.78.0
     transactionsController.recordInflow
+);
+
+// ============================================================
+// CONNECTED DOCUMENTS (v1.78.0)
+// GET    /api/transactions/:id/documents
+// POST   /api/transactions/:id/documents                { document_ids[], confirm_additional? }
+// DELETE /api/transactions/:id/documents/:documentId
+// Seeing them: anyone who may open a transaction. Connecting and
+// disconnecting: people who may upload documents or record money.
+// ============================================================
+router.get('/:id/documents',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    validators.idParam('id'),
+    validateRequest,
+    documentLinksController.getTransactionDocuments
+);
+
+router.post('/:id/documents',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    requireAnyPermission(['DOCUMENT_UPLOAD', 'FINANCE_TRANSACTION_CREATE']),
+    validators.idParam('id'),
+    [
+        body('document_ids').isArray({ min: 1, max: 20 }).withMessage('Choose at least one document'),
+        body('document_ids.*').isInt({ min: 1 }).withMessage('Invalid document'),
+        body('confirm_additional').optional().isBoolean(),
+        body('note').optional({ values: 'falsy' }).trim().isLength({ max: 500 }),
+    ],
+    validateRequest,
+    documentLinksController.linkTransactionDocuments
+);
+
+router.delete('/:id/documents/:documentId',
+    requirePermissions(['FINANCE_VIEW_ALL']),
+    requireAnyPermission(['DOCUMENT_UPLOAD', 'FINANCE_TRANSACTION_CREATE']),
+    validators.idParam('id'),
+    validators.idParam('documentId'),
+    validateRequest,
+    documentLinksController.unlinkTransactionDocument
 );
 
 // ============================================================

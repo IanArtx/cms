@@ -1,8 +1,12 @@
 // ============================================================
 // CAPITAL CALL DETAIL PAGE (v1.43.0)
 // One monthly capital call. Two audiences share this page:
-//   - Every member sees the anonymous, colour-coded status grid —
-//     one cell per active shareholder, no names, no amounts.
+//   - Every member sees the colour-coded status grid — one cell per
+//     active shareholder.
+//     v1.78.0 — requested: "make the names of the pledgers shown"
+//     (confirmed: all members see names + amounts). The grid now
+//     carries each member's name, and a member-by-member table lists
+//     what each one pledged, paid and still owes this month.
 //   - A Treasurer (CAPITAL_GOAL_MANAGE) also sees the approval queue:
 //     every pledge submitted against this call, with Approve/Reject
 //     actions. Approving IS the act of recording the payment — the
@@ -11,14 +15,15 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { capitalGoalCallsAPI, accountsAPI } from '../../api/endpoints';
+import { capitalGoalCallsAPI, capitalGoalsAPI, accountsAPI } from '../../api/endpoints';
 import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import { CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, XMarkIcon, HandRaisedIcon } from '@heroicons/react/24/outline';
+import { MemberStatus, PledgeModal, pledgeTargetFor, money, pct, ProgressBar } from './capitalGoalUi';
 
 // ============================================================
 // STATUS GRID CELL COLOURS — deliberately separate from the shared
@@ -28,6 +33,7 @@ import { CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 const CELL_STYLES = {
     PAID:            { bg: 'bg-green-500',  label: 'Paid in full' },
     PARTIALLY_PAID:  { bg: 'bg-yellow-400', label: 'Partially paid' },
+    PARTIAL_OVERDUE: { bg: 'bg-orange-500', label: 'Partially paid, past deadline' },
     PLEDGED:         { bg: 'bg-blue-400',   label: 'Pledged, not yet paid' },
     DEFAULTED:       { bg: 'bg-red-500',    label: 'Pledged but past deadline, unpaid' },
     NOT_RESPONDED:   { bg: 'bg-gray-200',   label: 'No pledge made' },
@@ -252,6 +258,11 @@ const CapitalCallDetailPage = () => {
     const [error, setError] = useState(null);
     const [approving, setApproving] = useState(null);
     const [rejecting, setRejecting] = useState(null);
+    const [members, setMembers] = useState(null);   // v1.78.0 — by name
+    const [glance, setGlance] = useState(null);     // the goal as the overview sees it (my pledge, can I pledge)
+    const [currencies, setCurrencies] = useState([]);
+    const [pledgeTarget, setPledgeTarget] = useState(null);
+    const [memberFilter, setMemberFilter] = useState('');
 
     const load = useCallback(async () => {
         try {
@@ -262,6 +273,10 @@ const CapitalCallDetailPage = () => {
             ]);
             setCall(callRes.data.data);
             setStatus(statusRes.data.data);
+            capitalGoalCallsAPI.getCallMembers(id).then(r => setMembers(r.data.data)).catch(() => {});
+            capitalGoalsAPI.getOverview()
+                .then(r => setGlance((r.data.data.goals || []).find(g => g.id === callRes.data.data.goal_id) || null))
+                .catch(() => {});
             if (canManage) {
                 const pledgesRes = await capitalGoalCallsAPI.getPledgesForMonthlyCall(id);
                 setPledges(pledgesRes.data.data || []);
@@ -275,6 +290,7 @@ const CapitalCallDetailPage = () => {
 
     useEffect(() => {
         load();
+        accountsAPI.getCurrencies().then(r => setCurrencies(r.data.data || [])).catch(() => {});
         if (canManage) {
             accountsAPI.getAll().then(r => setAccounts(r.data.data || [])).catch(() => {});
         }
@@ -285,8 +301,15 @@ const CapitalCallDetailPage = () => {
     if (!call) return null;
 
     const fmt = (v) => `${call.currency_code} ${formatNumber(v)}`;
-    const metCount = status?.cells.filter(c => c.status === 'PAID').length || 0;
-    const totalCount = status?.cells.length || 0;
+    const metCount = members ? members.summary.paid_in_full : (status?.cells.filter(c => c.status === 'PAID').length || 0);
+    const totalCount = members ? members.summary.members : (status?.cells.length || 0);
+    const summary = members ? members.summary : null;
+    // This call is the goal's open month and I may still pledge into it?
+    const thisIsOpen = glance && glance.current_call && glance.current_call.id === call.id;
+    const canPledgeHere = thisIsOpen && glance.current_call.can_pledge;
+    const myPledge = thisIsOpen ? glance.current_call.my_pledge : null;
+    const memberRows = members ? members.members.filter(m => !memberFilter || m.status === memberFilter
+        || (memberFilter === 'PARTIALLY_PAID' && m.status === 'PARTIAL_OVERDUE')) : [];
 
     return (
         <div>
@@ -316,29 +339,59 @@ const CapitalCallDetailPage = () => {
                     <p className={`mt-1 text-xl font-bold ${parseFloat(call.settled) >= parseFloat(call.monthly_target) ? 'text-green-600' : 'text-gray-900'}`}>
                         {fmt(call.settled)}
                     </p>
+                    {summary && (
+                        <>
+                            <ProgressBar percent={summary.percent} tone="info" className="h-1.5 mt-2" />
+                            <p className="text-xs text-gray-400 mt-1">
+                                {pct(summary.percent)} of the target{summary.shortfall > 0 ? ` · short ${fmt(summary.shortfall)}` : ' · met'}
+                            </p>
+                        </>
+                    )}
                 </div>
                 <div className="card">
                     <p className="text-xs font-medium text-gray-500">Shareholders Paid In Full</p>
                     <p className="mt-1 text-xl font-bold text-gray-900">{metCount} / {totalCount}</p>
+                    {summary && (
+                        <p className="text-xs text-gray-400 mt-1">
+                            {summary.pledged_members} pledged · {fmt(summary.total_pledged)} pledged in all
+                        </p>
+                    )}
                 </div>
                 <div className="card">
-                    <Link to="/capital-goals/my-calls" className="text-sm font-medium text-primary-700 hover:text-primary-800">
-                        Make or edit my own pledge →
+                    <p className="text-xs font-medium text-gray-500">My pledge this month</p>
+                    {myPledge ? (
+                        <>
+                            <p className="mt-1 text-lg font-bold text-gray-900">{money(myPledge.pledged_amount, myPledge.currency_code)}</p>
+                            <p className="text-xs text-gray-400">paid {money(myPledge.amount_settled, myPledge.currency_code)} · {myPledge.status.toLowerCase()}</p>
+                        </>
+                    ) : canPledgeHere ? (
+                        <button type="button" onClick={() => setPledgeTarget(pledgeTargetFor(glance))}
+                            className="btn-primary mt-2 flex items-center gap-2 text-sm">
+                            <HandRaisedIcon className="h-4 w-4" /> Pledge now
+                        </button>
+                    ) : (
+                        <p className="mt-1 text-sm text-gray-400">{thisIsOpen ? 'Not open to me' : 'This month is not open for pledges'}</p>
+                    )}
+                    <Link to="/capital-goals?tab=mine" className="block text-xs text-primary-700 hover:underline mt-2">
+                        All my pledges →
                     </Link>
-                    <p className="text-xs text-gray-400 mt-1">On the My Capital Calls page</p>
                 </div>
             </div>
 
-            {/* Anonymous colour-coded status grid — visible to everyone,
-                no names or amounts, exactly one cell per active
-                shareholder. */}
+            {/* Colour-coded status grid — one cell per active shareholder.
+                v1.78.0 — each cell now names the member (hover / long
+                press), and the table below gives the amounts. */}
             <div className="card mb-6">
                 <h3 className="section-title mb-1">Status — Who's Pledged / Paid</h3>
                 <p className="text-xs text-gray-400 mb-4">
-                    Anonymous by design — this shows where the group stands without identifying individuals.
+                    One square per shareholder. Point at (or press) a square to see who it is; the table below lists everyone.
                 </p>
                 <div className="flex flex-wrap gap-1.5 mb-4">
-                    {(status?.cells || []).map((cell, i) => (
+                    {members ? members.members.filter(m => m.is_shareholder).map(m => (
+                        <div key={m.user_id}
+                            title={`${m.name} — ${CELL_STYLES[m.status]?.label || m.status}`}
+                            className={`h-6 w-6 rounded ${CELL_STYLES[m.status]?.bg || 'bg-gray-200'}`} />
+                    )) : (status?.cells || []).map((cell, i) => (
                         <div key={i}
                             title={CELL_STYLES[cell.status]?.label || cell.status}
                             className={`h-6 w-6 rounded ${CELL_STYLES[cell.status]?.bg || 'bg-gray-200'}`} />
@@ -355,9 +408,82 @@ const CapitalCallDetailPage = () => {
                 </div>
             </div>
 
+            {/* v1.78.0 — member by member, by name */}
+            {members && (
+                <div className="card mb-6">
+                    <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+                        <h3 className="section-title">Member by member</h3>
+                        <div className="flex gap-2 flex-wrap">
+                            {[['', 'Everyone'], ['PAID', 'Paid'], ['PARTIALLY_PAID', 'Part paid'], ['PLEDGED', 'Pledged'],
+                              ['DEFAULTED', 'Missed'], ['NOT_RESPONDED', 'No pledge']].map(([k, label]) => {
+                                const n = k ? (k === 'PARTIALLY_PAID'
+                                    ? (members.summary.counts.PARTIALLY_PAID || 0) + (members.summary.counts.PARTIAL_OVERDUE || 0)
+                                    : members.summary.counts[k] || 0) : members.members.length;
+                                return (
+                                    <button key={k} type="button" onClick={() => setMemberFilter(k)}
+                                        className={`chip-filter ${memberFilter === k ? 'chip-filter-active' : ''}`}>
+                                        {label} ({n})
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                    <div className="cms-table-scroll overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
+                                    <th className="py-2 pr-4">Member</th>
+                                    <th className="py-2 pr-4 text-right">Pledged</th>
+                                    <th className="py-2 pr-4 text-right">Paid</th>
+                                    <th className="py-2 pr-4 text-right">Still owed</th>
+                                    <th className="py-2 pr-4">Pledge(s)</th>
+                                    <th className="py-2">Standing</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-50">
+                                {memberRows.map(m => (
+                                    <tr key={m.user_id}>
+                                        <td className="py-2 pr-4 text-gray-900 font-medium whitespace-nowrap">{m.name}</td>
+                                        <td className="py-2 pr-4 text-right whitespace-nowrap">{m.pledged ? fmt(m.pledged) : '—'}</td>
+                                        <td className="py-2 pr-4 text-right whitespace-nowrap text-green-700">{m.paid ? fmt(m.paid) : '—'}</td>
+                                        <td className={`py-2 pr-4 text-right whitespace-nowrap ${m.outstanding > 0 && (m.status === 'DEFAULTED' || m.status === 'PARTIAL_OVERDUE') ? 'text-red-600 font-medium' : ''}`}>
+                                            {m.outstanding ? fmt(m.outstanding) : '—'}
+                                        </td>
+                                        <td className="py-2 pr-4 text-xs text-gray-500">
+                                            {m.pledges.length === 0 ? '—' : m.pledges.map(p => (
+                                                <div key={p.id} className="whitespace-nowrap">
+                                                    <span className="font-mono">{p.reference_code}</span>
+                                                    {' · '}{p.iteration === 2 ? 'round 2 · ' : ''}
+                                                    {formatNumber(p.pledged_amount)} {p.currency_code}
+                                                    {' · '}<span className="lowercase">{p.status}</span>
+                                                </div>
+                                            ))}
+                                        </td>
+                                        <td className="py-2"><MemberStatus status={m.status} /></td>
+                                    </tr>
+                                ))}
+                                {memberRows.length === 0 && (
+                                    <tr><td colSpan={6} className="py-6 text-center text-sm text-gray-400">No one matches</td></tr>
+                                )}
+                            </tbody>
+                            <tfoot>
+                                <tr className="border-t border-gray-200 font-semibold">
+                                    <td className="py-2 pr-4">Total</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{fmt(members.summary.total_pledged)}</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{fmt(members.summary.settled)}</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{fmt(members.members.reduce((s, m) => s + m.outstanding, 0))}</td>
+                                    <td colSpan={2} />
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-2">Amounts in {call.currency_code}; payments in another currency are converted at the rate used when they were approved.</p>
+                </div>
+            )}
+
             {/* Approval queue — Treasurer only */}
             {canManage && (
-                <div className="card">
+                <div className="card" id="approvals">
                     <h3 className="section-title mb-4">Pledges — Approval Queue</h3>
                     <div className="overflow-x-auto">
                         <table className="min-w-full text-sm">
@@ -420,6 +546,13 @@ const CapitalCallDetailPage = () => {
                 onClose={() => setRejecting(null)}
                 onSuccess={load}
                 pledge={rejecting}
+            />
+            <PledgeModal
+                isOpen={!!pledgeTarget}
+                onClose={() => setPledgeTarget(null)}
+                onSuccess={load}
+                target={pledgeTarget}
+                currencies={currencies}
             />
         </div>
     );

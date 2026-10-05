@@ -15,6 +15,7 @@ const { query, withTransaction } = require('../config/database');
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
+const capitalGoalFunds = require('../services/capitalGoalFundsService'); // v1.78.0
 const { generateReference, linkReferenceToRecord, MODULE_CODES, resolveModuleCode } = require('../services/referenceService');
 const { postTransaction } = require('./transactionsController');
 const { generateBondCouponSchedule } = require('../utils/bondSchedule');
@@ -22,6 +23,7 @@ const { notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const taxService = require('../services/taxService');
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
+const investmentCost = require('../services/investmentCostService'); // v1.80.0 — buying vs running
 
 // ============================================================
 // v1.40.0 SHARED HELPERS
@@ -713,8 +715,12 @@ const setBondTerm = asyncHandler(async (req, res) => {
 // (currency_id, reference_code — see the JOIN shape used below).
 // ============================================================
 async function postInvestmentFunding(client, investment, {
-    amount, categoryId, description, valueDate, projectId, userId,
+    amount, categoryId, description, valueDate, projectId, userId, capitalGoalId = null,
+    accountId = null, // v1.80.0 — a requisition may pay from another account in the same currency
 }) {
+    // v1.80.0 — money put INTO an investment is capital; its category trail
+    // is Expense › Investments › Purchase & expansion unless one was chosen.
+    if (!categoryId) categoryId = await investmentCost.purposeCategory(client, 'CAPITAL', userId);
     const { referenceId: txRefId, referenceCode: txRefCode } =
         await generateReference(
             client,
@@ -725,7 +731,7 @@ async function postInvestmentFunding(client, investment, {
         );
 
     const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
-        accountId:       investment.funding_account_id,
+        accountId:       accountId || investment.funding_account_id,
         transactionType: 'DEBIT',
         inflowType:      'EXPENSE',
         amount,
@@ -740,12 +746,18 @@ async function postInvestmentFunding(client, investment, {
     });
 
     await linkReferenceToRecord(client, txRefId, transactionId);
+    await investmentCost.setCostType(client, transactionId, 'CAPITAL');
 
-    await client.query(`
+    const fundingRow = await client.query(`
         INSERT INTO investment_funding (
             investment_id, project_id, transaction_id, amount, created_by
         ) VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
     `, [investment.id, projectId || null, transactionId, amount, userId]);
+    // v1.78.0 — funded with a capital goal's money (checked by the caller)
+    if (capitalGoalId) {
+        await client.query('UPDATE investment_funding SET capital_goal_id = $1 WHERE id = $2', [capitalGoalId, fundingRow.rows[0].id]);
+    }
 
     // Auto-log any portion of this funding that pushes total spend
     // past planned_budget as supplementary budget (v1.40.0).
@@ -776,7 +788,7 @@ async function postInvestmentFunding(client, investment, {
 // ============================================================
 const fundInvestment = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { amount, category_id, description, value_date, project_id } = req.body;
+    const { amount, category_id, description, value_date, project_id, capital_goal_id } = req.body;
 
     await withTransaction(async (client) => {
         const investResult = await client.query(`
@@ -800,9 +812,21 @@ const fundInvestment = asyncHandler(async (req, res) => {
             );
         }
 
+        // v1.78.0 — investing a capital goal's money: never more than the
+        // goal money that has reached this investment's account.
+        let goalLink = null;
+        if (capital_goal_id) {
+            goalLink = await capitalGoalFunds.assertFundingAllowed(client, {
+                goalId: parseInt(capital_goal_id, 10), investmentId: investment.id, amount,
+            });
+        }
+
         const funding = await postInvestmentFunding(client, investment, {
-            amount, categoryId: category_id, description, valueDate: value_date,
+            amount, categoryId: category_id,
+            description: description || (goalLink ? `Investment funding from ${goalLink.goal.reference_code} (${goalLink.goal.title}) — ${investment.name} (${investment.reference_code})` : undefined),
+            valueDate: value_date,
             projectId: project_id, userId: req.user.id,
+            capitalGoalId: goalLink ? goalLink.goal.id : null,
         });
 
         sendCreated(res, {
@@ -983,6 +1007,55 @@ const recordReturn = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// SHARED (v1.80.0): pay a running / maintenance / capital EXPENSE of
+// an investment from inside another flow (a paid requisition). Same
+// effect as "Record expense" on the investment page: a ledger DEBIT
+// tagged with the investment and its purpose, an investment_transactions
+// row, and the investment's "Spent" figure. The caller has the
+// investment locked (SELECT … FOR UPDATE, with currency_id /
+// reference_code / reference_prefix joined as below).
+// ============================================================
+async function postInvestmentExpense(client, investment, {
+    amount, description, entryDate, costType, accountId = null, categoryId = null, userId,
+}) {
+    if (!MUTABLE_INVESTMENT_STATUSES.includes(investment.status)) {
+        throw createError.badRequest(`${investment.name} is ${String(investment.status).toLowerCase().replace(/_/g, ' ')} — expenses can only be recorded against an active investment.`);
+    }
+    if (!categoryId) categoryId = await investmentCost.purposeCategory(client, costType, userId);
+    const { referenceId: opRefId, referenceCode: opRefCode } =
+        await generateReference(client, MODULE_CODES.INVESTMENT, 'INV-OP', 'INVESTMENT_TRANSACTION', userId);
+    const { referenceId: txRefId, referenceCode: txRefCode } =
+        await generateReference(client, resolveModuleCode(investment), 'INVEST-OP-OUT', 'TRANSACTION', userId);
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId:       accountId || investment.returns_account_id,
+        transactionType: 'DEBIT',
+        inflowType:      'EXPENSE',
+        amount,
+        currencyId:      investment.currency_id,
+        categoryId,
+        description:     description || `Investment expense — ${investment.name} (${investment.reference_code})`,
+        valueDate:       entryDate,
+        createdBy:       userId,
+        referenceId:     txRefId,
+        investmentId:    investment.id,
+    });
+    await linkReferenceToRecord(client, txRefId, transactionId);
+    await investmentCost.setCostType(client, transactionId, costType);
+    const op = await client.query(`
+        INSERT INTO investment_transactions (reference_id, investment_id, transaction_id, entry_type, amount, description, entry_date, created_by)
+        VALUES ($1, $2, $3, 'EXPENSE', $4, $5, $6, $7) RETURNING id
+    `, [opRefId, investment.id, transactionId, amount, description || 'Investment expense', entryDate, userId]);
+    await linkReferenceToRecord(client, opRefId, op.rows[0].id);
+    const { newExpenditure, supplementaryDelta } = computeSupplementaryOverage(
+        investment.planned_budget, investment.actual_expenditure, amount
+    );
+    await client.query(`
+        UPDATE investments SET actual_expenditure = $1, supplementary_budget = supplementary_budget + $2 WHERE id = $3
+    `, [newExpenditure, supplementaryDelta, investment.id]);
+    return { transactionId, referenceCode: txRefCode, operationReference: opRefCode, balanceBefore, balanceAfter };
+}
+
+// ============================================================
 // RECORD INVESTMENT OPERATIONAL TRANSACTION
 // POST /api/investments/:id/transactions
 // Records a dedicated operational entry against ONE investment —
@@ -1000,11 +1073,16 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
     // to 5700, CREDITABLE to 1500; either way it is added to the register
     // of tax deducted from the company. gross_amount (optional) is the
     // income it was deducted from.
-    const { entry_type, amount, description, entry_date, category_id, tax_treatment, gross_amount, tax_certificate_number } = req.body;
+    const { entry_type, amount, description, entry_date, tax_treatment, gross_amount, tax_certificate_number } = req.body;
+    let { category_id } = req.body;
 
     if (!['EXPENSE', 'INFLOW', 'TAX'].includes(entry_type)) {
         throw createError.badRequest('entry_type must be EXPENSE, INFLOW, or TAX');
     }
+    // v1.80.0 — an EXPENSE says what it was for (buying / running /
+    // maintenance). An entry without one (e.g. waiting in "Awaiting
+    // approval" since before v1.80) is kept as before: capital.
+    const costType = entry_type === 'EXPENSE' ? investmentCost.assertCostType(req.body.cost_type) : null;
 
     await withTransaction(async (client) => {
         const investResult = await client.query(`
@@ -1053,6 +1131,7 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
 
         const entryLabel = entry_type === 'TAX' ? 'Tax' :
                             entry_type === 'INFLOW' ? 'Inflow' : 'Expense';
+        if (costType && !category_id) category_id = await investmentCost.purposeCategory(client, costType, req.user.id);
 
         const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
             accountId:       investment.returns_account_id,
@@ -1074,6 +1153,7 @@ const recordInvestmentTransaction = asyncHandler(async (req, res) => {
         });
 
         await linkReferenceToRecord(client, txRefId, transactionId);
+        if (costType) await investmentCost.setCostType(client, transactionId, costType);
 
         if (entry_type === 'TAX') {
             const gross = gross_amount && parseFloat(gross_amount) > parseFloat(amount) ? parseFloat(gross_amount) : parseFloat(amount);
@@ -2805,7 +2885,120 @@ const getProjectById = asyncHandler(async (req, res) => {
     sendSuccess(res, result.rows[0]);
 });
 
+// ============================================================
+// INVESTMENT LEDGER (v1.80.0) — GET /api/investments/:id/ledger
+// Every ledger entry tagged with this investment (funding, expenses,
+// returns, tax, requisitions paid for it, and their reversals), with
+// what each expense was for, its category trail, connected documents
+// and the requisition it came from. Plus totals by purpose.
+// ============================================================
+const getInvestmentLedger = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const inv = await query('SELECT id, name, currency_id FROM investments WHERE id = $1', [id]);
+    if (!inv.rows.length) throw createError.notFound('Investment not found');
+    const hasCost = await investmentCost.costTypeReady({ query });
+    const hasLinks = (await query(`SELECT to_regclass('public.transaction_document_links') IS NOT NULL AS ok`)).rows[0].ok;
+    const hasReqInv = (await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'requisitions' AND column_name = 'investment_id'`)).rows.length > 0;
+    const r = await query(`
+        SELECT t.id, t.transaction_type, t.inflow_type, t.amount, t.value_date::text AS value_date, t.description,
+               t.is_reversal, t.is_reversed, t.reversal_of, t.posted_at,
+               ${hasCost ? 'COALESCE(t.investment_cost_type, o.investment_cost_type)' : 'NULL'} AS cost_type,
+               rr.reference_code, c.code AS currency_code, a.name AS account_name, cp.full_path AS category_trail,
+               CASE WHEN f.id IS NOT NULL OR fo.id IS NOT NULL THEN 'FUNDING'
+                    WHEN ir.id IS NOT NULL OR iro.id IS NOT NULL THEN 'RETURN'
+                    WHEN it.id IS NOT NULL THEN it.entry_type
+                    WHEN ito.id IS NOT NULL THEN ito.entry_type
+                    ELSE 'OTHER' END AS kind,
+               COALESCE(it.id, ito.id) AS operation_id,
+               ${hasLinks ? '(SELECT COUNT(*)::int FROM transaction_document_links l WHERE l.transaction_id = t.id AND l.removed_at IS NULL)' : '0'} AS document_count,
+               (SELECT q.id FROM requisitions q WHERE q.transaction_id = t.id OR q.transaction_id = t.reversal_of LIMIT 1) AS requisition_id,
+               (SELECT qr.reference_code FROM requisitions q JOIN references_registry qr ON qr.id = q.reference_id
+                 WHERE q.transaction_id = t.id OR q.transaction_id = t.reversal_of LIMIT 1) AS requisition_reference
+        FROM   transactions t
+        LEFT JOIN transactions o ON o.id = t.reversal_of
+        JOIN   references_registry rr ON rr.id = t.reference_id
+        JOIN   currencies c ON c.id = t.currency_id
+        JOIN   accounts a ON a.id = t.account_id
+        LEFT JOIN category_paths cp ON cp.category_id = t.category_id
+        LEFT JOIN investment_funding f  ON f.transaction_id = t.id
+        LEFT JOIN investment_funding fo ON fo.transaction_id = t.reversal_of
+        LEFT JOIN investment_returns ir  ON ir.transaction_id = t.id
+        LEFT JOIN investment_returns iro ON iro.transaction_id = t.reversal_of
+        LEFT JOIN investment_transactions it  ON it.transaction_id = t.id
+        LEFT JOIN investment_transactions ito ON ito.transaction_id = t.reversal_of
+        WHERE  t.investment_id = $1 OR o.investment_id = $1
+        ORDER  BY t.value_date DESC, t.id DESC
+    `, [id]);
+    const totals = { capital: 0, operating: 0, maintenance: 0, unclassified: 0, returns: 0, tax: 0, inflows: 0 };
+    const unclassified = [];
+    for (const t of r.rows) {
+        if (t.is_reversal || t.is_reversed) continue; // a reversed entry and its reversal cancel out
+        const amt = parseFloat(t.amount);
+        if (t.transaction_type === 'DEBIT' && t.inflow_type === 'EXPENSE' && t.kind !== 'TAX') {
+            if (t.cost_type === 'OPERATING') totals.operating += amt;
+            else if (t.cost_type === 'MAINTENANCE') totals.maintenance += amt;
+            else if (t.cost_type === 'CAPITAL') totals.capital += amt;
+            else { totals.unclassified += amt; if (t.kind === 'EXPENSE') unclassified.push(t.id); }
+        } else if (t.kind === 'TAX') totals.tax += amt;
+        else if (t.kind === 'RETURN') totals.returns += amt;
+        else if (t.transaction_type === 'CREDIT') totals.inflows += amt;
+    }
+    for (const k of Object.keys(totals)) totals[k] = Math.round(totals[k] * 100) / 100;
+    sendSuccess(res, {
+        transactions: r.rows.map(t => ({ ...t, amount: parseFloat(t.amount), can_classify: hasCost && t.kind === 'EXPENSE' && !t.is_reversal })),
+        totals,
+        unclassified_ids: unclassified,
+        ready: hasCost,
+        requisitions_ready: hasReqInv,
+        labels: investmentCost.COST_TYPE_LABEL,
+    });
+});
+
+// ============================================================
+// CLASSIFY AN EXPENSE (v1.80.0) — PATCH /api/investments/:id/cost-type
+// body: { transaction_id, cost_type }
+// For expenses recorded before v1.80 (shown as "not classified", booked
+// as capital) or recorded with the wrong purpose. Changes which ledger
+// account the expense sits in (1400 asset ↔ 5150 / 5160 expense) and its
+// category trail, from its own date — so past statements change too.
+// Treasurer or Admin; audit-logged with the old and new purpose.
+// ============================================================
+const classifyInvestmentExpense = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const costType = investmentCost.assertCostType(req.body.cost_type, { required: true });
+    const txId = parseInt(req.body.transaction_id, 10);
+    if (!Number.isInteger(txId)) throw createError.badRequest('transaction_id is required.');
+    if (!(await investmentCost.costTypeReady({ query }))) throw createError.conflict('Classifying needs the v1.80.0 database update — ask the Admin to run it.');
+    await withTransaction(async (client) => {
+        const r = await client.query(`
+            SELECT t.id, t.investment_id, t.investment_cost_type, t.is_reversal, t.inflow_type, t.transaction_type, t.category_id,
+                   rr.reference_code, it.id AS op_id
+            FROM   transactions t
+            JOIN   references_registry rr ON rr.id = t.reference_id
+            JOIN   investment_transactions it ON it.transaction_id = t.id AND it.entry_type = 'EXPENSE'
+            WHERE  t.id = $1 FOR UPDATE OF t`, [txId]);
+        if (!r.rows.length) throw createError.notFound('That expense of this investment was not found (only investment expenses can be classified; funding is always capital).');
+        const t = r.rows[0];
+        if (String(t.investment_id) !== String(id)) throw createError.badRequest('That transaction belongs to another investment.');
+        if (t.is_reversal) throw createError.badRequest('Classify the original entry, not its reversal.');
+        if (t.investment_cost_type === costType) return;
+        const categoryId = await investmentCost.purposeCategory(client, costType, req.user.id);
+        await client.query('UPDATE transactions SET investment_cost_type = $1, category_id = $2 WHERE id = $3', [costType, categoryId, t.id]);
+        await logAction(req.user.id, ACTIONS.INVESTMENT_UPDATED || 'INVESTMENT_UPDATED', MODULES.INVESTMENTS, {
+            ipAddress: req.ip, recordType: 'transactions', recordId: t.id,
+            oldValues: { investment_cost_type: t.investment_cost_type, category_id: t.category_id },
+            newValues: { investment_cost_type: costType, category_id: categoryId },
+            description: `Investment expense ${t.reference_code} classified as ${investmentCost.COST_TYPE_LABEL[costType]} (was ${t.investment_cost_type ? investmentCost.COST_TYPE_LABEL[t.investment_cost_type] : 'not classified — capital'})`,
+            client,
+        });
+    });
+    sendSuccess(res, { transaction_id: txId, cost_type: costType }, `Classified as ${investmentCost.COST_TYPE_LABEL[costType]}`);
+});
+
 module.exports = {
+    getInvestmentLedger, classifyInvestmentExpense, // v1.80.0
+    postInvestmentFunding, // v1.80.0 — used by paid requisitions
+    postInvestmentExpense, // v1.80.0
     createInvestment,
     editInvestment,
     approveInvestment,

@@ -24,6 +24,7 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('../services/referenceService');
+const { attachInvestment } = require('../services/capitalGoalInsightsService'); // v1.78.0
 const {
     generateMonthlyCallsForGoal, catchUpMonthlyCalls, getFineSettings,
     isHistoricalPeriod, getHistoricalPeriodCollected,
@@ -236,9 +237,13 @@ const createGoal = asyncHandler(async (req, res) => {
     const {
         title, description, target_amount, currency_id, start_date, end_date,
         goal_type, fiscal_year, call_deadline_day, effective_from,
+        investment_id, new_investment, // v1.78.0 — a secondary goal can be tied to an investment
     } = req.body;
 
     await assertTrackingEnabled();
+    if ((investment_id || new_investment) && goal_type !== 'SECONDARY') {
+        throw createError.badRequest('Only a secondary goal can be tied to an investment.');
+    }
     const validatedEffectiveFrom = validateEffectiveFrom(effective_from, start_date, end_date);
 
     await withTransaction(async (client) => {
@@ -287,6 +292,16 @@ const createGoal = asyncHandler(async (req, res) => {
             effectiveFrom: validatedEffectiveFrom,
         });
 
+        // v1.78.0 — tie it to an existing investment or a new proposal, in
+        // the same database transaction (all or nothing).
+        let investment = null;
+        if (investment_id || new_investment) {
+            investment = await attachInvestment(client, {
+                goal: { id: goalId, goal_type, reference_code: referenceCode, title },
+                investmentId: investment_id, newInvestment: new_investment, user: req.user, ipAddress: req.ip,
+            });
+        }
+
         await logAction(req.user.id, ACTIONS.CAPITAL_GOAL_CREATED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'capital_goals',
@@ -296,8 +311,9 @@ const createGoal = asyncHandler(async (req, res) => {
             client,
         });
 
-        sendCreated(res, { goal_id: goalId, reference: referenceCode, total_months: totalMonths, monthly_target: monthlyTarget },
-            `Capital goal created with ${totalMonths} monthly call(s). Reference: ${referenceCode}`);
+        sendCreated(res, { goal_id: goalId, reference: referenceCode, total_months: totalMonths, monthly_target: monthlyTarget, investment },
+            `Capital goal created with ${totalMonths} monthly call(s). Reference: ${referenceCode}` +
+            (investment ? ` — tied to investment ${investment.reference_code} (${investment.name})` : ''));
     });
 });
 
@@ -481,11 +497,16 @@ const getAllGoals = asyncHandler(async (req, res) => {
             g.status, g.created_at, g.goal_type, g.currency_id, g.effective_from,
             r.reference_code, r.public_id,
             c.code AS currency_code, c.symbol AS currency_symbol,
-            u.first_name || ' ' || u.last_name AS created_by_name
+            u.first_name || ' ' || u.last_name AS created_by_name,
+            -- v1.78.0 — the investment a secondary goal raises money for.
+            -- Read through to_jsonb so the list still works on a database
+            -- where migration_v1.78.0.sql has not been run yet.
+            inv.id AS investment_id, inv.name AS investment_name, inv.status AS investment_status
         FROM  capital_goals g
         JOIN  references_registry r ON r.id = g.reference_id
         JOIN  currencies c          ON c.id = g.currency_id
         JOIN  users u                ON u.id = g.created_by
+        LEFT JOIN investments inv   ON inv.id = (to_jsonb(g) ->> 'investment_id')::int
         ${where}
         ORDER BY g.status = 'ACTIVE' DESC, g.end_date ASC
         LIMIT $${p + 1} OFFSET $${p + 2}
@@ -526,7 +547,19 @@ const getGoalById = asyncHandler(async (req, res) => {
     const goal = result.rows[0];
     const progress = await computeGoalProgress(goal, { withMonths: true });
 
-    sendSuccess(res, { ...goal, ...progress });
+    // v1.78.0 — the investment this goal raises money for, if any
+    let investment = null;
+    if (goal.investment_id) {
+        const inv = await query(`
+            SELECT i.id, i.name, i.status, i.planned_budget, i.actual_expenditure, i.funding_account_id,
+                   a.name AS funding_account_name, c.code AS currency_code, rr.reference_code
+            FROM investments i JOIN accounts a ON a.id = i.funding_account_id
+            JOIN currencies c ON c.id = i.currency_id JOIN references_registry rr ON rr.id = i.reference_id
+            WHERE i.id = $1`, [goal.investment_id]);
+        investment = inv.rows[0] || null;
+    }
+
+    sendSuccess(res, { ...goal, ...progress, investment });
 });
 
 // ============================================================
@@ -790,6 +823,7 @@ const updateCapitalGoalTrackingSettings = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    computeGoalProgress, // v1.78.0 — shared with capitalGoalInsightsService
     createGoal,
     updateGoal,
     cancelGoal,

@@ -5,7 +5,9 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI } from '../../api/endpoints';
+import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI, investmentsAPI } from '../../api/endpoints';
+import { Link, useSearchParams } from 'react-router-dom'; // v1.80.0
+import { CostTypeBadge } from '../investments/InvestmentLedger'; // v1.80.0
 import { formatDate, getErrorMessage, getInflowTypeLabel } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
@@ -23,6 +25,8 @@ import {
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 import { useTabParam } from '../../hooks/useTabParam'; // v1.72.0 — Ledger / Reversal requests tabs
 import { useConfirm } from '../../contexts/ConfirmContext'; // v1.72.0
+// v1.78.0 — documents connected to transactions (at entry or later)
+import { DocumentPicker, documentIdsOf, TransactionDetailModal, LinkCount } from '../../components/documents/TransactionDocuments';
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -143,6 +147,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const [includeSideFund, setIncludeSideFund] = useState(false);
     const [includeSavings,  setIncludeSavings]  = useState(false);
     const [includeDeposit,  setIncludeDeposit]  = useState(false);
+    const [docs, setDocs] = useState([]); // v1.78.0 — supporting documents (optional)
 
     useEffect(() => {
         if (!isOpen) return;
@@ -168,9 +173,11 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                 side_fund_amount: includeSideFund ? (form.side_fund_amount || undefined) : undefined,
                 savings_amount:   includeSavings  ? (form.savings_amount  || undefined) : undefined,
                 deposit_amount:   includeDeposit  ? (form.deposit_amount  || undefined) : undefined,
+                document_ids:     documentIdsOf(docs),
             });
             onSuccess();
             onClose();
+            setDocs([]);
             setForm({ amount: '', contribution_date: '', category_id: '',
                 notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
                 deposit_amount: '', account_id: '' });
@@ -381,6 +388,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                 onChange={e => setForm(p => ({
                                     ...p, notes: e.target.value }))} />
                         </div>
+                        <DocumentPicker value={docs} onChange={setDocs} />
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
@@ -406,6 +414,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    const [docs, setDocs] = useState([]); // v1.78.0 — supporting documents (optional)
 
     if (!isOpen) return null;
 
@@ -415,10 +424,11 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
         setError(null);
         try {
             // v1.70.0 — tax treatment + supplier withholding (see TaxFields)
-            const res = await transactionsAPI.recordExpense(expenseTaxPayload(form));
+            const res = await transactionsAPI.recordExpense({ ...expenseTaxPayload(form), document_ids: documentIdsOf(docs) });
             if (res?.data?.data?.withholding) window.alert(res.data.message);
             onSuccess();
             onClose();
+            setDocs([]);
             setForm({ account_id: '', amount: '', category_id: '',
                 description: '', value_date: '' });
         } catch (err) {
@@ -496,6 +506,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
                         </div>
                         <ExpenseTaxFields form={form} setForm={setForm}
                             currencyCode={(accounts.find(a => String(a.id) === String(form.account_id)) || {}).currency_code} />
+                        <DocumentPicker value={docs} onChange={setDocs} label="Receipt / invoice" />
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
@@ -796,6 +807,7 @@ const TransactionsPage = () => {
     const [shareholders, setShareholders] = useState([]);
     const [preview,      setPreview]      = useState(null);
     const [reversing,    setReversing]    = useState(null);
+    const [detailId,     setDetailId]     = useState(null); // v1.78.0 — transaction detail window
     const [analytics,        setAnalytics]        = useState(null);
     const [analyticsLoading, setAnalyticsLoading] = useState(true);
     const [exportingCsv,     setExportingCsv]     = useState(false);
@@ -819,10 +831,17 @@ const TransactionsPage = () => {
     useEffect(() => { loadReversalRequests(); }, [loadReversalRequests]);
     const pendingReversals = revRequests.filter(r => r.status === 'PENDING').length;
 
-    // Filters
+    // Filters — v1.80.0: investment_id (also from the address, e.g. the
+    // "Open in Transactions" link on an investment's page)
+    const [searchParams] = useSearchParams();
     const [filters, setFilters] = useState({
-        account_id: '', inflow_type: '', from_date: '', to_date: ''
+        account_id: '', inflow_type: '', from_date: '', to_date: '',
+        investment_id: searchParams.get('investment_id') || '',
     });
+    const [investmentOptions, setInvestmentOptions] = useState([]);
+    useEffect(() => {
+        investmentsAPI.getAll({ limit: 200 }).then(r => setInvestmentOptions(r.data.data || [])).catch(() => setInvestmentOptions([]));
+    }, []);
 
     const loadTransactions = useCallback(async () => {
         try {
@@ -899,13 +918,10 @@ const TransactionsPage = () => {
             render: row => (
                 <div>
                     <button
-                        onClick={() => setPreview({
-                            html: transactionTemplate(row),
-                            title: row.reference_code,
-                        })}
+                        onClick={() => setDetailId(row.id)}
                         className="font-mono text-xs font-medium text-primary-700
                             hover:underline"
-                        title="Preview document"
+                        title="Open — details, connected documents, print"
                     >
                         {row.reference_code}
                     </button>
@@ -937,10 +953,24 @@ const TransactionsPage = () => {
             ),
         },
         {
+            // v1.78.0 — how many documents are connected (click to see / connect)
+            header: 'Docs',
+            render: row => (
+                <LinkCount count={row.document_count} onClick={() => setDetailId(row.id)}
+                    title={row.document_refs ? `Connected: ${row.document_refs}` : 'No document connected — click to connect one'} />
+            ),
+        },
+        {
             header: 'Category',
             render: row => (
                 <span className="text-xs text-gray-500">
                     {row.category_trail || row.category_name}
+                    {row.investment_id && (
+                        <span className="block mt-0.5">
+                            <Link to={`/investments/${row.investment_id}`} className="text-indigo-700 hover:underline">↳ {row.investment_name}</Link>{' '}
+                            {row.inflow_type === 'EXPENSE' && <CostTypeBadge value={row.investment_cost_type} />}
+                        </span>
+                    )}
                 </span>
             ),
         },
@@ -1178,6 +1208,12 @@ const TransactionsPage = () => {
                         <option value="LOAN_RECEIVED">Loan Received</option>
                         <option value="INVESTMENT_RETURN">Investment Return</option>
                     </select>
+                    <select className="input" value={filters.investment_id}
+                        onChange={e => setFilters(p => ({ ...p, investment_id: e.target.value }))}>
+                        <option value="">All investments and none</option>
+                        <option value="any">Any investment</option>
+                        {investmentOptions.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                    </select>
                     <input type="date" className="input" value={filters.from_date}
                         onChange={e => setFilters(p => ({
                             ...p, from_date: e.target.value }))} />
@@ -1189,7 +1225,7 @@ const TransactionsPage = () => {
                     <button
                         onClick={() => {
                             setFilters({ account_id: '', inflow_type: '',
-                                from_date: '', to_date: '' });
+                                from_date: '', to_date: '', investment_id: '' });
                             setPage(1);
                         }}
                         className="text-sm text-gray-500 hover:text-gray-700"
@@ -1230,6 +1266,15 @@ const TransactionsPage = () => {
             />
 
             <DocumentPreviewModal preview={preview} onClose={() => setPreview(null)} />
+            <TransactionDetailModal
+                transactionId={detailId}
+                onClose={() => setDetailId(null)}
+                onPrint={(tx) => { setDetailId(null); setPreview({ html: transactionTemplate(tx), title: tx.reference_code }); }}
+                onChanged={(id, docs) => setTransactions(list => list.map(t => (t.id === id ? {
+                    ...t, document_count: docs.length,
+                    document_refs: docs.map(d => d.reference_code).join(', ') || null,
+                } : t)))}
+            />
 
             <ReverseTransactionModal
                 transaction={reversing}

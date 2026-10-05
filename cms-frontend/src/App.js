@@ -40,6 +40,9 @@ import GeneralLedgerPage from './pages/reports/GeneralLedgerPage';
 import RecordChecksPage from './pages/reports/RecordChecksPage'; // v1.72.0
 import MoneyApprovalsPage from './pages/moneyApprovals/MoneyApprovalsPage'; // v1.73.0
 import EventsPage from './pages/events/EventsPage';
+import MeetingsPage from './pages/meetings/MeetingsPage'; // v1.79.0
+import MeetingDetailPage from './pages/meetings/MeetingDetailPage';
+import ResolutionDetailPage from './pages/meetings/ResolutionDetailPage';
 import DocumentsPage from './pages/documents/DocumentsPage';
 import ReportsPage from './pages/reports/ReportsPage';
 import UsersPage from './pages/users/UsersPage';
@@ -165,6 +168,9 @@ function App() {
                             <Route path="capital-goals/monthly-calls/:id" element={<CapitalCallDetailPage />} />
                             <Route path="capital-goals/:id" element={<CapitalGoalDetailPage />} />
                             <Route path="events" element={<EventsPage />} />
+                            <Route path="meetings" element={<MeetingsPage />} />
+                            <Route path="meetings/resolutions/:rid" element={<ResolutionDetailPage />} />
+                            <Route path="meetings/:id" element={<MeetingDetailPage />} />
                             <Route path="documents/generate" element={<GenerateDocumentPage />} />
                             <Route path="documents" element={<DocumentsPage />} />
                             <Route path="reports" element={<ReportsPage />} />

@@ -1,0 +1,43 @@
+%% v1.78.0 — capital goals hub, pledgers by name, goal → investment, transactions ↔ documents
+flowchart TD
+    subgraph HUB["Capital Goals hub (/capital-goals?tab=…)"]
+        O["GET /capital-goals/overview\n(one request: goals, this month, my pledge,\nwhat I owe, approvals for managers)"]
+        O --> T1["Overview — card per goal + Pledge"]
+        O --> T2["All goals — status / type filters"]
+        O --> T3["My pledges — former My Capital Calls"]
+        O --> T4["Approvals — managers, links to the month"]
+        O --> T5["How it works — live fine rates"]
+        O --> D1["Company dashboard + Shareholder dashboard\n(CapitalGoalsDashboardSection)"]
+    end
+
+    subgraph GOAL["One goal (/capital-goals/:id?tab=…)"]
+        G1["Summary — /:id/insights\n(pace, forecast, participation, pledge stats, top 5)"]
+        G2["Months — chart + calls"]
+        G3["Pledgers — /:id/pledgers (by name, rank, standing)"]
+        G4["Investment — /:id/funds (secondary goals)"]
+        G5["Activity — /:id/activity"]
+        M["Month page — /monthly-calls/:id/members (by name)"]
+    end
+
+    subgraph INV["Secondary goal → investment"]
+        I0["Tie: existing investment or new PENDING proposal\n(on create, or PUT /:id/investment)"]
+        I1["Collected: approved pledge payments (Primary EUR)"]
+        I2["Step 1 Move: POST /transfers + capital_goal_id\nDirector starts · Treasurer approves · rate applied\nwaiting transfers reserve the money"]
+        I3["Arrived in the investment's operational account (UGX)"]
+        I4["Step 2 Invest: POST /investments/:id/fund + capital_goal_id\ninvestment must be approved · held unless Treasurer/Admin"]
+        I0 --> I1 --> I2 --> I3 --> I4
+        CAP{{"never more than the goal collected\n(goal row locked while checking)"}}
+        I2 -.-> CAP
+        I4 -.-> CAP
+    end
+
+    subgraph DOC["Transactions ↔ documents (transaction_document_links)"]
+        E1["Record contribution / expense / inflow\n+ document_ids (pick existing or upload new)"] --> E2["every row of the entry connected\n(held entries: on approval)"]
+        L1["Connect later — from the transaction\nor from the document"] --> L2{"already connected\nto something else?"}
+        L2 -- "yes, not confirmed" --> L3["409 ALREADY_CONNECTED\n'Connect anyway?'"]
+        L3 -- Yes --> L4["connected (audit-logged)"]
+        L2 -- no --> L4
+        L4 --> C1["🔗 counts on both lists"]
+        L4 --> C2["Printed transaction:\nConnected Documents (references)"]
+        L4 --> C3["Disconnect = removed_at stamped (history kept)"]
+    end

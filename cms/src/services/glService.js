@@ -46,6 +46,10 @@
 //   1. Investments — an EXPENSE-tagged transaction that carries a
 //      non-null `investment_id` is capital deployed into a
 //      project/bond (an Asset acquired), reclassified to 1400.
+//      v1.80.0: unless it is marked as RUNNING (5150 Investment
+//      Operating Costs) or MAINTENANCE (5160 Investment Maintenance
+//      Costs) in transactions.investment_cost_type — see
+//      investmentCostService.js.
 //   2. Side Fund expenses (v1.66.0) — an EXPENSE-tagged transaction
 //      recorded through the Side Fund module (it has a
 //      side_fund_expenses row) is the MEMBERS' money being spent, so
@@ -137,6 +141,14 @@ const normalizeBasis = (basis) => (basis === BASIS.CURRENCY ? BASIS.CURRENCY : B
 // v1.70.0 columns may not exist yet on a database that hasn't run
 // migration_v1.70.0.sql — the reports keep working without them.
 let overrideColumnKnown = null;
+// v1.80.0 — transactions.investment_cost_type (buying vs running an investment)
+let costTypeColumnKnown = null;
+const hasCostTypeColumn = async () => {
+    if (costTypeColumnKnown === true) return true;
+    costTypeColumnKnown = await adjustments.columnExists('transactions', 'investment_cost_type');
+    return costTypeColumnKnown;
+};
+
 const hasOverrideColumn = async () => {
     if (overrideColumnKnown === true) return true;
     overrideColumnKnown = await adjustments.columnExists('transactions', 'gl_override_account_code');
@@ -264,6 +276,11 @@ const getTransactionLedgerLines = async ({ accountId, fromDate, toDate, basis = 
     const accountsByCode = new Map(accounts.map(a => [a.code, a]));
     const cashAccount = accountsByCode.get(CASH_GL_CODE);
     const investmentOverrideAccount = accountsByCode.get(INVESTMENT_OVERRIDE_GL_CODE);
+    // v1.80.0 — running / maintaining an investment is an expense, not capital
+    const investmentRunningAccounts = {
+        OPERATING: accountsByCode.get('5150'),
+        MAINTENANCE: accountsByCode.get('5160'),
+    };
     const sideFundOverrideAccount = accountsByCode.get(SIDE_FUND_OVERRIDE_GL_CODE);
     const capitalPendingAccount = accountsByCode.get(CAPITAL_PENDING_GL_CODE);
     const shareCapitalAccount = accountsByCode.get(SHARE_CAPITAL_GL_CODE);
@@ -289,6 +306,7 @@ const getTransactionLedgerLines = async ({ accountId, fromDate, toDate, basis = 
     // read too — before v1.70.0 a reversed investment funding or side
     // fund expense was wrongly booked back to operating expenses.
     const hasOverride = await hasOverrideColumn();
+    const hasCostType = await hasCostTypeColumn();
     const result = await query(`
         SELECT t.id, t.account_id, t.value_date::text AS value_date, t.transaction_type, t.inflow_type,
                t.amount, t.description, t.investment_id, t.category_id,
@@ -298,6 +316,7 @@ const getTransactionLedgerLines = async ({ accountId, fromDate, toDate, basis = 
                (sfe.id IS NOT NULL) AS is_side_fund_expense,
                ${hasOverride ? 't.gl_override_account_code, o.gl_override_account_code AS orig_gl_override,' : 'NULL AS gl_override_account_code, NULL AS orig_gl_override,'}
                o.investment_id AS orig_investment_id,
+               ${hasCostType ? 't.investment_cost_type, o.investment_cost_type AS orig_investment_cost_type,' : 'NULL AS investment_cost_type, NULL AS orig_investment_cost_type,'}
                (osfe.id IS NOT NULL) AS orig_is_side_fund_expense
         FROM   transactions t
         JOIN   currencies cur           ON cur.id = t.currency_id
@@ -378,7 +397,13 @@ const getTransactionLedgerLines = async ({ accountId, fromDate, toDate, basis = 
         if (overrideCode && accountsByCode.has(overrideCode)) {
             lineBGlAccountId = accountsByCode.get(overrideCode).id;
         } else if (t.inflow_type === 'EXPENSE' && investmentId) {
-            lineBGlAccountId = investmentOverrideAccount.id;
+            // v1.80.0 — what the money was for: running / maintenance costs
+            // are expenses (5150 / 5160); buying / expanding — and every
+            // entry recorded before v1.80 that is not classified yet — is
+            // capital (1400). A reversal follows the entry it reverses.
+            const costType = t.investment_cost_type || t.orig_investment_cost_type;
+            const running = costType && investmentRunningAccounts[costType];
+            lineBGlAccountId = running ? running.id : investmentOverrideAccount.id;
         } else if (t.inflow_type === 'EXPENSE' && isSideFundExpense && sideFundOverrideAccount) {
             lineBGlAccountId = sideFundOverrideAccount.id;
         }

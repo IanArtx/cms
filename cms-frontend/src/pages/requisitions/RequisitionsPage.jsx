@@ -18,6 +18,10 @@ import { requisitionTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
+import {
+    InvestmentFields, PendingFiles, uploadFiles, RequisitionDocuments, PrerequisiteList, ReversalModal, PurposeBadge,
+} from './requisitionParts'; // v1.80.0
+import { PaperClipIcon, ArrowUturnLeftIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
 // PRIORITY BADGE
@@ -45,12 +49,15 @@ const BLANK_REQ_FORM = {
     amount_requested: '', purpose: '',
     required_by_date: '', priority: 'NORMAL',
     requisition_type: 'EXPENSE', contribution_date: '',
+    // v1.80.0
+    for_investment: false, investment_id: '', investment_purpose: '',
 };
 
 const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editingRecord }) => {
     const [form, setForm] = useState(BLANK_REQ_FORM);
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    const [files,   setFiles]   = useState([]); // v1.80.0 — uploaded after the requisition is created
     const isEdit = !!editingRecord;
 
     useEffect(() => {
@@ -65,10 +72,14 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                 priority: editingRecord.priority || 'NORMAL',
                 requisition_type: editingRecord.requisition_type || 'EXPENSE',
                 contribution_date: editingRecord.contribution_date ? editingRecord.contribution_date.slice(0, 10) : '',
+                for_investment: !!editingRecord.investment_id,
+                investment_id: editingRecord.investment_id ? String(editingRecord.investment_id) : '',
+                investment_purpose: editingRecord.investment_purpose || '',
             });
         } else {
             setForm(BLANK_REQ_FORM);
         }
+        setFiles([]);
     }, [editingRecord, isOpen]);
 
     if (!isOpen) return null;
@@ -77,14 +88,24 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
     const isSavingsDeposit = form.requisition_type === 'SAVINGS_DEPOSIT';
     const isSideFund = form.requisition_type === 'SIDE_FUND_CONTRIBUTION';
     const needsDate = isContribution || isSavingsDeposit || isSideFund;
+    const isExpense = form.requisition_type === 'EXPENSE';
+    const forInvestment = isExpense && form.for_investment;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
         try {
+            if (forInvestment && (!form.investment_id || !form.investment_purpose)) {
+                throw new Error('Choose the investment and what the money is for.');
+            }
+            const { for_investment: _fi, ...rest } = form;
             const payload = {
-                ...form,
+                ...rest,
+                // v1.80.0 — for an investment: its category is set automatically
+                category_id: forInvestment ? undefined : form.category_id,
+                investment_id: forInvestment ? parseInt(form.investment_id, 10) : (isEdit && editingRecord.investment_id ? null : undefined),
+                investment_purpose: forInvestment ? form.investment_purpose : (isEdit && editingRecord.investment_id ? null : undefined),
                 amount_requested: parseFloat(form.amount_requested),
                 contribution_date: needsDate ? form.contribution_date : undefined,
                 // An empty string here previously reached the backend's
@@ -96,7 +117,15 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
             if (isEdit) {
                 await requisitionsAPI.update(editingRecord.id, payload);
             } else {
-                await requisitionsAPI.create(payload);
+                const created = await requisitionsAPI.create(payload);
+                if (files.length) {
+                    try {
+                        await uploadFiles(created.data.data.requisition_id, files);
+                    } catch (upErr) {
+                        onSuccess();
+                        throw new Error(`The requisition was submitted (${created.data.data.reference}), but a file could not be attached: ${getErrorMessage(upErr)} — open it and add the document again.`);
+                    }
+                }
             }
             onSuccess();
             onClose();
@@ -191,7 +220,12 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                 required />
                         </div>
 
+                        {isExpense && (
+                            <InvestmentFields value={form} onChange={v => setForm(p => ({ ...p, ...v }))} />
+                        )}
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {!forInvestment && (
                             <div>
                                 <label className="label">Category *</label>
                                 <select className="input" value={form.category_id}
@@ -206,6 +240,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                     ))}
                                 </select>
                             </div>
+                            )}
                             {!needsDate && (
                                 <div>
                                     <label className="label">Priority</label>
@@ -279,6 +314,9 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                                 placeholder="Any additional information..." />
                         </div>
 
+                        {isExpense && !isEdit && <PendingFiles files={files} onChange={setFiles} />}
+                        {isExpense && isEdit && <RequisitionDocuments requisition={editingRecord} />}
+
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
@@ -311,10 +349,13 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    const [docCount, setDocCount] = useState(0); // v1.80.0
 
     if (!isOpen || !requisition) return null;
 
     const isContribution = requisition.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT';
+    const isExpenseReq = requisition.requisition_type === 'EXPENSE';
+    const forInvestment = isExpenseReq && !!requisition.investment_id;
     const isSideFund = requisition.requisition_type === 'SIDE_FUND_CONTRIBUTION';
     const isFine = requisition.requisition_type === 'FINE_PAYMENT';
     const noAccountNeeded = isContribution || isSideFund;
@@ -327,7 +368,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
             await requisitionsAPI.approve(requisition.id, {
                 // v1.69.1 — a contribution can be received into any
                 // (non-savings) account; Primary if none is chosen.
-                account_id: isContribution
+                account_id: isContribution || forInvestment
                     ? (form.account_id ? parseInt(form.account_id) : undefined)
                     : noAccountNeeded
                         ? undefined
@@ -352,7 +393,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
             <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl
-                    max-w-md w-full p-6">
+                    max-w-lg w-full p-6">
                     <h2 className="text-lg font-semibold text-gray-900 mb-1">
                         {isContribution ? 'Acknowledge Contribution' : isSideFund ? 'Acknowledge Side Fund Payment' : isFine ? 'Acknowledge Fine Payment' : 'Approve Requisition'}
                     </h2>
@@ -378,7 +419,21 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                             {noAccountNeeded ? 'How they paid: ' : 'Purpose: '}
                             {requisition.purpose}
                         </p>
+                        {forInvestment && (
+                            <p className="text-xs text-gray-700 mt-1">
+                                For the investment <strong>{requisition.investment_name}</strong> <PurposeBadge value={requisition.investment_purpose} />
+                            </p>
+                        )}
                     </div>
+                    {isExpenseReq && (
+                        <div className="space-y-2 mb-4">
+                            <RequisitionDocuments requisition={requisition} onCount={setDocCount} />
+                            <div className="bg-gray-50 rounded-lg p-3">
+                                <p className="text-xs font-semibold text-gray-700 mb-1">Before it can be paid</p>
+                                <PrerequisiteList requisition={requisition} documentCount={docCount} />
+                            </div>
+                        </div>
+                    )}
                     {isContribution && (
                         <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4 text-xs text-blue-700">
                             Choose the account the member actually paid into (any currency). The amount
@@ -423,13 +478,13 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         )}
                         {!noAccountNeeded && (
                             <div>
-                                <label className="label">Pay From Account *</label>
+                                <label className="label">Pay From Account {forInvestment ? '' : '*'}</label>
                                 <select className="input" value={form.account_id}
                                     onChange={e => setForm(p => ({
                                         ...p, account_id: e.target.value }))}
-                                    required>
-                                    <option value="">Select account...</option>
-                                    {accounts.map(a => (
+                                    required={!forInvestment}>
+                                    <option value="">{forInvestment ? "The investment's own account (default)" : 'Select account...'}</option>
+                                    {accounts.filter(a => !forInvestment || a.currency_id === requisition.investment_currency_id).map(a => (
                                         <option key={a.id} value={a.id}>
                                             {a.name} ({a.currency_code})
                                         </option>
@@ -462,7 +517,8 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose}
                                 className="btn-secondary">Cancel</button>
-                            <button type="submit" disabled={loading}
+                            <button type="submit" disabled={loading || (isExpenseReq && docCount === 0)}
+                                title={isExpenseReq && docCount === 0 ? 'Connect a supporting document first' : undefined}
                                 className="btn-primary">
                                 {loading
                                     ? 'Processing...'
@@ -565,6 +621,9 @@ const RequisitionsPage = () => {
     const [rejectReq,  setRejectReq]  = useState(null);
     const [statusFilter, setStatusFilter] = useState('');
     const [preview, setPreview] = useState(null);
+    const [docsReq, setDocsReq] = useState(null);       // v1.80.0
+    const [reverseReq, setReverseReq] = useState(null); // v1.80.0
+    const [notice, setNotice] = useState(null);
 
     const canApprove = hasPermission('FINANCE_TRANSACTION_CREATE') &&
                        hasPermission('FINANCE_VIEW_ALL');
@@ -576,6 +635,31 @@ const RequisitionsPage = () => {
     // requires for the Approve/Reject action buttons themselves.
     const canViewAll = hasPermission('FINANCE_VIEW_ALL');
     const isTreasuryRole = hasRole(['Treasurer', 'Assistant Treasurer']);
+    // v1.80.0 — reversing a paid requisition = asking for the reversal of its
+    // payment (the same Treasurer-only, second-person rule as Transactions).
+    const canReverse = (row) => hasRole('Treasurer') && row.status === 'APPROVED' && row.transaction_id
+        && row.requisition_type === 'EXPENSE' && !row.pending_reversal_id;
+
+    // v1.80.0 — investment, purpose, documents and reversal under the title
+    const extras = (row) => (
+        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+            {row.investment_name && <span className="text-[11px] text-indigo-700">↳ {row.investment_name}</span>}
+            <PurposeBadge value={row.investment_purpose} />
+            {row.requisition_type === 'EXPENSE' && row.document_count != null && (
+                <button type="button" onClick={() => setDocsReq(row)} title="Supporting documents"
+                    className={`inline-flex items-center gap-0.5 text-[11px] rounded-full px-1.5 py-0.5 ${row.document_count > 0 ? 'bg-primary-50 text-primary-700' : 'bg-amber-50 text-amber-700'}`}>
+                    <PaperClipIcon className="h-3 w-3" />{row.document_count > 0 ? row.document_count : 'no document'}
+                </button>
+            )}
+            {row.pending_reversal_id && <span className="text-[11px] text-amber-700">reversal waiting for approval</span>}
+            {row.status === 'REVERSED' && row.reversal_reason && <span className="text-[11px] text-gray-500" title={row.reversal_reason}>reversed {formatDate(row.reversed_at)}</span>}
+        </div>
+    );
+    const reverseButton = (row) => canReverse(row) && (
+        <button onClick={() => setReverseReq(row)} className="p-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors" title="Reverse this payment">
+            <ArrowUturnLeftIcon className="h-4 w-4" />
+        </button>
+    );
 
     const canEdit = (row) =>
         row.status === 'PENDING' &&
@@ -675,6 +759,7 @@ const RequisitionsPage = () => {
                         )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
+                    {extras(row)}
                 </div>
             ),
         },
@@ -741,6 +826,7 @@ const RequisitionsPage = () => {
                             <PencilIcon className="h-4 w-4" />
                         </button>
                     )}
+                    {reverseButton(row)}
                     <button
                         onClick={() => printDocument(requisitionTemplate(row), row.reference_code)}
                         className="p-1.5 rounded-lg bg-gray-50 text-gray-500
@@ -810,6 +896,7 @@ const RequisitionsPage = () => {
                         )}
                     </div>
                     <p className="text-xs text-gray-400">{row.category_trail}</p>
+                    {extras(row)}
                 </div>
             ),
         },
@@ -872,6 +959,7 @@ const RequisitionsPage = () => {
                             </button>
                         </>
                     )}
+                    {reverseButton(row)}
                     <button
                         onClick={() => printDocument(requisitionTemplate(row), row.reference_code)}
                         className="p-1.5 rounded-lg bg-gray-50 text-gray-500
@@ -906,6 +994,11 @@ const RequisitionsPage = () => {
             {error && (
                 <div className="mb-4">
                     <ErrorMessage message={error} onDismiss={() => setError(null)} />
+                </div>
+            )}
+            {notice && (
+                <div className="mb-4 bg-green-50 border border-green-200 text-green-700 text-sm rounded-lg p-3 flex justify-between gap-3">
+                    <span>{notice}</span><button type="button" onClick={() => setNotice(null)}>×</button>
                 </div>
             )}
 
@@ -968,7 +1061,7 @@ const RequisitionsPage = () => {
                     {/* Status Filter */}
                     <div className="card mb-4">
                         <div className="flex gap-2 flex-wrap">
-                            {['', 'PENDING', 'APPROVED', 'REJECTED'].map(s => (
+                            {['', 'PENDING', 'APPROVED', 'REJECTED', 'REVERSED'].map(s => (
                                 <button
                                     key={s}
                                     onClick={() => {
@@ -1019,6 +1112,22 @@ const RequisitionsPage = () => {
             />
 
             <DocumentPreviewModal preview={preview} onClose={() => setPreview(null)} />
+
+            {/* v1.80.0 — documents of one requisition */}
+            {docsReq && (
+                <div className="fixed inset-0 z-50 overflow-y-auto">
+                    <div className="fixed inset-0 bg-black bg-opacity-40" onClick={() => { setDocsReq(null); handleSuccess(); }} />
+                    <div className="flex min-h-full items-center justify-center p-4">
+                        <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6 space-y-3">
+                            <h2 className="text-lg font-semibold text-gray-900">{docsReq.reference_code} — {docsReq.title}</h2>
+                            <RequisitionDocuments requisition={docsReq} />
+                            <PrerequisiteList requisition={docsReq} documentCount={docsReq.document_count || 0} />
+                            <div className="flex justify-end"><button type="button" className="btn-secondary" onClick={() => { setDocsReq(null); handleSuccess(); }}>Close</button></div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            <ReversalModal requisition={reverseReq} onClose={() => setReverseReq(null)} onDone={(msg) => { setNotice(msg); handleSuccess(); }} />
         </div>
     );
 };

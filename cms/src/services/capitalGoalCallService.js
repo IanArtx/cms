@@ -166,13 +166,22 @@ const getHistoricalPeriodCollected = async (client, period, goalCurrencyId) => {
 // totals — "in consideration of the contribution party" per the
 // feature's own wording.
 const getHistoricalContributionsByUser = async (client, goal) => {
+    // v1.78.0 — only the goal's own historical months count: from its
+    // start month up to (not including) its effective month, exactly the
+    // months computeGoalProgress shows as "Historical". Before, every
+    // contribution ever made before the effective month was counted, so a
+    // member's "My contribution" and the top contributor could be larger
+    // than anything the goal itself shows as collected.
+    if (!goal.effective_from) return {};
     const effectivePeriod = effectivePeriodOf(goal);
+    const startPeriod = normalizeDateInput(goal.start_date).slice(0, 7);
     const result = await client.query(`
         SELECT user_id, amount, currency_id, contribution_date
         FROM   shareholder_contributions
         WHERE  status = 'APPROVED'
+        AND    to_char(contribution_date, 'YYYY-MM') >= $2
         AND    to_char(contribution_date, 'YYYY-MM') < $1
-    `, [effectivePeriod]);
+    `, [effectivePeriod, startPeriod]);
 
     const byUser = {};
     for (const row of result.rows) {

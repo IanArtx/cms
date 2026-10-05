@@ -112,6 +112,9 @@ router.post('/',
             .custom(notFutureDate),
         body('description')
             .optional().trim(),
+        // v1.78.0 — optional: this moves a capital goal's collected money towards its investment
+        body('capital_goal_id')
+            .optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Invalid capital goal'),
     ],
     validateRequest,
     transfersController.initiateTransfer

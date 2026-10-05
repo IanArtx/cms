@@ -15,6 +15,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { ExpenseTaxFields, InflowTaxFields, expenseTaxPayload, inflowTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
+import { DocumentPicker, documentIdsOf, TransactionDetailModal, LinkCount } from '../../components/documents/TransactionDocuments'; // v1.78.0
 import {
     PlusIcon,
     BuildingLibraryIcon,
@@ -504,11 +505,13 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
     const [categories, setCategories] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [docs, setDocs] = useState([]); // v1.78.0 — supporting documents (optional)
 
     useEffect(() => {
         if (isOpen) {
             categoriesAPI.getAll({ flat: true }).then(r => setCategories(r.data.data || [])).catch(() => {});
             setForm({ amount: '', category_id: '', description: '', value_date: new Date().toISOString().slice(0, 10) });
+            setDocs([]);
         }
     }, [isOpen]);
 
@@ -522,7 +525,7 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
         setLoading(true);
         setError(null);
         try {
-            const payload = { ...form, account_id: account.id, amount: parseFloat(form.amount) };
+            const payload = { ...form, account_id: account.id, amount: parseFloat(form.amount), document_ids: documentIdsOf(docs) };
             // v1.70.0 — tax treatment / supplier withholding on an expense;
             // tax deducted at source on an inflow (see TaxFields).
             if (isExpense) {
@@ -590,6 +593,7 @@ const RecordTransactionModal = ({ isOpen, onClose, onSuccess, account, type }) =
                         {isExpense
                             ? <ExpenseTaxFields form={form} setForm={setForm} currencyCode={account.currency_code} />
                             : <InflowTaxFields form={form} setForm={setForm} />}
+                        <DocumentPicker value={docs} onChange={setDocs} label={isExpense ? 'Receipt / invoice' : 'Supporting documents'} />
                         <div className="flex justify-end gap-3 pt-2">
                             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading}
@@ -612,6 +616,7 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
     const [pagination,   setPagination]   = useState(null);
     const [showExpense,  setShowExpense]  = useState(false);
     const [showInflow,   setShowInflow]   = useState(false);
+    const [detailId,     setDetailId]     = useState(null); // v1.78.0
 
     const loadTransactions = useCallback(async () => {
         try {
@@ -877,6 +882,15 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
             )}
 
             {/* Transaction Ledger */}
+            {/* v1.78.0 — one transaction: details + connected documents */}
+            <TransactionDetailModal
+                transactionId={detailId}
+                onClose={() => setDetailId(null)}
+                onChanged={(id, docs) => setTransactions(list => list.map(t => (t.id === id ? {
+                    ...t, document_count: docs.length,
+                    document_refs: docs.map(d => d.reference_code).join(', ') || null,
+                } : t)))}
+            />
             <div className="card">
                 <h3 className="section-title mb-4">Transaction Ledger</h3>
                 {loading ? (
@@ -912,10 +926,16 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
                                             <tr key={i}
                                                 className="hover:bg-gray-50">
                                                 <td className="table-cell">
-                                                    <span className="font-mono
-                                                        text-xs text-primary-700">
+                                                    <button type="button" onClick={() => setDetailId(tx.id)}
+                                                        className="font-mono text-xs text-primary-700 hover:underline"
+                                                        title="Open — details and connected documents">
                                                         {tx.reference_code}
-                                                    </span>
+                                                    </button>
+                                                    {parseInt(tx.document_count || 0, 10) > 0 && (
+                                                        <span className="ml-1.5 align-middle">
+                                                            <LinkCount count={tx.document_count} title={`Connected: ${tx.document_refs || ''}`} />
+                                                        </span>
+                                                    )}
                                                 </td>
                                                 <td className="table-cell
                                                     max-w-xs">

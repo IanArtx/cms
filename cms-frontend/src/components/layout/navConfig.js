@@ -47,6 +47,7 @@ import {
     DocumentMagnifyingGlassIcon,
     CurrencyDollarIcon,
     ClockIcon,
+    BuildingOffice2Icon,
 } from '@heroicons/react/24/outline';
 
 // v1.73.0 — permissions that let someone record money straight away
@@ -136,6 +137,11 @@ export const NAV_ITEMS = [
     // ---- Office -----------------------------------------------
     { id: 'events', label: 'Events', href: '/events', group: 'office', icon: CalendarDaysIcon,
       show: (c) => c.hasPermission('EVENT_VIEW'), keywords: 'meeting calendar agm board' },
+    // v1.79.0 — AGM / EGM / board meetings, register of attendance, resolutions
+    { id: 'meetings', label: 'Meetings & resolutions', href: '/meetings', group: 'office', icon: BuildingOffice2Icon,
+      show: (c) => !c.isAdminOfficer && (c.hasPermission('MEETING_VIEW') || c.hasPermission('MEETING_MANAGE')
+          || c.hasRole(['Admin', 'Director', 'Secretary', 'Assistant Secretary', 'Shareholder'])),
+      keywords: 'agm egm annual general meeting board minutes resolution special ordinary written proxy register attendance quorum ursb filing notice' },
     { id: 'documents', label: 'Documents', href: '/documents', group: 'office', icon: DocumentTextIcon,
       show: (c) => c.hasPermission('DOCUMENT_VIEW'), keywords: 'files minutes letters certificates templates' },
     { id: 'service-fees', label: 'Service fees', href: '/service-fees', group: 'office', icon: BriefcaseIcon,
@@ -181,6 +187,8 @@ export const QUICK_ACTIONS = [
     { id: 'transfer', label: 'Transfer between accounts', href: '/transfers?new=1', needs: 'transfers',
       show: (c) => c.hasPermission('FINANCE_TRANSFER_CREATE') && !c.isAdminOfficer },
     { id: 'requisition', label: 'New requisition', href: '/requisitions?new=1', needs: 'requisitions', show: (c) => !c.isAdminOfficer },
+    { id: 'meeting', label: 'Convene a meeting', href: '/meetings?new=1', needs: 'meetings',
+      show: (c) => !c.isAdminOfficer && (c.hasPermission('MEETING_MANAGE') || c.hasRole(['Admin', 'Director', 'Secretary', 'Assistant Secretary'])) },
     { id: 'event', label: 'New event', href: '/events?new=1', needs: 'events',
       show: (c) => c.hasPermission('EVENT_CREATE') },
     { id: 'document', label: 'Upload a document', href: '/documents?new=1', needs: 'documents',
@@ -199,6 +207,8 @@ export const SUB_PAGE_LABELS = [
     { pattern: /^\/reports\/general-ledger/,    label: 'General ledger' },
     { pattern: /^\/reports\/record-checks/,     label: 'Records check' }, // v1.72.0
     { pattern: /^\/documents\/generate/,        label: 'Generate document' },
+    { pattern: /^\/meetings\/resolutions\/\d+/, label: 'Resolution' }, // v1.79.0
+    { pattern: /^\/meetings\/\d+/,             label: 'Meeting' },
     { pattern: /^\/capital-goals\/my-calls/,    label: 'My capital calls' },
     { pattern: /^\/capital-goals\/monthly-calls\//, label: 'Monthly call' },
     { pattern: /^\/capital-goals\/\d+/,         label: 'Goal' },

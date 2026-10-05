@@ -5765,5 +5765,443 @@ WHERE  e.code = 'EUR' AND u.code = 'UGX'
 ON CONFLICT (base_currency_id, target_currency_id) DO NOTHING;
 
 -- ============================================================
--- END OF SCHEMA — v1.76.0
+-- v1.78.0 — goals tied to investments, goal money flows, and
+-- transaction ↔ document links (see migration_v1.78.0.sql)
+-- ============================================================
+-- 1. Goal → investment ------------------------------------------------
+ALTER TABLE capital_goals ADD COLUMN IF NOT EXISTS investment_id INTEGER REFERENCES investments(id);
+CREATE INDEX IF NOT EXISTS idx_capital_goals_investment ON capital_goals (investment_id) WHERE investment_id IS NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'capital_goals_investment_secondary_only') THEN
+        ALTER TABLE capital_goals
+            ADD CONSTRAINT capital_goals_investment_secondary_only
+            CHECK (investment_id IS NULL OR goal_type = 'SECONDARY');
+    END IF;
+END $$;
+
+-- 2. Goal money moved / invested ---------------------------------------
+ALTER TABLE transfers          ADD COLUMN IF NOT EXISTS capital_goal_id INTEGER REFERENCES capital_goals(id);
+ALTER TABLE investment_funding ADD COLUMN IF NOT EXISTS capital_goal_id INTEGER REFERENCES capital_goals(id);
+CREATE INDEX IF NOT EXISTS idx_transfers_capital_goal          ON transfers (capital_goal_id)          WHERE capital_goal_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_investment_funding_capital_goal ON investment_funding (capital_goal_id) WHERE capital_goal_id IS NOT NULL;
+
+-- 3. Transactions ↔ documents -------------------------------------------
+CREATE TABLE IF NOT EXISTS transaction_document_links (
+    id              SERIAL       PRIMARY KEY,
+    transaction_id  INTEGER      NOT NULL REFERENCES transactions(id),
+    document_id     INTEGER      NOT NULL REFERENCES documents(id),
+    note            TEXT,
+    linked_by       INTEGER      NOT NULL REFERENCES users(id),
+    linked_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    linked_via      VARCHAR(20)  NOT NULL DEFAULT 'LATER'
+                    CHECK (linked_via IN ('AT_ENTRY', 'LATER')),
+    removed_at      TIMESTAMPTZ,
+    removed_by      INTEGER      REFERENCES users(id)
+);
+
+-- One live link per pair (a removed link can be made again).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tx_doc_link_live
+    ON transaction_document_links (transaction_id, document_id) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tx_doc_link_tx  ON transaction_document_links (transaction_id) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tx_doc_link_doc ON transaction_document_links (document_id)    WHERE removed_at IS NULL;
+
+-- ============================================================
+-- v1.79.0 — company meetings (AGM / EGM / board), the register of
+-- attendees, resolutions and written resolutions, governance
+-- settings, statutory letterhead details (see migration_v1.79.0.sql)
+-- ============================================================
+-- ------------------------------------------------------------
+-- 1. GOVERNANCE SETTINGS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS governance_settings (
+    id                              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    agm_notice_days                 INTEGER NOT NULL DEFAULT 21 CHECK (agm_notice_days >= 0),
+    special_resolution_notice_days  INTEGER NOT NULL DEFAULT 21 CHECK (special_resolution_notice_days >= 0),
+    general_meeting_notice_days     INTEGER NOT NULL DEFAULT 14 CHECK (general_meeting_notice_days >= 0),
+    board_meeting_notice_days       INTEGER NOT NULL DEFAULT 7  CHECK (board_meeting_notice_days >= 0),
+    member_quorum                   INTEGER NOT NULL DEFAULT 2  CHECK (member_quorum >= 1),
+    board_quorum                    INTEGER NOT NULL DEFAULT 2  CHECK (board_quorum >= 1),
+    special_resolution_majority_pct NUMERIC(5,2) NOT NULL DEFAULT 75 CHECK (special_resolution_majority_pct > 50 AND special_resolution_majority_pct <= 100),
+    short_notice_consent_pct        NUMERIC(5,2) NOT NULL DEFAULT 95 CHECK (short_notice_consent_pct > 50 AND short_notice_consent_pct <= 100),
+    resolution_filing_days          INTEGER NOT NULL DEFAULT 15 CHECK (resolution_filing_days >= 0),
+    -- On a show of hands a proxy does not vote unless the Articles allow it.
+    proxy_votes_on_show_of_hands    BOOLEAN NOT NULL DEFAULT FALSE,
+    agm_max_interval_months         INTEGER NOT NULL DEFAULT 15 CHECK (agm_max_interval_months >= 1),
+    act_name                        VARCHAR(200) NOT NULL DEFAULT 'Companies Act, 2012',
+    -- Printed in the heading of resolutions, e.g. "PRIVATE COMPANY LIMITED BY SHARES".
+    company_type                    VARCHAR(120) NOT NULL DEFAULT 'Private Company Limited by Shares',
+    -- Section references printed on the documents. Kept editable because
+    -- the revised edition of the Act renumbers sections — the company
+    -- secretary confirms them against the edition in use.
+    legal_references                JSONB NOT NULL DEFAULT '{
+        "agm": "s.138",
+        "notice": "s.140",
+        "quorum": "s.141",
+        "proxy": "s.143",
+        "special_resolution": "s.148",
+        "filing": "s.150",
+        "minutes": "s.152"
+    }'::jsonb,
+    articles_note                   TEXT,
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by                      INTEGER REFERENCES users(id)
+);
+INSERT INTO governance_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 2. MEETINGS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS company_meetings (
+    id                    SERIAL PRIMARY KEY,
+    reference_id          INTEGER NOT NULL REFERENCES references_registry(id),
+    meeting_type          VARCHAR(10) NOT NULL CHECK (meeting_type IN ('AGM', 'EGM', 'BOARD')),
+    sequence_number       INTEGER,                 -- "the 3rd Annual General Meeting"
+    title                 VARCHAR(255) NOT NULL,
+    financial_year        VARCHAR(40),             -- AGM: the year whose accounts are laid
+    meeting_date          DATE NOT NULL,
+    start_time            TIME NOT NULL,
+    end_time              TIME,
+    venue                 TEXT,
+    mode                  VARCHAR(10) NOT NULL DEFAULT 'PHYSICAL' CHECK (mode IN ('PHYSICAL', 'VIRTUAL', 'HYBRID')),
+    virtual_link          TEXT,
+    chairperson_user_id   INTEGER REFERENCES users(id),
+    chairperson_name      VARCHAR(200),
+    secretary_user_id     INTEGER REFERENCES users(id),
+    secretary_name        VARCHAR(200),
+    agenda                JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{ no, title, description, business }]
+    has_special_business  BOOLEAN NOT NULL DEFAULT FALSE,
+    notice_issued_at      TIMESTAMPTZ,
+    notice_issued_by      INTEGER REFERENCES users(id),
+    notice_days_required  INTEGER,
+    notice_days_given     INTEGER,
+    short_notice_consent  BOOLEAN NOT NULL DEFAULT FALSE,
+    short_notice_note     TEXT,
+    quorum_required       INTEGER,
+    opened_at             TIMESTAMPTZ,
+    opened_by             INTEGER REFERENCES users(id),
+    quorum_at_opening     INTEGER,
+    closed_at             TIMESTAMPTZ,
+    closed_by             INTEGER REFERENCES users(id),
+    minutes               JSONB NOT NULL DEFAULT '{}'::jsonb,   -- { opening, previous_minutes, items:[{ no, title, discussion, decision }], aob, closing, next_meeting }
+    status                VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
+                          CHECK (status IN ('DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED', 'CANCELLED')),
+    cancelled_reason      TEXT,
+    created_by            INTEGER NOT NULL REFERENCES users(id),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_company_meetings_date ON company_meetings (meeting_date DESC);
+
+-- ------------------------------------------------------------
+-- 3. REGISTER OF ATTENDEES
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS meeting_attendance (
+    id                 SERIAL PRIMARY KEY,
+    meeting_id         INTEGER NOT NULL REFERENCES company_meetings(id) ON DELETE CASCADE,
+    user_id            INTEGER REFERENCES users(id),
+    name               VARCHAR(200) NOT NULL,
+    -- MEMBER / DIRECTOR count for the quorum and vote; IN_ATTENDANCE
+    -- (company secretary, auditor, guest) is recorded but never counted.
+    capacity           VARCHAR(20) NOT NULL CHECK (capacity IN ('MEMBER', 'DIRECTOR', 'IN_ATTENDANCE')),
+    designation        VARCHAR(120),            -- e.g. Chairperson, Director, Auditor
+    shares_held        NUMERIC(20,4),           -- members: shares on the register when the list was made
+    status             VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                       CHECK (status IN ('PENDING', 'PRESENT', 'PRESENT_VIRTUAL', 'BY_PROXY', 'APOLOGY', 'ABSENT')),
+    proxy_name         VARCHAR(200),
+    proxy_user_id      INTEGER REFERENCES users(id),
+    marked_at          TIMESTAMPTZ,
+    marked_by          INTEGER REFERENCES users(id),
+    confirmed_at       TIMESTAMPTZ,             -- the attendee's own digital signature
+    confirmation_code  VARCHAR(16),
+    confirmed_ip       VARCHAR(64),
+    sort_order         INTEGER NOT NULL DEFAULT 0,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_meeting_attendance_user
+    ON meeting_attendance (meeting_id, user_id, capacity) WHERE user_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 4. RESOLUTIONS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS meeting_resolutions (
+    id                     SERIAL PRIMARY KEY,
+    reference_id           INTEGER NOT NULL REFERENCES references_registry(id),
+    meeting_id             INTEGER REFERENCES company_meetings(id),   -- NULL for a written resolution
+    kind                   VARCHAR(20) NOT NULL
+                           CHECK (kind IN ('ORDINARY', 'SPECIAL', 'BOARD', 'WRITTEN_MEMBERS', 'WRITTEN_BOARD')),
+    -- A written members' resolution can stand in for a special one.
+    treated_as_special     BOOLEAN NOT NULL DEFAULT FALSE,
+    resolution_number      VARCHAR(30) NOT NULL,      -- e.g. SR 1/2026
+    agenda_no              INTEGER,
+    title                  VARCHAR(255) NOT NULL,
+    preamble               TEXT,                       -- "WHEREAS …"
+    clauses                JSONB NOT NULL DEFAULT '[]'::jsonb,   -- ["THAT …", …]
+    proposed_by_user_id    INTEGER REFERENCES users(id),
+    proposed_by_name       VARCHAR(200),
+    seconded_by_user_id    INTEGER REFERENCES users(id),
+    seconded_by_name       VARCHAR(200),
+    votes_for              INTEGER CHECK (votes_for >= 0),
+    votes_against          INTEGER CHECK (votes_against >= 0),
+    votes_abstain          INTEGER CHECK (votes_abstain >= 0),
+    voters_present         INTEGER,
+    chair_casting_vote     VARCHAR(10) CHECK (chair_casting_vote IN ('FOR', 'AGAINST')),   -- only on equal votes
+    majority_required_pct  NUMERIC(5,2),
+    result                 VARCHAR(10) NOT NULL DEFAULT 'PENDING' CHECK (result IN ('PENDING', 'CARRIED', 'LOST', 'WITHDRAWN')),
+    passed_on              DATE,
+    recorded_at            TIMESTAMPTZ,
+    recorded_by            INTEGER REFERENCES users(id),
+    filing_required        BOOLEAN NOT NULL DEFAULT FALSE,
+    filing_due_date        DATE,
+    filed_on               DATE,
+    filing_reference       VARCHAR(120),
+    filed_by               INTEGER REFERENCES users(id),
+    created_by             INTEGER NOT NULL REFERENCES users(id),
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_resolutions_meeting ON meeting_resolutions (meeting_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_meeting_resolutions_number ON meeting_resolutions (resolution_number);
+
+-- ------------------------------------------------------------
+-- 5. SIGNATURES ON WRITTEN RESOLUTIONS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS resolution_signatories (
+    id                 SERIAL PRIMARY KEY,
+    resolution_id      INTEGER NOT NULL REFERENCES meeting_resolutions(id) ON DELETE CASCADE,
+    user_id            INTEGER NOT NULL REFERENCES users(id),
+    name               VARCHAR(200) NOT NULL,
+    capacity           VARCHAR(20) NOT NULL CHECK (capacity IN ('MEMBER', 'DIRECTOR')),
+    shares_held        NUMERIC(20,4),
+    decision           VARCHAR(10) CHECK (decision IN ('AGREE', 'DISAGREE')),
+    signed_at          TIMESTAMPTZ,
+    confirmation_code  VARCHAR(16),
+    signed_ip          VARCHAR(64),
+    UNIQUE (resolution_id, user_id)
+);
+
+-- ------------------------------------------------------------
+-- 6. NEW DOCUMENT TYPES
+-- Each CHECK is re-created as the full list (old values + new), so
+-- every existing row stays valid.
+-- ------------------------------------------------------------
+DO $$
+DECLARE
+    all_types TEXT := $t$'MEETING_MINUTES','MEETING_AGENDA','INVESTMENT_PROPOSAL',
+        'FINANCIAL_REPORT_GENERAL','FINANCIAL_REPORT_INDIVIDUAL','RECEIPT','RESOLUTION','CONTRACT',
+        'LOAN_AGREEMENT','GRANT_AGREEMENT','AUDITOR_FEEDBACK','AUDIT_REPORT','OTHER','SHARE_CERTIFICATE',
+        'NOTICE_OF_MEETING','PROXY_FORM','ATTENDANCE_REGISTER','WRITTEN_RESOLUTION','CERTIFIED_RESOLUTION'$t$;
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT c.conrelid::regclass::text AS tbl, c.conname,
+               CASE WHEN c.conrelid = 'document_templates'::regclass THEN 'template_type' ELSE 'document_type' END AS col
+        FROM   pg_constraint c
+        WHERE  c.contype = 'c'
+        AND    c.conrelid IN ('documents'::regclass, 'document_templates'::regclass,
+                              'signature_requirements'::regclass, 'document_stamp_requirements'::regclass)
+        AND    pg_get_constraintdef(c.oid) LIKE '%MEETING_MINUTES%'
+    LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+        EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I CHECK (%I IN (%s))', r.tbl, r.conname, r.col, all_types);
+    END LOOP;
+END $$;
+
+-- document_type columns of the signature / stamp settings were VARCHAR(30)
+-- — every new type fits (the longest is 20 characters).
+
+INSERT INTO document_templates (name, template_type, description, template_body)
+SELECT v.name, v.ttype, v.descr, 'Rendered client-side — see exportUtils.js (statutory meeting documents, v1.79.0).'
+FROM (VALUES
+    ('Notice of Meeting',     'NOTICE_OF_MEETING',    'Statutory notice of an AGM, EGM or board meeting, with the agenda and the proxy statement.'),
+    ('Proxy Form',            'PROXY_FORM',           'Form for a member to appoint a proxy to attend and vote at a general meeting.'),
+    ('Attendance Register',   'ATTENDANCE_REGISTER',  'Register of attendees with shares held, capacity, digital confirmations and the quorum.'),
+    ('Written Resolution',    'WRITTEN_RESOLUTION',   'Resolution in writing signed by every member or every director entitled to vote.'),
+    ('Certified Resolution',  'CERTIFIED_RESOLUTION', 'Certified true copy of a resolution for filing with the Registrar of Companies.')
+) AS v(name, ttype, descr)
+WHERE NOT EXISTS (SELECT 1 FROM document_templates t WHERE t.template_type = v.ttype);
+
+-- ------------------------------------------------------------
+-- 7. COMPANY ADDRESSES FOR THE STATUTORY LETTERHEAD
+-- ------------------------------------------------------------
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS registered_office VARCHAR(300);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS postal_address    VARCHAR(200);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_email     VARCHAR(150);
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_phone     VARCHAR(50);
+
+-- ------------------------------------------------------------
+-- 8. PERMISSIONS
+-- Granted to the roles that run meetings. An Admin can change this
+-- under Settings › Roles; the routes also accept those roles directly.
+-- ------------------------------------------------------------
+INSERT INTO permissions (code, module, description) VALUES
+    ('MEETING_VIEW',   'GOVERNANCE', 'See company meetings, registers, minutes and resolutions (v1.79.0)'),
+    ('MEETING_MANAGE', 'GOVERNANCE', 'Convene meetings, issue notices, keep the register, record resolutions and minutes (v1.79.0)')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission_id, granted_by)
+SELECT r.id, p.id, g.uid
+FROM   roles r
+JOIN   permissions p ON p.code = 'MEETING_MANAGE'
+CROSS JOIN (SELECT MIN(id) AS uid FROM users) g
+WHERE  r.name IN ('Admin', 'Director', 'Secretary', 'Assistant Secretary')
+AND    g.uid IS NOT NULL
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission_id, granted_by)
+SELECT r.id, p.id, g.uid
+FROM   roles r
+JOIN   permissions p ON p.code = 'MEETING_VIEW'
+CROSS JOIN (SELECT MIN(id) AS uid FROM users) g
+WHERE  r.name IN ('Admin', 'Director', 'Treasurer', 'Assistant Treasurer', 'Secretary',
+                  'Assistant Secretary', 'Coordinator', 'Shareholder')
+AND    g.uid IS NOT NULL
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- ============================================================
+-- v1.80.0 — requisitions (documents first, investments, reversal),
+-- investment spending split into buying vs running, and statutory
+-- document corrections (see migration_v1.80.0.sql)
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- 1. Buying vs running an investment
+-- ------------------------------------------------------------
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS investment_cost_type VARCHAR(12);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transactions_investment_cost_type_check') THEN
+        ALTER TABLE transactions ADD CONSTRAINT transactions_investment_cost_type_check
+            CHECK (investment_cost_type IS NULL OR investment_cost_type IN ('CAPITAL', 'OPERATING', 'MAINTENANCE'));
+    END IF;
+END $$;
+
+-- Money put INTO an investment through "Fund" was always capital.
+UPDATE transactions t
+SET    investment_cost_type = 'CAPITAL'
+FROM   investment_funding f
+WHERE  f.transaction_id = t.id AND t.investment_cost_type IS NULL;
+
+-- ------------------------------------------------------------
+-- 2. Ledger accounts for running an investment
+-- ------------------------------------------------------------
+INSERT INTO gl_accounts (code, name, account_type, normal_balance, statement_section, cash_flow_category, description, display_order)
+VALUES
+    ('5150', 'Investment Operating Costs', 'EXPENSE', 'DEBIT', 'EXPENSES', 'OPERATING',
+     'Running costs of the company''s investments (feed, wages, fuel, utilities, transport …) — v1.80.0', 712),
+    ('5160', 'Investment Maintenance Costs', 'EXPENSE', 'DEBIT', 'EXPENSES', 'OPERATING',
+     'Repairs and upkeep that keep an investment running without adding to it — v1.80.0', 714)
+ON CONFLICT (code) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 3. Requisitions: investment, purpose and reversal
+-- ------------------------------------------------------------
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS investment_id          INTEGER REFERENCES investments(id);
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS investment_purpose     VARCHAR(12);
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS reversed_at            TIMESTAMPTZ;
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS reversed_by            INTEGER REFERENCES users(id);
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS reversal_reason        TEXT;
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS reversal_transaction_id INTEGER REFERENCES transactions(id);
+DO $$
+DECLARE r RECORD;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'requisitions_investment_purpose_check') THEN
+        ALTER TABLE requisitions ADD CONSTRAINT requisitions_investment_purpose_check
+            CHECK (investment_purpose IS NULL OR investment_purpose IN ('CAPITAL', 'OPERATING', 'MAINTENANCE'));
+    END IF;
+    -- status: add REVERSED (the CHECK is recreated with the full list)
+    FOR r IN
+        SELECT conname FROM pg_constraint
+        WHERE  conrelid = 'requisitions'::regclass AND contype = 'c'
+        AND    pg_get_constraintdef(oid) LIKE '%CANCELLED%' AND pg_get_constraintdef(oid) NOT LIKE '%REVERSED%'
+    LOOP
+        EXECUTE format('ALTER TABLE requisitions DROP CONSTRAINT %I', r.conname);
+        EXECUTE format('ALTER TABLE requisitions ADD CONSTRAINT %I CHECK (status IN (''PENDING'', ''APPROVED'', ''REJECTED'', ''CANCELLED'', ''REVERSED''))', r.conname);
+    END LOOP;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_requisitions_investment ON requisitions (investment_id) WHERE investment_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 4. Documents connected to a requisition
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS requisition_document_links (
+    id              SERIAL PRIMARY KEY,
+    requisition_id  INTEGER      NOT NULL REFERENCES requisitions(id),
+    document_id     INTEGER      NOT NULL REFERENCES documents(id),
+    linked_by       INTEGER      NOT NULL REFERENCES users(id),
+    linked_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    removed_at      TIMESTAMPTZ,
+    removed_by      INTEGER      REFERENCES users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_requisition_doc_link_live
+    ON requisition_document_links (requisition_id, document_id) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_requisition_doc_link_req ON requisition_document_links (requisition_id) WHERE removed_at IS NULL;
+
+-- ------------------------------------------------------------
+-- 5. One signature slot per POSITION (a person may hold two)
+-- ------------------------------------------------------------
+DROP INDEX IF EXISTS document_signatures_user_slot_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS document_signatures_user_position_unique
+    ON document_signatures (target_type, target_id, required_user_id, (COALESCE(position_title, '')))
+    WHERE required_user_id IS NOT NULL;
+
+-- Repair: approved statutory / meeting documents whose template names a
+-- person for a position that never got a slot (the same person already
+-- had a slot for another position). If that person has already signed
+-- the document, the new slot is filled with the same signature.
+DO $$
+DECLARE
+    f RECORD;
+    d RECORD;
+    uid INTEGER;
+    signed RECORD;
+BEGIN
+    FOR f IN SELECT * FROM (VALUES ('chairperson', 'Chairman'), ('secretary', 'Secretary'), ('director', 'Director')) AS v(k, title)
+    LOOP
+        FOR d IN
+            SELECT id, template_data FROM documents
+            WHERE  document_type IN ('MEETING_MINUTES', 'MEETING_AGENDA', 'RESOLUTION',
+                                     'NOTICE_OF_MEETING', 'ATTENDANCE_REGISTER', 'CERTIFIED_RESOLUTION')
+            AND    status NOT IN ('DELETED', 'SUPERSEDED')
+            AND    template_data ? (f.k || '_user_id')
+            AND    EXISTS (SELECT 1 FROM document_signatures s WHERE s.target_type = 'DOCUMENT' AND s.target_id = documents.id)
+        LOOP
+            BEGIN
+                uid := (d.template_data ->> (f.k || '_user_id'))::int;
+            EXCEPTION WHEN others THEN
+                uid := NULL;
+            END;
+            CONTINUE WHEN uid IS NULL;
+            CONTINUE WHEN EXISTS (
+                SELECT 1 FROM document_signatures s
+                WHERE  s.target_type = 'DOCUMENT' AND s.target_id = d.id
+                AND    s.required_user_id = uid AND COALESCE(s.position_title, '') = f.title);
+            SELECT * INTO signed FROM document_signatures s
+            WHERE  s.target_type = 'DOCUMENT' AND s.target_id = d.id AND s.required_user_id = uid AND s.status = 'SIGNED'
+            ORDER  BY s.signed_at LIMIT 1;
+            IF FOUND THEN
+                INSERT INTO document_signatures (target_type, target_id, required_user_id, position_title, status, signed_by, signature_snapshot_path, signed_at)
+                VALUES ('DOCUMENT', d.id, uid, f.title, 'SIGNED', signed.signed_by, signed.signature_snapshot_path, signed.signed_at);
+            ELSE
+                INSERT INTO document_signatures (target_type, target_id, required_user_id, position_title)
+                VALUES ('DOCUMENT', d.id, uid, f.title);
+            END IF;
+        END LOOP;
+    END LOOP;
+END $$;
+
+-- ------------------------------------------------------------
+-- 6. Captured signatures on the register and written resolutions
+-- ------------------------------------------------------------
+ALTER TABLE meeting_attendance     ADD COLUMN IF NOT EXISTS signature_snapshot_path TEXT;
+ALTER TABLE resolution_signatories ADD COLUMN IF NOT EXISTS signature_snapshot_path TEXT;
+
+-- ------------------------------------------------------------
+-- 7. Meetings recorded after they took place
+-- ------------------------------------------------------------
+ALTER TABLE company_meetings ADD COLUMN IF NOT EXISTS recorded_after_event BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- ============================================================
+-- END OF SCHEMA — v1.80.0
 -- ============================================================

@@ -453,6 +453,50 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Requisitions, investment costs, meeting documents** (v1.80.0): run
+  `cms/migration_v1.80.0.sql` on **both** databases **before** pushing the
+  code — `node update_live_database.js --url "…"` then
+  `--apply --confirm=<database name>`. It adds the buying / running /
+  maintenance purpose on transactions (existing investment funding is set
+  to "buying"), ledger accounts 5150 and 5160, the investment, reversal and
+  documents fields on requisitions (status REVERSED), the
+  `requisition_document_links` table, one signature slot per position
+  (and repairs documents already filed where one person held two
+  positions), captured-signature columns and the "recorded after the
+  meeting" flag. Safe to run twice. Afterwards:
+  1. Every director, secretary and member who will confirm attendance or
+     sign a written resolution saves their signature once in
+     **My Profile › Signature** — without it the system refuses to sign.
+  2. The Treasurer opens each investment and classifies the expenses
+     listed as **Not classified** (recorded before this update) as
+     running, maintenance or buying. Until then they count as part of the
+     investment's value, exactly as before.
+  3. Expense requisitions now need at least one document before they can
+     be approved — tell members to attach the invoice / quotation when
+     they request.
+- **Company meetings & resolutions** (v1.79.0): run
+  `cms/migration_v1.79.0.sql` on **both** databases **before** using the new
+  *Meetings & resolutions* page — `node update_live_database.js --url "…"`
+  then `--apply --confirm=<database name>`. It adds `governance_settings`,
+  `company_meetings`, `meeting_attendance`, `meeting_resolutions`,
+  `resolution_signatories`, four address/contact columns on
+  `company_settings`, five document types and the MEETING_VIEW /
+  MEETING_MANAGE permissions (granted to the usual roles). Nothing existing
+  changes and it is safe to run twice. Afterwards an Admin or the Secretary
+  fills in **Settings › Governance**: registered office, postal address,
+  phone, email, and checks the notice days, quorum and the legal section
+  references against the company's Articles and the edition of the Act in use.
+- **Capital goals hub + transactions ↔ documents** (v1.78.0): run
+  `cms/migration_v1.78.0.sql` on **both** databases — easiest with
+  `node update_live_database.js --url "…"` (it lists what is missing) and
+  then the same with `--apply --confirm=<database name>` (it prints the
+  exact command). It adds `transaction_document_links`,
+  `capital_goals.investment_id`, `transfers.capital_goal_id` and
+  `investment_funding.capital_goal_id`; nothing existing is changed and it
+  is safe to run twice. The new code also works before the migration
+  (counts show 0, tying a goal to an investment and connecting documents
+  explain that the update is needed), so push first or migrate first —
+  either order is safe.
 - **Fixed exchange rate before 20 Aug 2025** (v1.76.0): 1 EUR = UGX 4,000
   for every date before 20 August 2025, in both companies. After pushing and
   applying `migration_v1.76.0.sql`, run on each database:

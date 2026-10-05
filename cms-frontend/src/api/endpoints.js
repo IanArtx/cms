@@ -115,6 +115,10 @@ export const transactionsAPI = {
     getReversalRequests:    (params)   => api.get('/transactions/reversal-requests', { params }),
     approveReversalRequest: (id)       => api.post(`/transactions/reversal-requests/${id}/approve`),
     rejectReversalRequest:  (id, data) => api.post(`/transactions/reversal-requests/${id}/reject`, data),
+    // v1.78.0 — documents connected to a transaction
+    getDocuments:    (id)         => api.get(`/transactions/${id}/documents`),
+    linkDocuments:   (id, data)   => api.post(`/transactions/${id}/documents`, data),
+    unlinkDocument:  (id, docId)  => api.delete(`/transactions/${id}/documents/${docId}`),
 };
 
 // ============================================================
@@ -212,6 +216,9 @@ export const investmentsAPI = {
     payCoupon:       (id, couponId, data) =>
         api.patch(`/investments/${id}/coupons/${couponId}/pay`, data),
     recordTransaction: (id, data) => api.post(`/investments/${id}/transactions`, data),
+    // v1.80.0 — every ledger entry of one investment, and classifying an expense
+    getLedger:       (id)       => api.get(`/investments/${id}/ledger`),
+    classifyExpense: (id, data) => api.patch(`/investments/${id}/cost-type`, data),
     // v1.70.0 — treasury bill repaid at maturity (tax on the discount)
     recordTreasuryBillMaturity: (id, data) => api.post(`/investments/${id}/treasury-bill-maturity`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
@@ -265,6 +272,14 @@ export const capitalGoalsAPI = {
     // v1.51.0 — company-wide Capital Goal Tracking on/off toggle.
     getTrackingSettings:    ()     => api.get('/capital-goals/settings/tracking'),
     updateTrackingSettings: (data) => api.patch('/capital-goals/settings/tracking', data),
+    // v1.78.0 — dashboards/hub, statistics, pledgers by name, activity,
+    // goal money (Collected → Moved → Invested), tie to an investment
+    getOverview:   ()         => api.get('/capital-goals/overview'),
+    getInsights:   (id)       => api.get(`/capital-goals/${id}/insights`),
+    getPledgers:   (id)       => api.get(`/capital-goals/${id}/pledgers`),
+    getActivity:   (id, params) => api.get(`/capital-goals/${id}/activity`, { params }),
+    getFunds:      (id)       => api.get(`/capital-goals/${id}/funds`),
+    setInvestment: (id, data) => api.put(`/capital-goals/${id}/investment`, data),
 };
 
 // ============================================================
@@ -284,6 +299,7 @@ export const capitalGoalCallsAPI = {
     listMonthlyCallsForGoal:  (goalId)         => api.get(`/capital-goals/${goalId}/monthly-calls`),
     getGoalContributionStats: (goalId)         => api.get(`/capital-goals/${goalId}/stats`),
     getPendingPledges:        ()               => api.get('/capital-goals/pending-pledges'), // v1.56.1
+    getCallMembers:           (monthlyCallId)  => api.get(`/capital-goals/monthly-calls/${monthlyCallId}/members`), // v1.78.0 — by name
 };
 
 // ============================================================
@@ -330,6 +346,41 @@ export const eventsAPI = {
 };
 
 // ============================================================
+// MEETINGS & RESOLUTIONS (v1.79.0) — AGM / EGM / board meetings,
+// the register of attendees, resolutions, written resolutions
+// ============================================================
+export const meetingsAPI = {
+    getSettings:      ()          => api.get('/meetings/settings'),
+    updateSettings:   (data)      => api.patch('/meetings/settings', data),
+    getMyActions:     ()          => api.get('/meetings/my-actions'),
+    getAll:           (params)    => api.get('/meetings', { params }),
+    create:           (data)      => api.post('/meetings', data),
+    getById:          (id)        => api.get(`/meetings/${id}`),
+    update:           (id, data)  => api.patch(`/meetings/${id}`, data),
+    refreshRegister:  (id)        => api.post(`/meetings/${id}/register/refresh`),
+    addAttendee:      (id, data)  => api.post(`/meetings/${id}/attendees`, data),
+    markAttendance:   (id, aid, data) => api.patch(`/meetings/${id}/attendees/${aid}`, data),
+    removeAttendee:   (id, aid)   => api.delete(`/meetings/${id}/attendees/${aid}`),
+    issueNotice:      (id, data)  => api.post(`/meetings/${id}/notice`, data || {}),
+    open:             (id)        => api.post(`/meetings/${id}/open`, {}),
+    confirmAttendance: (id, data) => api.post(`/meetings/${id}/confirm`, data),
+    saveMinutes:      (id, data)  => api.put(`/meetings/${id}/minutes`, data),
+    close:            (id, data)  => api.post(`/meetings/${id}/close`, data || {}),
+    cancel:           (id, data)  => api.post(`/meetings/${id}/cancel`, data),
+    addResolution:    (id, data)  => api.post(`/meetings/${id}/resolutions`, data),
+    getResolutions:   (params)    => api.get('/meetings/resolutions', { params }),
+    getResolution:    (rid)       => api.get(`/meetings/resolutions/${rid}`),
+    updateResolution: (rid, data) => api.patch(`/meetings/resolutions/${rid}`, data),
+    vote:             (rid, data) => api.post(`/meetings/resolutions/${rid}/vote`, data),
+    withdraw:         (rid)       => api.post(`/meetings/resolutions/${rid}/withdraw`, {}),
+    markFiled:        (rid, data) => api.post(`/meetings/resolutions/${rid}/filed`, data),
+    createWritten:    (data)      => api.post('/meetings/resolutions/written', data),
+    sign:             (rid, data) => api.post(`/meetings/resolutions/${rid}/sign`, data),
+    // The server builds the document's content; preview: true returns it unsaved.
+    document:         (data)      => api.post('/meetings/documents', data),
+};
+
+// ============================================================
 // DOCUMENTS
 // ============================================================
 export const documentsAPI = {
@@ -367,6 +418,10 @@ export const documentsAPI = {
     }),
     getTemplates:   ()       => api.get('/documents/templates'),
     createTemplate: (data)   => api.post('/documents/templates', data),
+    // v1.78.0 — transactions connected to a document
+    getTransactions:   (id)        => api.get(`/documents/${id}/transactions`),
+    linkTransactions:  (id, data)  => api.post(`/documents/${id}/transactions`, data),
+    unlinkTransaction: (id, txId)  => api.delete(`/documents/${id}/transactions/${txId}`),
 };
 
 // ============================================================
@@ -427,6 +482,9 @@ export const auditAPI = {
 export const settingsAPI = {
     getCompany:    ()     => api.get('/settings/company'),
     updateCompany: (data) => api.patch('/settings/company', data),
+    // v1.79.0 — registration number, TIN, registered office … (logged-in users only)
+    getStatutory:    ()     => api.get('/settings/company/statutory'),
+    updateStatutory: (data) => api.patch('/settings/company/statutory', data),
     uploadLogo:    (formData) => api.post('/settings/company/logo', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),
@@ -655,6 +713,14 @@ export const requisitionsAPI = {
     update:    (id, data) => api.patch(`/requisitions/${id}`, data),
     approve:   (id, data) => api.post(`/requisitions/${id}/approve`, data),
     reject:    (id, data) => api.post(`/requisitions/${id}/reject`, data),
+    // v1.80.0 — supporting documents, investments
+    investmentOptions: ()        => api.get('/requisitions/investment-options'),
+    getDocuments:   (id)         => api.get(`/requisitions/${id}/documents`),
+    linkDocuments:  (id, ids)    => api.post(`/requisitions/${id}/documents`, { document_ids: ids }),
+    uploadDocument: (id, formData) => api.post(`/requisitions/${id}/documents/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    unlinkDocument: (id, docId)  => api.delete(`/requisitions/${id}/documents/${docId}`),
 };
 
 // ============================================================

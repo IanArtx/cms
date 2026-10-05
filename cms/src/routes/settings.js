@@ -66,6 +66,28 @@ router.patch('/company',
     settingsController.updateCompanySettings
 );
 
+// ------------------------------------------------------------
+// STATUTORY DETAILS (v1.79.0) — registration number, TIN, registered
+// office, postal address, email, phone. Printed on the letterhead of
+// every generated document (notices, minutes, resolutions, registers,
+// receipts …). Read: any logged-in user (kept off the public GET
+// /company above on purpose). Write: Admin or Company Secretary. The
+// TIN, registration number and incorporation date are still edited
+// on the Tax page (Settings there wins — this only reads them).
+// ------------------------------------------------------------
+router.get('/company/statutory', settingsController.getStatutoryDetails);
+router.patch('/company/statutory',
+    requireRoles(['Admin', 'Secretary']),
+    [
+        body('registered_office').optional({ nullable: true }).trim().isLength({ max: 300 }).withMessage('Registered office: at most 300 characters'),
+        body('postal_address').optional({ nullable: true }).trim().isLength({ max: 200 }).withMessage('Postal address: at most 200 characters'),
+        body('company_email').optional({ nullable: true, checkFalsy: true }).trim().isEmail().withMessage('Company email is not a valid email address'),
+        body('company_phone').optional({ nullable: true }).trim().isLength({ max: 50 }).withMessage('Phone: at most 50 characters'),
+    ],
+    validateRequest,
+    settingsController.updateStatutoryDetails
+);
+
 router.post('/company/logo',
     requireRoles(['Admin']),
     uploadSingle('logo', 'branding'),

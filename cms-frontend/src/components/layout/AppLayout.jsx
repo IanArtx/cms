@@ -10,7 +10,7 @@
 // title, notification panel) between these parts.
 // ============================================================
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import useIdleLogout from '../../hooks/useIdleLogout';
@@ -22,6 +22,8 @@ import { LayoutProvider } from './LayoutContext';
 import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
 import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74.0
 import useScrollHints from '../../hooks/useScrollHints'; // v1.77.0
+import { settingsAPI } from '../../api/endpoints';
+import { setStatutory } from '../../utils/exportUtils'; // v1.79.0
 
 // Auto-logout after this many minutes of no mouse/keyboard/touch/
 // scroll activity anywhere in the app — see hooks/useIdleLogout.js.
@@ -32,6 +34,14 @@ const AppLayout = () => {
     const [loggingOut, setLoggingOut] = useState(false);
     const { user, hasRole, logout } = useAuth();
     const location = useLocation();
+
+    // v1.79.0 — the registration number, TIN and registered office
+    // printed on every generated document's letterhead. Loaded once
+    // after login (they are not on the public branding endpoint).
+    useEffect(() => {
+        if (!user) return;
+        settingsAPI.getStatutory().then(r => setStatutory(r.data.data || {})).catch(() => {});
+    }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Idle timeout logs out directly (no confirmation prompt — the
     // whole point is that nobody's there to answer one); a manual

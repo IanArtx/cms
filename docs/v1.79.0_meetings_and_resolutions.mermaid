@@ -1,0 +1,52 @@
+%% v1.79.0 — company meetings, register of attendance, resolutions, statutory documents for URSB
+flowchart TD
+    subgraph SETUP["Settings › Governance / Meetings › Rules (Admin, Secretary)"]
+        GS["governance_settings\nnotice days 21/21/14/7 · quorum 2/2\nspecial 75% · short notice 95% · file in 15 days\nact name · company type · legal references"]
+        CS["company_settings\nreg. no. · TIN (Tax page)\nregistered office · P.O. Box · phone · email"]
+    end
+
+    subgraph MEET["One meeting (/meetings/:id) — run by Secretary / Director / Admin"]
+        C["Create (AGM · EGM · BOARD)\nsequence no. · MTG reference\ndefault agenda"] --> R["Register built automatically\nmembers with shares / directors\n+ secretary in attendance"]
+        R --> N{"Issue notice\ndays given ≥ required?"}
+        N -- "no, and no consent" --> X["409 — move the date\nor record short-notice consent"]
+        N -- "yes / consent recorded" --> NI["NOTICE_ISSUED\nnotification + email to the register"]
+        NI --> CK["Meeting day: each person\n'Confirm my attendance'\n(time + HMAC code + IP)\nsecretary marks the rest / proxies"]
+        CK --> Q{"Quorum present?\n(in person + online + proxy)"}
+        Q -- "no" --> W["Cannot open"]
+        Q -- "yes" --> O["IN_PROGRESS"]
+        O --> V["Resolutions — show of hands\nordinary/board: for > against (casting vote on a tie)\nspecial: for ÷ (for+against) ≥ 75%"]
+        V --> F["Special carried →\nfiling due = passed + 15 days\nSecretary notified"]
+        O --> MN["Minutes per agenda item"]
+        V --> CL["Close — pending → ABSENT\n(all resolutions decided)"]
+    end
+
+    subgraph WR["Written resolution (no meeting)"]
+        W1["Circulate to all members with shares\nor all directors"] --> W2{"Each signs\nAGREE / DISAGREE"}
+        W2 -- "all agree" --> W3["CARRIED (date of last signature)\nin place of special → filing due"]
+        W2 -- "any disagree" --> W4["LOST"]
+    end
+
+    subgraph DOCS["Statutory documents — POST /meetings/documents (server builds the snapshot)"]
+        D1["Notice of meeting"]
+        D2["Form of proxy"]
+        D3["Register of attendance\n(digital confirmations + codes, quorum statement)"]
+        D4["Minutes (MIN 01/AGM/2026 …)"]
+        D5["Resolution — 'THE COMPANIES ACT, 2012 …\nSPECIAL RESOLUTION OF …'"]
+        D6["Written resolution + signature table"]
+        D7["Certified true copy for URSB\n(director + secretary, filing deadline)"]
+        DS["Documents › Statutory Records (DRAFT)\n→ approve → chair / secretary / director sign\n→ company stamp → FINAL"]
+    end
+
+    GS -.-> N
+    GS -.-> Q
+    GS -.-> V
+    CS -.-> DOCS
+    NI --> D1
+    NI --> D2
+    O --> D3
+    MN --> D4
+    F --> D5
+    F --> D7
+    W3 --> D6
+    D1 & D2 & D3 & D4 & D5 & D6 & D7 --> DS
+    DS --> URSB["Filed with the Registrar (URSB)\n'Record the filing' → date + reference"]

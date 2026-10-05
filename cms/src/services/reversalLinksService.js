@@ -111,12 +111,16 @@ const findUnsupportedLink = async (client, tx) => {
         const r = await client.query(check.sql, [tx.id]);
         if (r.rows.length) return check;
     }
-    // A requisition that was PAID OUT (money left the company) — its own
-    // status would stay "paid". Requisitions that acknowledge money coming
-    // IN (contributions, deposits, savings) are unwound by their own paths.
+    // v1.80.0 — a PAID requisition can now be reversed: its requisition is
+    // marked REVERSED by markRequisitionsReversed() below. (Before the
+    // v1.80.0 database update the REVERSED status does not exist, so the
+    // reversal is still refused then.)
     if (['DEBIT'].includes(tx.transaction_type)) {
         const r = await client.query('SELECT 1 FROM requisitions WHERE transaction_id = $1', [tx.id]);
-        if (r.rows.length) return { label: 'a paid requisition', page: 'Requisitions' };
+        if (r.rows.length) {
+            const ready = await client.query(`SELECT to_regclass('public.requisition_document_links') IS NOT NULL AS ok`);
+            if (!ready.rows[0].ok) return { label: 'a paid requisition (needs the v1.80.0 database update)', page: 'Requisitions' };
+        }
     }
     return null;
 };
@@ -387,7 +391,30 @@ const applySubledger = async (client, group, { userId, reversalOf }) => {
     return { summary: note.join('; ') };
 };
 
+// ------------------------------------------------------------
+// v1.80.0 — requisitions paid by the reversed entries become REVERSED.
+// Returns a sentence for the effect summary, or null.
+// ------------------------------------------------------------
+const markRequisitionsReversed = async (client, { reversalOf, reason, userId }) => {
+    const ids = [...reversalOf.keys()];
+    if (!ids.length) return null;
+    const ready = await client.query(`SELECT to_regclass('public.requisition_document_links') IS NOT NULL AS ok`);
+    if (!ready.rows[0].ok) return null;
+    const r = await client.query(`
+        SELECT q.id, q.transaction_id, rr.reference_code FROM requisitions q
+        JOIN references_registry rr ON rr.id = q.reference_id
+        WHERE q.transaction_id = ANY($1::int[]) AND q.status = 'APPROVED' FOR UPDATE OF q`, [ids]);
+    for (const q of r.rows) {
+        await client.query(`
+            UPDATE requisitions SET status = 'REVERSED', reversed_at = NOW(), reversed_by = $2,
+                   reversal_reason = $3, reversal_transaction_id = $4
+            WHERE id = $1`, [q.id, userId, reason, reversalOf.get(q.transaction_id) || null]);
+    }
+    return r.rows.length ? `requisition ${r.rows.map(q => q.reference_code).join(', ')} marked reversed` : null;
+};
+
 module.exports = {
+    markRequisitionsReversed,
     findUnsupportedLink,
     resolveGroup,
     precheck,

@@ -31,6 +31,8 @@ const SIGNABLE_DOCUMENT_TYPES = [
     'CONTRACT', 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
     'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
     'RECEIPT', 'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER',
+    // v1.79.0 — statutory meeting documents
+    'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION',
 ];
 
 // ============================================================
@@ -90,12 +92,25 @@ const ensurePersonSignatureSlots = async (client, targetType, targetId, people =
     const created = [];
     for (const person of people) {
         if (!person || !person.userId) continue;
-        await client.query(`
-            INSERT INTO document_signatures (target_type, target_id, required_user_id, position_title)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (target_type, target_id, required_user_id)
-            WHERE required_user_id IS NOT NULL DO NOTHING
-        `, [targetType, targetId, person.userId, person.positionTitle || null]);
+        // v1.80.0 — one slot per POSITION, so the same person can hold two
+        // (e.g. Director and Secretary on a certified copy). Before the
+        // v1.80.0 migration the old index allows one slot per person, so
+        // a second position is skipped there (savepoint) instead of failing.
+        await client.query('SAVEPOINT person_slot');
+        try {
+            await client.query(`
+                INSERT INTO document_signatures (target_type, target_id, required_user_id, position_title)
+                SELECT $1::varchar, $2::int, $3::int, $4::varchar
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM document_signatures
+                    WHERE  target_type = $1::varchar AND target_id = $2::int AND required_user_id = $3::int
+                    AND    COALESCE(position_title, '') = COALESCE($4::varchar, ''))
+            `, [targetType, targetId, person.userId, person.positionTitle || null]);
+            await client.query('RELEASE SAVEPOINT person_slot');
+        } catch (err) {
+            await client.query('ROLLBACK TO SAVEPOINT person_slot');
+            if (err.code !== '23505') throw err;
+        }
         created.push(person);
     }
     return { hasRequirements: created.length > 0, people: created };
@@ -131,45 +146,57 @@ const signSlot = async (client, { targetType, targetId, userId }) => {
     // slot whose role they currently hold, or (v1.45.0) a slot naming
     // them specifically as a required signer (e.g. Chairman/Secretary
     // on a Meeting Minutes/Agenda/Resolution) regardless of role.
-    const slotResult = await client.query(`
+    // v1.80.0 — every slot naming THIS person is signed at once (one
+    // person may hold two positions on a document, e.g. Director and
+    // Secretary); otherwise one role-based slot they qualify for.
+    let slots = (await client.query(`
         SELECT id, required_role_id, required_user_id
         FROM   document_signatures
-        WHERE  target_type = $1 AND target_id = $2
-        AND    status = 'PENDING'
-        AND    (required_user_id = $3 OR required_role_id = ANY($4::int[]))
-        LIMIT  1
+        WHERE  target_type = $1 AND target_id = $2 AND status = 'PENDING' AND required_user_id = $3
+        ORDER  BY id
         FOR UPDATE
-    `, [targetType, targetId, userId, userRoleIds]);
+    `, [targetType, targetId, userId])).rows;
+    if (!slots.length) {
+        slots = (await client.query(`
+            SELECT id, required_role_id, required_user_id
+            FROM   document_signatures
+            WHERE  target_type = $1 AND target_id = $2 AND status = 'PENDING' AND required_role_id = ANY($3::int[])
+            ORDER  BY id
+            LIMIT  1
+            FOR UPDATE
+        `, [targetType, targetId, userRoleIds])).rows;
+    }
 
-    if (slotResult.rows.length === 0) {
+    if (slots.length === 0) {
         throw createError.forbidden('There is no pending signature slot here that you can sign (either you already signed, someone else already covered it, or you are not a required signatory for this).');
     }
-    const slot = slotResult.rows[0];
 
-    // Snapshot the signature file at this moment — a real copy (not
-    // just re-pointing at the live signature_path), via storageService
-    // so it works the same way whether files live on R2 or (dev
-    // fallback) local disk.
-    const sourceKey = toKey(user.signature_path);
-    const snapshotKey = generateKey(
-        'signature-snapshots',
-        `${targetType.toLowerCase()}-${targetId}-${slot.id}.png`
-    );
-    let snapshotUrlPath = user.signature_path; // fallback if the source file is somehow missing
-    try {
-        await copyObject(sourceKey, snapshotKey);
-        snapshotUrlPath = `/uploads/${snapshotKey}`;
-    } catch (err) {
-        // Source file missing (e.g. moved/deleted outside the app) —
-        // fall back to referencing the live signature_path rather than
-        // failing the whole signing action outright.
+    for (const slot of slots) {
+        // Snapshot the signature file at this moment — a real copy (not
+        // just re-pointing at the live signature_path), via storageService
+        // so it works the same way whether files live on R2 or (dev
+        // fallback) local disk.
+        const sourceKey = toKey(user.signature_path);
+        const snapshotKey = generateKey(
+            'signature-snapshots',
+            `${targetType.toLowerCase()}-${targetId}-${slot.id}.png`
+        );
+        let snapshotUrlPath = user.signature_path; // fallback if the source file is somehow missing
+        try {
+            await copyObject(sourceKey, snapshotKey);
+            snapshotUrlPath = `/uploads/${snapshotKey}`;
+        } catch (err) {
+            // Source file missing (e.g. moved/deleted outside the app) —
+            // fall back to referencing the live signature_path rather than
+            // failing the whole signing action outright.
+        }
+
+        await client.query(`
+            UPDATE document_signatures
+            SET    status = 'SIGNED', signed_by = $1, signature_snapshot_path = $2, signed_at = NOW()
+            WHERE  id = $3
+        `, [userId, snapshotUrlPath, slot.id]);
     }
-
-    await client.query(`
-        UPDATE document_signatures
-        SET    status = 'SIGNED', signed_by = $1, signature_snapshot_path = $2, signed_at = NOW()
-        WHERE  id = $3
-    `, [userId, snapshotUrlPath, slot.id]);
 
     const remainingResult = await client.query(`
         SELECT COUNT(*)::int AS remaining

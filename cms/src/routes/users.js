@@ -163,7 +163,10 @@ router.get('/directory',
     requireConsent,
     (req, res, next) => {
         const perms = req.user.permissions || [];
-        if (['DOCUMENT_GENERATE', 'EVENT_CREATE', 'USER_VIEW_ALL'].some(p => perms.includes(p))) return next();
+        if (['DOCUMENT_GENERATE', 'EVENT_CREATE', 'USER_VIEW_ALL', 'MEETING_MANAGE'].some(p => perms.includes(p))) return next();
+        // v1.79.0 — whoever runs company meetings picks the chair,
+        // secretary, proposer and seconder from this list.
+        if (require('../services/governanceService').canManage(req.user)) return next();
         return res.status(403).json({ success: false, message: 'Your role cannot list members.' });
     },
     asyncHandler(async (req, res) => {

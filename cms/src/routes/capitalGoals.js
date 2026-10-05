@@ -14,6 +14,7 @@ const { validateRequest, validators, notFutureDate } = require('../middleware/va
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions } = require('../middleware/auth');
 const capitalGoalsController = require('../controllers/capitalGoalsController');
 const capitalGoalCallsController = require('../controllers/capitalGoalCallsController');
+const insightsController = require('../controllers/capitalGoalInsightsController'); // v1.78.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -67,6 +68,11 @@ router.post('/',
         // [start_date, end_date] (a clearer, feature-specific message
         // than a raw isISO8601 failure would give).
         body('effective_from').optional({ nullable: true }).isISO8601().withMessage('effective_from must be a valid date'),
+        // v1.78.0 — optional: tie a SECONDARY goal to an investment (existing or a new proposal)
+        body('investment_id').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Invalid investment'),
+        body('new_investment').optional({ nullable: true }).isObject(),
+        body('new_investment.planned_budget').optional().isFloat({ min: 0.01 }).withMessage('Planned budget must be greater than zero'),
+        body('new_investment.funding_account_id').optional().isInt({ min: 1 }).withMessage('Choose the operational account'),
     ],
     validateRequest,
     capitalGoalsController.createGoal
@@ -148,6 +154,21 @@ router.post('/:id/activate-call-schedule',
 
 // My own pledges + which open calls I can still pledge into.
 // GET /api/capital-goals/my-calls
+// ============================================================
+// OVERVIEW (v1.78.0) — every active goal, its open month, my pledge
+// there, what I owe, approvals waiting. One call for the dashboards
+// and the Capital goals hub. Any member (like /my-calls).
+// ============================================================
+router.get('/overview', insightsController.overview);
+
+// v1.78.0 — one month, member by member (names + amounts: every member, as confirmed)
+router.get('/monthly-calls/:id/members',
+    requirePermissions(['CAPITAL_GOAL_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    insightsController.callMembers
+);
+
 router.get('/my-calls',
     capitalGoalCallsController.getMyPledges
 );
@@ -318,6 +339,28 @@ router.get('/:id/stats',
     validators.idParam('id'),
     validateRequest,
     capitalGoalCallsController.getGoalContributionStats
+);
+
+// ============================================================
+// v1.78.0 — statistics, pledgers by name, activity, goal money flow,
+// and tying a secondary goal to an investment.
+// ============================================================
+router.get('/:id/insights', requirePermissions(['CAPITAL_GOAL_VIEW']), validators.idParam('id'), validateRequest, insightsController.goalInsights);
+router.get('/:id/pledgers', requirePermissions(['CAPITAL_GOAL_VIEW']), validators.idParam('id'), validateRequest, insightsController.pledgers);
+router.get('/:id/activity', requirePermissions(['CAPITAL_GOAL_VIEW']), validators.idParam('id'), validateRequest, insightsController.activity);
+router.get('/:id/funds', requirePermissions(['CAPITAL_GOAL_VIEW']), validators.idParam('id'), validateRequest, insightsController.goalFunds);
+router.put('/:id/investment',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    validators.idParam('id'),
+    [
+        body('investment_id').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Invalid investment'),
+        body('new_investment').optional({ nullable: true }).isObject(),
+        body('new_investment.name').optional().trim().notEmpty().withMessage('Give the proposed investment a name'),
+        body('new_investment.planned_budget').optional().isFloat({ min: 0.01 }).withMessage('Planned budget must be greater than zero'),
+        body('new_investment.funding_account_id').optional().isInt({ min: 1 }).withMessage('Choose the operational account'),
+    ],
+    validateRequest,
+    insightsController.setInvestment
 );
 
 module.exports = router;

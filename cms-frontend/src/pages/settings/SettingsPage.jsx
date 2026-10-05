@@ -36,7 +36,9 @@ import {
     VideoCameraIcon,
     LinkIcon,
     WrenchScrewdriverIcon,
+    BuildingLibraryIcon,
 } from '@heroicons/react/24/outline';
+import { GovernanceSettingsPanel } from '../meetings/meetingUi'; // v1.79.0
 import MaintenanceSettings from '../../components/maintenance/MaintenanceSettings'; // v1.74.0
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
@@ -1032,6 +1034,12 @@ const SIGNABLE_TYPES = [
     { key: 'AUDITOR_FEEDBACK',            label: 'Auditor Feedback' },
     { key: 'AUDIT_REPORT',                label: 'Audit Reports' },
     { key: 'OTHER',                       label: 'Other' },
+    // v1.79.0 — statutory meeting documents
+    { key: 'NOTICE_OF_MEETING',           label: 'Notices of Meetings' },
+    { key: 'PROXY_FORM',                  label: 'Proxy Forms' },
+    { key: 'ATTENDANCE_REGISTER',         label: 'Registers of Attendance' },
+    { key: 'WRITTEN_RESOLUTION',          label: 'Written Resolutions' },
+    { key: 'CERTIFIED_RESOLUTION',        label: 'Certified Copies of Resolutions (for URSB)' },
 ];
 
 const SignatoriesTab = () => {
@@ -1161,6 +1169,12 @@ const STAMPABLE_TYPES = [
     { key: 'AUDITOR_FEEDBACK',            label: 'Auditor Feedback' },
     { key: 'AUDIT_REPORT',                label: 'Audit Reports' },
     { key: 'OTHER',                       label: 'Other' },
+    // v1.79.0 — statutory meeting documents
+    { key: 'NOTICE_OF_MEETING',           label: 'Notices of Meetings' },
+    { key: 'PROXY_FORM',                  label: 'Proxy Forms' },
+    { key: 'ATTENDANCE_REGISTER',         label: 'Registers of Attendance' },
+    { key: 'WRITTEN_RESOLUTION',          label: 'Written Resolutions' },
+    { key: 'CERTIFIED_RESOLUTION',        label: 'Certified Copies of Resolutions (for URSB)' },
 ];
 
 const StampsTab = () => {
@@ -2110,6 +2124,7 @@ const SettingsPage = () => {
         { key: 'capital-call-fines', label: 'Capital Goals', icon: ScaleIcon },
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
         { key: 'tax', label: 'Registration & Tax', icon: ReceiptPercentIcon },
+        { key: 'governance', label: 'Governance', icon: BuildingLibraryIcon }, // v1.79.0 — meetings & resolutions
         { key: 'maintenance', label: 'Maintenance', icon: WrenchScrewdriverIcon }, // v1.74.0
     ];
 
@@ -2152,6 +2167,7 @@ const SettingsPage = () => {
                 {activeTab === 'capital-call-fines' && <CapitalCallFinesTab />}
                 {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
                 {activeTab === 'maintenance' && <MaintenanceSettings />}
+                {activeTab === 'governance' && <GovernanceSettingsPanel canEdit />}
                 {activeTab === 'tax' && (
                     <div className="space-y-6">
                         <TaxRegistrationCard canEdit />

@@ -16,6 +16,202 @@ const { clearFine } = require('../services/finesService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
+// v1.80.0 — documents before payment, investments, reversal
+const investmentCost = require('../services/investmentCostService');
+const documentLinks = require('../services/documentLinksService');
+const { uploadBuffer, generateKey } = require('../services/storageService');
+const { getOrCreateCategory } = require('../services/categoryService');
+
+// ============================================================
+// v1.80.0 — REQUISITIONS: DOCUMENTS FIRST, INVESTMENTS, REVERSAL
+// Requested: "requisitions have a functional reversal functionality and
+// before a requisition is approved fully to make a transactional post a
+// few prerequisites like linking / connecting to a document and or an
+// investment". Confirmed:
+//   • a money-out (EXPENSE) requisition needs at least one supporting
+//     document (quotation, invoice, receipt …) before it can be approved;
+//   • when it is FOR AN INVESTMENT, the investment and what the money is
+//     for (buying / running / maintenance) are required too, and the
+//     payment is booked as that investment's funding (buying) or expense
+//     (running / maintenance) — see investmentCostService.js;
+//   • documents connected to the requisition are connected to the
+//     transaction when it is paid;
+//   • a paid requisition is reversed through the normal second-person
+//     reversal of its transaction; once approved it is marked REVERSED
+//     (to pay again, a new requisition is raised).
+// ============================================================
+let reqV180 = false;
+const requisitionsV180Ready = async (db) => {
+    if (reqV180) return true;
+    const r = await db.query(`SELECT to_regclass('public.requisition_document_links') IS NOT NULL AS ok`);
+    reqV180 = !!r.rows[0].ok;
+    return reqV180;
+};
+const TREASURY = ['Treasurer', 'Assistant Treasurer', 'Admin'];
+const isTreasury = (user) => (user.roles || []).some(r => TREASURY.includes(r));
+
+// Validate an investment chosen for a requisition.
+const checkInvestmentChoice = async (client, investmentId, purpose) => {
+    if (!investmentId) return null;
+    const inv = await client.query(`
+        SELECT i.id, i.name, i.status, i.currency_id, rr.reference_code
+        FROM investments i JOIN references_registry rr ON rr.id = i.reference_id WHERE i.id = $1`, [investmentId]);
+    if (!inv.rows.length) throw createError.notFound('Investment not found');
+    if (['COMPLETED', 'TERMINATED', 'REJECTED', 'CANCELLED', 'CLOSED'].includes(inv.rows[0].status)) {
+        throw createError.badRequest(`${inv.rows[0].name} is ${inv.rows[0].status.toLowerCase()} — money can no longer be requested for it.`);
+    }
+    investmentCost.assertCostType(purpose, { required: true });
+    return inv.rows[0];
+};
+
+const liveDocumentIds = async (db, requisitionId) => {
+    const r = await db.query(`
+        SELECT l.document_id FROM requisition_document_links l
+        JOIN documents d ON d.id = l.document_id
+        WHERE l.requisition_id = $1 AND l.removed_at IS NULL AND d.status <> 'DELETED'
+        ORDER BY l.linked_at, l.id`, [requisitionId]);
+    return r.rows.map(x => x.document_id);
+};
+
+const linkDocumentsToRequisition = async (client, requisitionId, documentIds, userId, ip) => {
+    const ids = [...new Set((Array.isArray(documentIds) ? documentIds : [documentIds]).map(x => parseInt(x, 10)).filter(x => Number.isInteger(x) && x > 0))];
+    if (!ids.length) return 0;
+    const docs = await client.query(`
+        SELECT d.id, d.status, rr.reference_code FROM documents d JOIN references_registry rr ON rr.id = d.reference_id
+        WHERE d.id = ANY($1::int[])`, [ids]);
+    if (docs.rows.length !== ids.length) throw createError.notFound('One of the documents was not found.');
+    const deleted = docs.rows.find(d => d.status === 'DELETED');
+    if (deleted) throw createError.badRequest(`${deleted.reference_code} has been deleted and can't be connected.`);
+    let n = 0;
+    for (const d of docs.rows) {
+        const r = await client.query(`
+            INSERT INTO requisition_document_links (requisition_id, document_id, linked_by)
+            SELECT $1, $2, $3
+            WHERE NOT EXISTS (SELECT 1 FROM requisition_document_links WHERE requisition_id = $1 AND document_id = $2 AND removed_at IS NULL)
+            RETURNING id`, [requisitionId, d.id, userId]);
+        if (r.rows.length) {
+            n++;
+            await logAction(userId, ACTIONS.REQUISITION_UPDATED, MODULES.FINANCE, {
+                ipAddress: ip, recordType: 'requisitions', recordId: requisitionId, newValues: { document: d.reference_code },
+                description: `Document ${d.reference_code} connected to requisition #${requisitionId}`, client,
+            });
+        }
+    }
+    return n;
+};
+
+// Who may connect / remove documents: the requester while it is pending
+// (only documents they can see — their own uploads), or Treasury.
+const loadRequisitionForDocs = async (client, id, user, { forWrite = false } = {}) => {
+    const r = await client.query(`SELECT * FROM requisitions WHERE id = $1 ${forWrite ? 'FOR UPDATE' : ''}`, [id]);
+    if (!r.rows.length) throw createError.notFound('Requisition not found');
+    const q = r.rows[0];
+    const own = q.requested_by === user.id;
+    const canView = own || isTreasury(user) || (user.permissions || []).includes('FINANCE_VIEW_ALL');
+    if (!canView) throw createError.forbidden('You cannot see this requisition.');
+    if (forWrite) {
+        if (q.status !== 'PENDING') throw createError.badRequest('Documents can only be connected or removed while the requisition is pending.');
+        if (!own && !isTreasury(user)) throw createError.forbidden('Only the person who made the requisition, or Treasury, can change its documents.');
+    }
+    return q;
+};
+
+// GET /api/requisitions/investment-options — names of the investments a
+// requisition can be for (any member raising a requisition; no figures).
+const getInvestmentOptions = asyncHandler(async (req, res) => {
+    const r = await query(`
+        SELECT i.id, i.name, i.status, i.investment_type, rr.reference_code, c.code AS currency_code, i.currency_id
+        FROM investments i
+        JOIN references_registry rr ON rr.id = i.reference_id
+        JOIN currencies c ON c.id = i.currency_id
+        WHERE i.status IN ('ACTIVE', 'PENDING_TERMINATION', 'PENDING', 'PROPOSED', 'PENDING_APPROVAL')
+        ORDER BY i.name`);
+    sendSuccess(res, r.rows);
+});
+
+// GET /api/requisitions/:id/documents
+const getRequisitionDocuments = asyncHandler(async (req, res) => {
+    if (!(await requisitionsV180Ready({ query }))) return sendSuccess(res, []);
+    await loadRequisitionForDocs({ query }, req.params.id, req.user);
+    const r = await query(`
+        SELECT l.id AS link_id, l.linked_at, lu.first_name || ' ' || lu.last_name AS linked_by_name,
+               d.id AS document_id, d.title, d.document_type, d.status, d.file_name, d.mime_type, rr.reference_code
+        FROM   requisition_document_links l
+        JOIN   documents d ON d.id = l.document_id
+        JOIN   references_registry rr ON rr.id = d.reference_id
+        JOIN   users lu ON lu.id = l.linked_by
+        WHERE  l.requisition_id = $1 AND l.removed_at IS NULL AND d.status <> 'DELETED'
+        ORDER  BY l.linked_at, l.id`, [req.params.id]);
+    sendSuccess(res, r.rows);
+});
+
+// POST /api/requisitions/:id/documents   { document_ids: [] }  (Treasury: pick existing)
+const linkRequisitionDocuments = asyncHandler(async (req, res) => {
+    if (!(await requisitionsV180Ready({ query }))) throw createError.conflict('Connecting documents to requisitions needs the v1.80.0 database update.');
+    let n = 0;
+    await withTransaction(async (client) => {
+        await loadRequisitionForDocs(client, req.params.id, req.user, { forWrite: true });
+        if (!isTreasury(req.user)) {
+            // A requester may only connect documents they uploaded themselves.
+            const mine = await client.query(`SELECT COUNT(*)::int AS n FROM documents WHERE id = ANY($1::int[]) AND created_by = $2`,
+                [(req.body.document_ids || []).map(Number), req.user.id]);
+            if (mine.rows[0].n !== (req.body.document_ids || []).length) throw createError.forbidden('You can connect only documents you uploaded — upload the file here instead.');
+        }
+        n = await linkDocumentsToRequisition(client, req.params.id, req.body.document_ids, req.user.id, req.ip);
+    });
+    sendSuccess(res, { connected: n }, n ? `${n} document(s) connected` : 'Already connected');
+});
+
+// POST /api/requisitions/:id/documents/upload  (multipart: document, title, document_type)
+// Anyone who can change the requisition's documents — the file is saved
+// in Documents (Finance › Requisition documents) and connected here.
+const uploadRequisitionDocument = asyncHandler(async (req, res) => {
+    if (!req.file) throw createError.badRequest('Choose a file to upload.');
+    if (!(await requisitionsV180Ready({ query }))) throw createError.conflict('Attaching documents to requisitions needs the v1.80.0 database update.');
+    const docType = ['RECEIPT', 'CONTRACT', 'INVESTMENT_PROPOSAL', 'OTHER'].includes(req.body.document_type) ? req.body.document_type : 'OTHER';
+    const title = (req.body.title || req.file.originalname || 'Supporting document').toString().trim().slice(0, 255);
+    const key = generateKey('documents', req.file.originalname);
+    let out = null;
+    await withTransaction(async (client) => {
+        const q = await loadRequisitionForDocs(client, req.params.id, req.user, { forWrite: true });
+        await uploadBuffer(req.file.buffer, key, req.file.mimetype);
+        const categoryId = await getOrCreateCategory(client, {
+            module: 'DOCUMENT', name: 'Requisition documents', abbreviation: 'REQD',
+            description: 'Quotations, invoices and receipts supporting requisitions (v1.80.0).', createdBy: req.user.id,
+        });
+        const { referenceId, referenceCode } = await generateReference(client, MODULE_CODES.DOCUMENT, docType.substring(0, 6), 'DOCUMENT', req.user.id);
+        const d = await client.query(`
+            INSERT INTO documents (reference_id, category_id, title, document_type, source, file_path, file_name, file_size_bytes, mime_type,
+                                   version, related_record_type, related_record_id, status, created_by)
+            VALUES ($1,$2,$3,$4,'UPLOADED',$5,$6,$7,$8,1,'requisitions',$9,'DRAFT',$10) RETURNING id`,
+        [referenceId, categoryId, title, docType, key, req.file.originalname, req.file.size, req.file.mimetype, q.id, req.user.id]);
+        await linkReferenceToRecord(client, referenceId, d.rows[0].id);
+        await logAction(req.user.id, ACTIONS.DOCUMENT_UPLOADED, MODULES.DOCUMENTS, {
+            ipAddress: req.ip, recordType: 'documents', recordId: d.rows[0].id, newValues: { referenceCode, title, requisition_id: q.id },
+            description: `Document uploaded for a requisition: ${referenceCode} — ${title}`, client,
+        });
+        await linkDocumentsToRequisition(client, q.id, [d.rows[0].id], req.user.id, req.ip);
+        out = { document_id: d.rows[0].id, reference: referenceCode, title };
+    });
+    sendCreated(res, out, `Document ${out.reference} attached`);
+});
+
+// DELETE /api/requisitions/:id/documents/:documentId
+const unlinkRequisitionDocument = asyncHandler(async (req, res) => {
+    await withTransaction(async (client) => {
+        await loadRequisitionForDocs(client, req.params.id, req.user, { forWrite: true });
+        const r = await client.query(`
+            UPDATE requisition_document_links SET removed_at = NOW(), removed_by = $3
+            WHERE requisition_id = $1 AND document_id = $2 AND removed_at IS NULL RETURNING id`,
+        [req.params.id, req.params.documentId, req.user.id]);
+        if (!r.rows.length) throw createError.notFound('This document is not connected to the requisition.');
+        await logAction(req.user.id, ACTIONS.REQUISITION_UPDATED, MODULES.FINANCE, {
+            ipAddress: req.ip, recordType: 'requisitions', recordId: parseInt(req.params.id, 10), oldValues: { document_id: parseInt(req.params.documentId, 10) },
+            description: `Document #${req.params.documentId} disconnected from requisition #${req.params.id}`, client,
+        });
+    });
+    sendSuccess(res, null, 'Document disconnected');
+});
 
 MODULE_CODES.REQUISITION = 'REQ';
 
@@ -37,8 +233,13 @@ const createRequisition = asyncHandler(async (req, res) => {
         contribution_date,
         fine_id,
     } = req.body;
+    let { category_id: categoryId } = req.body;
 
     const type = requisition_type || 'EXPENSE';
+    // v1.80.0 — a money-out requisition may be FOR AN INVESTMENT
+    const investmentId = type === 'EXPENSE' && req.body.investment_id ? parseInt(req.body.investment_id, 10) : null;
+    const invPurpose = investmentId ? req.body.investment_purpose : null;
+    if (!investmentId && !categoryId) throw createError.badRequest('A valid category is required');
     const isAcknowledgementType = (t) =>
         t === 'CONTRIBUTION_ACKNOWLEDGEMENT' || t === 'SAVINGS_DEPOSIT' ||
         t === 'SIDE_FUND_CONTRIBUTION' || t === 'FINE_PAYMENT';
@@ -77,6 +278,12 @@ const createRequisition = asyncHandler(async (req, res) => {
             validatedFineId = fineCheck.rows[0].id;
         }
 
+        const v180 = await requisitionsV180Ready(client);
+        if (investmentId && !v180) throw createError.conflict('Requisitions for an investment need the v1.80.0 database update.');
+        const investment = await checkInvestmentChoice(client, investmentId, invPurpose);
+        // Expense › Investments › <purpose>
+        if (investment) categoryId = await investmentCost.purposeCategory(client, invPurpose, req.user.id);
+
         // Generate requisition reference
         const { referenceId, referenceCode } = await generateReference(
             client, MODULE_CODES.REQUISITION, 'REQ',
@@ -92,7 +299,7 @@ const createRequisition = asyncHandler(async (req, res) => {
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10, $11, $12)
             RETURNING id
         `, [
-            referenceId, req.user.id, category_id,
+            referenceId, req.user.id, categoryId,
             title.trim(), description || null, amount_requested,
             purpose.trim(), required_by_date || null,
             priority || 'NORMAL',
@@ -103,12 +310,24 @@ const createRequisition = asyncHandler(async (req, res) => {
 
         const reqId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, reqId);
+        if (investment) {
+            await client.query('UPDATE requisitions SET investment_id = $1, investment_purpose = $2 WHERE id = $3', [investment.id, invPurpose, reqId]);
+        }
+        // Documents picked on the form (Treasury: existing ones; anyone: their own uploads)
+        if (v180 && req.body.document_ids && req.body.document_ids.length) {
+            if (!isTreasury(req.user)) {
+                const ids = req.body.document_ids.map(Number);
+                const mine = await client.query('SELECT COUNT(*)::int AS n FROM documents WHERE id = ANY($1::int[]) AND created_by = $2', [ids, req.user.id]);
+                if (mine.rows[0].n !== new Set(ids).size) throw createError.forbidden('You can connect only documents you uploaded.');
+            }
+            await linkDocumentsToRequisition(client, reqId, req.body.document_ids, req.user.id, req.ip);
+        }
 
         await logAction(req.user.id, ACTIONS.REQUISITION_CREATED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'requisitions',
             recordId:    reqId,
-            newValues:   { referenceCode, title, amount_requested, requisition_type: type },
+            newValues:   { referenceCode, title, amount_requested, requisition_type: type, investment_id: investmentId, investment_purpose: invPurpose },
             description: `Requisition created: ${referenceCode} — ${title}`,
             client,
         });
@@ -508,45 +727,93 @@ const approveRequisition = asyncHandler(async (req, res) => {
         // EXPENSE (original behaviour) — money OUT of the selected
         // account to fulfil the request.
         // ----------------------------------------------------------
-        if (!account_id) {
-            throw createError.badRequest('A valid account is required to approve this requisition');
+        // ----------------------------------------------------------
+        // v1.80.0 — PREREQUISITES before money leaves the company:
+        //   • at least one supporting document connected;
+        //   • for an investment: the investment and the purpose.
+        // ----------------------------------------------------------
+        const v180 = await requisitionsV180Ready(client);
+        let docIds = [];
+        if (v180) {
+            docIds = await liveDocumentIds(client, id);
+            if (!docIds.length) {
+                throw createError.badRequest('Connect at least one supporting document (quotation, invoice or receipt) to this requisition before approving it.');
+            }
         }
+        const { postInvestmentFunding, postInvestmentExpense } = require('./investmentsController');
+        const today = new Date().toISOString().split('T')[0];
+        const payDescription = `Requisition: ${req_.title} — ${req_.first_name} ${req_.last_name} (${req_.reference_code})`;
+        let transactionId; let txRefCode; let balanceBefore; let balanceAfter; let accountRow;
 
-        // Get the account
-        const account = await client.query(
-            'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
-            [account_id]
-        );
-        if (account.rows.length === 0) {
-            throw createError.notFound('Account not found');
-        }
+        if (v180 && req_.investment_id) {
+            const costType = investmentCost.assertCostType(req_.investment_purpose, { required: true });
+            const invR = await client.query(`
+                SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code, r.public_id
+                FROM   investments i
+                JOIN   accounts a ON a.id = i.funding_account_id
+                JOIN   references_registry r ON r.id = i.reference_id
+                WHERE  i.id = $1
+                FOR UPDATE OF i`, [req_.investment_id]);
+            if (!invR.rows.length) throw createError.notFound('The investment of this requisition was not found.');
+            const inv = invR.rows[0];
+            if (costType === 'CAPITAL' && inv.status !== 'ACTIVE') {
+                throw createError.badRequest(`${inv.name} must be approved (active) before money can be put into it.`);
+            }
+            const payFrom = account_id ? parseInt(account_id, 10) : (costType === 'CAPITAL' ? inv.funding_account_id : inv.returns_account_id);
+            const acc = await client.query('SELECT id, currency_id, account_type, reference_prefix, name FROM accounts WHERE id = $1', [payFrom]);
+            if (!acc.rows.length) throw createError.notFound('Account not found');
+            if (acc.rows[0].currency_id !== inv.currency_id) {
+                throw createError.badRequest(`${inv.name} is kept in another currency — pay it from an account in the investment's currency (or transfer the money first).`);
+            }
+            accountRow = acc.rows[0];
+            const description = `${payDescription} — ${inv.name} (${inv.reference_code})`;
+            const posted = costType === 'CAPITAL'
+                ? await postInvestmentFunding(client, inv, { amount: approvedAmount, description, valueDate: today, userId: req.user.id, accountId: payFrom, categoryId: req_.category_id })
+                : await postInvestmentExpense(client, inv, { amount: approvedAmount, description, entryDate: today, costType, accountId: payFrom, categoryId: req_.category_id, userId: req.user.id });
+            ({ transactionId, referenceCode: txRefCode, balanceBefore, balanceAfter } = posted);
+        } else {
+            if (!account_id) {
+                throw createError.badRequest('A valid account is required to approve this requisition');
+            }
+            const account = await client.query(
+                'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
+                [account_id]
+            );
+            if (account.rows.length === 0) {
+                throw createError.notFound('Account not found');
+            }
+            accountRow = account.rows[0];
 
-        // Generate transaction reference
-        const { referenceId: txRefId, referenceCode: txRefCode } =
-            await generateReference(
+            const ref = await generateReference(
                 client, resolveModuleCode(account.rows[0]), 'REQ', 'TRANSACTION', req.user.id
             );
+            txRefCode = ref.referenceCode;
 
-        // Post debit transaction
-        const { transactionId, balanceBefore, balanceAfter } =
-            await postTransaction(client, {
-                accountId:       account_id,
-                transactionType: 'DEBIT',
-                inflowType:      'EXPENSE',
-                amount:          approvedAmount,
-                currencyId:      account.rows[0].currency_id,
-                categoryId:      req_.category_id,
-                description:     `Requisition: ${req_.title} — ` +
-                                 `${req_.first_name} ${req_.last_name} ` +
-                                 `(${req_.reference_code})`,
-                valueDate:       new Date().toISOString().split('T')[0],
-                createdBy:       req.user.id,
-                referenceId:     txRefId,
+            ({ transactionId, balanceBefore, balanceAfter } =
+                await postTransaction(client, {
+                    accountId:       account_id,
+                    transactionType: 'DEBIT',
+                    inflowType:      'EXPENSE',
+                    amount:          approvedAmount,
+                    currencyId:      account.rows[0].currency_id,
+                    categoryId:      req_.category_id,
+                    description:     payDescription,
+                    valueDate:       today,
+                    createdBy:       req.user.id,
+                    referenceId:     ref.referenceId,
+                }));
+
+            await linkReferenceToRecord(client, ref.referenceId, transactionId);
+        }
+
+        // The requisition's documents now belong to the payment too.
+        if (docIds.length) {
+            await documentLinks.link(client, {
+                transactionIds: [transactionId], documentIds: docIds, userId: req.user.id,
+                via: 'AT_ENTRY', confirmAdditional: true, note: `From requisition ${req_.reference_code}`, ipAddress: req.ip,
             });
+        }
 
-        await linkReferenceToRecord(client, txRefId, transactionId);
-
-        // Update requisition
         await client.query(`
             UPDATE requisitions
             SET    status         = 'APPROVED',
@@ -559,8 +826,8 @@ const approveRequisition = asyncHandler(async (req, res) => {
                    review_notes    = $6
             WHERE  id = $7
         `, [
-            account_id,
-            account.rows[0].currency_id,
+            accountRow.id,
+            accountRow.currency_id,
             approvedAmount,
             transactionId,
             req.user.id,
@@ -663,6 +930,21 @@ const rejectRequisition = asyncHandler(async (req, res) => {
     sendSuccess(res, null, 'Requisition rejected');
 });
 
+
+const requisitionExtrasSql = async () => (await requisitionsV180Ready({ query })) ? `,
+            r.investment_id, r.investment_purpose, r.transaction_id, r.reversed_at, r.reversal_reason,
+            inv.name AS investment_name, invr.reference_code AS investment_reference, inv.currency_id AS investment_currency_id,
+            txr.reference_code AS transaction_reference,
+            (SELECT COUNT(*)::int FROM requisition_document_links l JOIN documents d ON d.id = l.document_id
+              WHERE l.requisition_id = r.id AND l.removed_at IS NULL AND d.status <> 'DELETED') AS document_count,
+            (SELECT rq.id FROM reversal_requests rq WHERE rq.transaction_id = r.transaction_id AND rq.status = 'PENDING' LIMIT 1) AS pending_reversal_id` : `,
+            r.transaction_id, NULL::int AS document_count`;
+const requisitionExtrasJoin = async () => (await requisitionsV180Ready({ query })) ? `
+        LEFT JOIN investments inv ON inv.id = r.investment_id
+        LEFT JOIN references_registry invr ON invr.id = inv.reference_id
+        LEFT JOIN transactions tx ON tx.id = r.transaction_id
+        LEFT JOIN references_registry txr ON txr.id = tx.reference_id` : '';
+
 // ============================================================
 // GET MY REQUISITIONS
 // GET /api/requisitions/me
@@ -680,11 +962,13 @@ const getMyRequisitions = asyncHandler(async (req, res) => {
             cat.name     AS category_name,
             cp.full_path AS category_trail,
             reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name
+            ${await requisitionExtrasSql()}
         FROM  requisitions r
         JOIN  references_registry rr ON rr.id  = r.reference_id
         JOIN  categories cat         ON cat.id = r.category_id
         JOIN  category_paths cp      ON cp.category_id = r.category_id
         LEFT JOIN users reviewer     ON reviewer.id = r.reviewed_by
+        ${await requisitionExtrasJoin()}
         WHERE r.requested_by = $1
         ORDER BY r.created_at DESC
     `, [req.user.id]);
@@ -737,12 +1021,14 @@ const getAllRequisitions = asyncHandler(async (req, res) => {
             u.first_name || ' ' || u.last_name AS requested_by_name,
             u.email      AS requested_by_email,
             reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name
+            ${await requisitionExtrasSql()}
         FROM  requisitions r
         JOIN  references_registry rr ON rr.id  = r.reference_id
         JOIN  categories cat         ON cat.id = r.category_id
         JOIN  category_paths cp      ON cp.category_id = r.category_id
         JOIN  users u                ON u.id  = r.requested_by
         LEFT JOIN users reviewer     ON reviewer.id = r.reviewed_by
+        ${await requisitionExtrasJoin()}
         ${where}
         ORDER BY
             CASE r.priority WHEN 'URGENT' THEN 1 WHEN 'HIGH' THEN 2
@@ -803,6 +1089,20 @@ const editRequisition = asyncHandler(async (req, res) => {
             );
         }
 
+        // v1.80.0 — the investment it is for, and the purpose
+        let newInvestmentId = requisition.investment_id || null;
+        let newInvPurpose = requisition.investment_purpose || null;
+        let newCategoryId = category_id || null;
+        if (req.body.investment_id !== undefined || req.body.investment_purpose !== undefined) {
+            if (!(await requisitionsV180Ready(client))) throw createError.conflict('Requisitions for an investment need the v1.80.0 database update.');
+            newInvestmentId = req.body.investment_id ? parseInt(req.body.investment_id, 10) : (req.body.investment_id === undefined ? newInvestmentId : null);
+            newInvPurpose = newInvestmentId ? (req.body.investment_purpose || newInvPurpose) : null;
+            if (newInvestmentId && newType !== 'EXPENSE') throw createError.badRequest('Only a money-out requisition can be for an investment.');
+            await checkInvestmentChoice(client, newInvestmentId, newInvPurpose);
+            if (newInvestmentId) newCategoryId = await investmentCost.purposeCategory(client, newInvPurpose, req.user.id);
+            else if (!newCategoryId && requisition.investment_id) throw createError.badRequest('Choose a category now that it is no longer for an investment.');
+        }
+
         let newFineId = requisition.fine_id;
         if (newType === 'FINE_PAYMENT') {
             const targetFineId = fine_id || requisition.fine_id;
@@ -841,7 +1141,7 @@ const editRequisition = asyncHandler(async (req, res) => {
             WHERE  id = $11
             RETURNING *
         `, [
-            category_id || null, title ? title.trim() : null,
+            newCategoryId, title ? title.trim() : null,
             description !== undefined ? description : null,
             amount_requested || null, purpose ? purpose.trim() : null,
             required_by_date !== undefined ? required_by_date : requisition.required_by_date,
@@ -851,6 +1151,12 @@ const editRequisition = asyncHandler(async (req, res) => {
             newFineId,
             id,
         ]);
+
+        if (await requisitionsV180Ready(client)) {
+            const inv = await client.query('UPDATE requisitions SET investment_id = $1, investment_purpose = $2 WHERE id = $3 RETURNING investment_id, investment_purpose',
+                [newInvestmentId, newInvPurpose, id]);
+            Object.assign(updated.rows[0], inv.rows[0]);
+        }
 
         await logAction(req.user.id, ACTIONS.REQUISITION_UPDATED, MODULES.FINANCE, {
             ipAddress:   req.ip,
@@ -867,6 +1173,7 @@ const editRequisition = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    getInvestmentOptions, getRequisitionDocuments, linkRequisitionDocuments, uploadRequisitionDocument, unlinkRequisitionDocument, // v1.80.0
     createRequisition,
     editRequisition,
     approveRequisition,

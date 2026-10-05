@@ -62,6 +62,56 @@ const getCompanySettings = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// STATUTORY DETAILS (v1.79.0)
+// GET /api/settings/company/statutory — any logged-in user
+// PATCH /api/settings/company/statutory — Admin / Secretary
+// What the statutory letterhead prints under the company name:
+// registration number, TIN, registered office, postal address,
+// email and phone. Before the v1.79.0 migration the address/contact
+// columns don't exist — every value then reads as null.
+// ============================================================
+const STATUTORY_FIELDS = ['registered_office', 'postal_address', 'company_email', 'company_phone'];
+
+const getStatutoryDetails = asyncHandler(async (req, res) => {
+    const r = await query(`SELECT to_jsonb(cs) AS row FROM company_settings cs WHERE id = 1`);
+    const row = (r.rows[0] && r.rows[0].row) || {};
+    sendSuccess(res, {
+        company_name:        row.company_name || null,
+        registration_number: row.registration_number || null,
+        tin:                 row.tin || null,
+        incorporation_date:  row.incorporation_date || null,
+        registered_office:   row.registered_office || null,
+        postal_address:      row.postal_address || null,
+        company_email:       row.company_email || null,
+        company_phone:       row.company_phone || null,
+        ready:               Object.prototype.hasOwnProperty.call(row, 'registered_office'),
+    });
+});
+
+const updateStatutoryDetails = asyncHandler(async (req, res, next) => {
+    const sets = [];
+    const params = [];
+    const changes = {};
+    for (const k of STATUTORY_FIELDS) {
+        if (req.body[k] === undefined) continue;
+        const v = req.body[k] === null || String(req.body[k]).trim() === '' ? null : String(req.body[k]).trim();
+        params.push(v);
+        sets.push(`${k} = $${params.length}`);
+        changes[k] = v;
+    }
+    if (!sets.length) throw createError.badRequest('Nothing to update.');
+    const exists = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'company_settings' AND column_name = 'registered_office'`);
+    if (!exists.rows.length) throw createError.conflict('Run the v1.79.0 database update first.');
+    params.push(req.user.id);
+    await query(`UPDATE company_settings SET ${sets.join(', ')}, updated_at = NOW(), updated_by = $${params.length} WHERE id = 1`, params);
+    await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.SYSTEM, {
+        ipAddress: req.ip, recordType: 'company_settings', recordId: 1, newValues: changes,
+        description: 'Company statutory details (registered office / postal address / contacts) updated',
+    });
+    return getStatutoryDetails(req, res, next);
+});
+
+// ============================================================
 // UPDATE COMPANY SETTINGS
 // PATCH /api/settings/company
 // Restricted to the "Admin" role directly (checked in the route,
@@ -293,6 +343,8 @@ const STAMPABLE_DOCUMENT_TYPES = [
     'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
     'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT',
     'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER', 'SHARE_CERTIFICATE',
+    // v1.79.0 — statutory meeting documents
+    'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION',
 ];
 
 // ============================================================
@@ -669,6 +721,8 @@ const disconnectGoogle = asyncHandler(async (req, res) => {
 module.exports = {
     getCompanySettings,
     updateCompanySettings,
+    getStatutoryDetails,
+    updateStatutoryDetails,
     uploadCompanyLogo,
     updateMembershipAgreement,
     getSignatureRequirements,

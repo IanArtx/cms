@@ -23,6 +23,7 @@ const { loadFiscalQuarters, bucketAndSummarize } = require('../services/quarterA
 const { rowsToCsv, sendCsv } = require('../utils/csv');
 const { normalizeDateInput } = require('../utils/dateUtils');
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
+const capitalGoalFunds = require('../services/capitalGoalFundsService'); // v1.78.0
 
 // ============================================================
 // INITIATE A TRANSFER
@@ -41,6 +42,7 @@ const initiateTransfer = asyncHandler(async (req, res) => {
         value_date,
         sending_bank_charge,
         receiving_bank_charge,
+        capital_goal_id, // v1.78.0 — moving a capital goal's collected money towards its investment
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -98,6 +100,19 @@ const initiateTransfer = asyncHandler(async (req, res) => {
         const sendingCharge   = parseFloat(sending_bank_charge   || 0);
         const receivingCharge = parseFloat(receiving_bank_charge  || 0);
 
+        // v1.78.0 — goal money: never more than the goal collected in the
+        // source account, and it must arrive where the investment is paid from.
+        let goalLink = null;
+        if (capital_goal_id) {
+            if (transferType !== 'PRIMARY_TO_SECONDARY') {
+                throw createError.badRequest('Goal money is moved from the primary account to an operational (secondary) account.');
+            }
+            goalLink = await capitalGoalFunds.assertTransferAllowed(client, {
+                goalId: parseInt(capital_goal_id, 10), fromAccountId: from_account_id, toAccountId: to_account_id,
+                amountSent: amount_sent, sendingCharge,
+            });
+        }
+
         // Generate transfer reference
         const { referenceId, referenceCode } = await generateReference(
             client,
@@ -153,6 +168,9 @@ const initiateTransfer = asyncHandler(async (req, res) => {
 
         const transferId = transferResult.rows[0].id;
         await linkReferenceToRecord(client, referenceId, transferId);
+        if (goalLink) {
+            await client.query('UPDATE transfers SET capital_goal_id = $1 WHERE id = $2', [goalLink.goal.id, transferId]);
+        }
 
         // Create approval workflow
         const requiredApprovals = transferType === 'PRIMARY_TO_SECONDARY' ? 1 : 3;
@@ -181,7 +199,8 @@ const initiateTransfer = asyncHandler(async (req, res) => {
                 transferType, sendingCharge, receivingCharge,
             },
             description: `Transfer initiated: ${referenceCode} — ` +
-                         `${from.name} to ${to.name} — Amount: ${amount_sent}`,
+                         `${from.name} to ${to.name} — Amount: ${amount_sent}` +
+                         (goalLink ? ` — money collected for ${goalLink.goal.reference_code}, towards investment ${goalLink.investment.reference_code}` : ''),
             client,
         });
 
@@ -198,7 +217,9 @@ const initiateTransfer = asyncHandler(async (req, res) => {
             receiving_bank_charge: receivingCharge,
             required_approvals: requiredApprovals,
             status:             'AWAITING_APPROVAL',
-        }, `Transfer initiated. Reference: ${referenceCode}. Awaiting approval.`);
+            capital_goal_id:    goalLink ? goalLink.goal.id : null,
+        }, `Transfer initiated. Reference: ${referenceCode}. Awaiting approval.` +
+           (goalLink && goalLink.investment.switched_account ? ` ${goalLink.investment.reference_code} will now be paid from ${goalLink.investment.funding_account_name}.` : ''));
     });
 });
 
@@ -254,6 +275,16 @@ const editTransfer = asyncHandler(async (req, res) => {
             ? 1
             : (exchange_rate !== undefined ? parseFloat(exchange_rate) : parseFloat(transfer.exchange_rate));
         const newAmountReceived = newAmountSent * newExchangeRate;
+
+        // v1.78.0 — a goal-money transfer can't grow beyond what the goal has left.
+        if (transfer.capital_goal_id) {
+            await capitalGoalFunds.assertTransferAllowed(client, {
+                goalId: transfer.capital_goal_id, fromAccountId: transfer.from_account_id, toAccountId: transfer.to_account_id,
+                amountSent: newAmountSent,
+                sendingCharge: sending_bank_charge !== undefined ? sending_bank_charge : transfer.sending_bank_charge,
+                excludeTransferId: transfer.id,
+            });
+        }
 
         const updated = await client.query(`
             UPDATE transfers

@@ -1,0 +1,43 @@
+%% v1.80.0 — requisitions (documents first, investments, reversal), investment spending by purpose, meeting document fixes
+flowchart TD
+    subgraph REQ["Requisition (/requisitions)"]
+        R1["Create / edit\namount · description · category\n+ optional investment and purpose\n+ files attached on the form"] --> R2["Documents panel\nrequester: upload own files\nTreasury: also pick existing documents"]
+        R2 --> R3{"Approve (Treasury)\n≥ 1 live document?\naccount in the investment's currency?"}
+        R3 -- "no" --> R4["Refused — the dialog lists\nwhat is still missing"]
+        R3 -- "yes, no investment" --> P0["Generic expense posting"]
+        R3 -- "yes, CAPITAL" --> P1["Investment funding\n(ACTIVE investments only)\nledger 1400 asset"]
+        R3 -- "yes, OPERATING" --> P2["Investment expense\nledger 5150"]
+        R3 -- "yes, MAINTENANCE" --> P3["Investment expense\nledger 5160"]
+        P0 --> L["Requisition documents linked\nto the transaction (AT_ENTRY)"]
+        P1 --> L
+        P2 --> L
+        P3 --> L
+        L --> AP["APPROVED (paid)"]
+        AP --> RV["Treasurer: Reverse — reason required\nnormal transaction reversal"]
+        RV --> RX["Reversal executed →\nrequisition REVERSED\nwho · when · why · reversal transaction"]
+    end
+
+    subgraph INV["Investment page (/investments/:id)"]
+        I1["Buy / Expand (capital)\n→ CAPITAL · Expense › Investments › Purchase & expansion"]
+        I2["Operational entry — 'What was it for?'\nOPERATING → Operating costs\nMAINTENANCE → Maintenance & repairs"]
+        LG["All transactions of this investment\nGET /investments/:id/ledger\ntotals: capital · running · maintenance · returns\n'Not classified' = recorded before v1.80"]
+        CL["Treasurer / Admin classify an older expense\nPATCH /investments/:id/cost-type\n(moves category; GL follows)"]
+        I1 --> LG
+        I2 --> LG
+        LG --> CL
+    end
+
+    subgraph TX["Transactions page"]
+        T1["Investment filter (?investment_id= / any)\ninvestment link + purpose badge"]
+    end
+    P1 --> LG
+    P2 --> LG
+    P3 --> LG
+    LG --> T1
+
+    subgraph MTG["Meetings — statutory document fixes"]
+        M1["Meeting dated in the past →\nrecorded_after_event\nshares as at the meeting date\nnotice date entered · no emails"] --> M2["Secretary records attendance\npeople then 'Confirm and sign'"]
+        M2 --> M3["Captured signature copied from\nMy Profile › Signature\n(refused if none saved)"]
+        M4["Document forms: pick chairperson /\nsecretary / director + document date"] --> M5["Signatures printed with no date below\none 'Dated this …' line in the body"]
+        M6["One person in two positions →\none slot per position\none signature fills both\n(migration repairs filed documents)"]
+    end

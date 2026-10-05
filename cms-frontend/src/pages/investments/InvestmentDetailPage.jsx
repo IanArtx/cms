@@ -34,6 +34,8 @@ import {
     Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
+import InvestmentLedger from './InvestmentLedger'; // v1.80.0
+import { INVESTMENT_PURPOSES } from '../requisitions/requisitionParts'; // v1.80.0
 
 // v1.60.0 — the fixed set of standard bond durations, matching how
 // bonds are actually categorised when bought. Same list enforced
@@ -85,9 +87,13 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
             <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
             <div className="flex min-h-full items-center justify-center p-4">
                 <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                        Record Expense
+                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                        Buy / expand — money put into the investment
                     </h2>
+                    <p className="text-xs text-gray-500 mb-4">
+                        Capital: it is added to what the investment is worth. For running costs (feed, wages, fuel …) or repairs use
+                        <strong> Record Operational Transaction › Expense</strong> instead — those are expenses of the investment.
+                    </p>
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -132,7 +138,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
                                 onChange={e => setForm(p => ({
                                     ...p, category_id: e.target.value }))}>
                                 <option value="">
-                                    Use investment's category ({investment.category_name})
+                                    Automatic — Expense › Investments › Purchase &amp; expansion
                                 </option>
                                 {investmentCategories.map(c => (
                                     <option key={c.id} value={c.id}>
@@ -153,7 +159,7 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
                                 className="btn-secondary">Cancel</button>
                             <button type="submit" disabled={loading}
                                 className="btn-primary">
-                                {loading ? 'Recording...' : 'Record Expense'}
+                                {loading ? 'Recording...' : 'Record capital spending'}
                             </button>
                         </div>
                     </form>
@@ -298,6 +304,7 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
         entry_type: 'EXPENSE', amount: '', entry_date: '',
         description: '', category_id: '',
         tax_treatment: 'FINAL', gross_amount: '', tax_certificate_number: '',
+        cost_type: '', // v1.80.0 — what an expense was for
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
@@ -310,8 +317,10 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
         setError(null);
         try {
             const isTax = form.entry_type === 'TAX';
+            if (form.entry_type === 'EXPENSE' && !form.cost_type) throw new Error('Choose what the expense was for.');
             await investmentsAPI.recordTransaction(investment.id, {
                 ...form,
+                cost_type: form.entry_type === 'EXPENSE' ? form.cost_type : undefined,
                 amount:      parseFloat(form.amount),
                 category_id: form.category_id || undefined,
                 // v1.70.0 — a TAX entry is tax deducted at source
@@ -322,7 +331,7 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
             onSuccess();
             onClose();
             setForm({ entry_type: 'EXPENSE', amount: '', entry_date: '',
-                description: '', category_id: '', tax_treatment: 'FINAL', gross_amount: '', tax_certificate_number: '' });
+                description: '', category_id: '', tax_treatment: 'FINAL', gross_amount: '', tax_certificate_number: '', cost_type: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -383,6 +392,21 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
                                     ...p, amount: e.target.value }))}
                                 min="0.01" step="0.01" required />
                         </div>
+                        {form.entry_type === 'EXPENSE' && (
+                            <div>
+                                <label className="label">What was it for? *</label>
+                                <div className="space-y-1.5">
+                                    {INVESTMENT_PURPOSES.map(pp => (
+                                        <label key={pp.value} className={`flex items-start gap-2 rounded-lg border px-3 py-2 cursor-pointer ${form.cost_type === pp.value ? 'border-primary-500 bg-primary-50' : 'border-gray-200'}`}>
+                                            <input type="radio" name="cost_type" className="mt-1" checked={form.cost_type === pp.value}
+                                                onChange={() => setForm(p => ({ ...p, cost_type: pp.value }))} />
+                                            <span><span className="text-sm font-medium text-gray-900">{pp.label}</span>
+                                                <span className="block text-xs text-gray-500">{pp.hint}</span></span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         {form.entry_type === 'TAX' && (
                             <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 grid grid-cols-1 sm:grid-cols-3 gap-3">
                                 <div><label className="label">Treatment</label>
@@ -411,7 +435,9 @@ const RecordOperationModal = ({ isOpen, onClose, onSuccess, investment, categori
                                 onChange={e => setForm(p => ({
                                     ...p, category_id: e.target.value }))}>
                                 <option value="">
-                                    Use investment's category ({investment.category_name})
+                                    {form.entry_type === 'EXPENSE'
+                                        ? 'Automatic — Expense › Investments › (what it was for)'
+                                        : `Use investment's category (${investment.category_name})`}
                                 </option>
                                 {investmentCategories.map(c => (
                                     <option key={c.id} value={c.id}>
@@ -1817,7 +1843,7 @@ const InvestmentDetailPage = () => {
                             className="btn-secondary flex items-center gap-2"
                         >
                             <MinusCircleIcon className="h-4 w-4" />
-                            Record Expense
+                            Buy / Expand (capital)
                         </button>
                     )}
                     {canManage && (investment.status === 'ACTIVE' || isPendingTermination) && (
@@ -1853,6 +1879,9 @@ const InvestmentDetailPage = () => {
             {/* Operating Budget — dedicated expenses/inflows/tax for THIS
                 investment, and the resulting running balance unspent */}
             <OperatingBudgetCard investment={investment} />
+
+            {/* v1.80.0 — every ledger entry of this investment, by purpose */}
+            <InvestmentLedger investment={investment} onChanged={loadInvestment} />
 
             {/* Bond Coupon Schedule — only for BOND-type investments */}
             {investment.investment_type === 'BOND' && (

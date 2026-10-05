@@ -45,7 +45,6 @@ import {
     ArrowTrendingUpIcon,
     TrophyIcon,
     WalletIcon,
-    FlagIcon,
     ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import {
@@ -53,6 +52,8 @@ import {
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import PageHeader from '../../components/common/PageHeader';
+import { CapitalGoalsDashboardSection } from '../capitalGoals/capitalGoalUi';
+import { MeetingActionsCard } from '../meetings/MeetingActionsCard'; // v1.79.0
 
 // Shortens a long investment/bond name for an x-axis tick label —
 // the full name still shows in the tooltip on hover. Charts whose
@@ -128,86 +129,39 @@ const InflowOutflowChart = ({ trend, currencyCode }) => {
 
 // ============================================================
 // PENDING PLEDGE NOTIFICATION BANNER (v1.56.0)
-// Shows only when a pledge is PENDING or PARTIAL. "Due date before
-// fines" = the call's own iteration deadline plus the Admin-set
-// grace_days from Capital Call fine settings — the same window
-// capitalGoalsController's fine machinery itself uses.
+// Shows only when a pledge of mine is still unpaid (PENDING/PARTIAL).
+// v1.78.0 — fed by /capital-goals/overview (me.next_due) and corrected:
+// it used to say "pay by <deadline + grace days> to avoid a late fine",
+// but a first-round payment made after the deadline IS fined (at the
+// lower rate during the grace days, the higher rate after). It now says
+// pay by the deadline, and when the higher fine starts. It links to the
+// month itself.
 // ============================================================
-const PendingPledgeBanner = ({ pledge, graceDays }) => {
-    if (!pledge || !pledge.dueDate) return null;
-
-    const safeDate = new Date(pledge.dueDate);
-    safeDate.setDate(safeDate.getDate() + (graceDays || 0));
-    const owed = parseFloat(pledge.pledged_amount) - parseFloat(pledge.amount_settled || 0);
-
+const PendingPledgeBanner = ({ due, count }) => {
+    if (!due) return null;
     return (
-        <div className="mb-6 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <ExclamationTriangleIcon className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+        <div className={`mb-6 flex items-start gap-3 rounded-lg border p-4 ${due.overdue ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}>
+            <ExclamationTriangleIcon className={`h-5 w-5 flex-shrink-0 mt-0.5 ${due.overdue ? 'text-red-500' : 'text-amber-500'}`} />
             <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-amber-800">
-                    Pledge payment pending — {pledge.goal_title} ({pledge.period})
+                <p className={`text-sm font-semibold ${due.overdue ? 'text-red-800' : 'text-amber-800'}`}>
+                    Pledge payment {due.overdue ? 'overdue' : 'pending'} — {due.goal_title} ({due.period}{due.iteration === 2 ? ', round 2' : ''})
+                    {count > 1 ? ` · ${count} unpaid pledges in all` : ''}
                 </p>
-                <p className="text-xs text-amber-700 mt-0.5">
-                    {pledge.currency_code} {owed.toLocaleString('en-US', { maximumFractionDigits: 2 })} still owed.
-                    {' '}Pay by <strong>{formatDate(safeDate)}</strong> to avoid a late fine.
+                <p className={`text-xs mt-0.5 ${due.overdue ? 'text-red-700' : 'text-amber-700'}`}>
+                    {due.currency_code} {parseFloat(due.owed).toLocaleString('en-US', { maximumFractionDigits: 2 })} still owed.
+                    {' '}{due.overdue ? 'The deadline was' : 'Pay by'} <strong>{formatDate(due.deadline)}</strong>
+                    {due.iteration === 2
+                        ? ' (no late fine in round 2).'
+                        : due.higher_fine_from
+                            ? `${due.overdue ? '' : ' to avoid a late fine'}; the higher late fine applies from ${formatDate(due.higher_fine_from)}.`
+                            : '.'}
                 </p>
             </div>
-            <Link to="/capital-goals/my-calls"
-                className="text-xs font-semibold text-amber-800 underline flex-shrink-0 whitespace-nowrap">
-                Pay now
+            <Link to={`/capital-goals/monthly-calls/${due.monthly_call_id}`}
+                className={`text-xs font-semibold underline flex-shrink-0 whitespace-nowrap ${due.overdue ? 'text-red-800' : 'text-amber-800'}`}>
+                View
             </Link>
         </div>
-    );
-};
-
-// ============================================================
-// PRIMARY GOAL CARD (v1.56.0) — replaces the old CurrentCapitalCallCard.
-// Shows the PRIMARY goal's own overall progress/status (ON_TRACK /
-// BEHIND / TARGET_REACHED) — not just whether a call happens to be
-// open right now — with the whole tile clicking through to the
-// current pledge, per the direct request "a tile of primary goal,
-// if set, and its status and on it a clickable section that takes
-// one on the current pledge."
-// ============================================================
-const STATUS_STYLES = {
-    TARGET_REACHED: 'bg-emerald-50 text-emerald-700',
-    ON_TRACK:       'bg-blue-50 text-blue-700',
-    BEHIND:         'bg-amber-50 text-amber-700',
-};
-
-const PrimaryGoalCard = ({ goal, openCall }) => {
-    if (!goal) return null;
-
-    const pct = Math.min(parseFloat(goal.percent_of_target || 0), 100);
-
-    return (
-        <Link to="/capital-goals/my-calls" className="card block hover:shadow-md transition-shadow">
-            <div className="flex items-center gap-2 mb-2">
-                <FlagIcon className="h-4 w-4 text-primary-600" />
-                <h2 className="section-title mb-0 truncate">Primary Goal — {goal.title}</h2>
-                <span className={`ml-auto flex-shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${
-                    STATUS_STYLES[goal.progress_status] || 'bg-gray-50 text-gray-600'
-                }`}>
-                    {(goal.progress_status || goal.status || '').replace(/_/g, ' ')}
-                </span>
-            </div>
-            <div className="mt-2 h-2 rounded-full bg-gray-100 overflow-hidden">
-                <div className="h-2 bg-primary-600" style={{ width: `${pct}%` }} />
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-                {goal.currency_code} {parseFloat(goal.total_collected || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                {' '}of{' '}
-                {goal.currency_code} {parseFloat(goal.target_amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                {' '}({goal.percent_of_target || 0}%)
-            </p>
-            <p className="text-xs text-primary-500 mt-1">
-                {openCall
-                    ? (openCall.already_pledged
-                        ? 'You have already pledged for this call — click to review.'
-                        : 'A call is open — click to pledge.')
-                    : 'Click to view your pledge history.'}
-            </p>
-        </Link>
     );
 };
 
@@ -435,7 +389,6 @@ const ShareholderDashboard = ({ headerActions = null }) => {
     const [sideFund,        setSideFund]        = useState(null);
     const [sideFundOverdue, setSideFundOverdue]  = useState(null);
     const [sideFundCredit,  setSideFundCredit]   = useState(null);
-    const [primaryOpenCall, setPrimaryOpenCall]  = useState(null);
     const [currentQuarter, setCurrentQuarter]    = useState(null);
     // v1.51.0 — hide the capital call widget while tracking is paused.
     const [capitalGoalTrackingEnabled, setCapitalGoalTrackingEnabled] = useState(true);
@@ -448,9 +401,8 @@ const ShareholderDashboard = ({ headerActions = null }) => {
     const [paymentLedger, setPaymentLedger] = useState([]);
     const [myFines, setMyFines] = useState([]);
     const [myDues, setMyDues] = useState([]);
-    const [fineSettings, setFineSettings] = useState(null);
-    const [primaryGoal, setPrimaryGoal] = useState(null);
     const [myPledges, setMyPledges] = useState([]);
+    const [capitalOverview, setCapitalOverview] = useState(null); // v1.78.0 — from the Capital goals section
 
     useEffect(() => {
         const load = async () => {
@@ -531,8 +483,6 @@ const ShareholderDashboard = ({ headerActions = null }) => {
     useEffect(() => {
         capitalGoalCallsAPI.getMyPledges()
             .then(res => {
-                const openCalls = res.data.data?.open_calls || [];
-                setPrimaryOpenCall(openCalls.find(c => c.goal_type === 'PRIMARY') || null);
                 setMyPledges(res.data.data?.my_pledges || []);
             })
             .catch(() => {});
@@ -558,15 +508,13 @@ const ShareholderDashboard = ({ headerActions = null }) => {
     useEffect(() => {
         const loadExtra = async () => {
             const [
-                trendRes, invRes, ledgerRes, finesRes, duesRes, fineSettingsRes, goalsRes,
+                trendRes, invRes, ledgerRes, finesRes, duesRes,
             ] = await Promise.allSettled([
                 accountsAPI.getInflowOutflowTrend(12),
                 investmentsAPI.getInputVsReturn(),
                 usersAPI.getMyPaymentLedger(5),
                 finesAPI.getMine(),
                 sideFundAPI.getMyDues(),
-                capitalGoalsAPI.getFineSettings(),
-                capitalGoalsAPI.getAll({ status: 'ACTIVE' }),
             ]);
 
             if (trendRes.status === 'fulfilled') {
@@ -583,13 +531,6 @@ const ShareholderDashboard = ({ headerActions = null }) => {
             }
             if (duesRes.status === 'fulfilled') {
                 setMyDues(duesRes.value.data.data || []);
-            }
-            if (fineSettingsRes.status === 'fulfilled') {
-                setFineSettings(fineSettingsRes.value.data.data || null);
-            }
-            if (goalsRes.status === 'fulfilled') {
-                const goals = goalsRes.value.data.data || [];
-                setPrimaryGoal(goals.find(g => g.goal_type === 'PRIMARY') || null);
             }
         };
 
@@ -630,15 +571,10 @@ const ShareholderDashboard = ({ headerActions = null }) => {
         ? sharePrice?.currency_code
         : primaryAccount?.currency_code;
 
-    // v1.56.0 — the nearest unpaid/partial pledge with a real deadline,
-    // for the top-of-page notification banner. "Due date before fines"
-    // uses whichever iteration deadline applies to that pledge.
-    const unpaidPledges = myPledges
-        .filter(p => p.status === 'PENDING' || p.status === 'PARTIAL')
-        .map(p => ({ ...p, dueDate: p.iteration === 2 ? p.iteration2_deadline : p.iteration1_deadline }))
-        .filter(p => p.dueDate)
-        .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-    const nextUnpaidPledge = unpaidPledges[0] || null;
+    // v1.56.0 — the nearest unpaid/partial pledge, for the top-of-page
+    // notification banner. v1.78.0 — taken from the capital goals
+    // overview (me.next_due), which already knows the deadline that
+    // applies (round 1 or round 2) and when the higher fine starts.
 
     // v1.56.0 — combined outstanding balances: fines, overdue/partial
     // Side Fund dues, and unpaid capital pledges, newest first, capped
@@ -690,7 +626,9 @@ const ShareholderDashboard = ({ headerActions = null }) => {
             )}
 
             {/* Pending pledge payment notification (v1.56.0) */}
-            <PendingPledgeBanner pledge={nextUnpaidPledge} graceDays={fineSettings?.grace_days} />
+            {capitalGoalTrackingEnabled && capitalOverview && (
+                <PendingPledgeBanner due={capitalOverview.me.next_due} count={capitalOverview.me.owed.length} />
+            )}
 
             {/* Personal Stats */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -759,6 +697,21 @@ const ShareholderDashboard = ({ headerActions = null }) => {
                     />
                 )}
             </div>
+
+            {/* Company meetings (v1.79.0) — confirm attendance, sign written
+                resolutions, meetings I'm called to, URSB filings due.
+                Shows nothing when there is nothing to do. */}
+            <MeetingActionsCard compact />
+
+            {/* My capital goals (v1.78.0) — every active goal, this month's
+                call, my pledge and what I owe, with a one-tap "Pledge".
+                Replaces the single Primary Goal tile; hidden while Capital
+                Goal Tracking is paused. */}
+            {capitalGoalTrackingEnabled && (
+                <div className="mb-6">
+                    <CapitalGoalsDashboardSection title="My capital goals" onOverview={setCapitalOverview} showApprovals={false} />
+                </div>
+            )}
 
             {/* Inflow / Outflow trend chart (v1.56.0) — full width, up top
                 per the direct request that this be the dashboard's first
@@ -850,13 +803,6 @@ const ShareholderDashboard = ({ headerActions = null }) => {
 
                 {/* Right Column */}
                 <div className="space-y-4">
-                    {/* Primary Goal — overall status + link to current pledge
-                        (v1.56.0, replaces the old open-call-only card) —
-                        hidden while Capital Goal Tracking is paused. */}
-                    {capitalGoalTrackingEnabled && (
-                        <PrimaryGoalCard goal={primaryGoal} openCall={primaryOpenCall} />
-                    )}
-
                     {/* Best/Worst Performing Investment + Input vs Return chart */}
                     <PerformanceCard performance={performance} inputVsReturn={investmentInputReturn} />
 

@@ -199,6 +199,7 @@ app.use('/api/capital-goals', require('./src/routes/capitalGoals'));
 app.use('/api/payment-acknowledgements', require('./src/routes/paymentAcknowledgements'));
 app.use('/api/payment-confirmations', require('./src/routes/paymentConfirmations'));
 app.use('/api/events',       require('./src/routes/events'));
+app.use('/api/meetings',     require('./src/routes/meetings')); // v1.79.0 — AGM/EGM/board meetings & resolutions
 app.use('/api/documents',    require('./src/routes/documents'));
 app.use('/api/reports',      require('./src/routes/reports'));
 app.use('/api/system', require('./src/routes/system'));

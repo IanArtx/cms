@@ -18,6 +18,7 @@ const { validateRequest, validators } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockAuditor, requirePermissions, requireRoles, requireAnyPermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const documentsController = require('../controllers/documentsController');
+const documentLinksController = require('../controllers/documentLinksController'); // v1.78.0
 
 // All routes require login
 router.use(authenticate);
@@ -54,7 +55,9 @@ router.post('/templates',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER'
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                // v1.79.0 — statutory meeting documents
+                'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
             .withMessage('Invalid template type'),
         body('template_body')
@@ -91,7 +94,9 @@ router.post('/upload',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER'
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                // v1.79.0 — statutory meeting documents
+                'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
             .withMessage('Invalid document type'),
         body('related_record_type').optional().trim(),
@@ -118,7 +123,9 @@ router.post('/generate',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER'
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                // v1.79.0 — statutory meeting documents
+                'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
             .withMessage('Invalid document type'),
         body('template_data')
@@ -166,6 +173,42 @@ router.get('/mine',
 router.get('/share-receipts',
     requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
     documentsController.getShareReceipts
+);
+
+// ============================================================
+// CONNECTED TRANSACTIONS (v1.78.0)
+// GET    /api/documents/:id/transactions   (details need FINANCE_VIEW_ALL; others get the count)
+// POST   /api/documents/:id/transactions   { transaction_ids[], confirm_additional? }
+// DELETE /api/documents/:id/transactions/:transactionId
+// ============================================================
+router.get('/:id/transactions',
+    requirePermissions(['DOCUMENT_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    documentLinksController.getDocumentTransactions
+);
+
+router.post('/:id/transactions',
+    requirePermissions(['DOCUMENT_VIEW', 'FINANCE_VIEW_ALL']),
+    requireAnyPermission(['DOCUMENT_UPLOAD', 'FINANCE_TRANSACTION_CREATE']),
+    validators.idParam('id'),
+    [
+        body('transaction_ids').isArray({ min: 1, max: 50 }).withMessage('Choose at least one transaction'),
+        body('transaction_ids.*').isInt({ min: 1 }).withMessage('Invalid transaction'),
+        body('confirm_additional').optional().isBoolean(),
+        body('note').optional({ values: 'falsy' }).trim().isLength({ max: 500 }),
+    ],
+    validateRequest,
+    documentLinksController.linkDocumentTransactions
+);
+
+router.delete('/:id/transactions/:transactionId',
+    requirePermissions(['DOCUMENT_VIEW', 'FINANCE_VIEW_ALL']),
+    requireAnyPermission(['DOCUMENT_UPLOAD', 'FINANCE_TRANSACTION_CREATE']),
+    validators.idParam('id'),
+    validators.idParam('transactionId'),
+    validateRequest,
+    documentLinksController.unlinkDocumentTransaction
 );
 
 // ============================================================

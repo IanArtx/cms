@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI, certificatesAPI } from '../../api/endpoints';
 import { formatDate, formatFileSize, getErrorMessage, truncate, getUploadUrl } from '../../utils/helpers';
 import {
@@ -38,6 +38,9 @@ import {
 } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
+// v1.78.0 — transactions connected to a document
+import { DocumentTransactionsBlock, LinkCount } from '../../components/documents/TransactionDocuments';
+import { renderGovernanceDocument } from '../../utils/governanceTemplates'; // v1.79.0 — statutory meeting documents
 
 // Renderers for SYSTEM_GENERATED documents — same client-side template
 // functions GenerateDocumentPage.jsx uses at creation time. Only the
@@ -118,7 +121,15 @@ const openDocument = async (doc, { forceDownload }) => {
         // v1.69.0 — the auto-generated share capital notice to all
         // shareholders (template_data.notice_kind) has its own template.
         // v1.70.0 — tax documents (certificate, agent notice, computation).
-        const renderer = payload.template_data?.receipt_kind === 'SHARE_PURCHASE'
+        // v1.79.0 — statutory meeting documents (notice, proxy form,
+        // register of attendance, statutory minutes, resolutions, written
+        // resolutions, certified copies) carry template_data.doc_kind and
+        // are rendered by governanceTemplates.js — checked first, since
+        // their MEETING_MINUTES / RESOLUTION types also have the older
+        // generic renderers below.
+        const renderer = payload.template_data?.doc_kind
+            ? renderGovernanceDocument
+            : payload.template_data?.receipt_kind === 'SHARE_PURCHASE'
             ? sharePurchaseReceiptTemplate
             : payload.template_data?.notice_kind === 'SHARE_CAPITAL_CHANGE'
                 ? shareCapitalNoticeTemplate
@@ -183,7 +194,10 @@ const openDocument = async (doc, { forceDownload }) => {
 const DOCUMENT_TYPES = [
     'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
     'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-    'RECEIPT', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER'
+    'RECEIPT', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+    // v1.79.0 — statutory meeting documents (generated from Meetings;
+    // a signed paper copy can also be uploaded under these types)
+    'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'RESOLUTION', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION',
 ];
 
 const ARCHIVE_TYPES = [
@@ -1113,8 +1127,108 @@ const GrantAccessModal = ({ isOpen, document, onClose }) => {
 // ============================================================
 // MAIN DOCUMENTS PAGE
 // ============================================================
+// ============================================================
+// DOCUMENT DETAIL WINDOW (v1.78.0)
+// One document: its details, Preview/Download, and the transactions it
+// is connected to (with connect / disconnect for finance staff). Opened
+// from the list (title, reference or the 🔗 count) or by address
+// (/documents?doc=<id>, used by a transaction's "Connected documents").
+// ============================================================
+const DocumentDetailModal = ({ documentId, onClose, onChanged }) => {
+    const [doc, setDoc] = useState(null);
+    const [error, setError] = useState(null);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        if (!documentId) return;
+        setDoc(null);
+        setError(null);
+        documentsAPI.getById(documentId).then(r => setDoc(r.data.data)).catch(err => setError(getErrorMessage(err)));
+    }, [documentId]);
+
+    if (!documentId) return null;
+
+    const open = async (forceDownload) => {
+        setBusy(true);
+        try {
+            await openDocument(doc, { forceDownload });
+        } catch (err) {
+            setError(await getBlobErrorMessage(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const Row = ({ label, children }) => (
+        <div className="flex justify-between gap-4 py-1.5 text-sm">
+            <span className="text-gray-500 flex-shrink-0">{label}</span>
+            <span className="text-gray-900 text-right break-words min-w-0">{children}</span>
+        </div>
+    );
+
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white rounded-xl shadow-xl max-w-lg w-full p-5 sm:p-6">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="min-w-0">
+                            <h2 className="text-lg font-semibold text-gray-900 break-words">{doc ? doc.title : 'Document'}</h2>
+                            {doc && <p className="font-mono text-xs text-primary-700 break-all">{doc.reference_code}</p>}
+                        </div>
+                        <button type="button" onClick={onClose} aria-label="Close" className="p-1 rounded hover:bg-gray-100">
+                            <XMarkIcon className="h-5 w-5 text-gray-500" />
+                        </button>
+                    </div>
+                    {error && <div className="mb-3"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    {!doc && !error && <p className="text-sm text-gray-400">Loading…</p>}
+                    {doc && (
+                        <>
+                            <div className="divide-y divide-gray-50 mb-4">
+                                <Row label="Type">{(doc.document_type || '').replace(/_/g, ' ').toLowerCase()}{doc.source === 'SYSTEM_GENERATED' ? ' (generated)' : ''}</Row>
+                                <Row label="Category">{doc.category_trail || doc.category_name || '—'}</Row>
+                                {doc.file_name && <Row label="File">{doc.file_name}{doc.file_size_bytes ? ` · ${formatFileSize(doc.file_size_bytes)}` : ''}</Row>}
+                                <Row label="Version">v{doc.version}</Row>
+                                <Row label="Status"><StatusBadge status={doc.status} /></Row>
+                                <Row label="Created">{doc.created_by_name}, {formatDate(doc.created_at)}</Row>
+                                {doc.approved_by_name && <Row label="Approved">{doc.approved_by_name}{doc.approved_at ? `, ${formatDate(doc.approved_at)}` : ''}</Row>}
+                                {doc.public_id && <Row label="Public ID"><span className="font-mono text-xs">{doc.public_id}</span></Row>}
+                            </div>
+                            <DocumentTransactionsBlock
+                                documentId={doc.id}
+                                data={{ count: doc.transaction_count || 0, transactions: doc.transactions || [], restricted: !!doc.transactions_restricted }}
+                                onChanged={(d) => {
+                                    setDoc(p => ({ ...p, transaction_count: d.count, transactions: d.transactions || [], transactions_restricted: !!d.restricted }));
+                                    if (onChanged) onChanged(doc.id, d.count);
+                                }}
+                            />
+                            <div className="flex justify-end gap-2 pt-4 flex-wrap">
+                                <button type="button" disabled={busy} onClick={() => open(false)} className="btn-secondary text-sm flex items-center gap-1.5">
+                                    <EyeIcon className="h-4 w-4" /> Preview
+                                </button>
+                                <button type="button" disabled={busy} onClick={() => open(true)} className="btn-secondary text-sm flex items-center gap-1.5">
+                                    <ArrowDownTrayIcon className="h-4 w-4" /> Download
+                                </button>
+                                <button type="button" onClick={onClose} className="btn-primary text-sm">Done</button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const DocumentsPage = () => {
     const { hasPermission, hasRole } = useAuth();
+    // v1.78.0 — /documents?doc=<id> opens that document's detail window
+    const [searchParams, setSearchParams] = useSearchParams();
+    const detailId = searchParams.get('doc');
+    const openDetail = (id) => setSearchParams(prev => {
+        const p = new URLSearchParams(prev);
+        if (id) p.set('doc', String(id)); else p.delete('doc');
+        return p;
+    }, { replace: true });
     // v1.67.0 — who may see every member's Share Purchase Receipts.
     const isTreasury = hasRole('Treasurer') || hasRole('Assistant Treasurer') || hasRole('Admin');
     const confirm = useConfirm();
@@ -1146,6 +1260,7 @@ const DocumentsPage = () => {
         'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
         'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT',
         'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER',
+        'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION', // v1.79.0
     ];
 
     const [typeFilter,   setTypeFilter]   = useState('');
@@ -1263,9 +1378,11 @@ const DocumentsPage = () => {
             header: 'Reference',
             render: row => (
                 <div>
-                    <span className="font-mono text-xs font-medium text-primary-700">
+                    <button type="button" onClick={() => openDetail(row.id)}
+                        className="font-mono text-xs font-medium text-primary-700 hover:underline"
+                        title="Open — details and connected transactions">
                         {row.reference_code}
-                    </span>
+                    </button>
                     {row.public_id && (
                         <div className="font-mono text-[10px] text-gray-400" title="Public ID — searchable">
                             {row.public_id}
@@ -1278,14 +1395,23 @@ const DocumentsPage = () => {
             header: 'Document',
             render: row => (
                 <div>
-                    <p className="text-sm font-medium text-gray-900">
+                    <button type="button" onClick={() => openDetail(row.id)}
+                        className="text-sm font-medium text-gray-900 hover:text-primary-700 hover:underline text-left">
                         {truncate(row.title, 40)}
-                    </p>
+                    </button>
                     <p className="text-xs text-gray-400">
                         {row.document_type?.replace(/_/g, ' ')}
                         {row.source === 'SYSTEM_GENERATED' && ' • Generated'}
                     </p>
                 </div>
+            ),
+        },
+        {
+            // v1.78.0 — how many transactions this document is connected to
+            header: 'Transactions',
+            render: row => (
+                <LinkCount count={row.transaction_count} onClick={() => openDetail(row.id)}
+                    title={parseInt(row.transaction_count || 0, 10) ? `Connected to ${row.transaction_count} transaction(s)` : 'Not connected to a transaction'} />
             ),
         },
         {
@@ -1624,6 +1750,12 @@ const DocumentsPage = () => {
                 target={signaturesTarget}
                 onClose={() => setSignaturesTarget(null)}
                 onSigned={() => { loadDocuments(); loadPendingSignatures(); }}
+            />
+
+            <DocumentDetailModal
+                documentId={detailId}
+                onClose={() => openDetail(null)}
+                onChanged={(id, count) => setDocuments(list => list.map(d => (d.id === id ? { ...d, transaction_count: count } : d)))}
             />
         </div>
     );

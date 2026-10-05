@@ -39,6 +39,43 @@ export const setBranding = ({ name, address, logoUrl, primaryColor, accentColor 
 };
 
 // ============================================================
+// STATUTORY DETAILS (v1.79.0)
+// Printed under the company name on EVERY generated document so each
+// one identifies the company the way the Registrar expects:
+// registration number, TIN, registered office, postal address,
+// email and phone. Loaded after login by BrandingContext from
+// GET /api/settings/company/statutory (kept off the public branding
+// endpoint on purpose). Empty values are simply left out.
+// ============================================================
+let STATUTORY = {
+    registration_number: '', tin: '', registered_office: '', postal_address: '',
+    company_email: '', company_phone: '', incorporation_date: '',
+};
+export const setStatutory = (details = {}) => {
+    STATUTORY = { ...STATUTORY, ...Object.fromEntries(
+        Object.entries(details || {}).filter(([k]) => k in STATUTORY).map(([k, v]) => [k, v || '']),
+    ) };
+};
+export const getStatutory = () => ({ ...STATUTORY, company_name: COMPANY_NAME, company_address: COMPANY_ADDRESS });
+
+const escCss = (v) => String(v || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
+
+// One line of identifiers + one line of addresses, for the letterhead.
+const statutoryLines = () => {
+    const ids = [
+        STATUTORY.registration_number && `Reg. No. ${STATUTORY.registration_number}`,
+        STATUTORY.tin && `TIN ${STATUTORY.tin}`,
+    ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    const addr = [
+        STATUTORY.registered_office ? `Registered office: ${STATUTORY.registered_office}` : COMPANY_ADDRESS,
+        STATUTORY.postal_address,
+        STATUTORY.company_phone && `Tel ${STATUTORY.company_phone}`,
+        STATUTORY.company_email,
+    ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    return { ids, addr };
+};
+
+// ============================================================
 // RESOLVE UPLOAD URL (v1.62.1)
 // Backend-stored file paths (e.g. signature snapshots:
 // "/uploads/signature-snapshots/xxx.png") are relative to the API's
@@ -322,6 +359,22 @@ const getBaseStyles = () => `
         .page { padding: 20px; }
         .no-print { display: none !important; }
     }
+
+    /* v1.79.0 — every printed page carries the company name and
+       "Page x of y" in its bottom margin, so a loose page of a filed
+       document can always be put back in order. */
+    @page {
+        size: A4;
+        margin: 12mm 10mm 16mm 10mm;
+        @bottom-left {
+            content: "${escCss(COMPANY_NAME)}${STATUTORY.registration_number ? ` · Reg. No. ${escCss(STATUTORY.registration_number)}` : ''}";
+            font-family: Arial, sans-serif; font-size: 8px; color: #6b7280;
+        }
+        @bottom-right {
+            content: "Page " counter(page) " of " counter(pages);
+            font-family: Arial, sans-serif; font-size: 8px; color: #6b7280;
+        }
+    }
 `;
 
 // ============================================================
@@ -386,14 +439,17 @@ const fmt = {
 // below) to keep the page from feeling cluttered with the same
 // code printed three or four times.
 // ============================================================
-const letterhead = (docType, reference, date) => `
+const letterhead = (docType, reference, date) => {
+    const st = statutoryLines();
+    return `
     <div class="letterhead">
         <div class="letterhead-left">
             <img class="company-logo" src="${COMPANY_LOGO_URL}" alt=""
                 onerror="this.style.display='none'" />
             <div>
                 <div class="company-name">${COMPANY_NAME}</div>
-                <div class="company-address">${COMPANY_ADDRESS}</div>
+                ${st.ids ? `<div class="company-address" style="font-weight:600;color:#374151;">${st.ids}</div>` : ''}
+                <div class="company-address">${st.addr}</div>
             </div>
         </div>
         <div class="letterhead-right">
@@ -403,6 +459,7 @@ const letterhead = (docType, reference, date) => `
         </div>
     </div>
 `;
+};
 
 // ============================================================
 // FOOTER HTML
@@ -474,8 +531,19 @@ const personName = (data, key) => data[`${key}_name`] || data[key] || '';
 // PERSON_SIGNATORY_FIELDS on the backend (documentsController.js).
 // Falls back to the original blank lines whenever there's no match.
 // ============================================================
-const signatureBlock = (data, label, name, positionTitle) => {
-    const slot = (data.signatures || []).find(s => s.role_name === positionTitle);
+// v1.80.0 — `opts`:
+//   userId   the person named for this position; when one person holds
+//            two positions on a document (e.g. Director and Secretary)
+//            their one signature fills both blocks, also on documents
+//            signed before each position had its own slot.
+//   showDate false on statutory documents — they carry one "Dated this
+//            … day of …" line instead of a date under each signature.
+const signatureBlock = (data, label, name, positionTitle, opts = {}) => {
+    const sigs = data.signatures || [];
+    let slot = sigs.find(s => s.role_name === positionTitle && (!opts.userId || !s.required_user_id || s.required_user_id === opts.userId));
+    if ((!slot || slot.status !== 'SIGNED') && opts.userId) {
+        slot = sigs.find(s => s.status === 'SIGNED' && (s.required_user_id === opts.userId || s.signed_by === opts.userId)) || slot;
+    }
     const signed = slot?.status === 'SIGNED';
     const signatureLine = signed && slot.signature_url
         ? `<img src="${resolveUploadUrl(slot.signature_url)}" alt="Signature" style="height:32px;display:block;margin-top:2px;" />`
@@ -484,8 +552,8 @@ const signatureBlock = (data, label, name, positionTitle) => {
     return `
         <div class="signature-block">
             ${label}: ${name || '_______________'}<br>
-            Signature: ${signatureLine}<br>
-            Date: ${dateLine}
+            Signature: ${signatureLine}${opts.showDate === false ? '' : `<br>
+            Date: ${dateLine}`}
         </div>`;
 };
 
@@ -567,7 +635,25 @@ export const txFromRow = (row) => {
 // ============================================================
 // TEMPLATE 1: TRANSACTION STATEMENT
 // Single transaction or list of transactions
+// v1.78.0 — shows the reference(s) of the document(s) connected to each
+// transaction ("the transaction connected shows the reference of the
+// connected document(s) on the printable version of the transaction").
+// A row from the ledger list carries document_refs ("DOC-…, DOC-…");
+// a transaction opened on its own carries documents [{ reference_code,
+// title }]. Either is enough.
 // ============================================================
+const escHtml = (v) => String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const connectedDocsOf = (t) => {
+    if (Array.isArray(t.documents)) {
+        return t.documents.map(d => ({ reference_code: d.reference_code, title: d.title, type: d.document_type }));
+    }
+    if (t.document_refs) {
+        return String(t.document_refs).split(',').map(r => r.trim()).filter(Boolean).map(r => ({ reference_code: r }));
+    }
+    return [];
+};
+
 export const transactionTemplate = (transactions, options = {}) => {
     const isSingle = !Array.isArray(transactions);
     const list     = isSingle ? [transactions] : transactions;
@@ -675,10 +761,12 @@ export const transactionTemplate = (transactions, options = {}) => {
                 ${list.map(t => {
                     const isCredit = t.transaction_type === 'CREDIT' ||
                                      t.transaction_type === 'REVERSAL_CREDIT';
+                    const docs = connectedDocsOf(t);
                     return `
                     <tr>
                         <td class="font-mono text-blue">${t.reference_code}</td>
-                        <td>${t.description || '—'}</td>
+                        <td>${t.description || '—'}${!isSingle && docs.length ? `
+                            <div class="text-gray" style="font-size:9px;margin-top:2px">Documents: <span class="font-mono">${docs.map(d => escHtml(d.reference_code)).join(', ')}</span></div>` : ''}</td>
                         <td class="text-gray">${t.category_trail || t.category_name || '—'}</td>
                         <td>${fmt.date(t.value_date)}</td>
                         <td class="text-right font-bold ${isCredit ? 'text-green' : 'text-red'}">
@@ -699,6 +787,25 @@ export const transactionTemplate = (transactions, options = {}) => {
             </tbody>
         </table>
     </div>
+
+    ${isSingle ? (() => {
+        const docs = connectedDocsOf(transactions);
+        return `
+    <div class="section">
+        <div class="section-title">Connected Documents (${docs.length})</div>
+        ${docs.length ? `
+        <table>
+            <thead><tr><th>Document Reference</th>${docs.some(d => d.title) ? '<th>Title</th>' : ''}${docs.some(d => d.type) ? '<th>Type</th>' : ''}</tr></thead>
+            <tbody>
+                ${docs.map(d => `<tr>
+                    <td class="font-mono text-blue">${escHtml(d.reference_code)}</td>
+                    ${docs.some(x => x.title) ? `<td>${escHtml(d.title || '')}</td>` : ''}
+                    ${docs.some(x => x.type) ? `<td class="text-gray">${escHtml((d.type || '').replace(/_/g, ' '))}</td>` : ''}
+                </tr>`).join('')}
+            </tbody>
+        </table>` : '<p class="text-gray" style="font-size:11px">No document is connected to this transaction.</p>'}
+    </div>`;
+    })() : ''}
 
     ${isSingle ? documentTrail([
         { role: 'Recorded By', name: transactions.created_by_name, date: transactions.created_at },
@@ -3184,6 +3291,19 @@ export const serviceFeeAgreementTemplate = (agreement, payments = [], amendments
 // PRINT / EXPORT FUNCTION
 // Opens document in new tab and triggers print dialog
 // ============================================================
+// ============================================================
+// SHARED BUILDING BLOCKS (v1.79.0) — used by governanceTemplates.js
+// (statutory meeting documents) so they carry exactly the same
+// letterhead, statutory details, page numbering, signature blocks
+// and stamps as every other generated document.
+// ============================================================
+export const docKit = {
+    getBaseStyles, letterhead, footer, signatureBlock, stampOverlay, personName, fmt,
+    resolveUploadUrl, statutoryLines,
+    colors: () => ({ primary: PRIMARY_COLOR, accent: ACCENT_COLOR }),
+    companyName: () => COMPANY_NAME,
+};
+
 export const printDocument = (html, title = 'Document') => {
     const win = window.open('', '_blank');
     if (!win) {

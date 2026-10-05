@@ -31,6 +31,8 @@ const shareCapitalService = require('../services/shareCapitalService');
 const taxService = require('../services/taxService');
 const reversalLinks = require('../services/reversalLinksService'); // v1.72.0
 const moneyApprovalContext = require('../services/moneyApprovalContext'); // v1.73.0
+const postingTracker = require('../services/postingTracker'); // v1.78.0
+const documentLinks = require('../services/documentLinksService'); // v1.78.0
 const { assertNotOwnApproval } = require('../services/approvalGuard'); // v1.72.0
 
 // v1.70.0 — a tax amount as a percentage of the gross (for the register).
@@ -242,6 +244,7 @@ const postTransaction = async (client, {
 
     const transactionId = txResult.rows[0].id;
     if (approvalCtx) approvalCtx.postedIds.push(transactionId); // v1.73.0
+    postingTracker.note(transactionId); // v1.78.0 — so a form can connect documents to every row it posted
 
     // v1.70.0 — set separately (and only when given) so a database that
     // has not run migration_v1.70.0.sql yet keeps posting normally.
@@ -1489,6 +1492,10 @@ const recordContribution = asyncHandler(async (req, res) => {
             });
         }
 
+        // v1.78.0 — documents chosen in the form are connected to every
+        // ledger row this entry posted (optional).
+        await documentLinks.linkAtEntry(client, req);
+
         sendCreated(res, {
             reference:            contribution ? contribution.referenceCode : null,
             transaction_id:       contribution ? contribution.transactionId : null,
@@ -1612,6 +1619,10 @@ const recordInflow = asyncHandler(async (req, res) => {
             description: `Inflow recorded: ${referenceCode} — ${description}`,
             client,
         });
+
+        // v1.78.0 — documents chosen in the form are connected to every
+        // ledger row this entry posted (optional).
+        await documentLinks.linkAtEntry(client, req);
 
         sendCreated(res, {
             reference:      referenceCode,
@@ -1740,6 +1751,10 @@ const recordExpense = asyncHandler(async (req, res) => {
             description: `Expense recorded: ${referenceCode} — ${description}`,
             client,
         });
+
+        // v1.78.0 — documents chosen in the form are connected to every
+        // ledger row this entry posted (optional).
+        await documentLinks.linkAtEntry(client, req);
 
         sendCreated(res, {
             reference:      referenceCode,
@@ -2233,7 +2248,12 @@ const executeReversal = async (client, { transactionId, reason, userId, ip }) =>
         results.push({ original_id: leg.id, ...r });
     }
     const sub = await reversalLinks.applySubledger(client, group, { userId, reversalOf });
-    return { tx, group, results, subledger: sub };
+    // v1.80.0 — a paid requisition is marked REVERSED
+    const reqNote = await reversalLinks.markRequisitionsReversed(client, { reversalOf, reason, userId });
+    const subledger = reqNote
+        ? { ...(sub || {}), summary: [sub && sub.summary, reqNote].filter(Boolean).join('; ') }
+        : sub;
+    return { tx, group, results, subledger };
 };
 
 // ------------------------------------------------------------
@@ -2422,6 +2442,16 @@ const rejectReversalRequest = asyncHandler(async (req, res) => {
 // (same account_id/inflow_type/from_date/to_date query params,
 // same WHERE clause) without a second, driftable copy of this logic.
 // ============================================================
+// v1.80.0 — investment_cost_type, or NULL before the migration
+let costColKnown = false;
+const investmentCostSql = async () => {
+    if (!costColKnown) {
+        const r = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'investment_cost_type'`);
+        costColKnown = r.rows.length > 0;
+    }
+    return costColKnown ? 'COALESCE(t.investment_cost_type, ro.investment_cost_type)' : 'NULL';
+};
+
 const buildTransactionFilters = (reqQuery) => {
     const { account_id, inflow_type, from_date, to_date } = reqQuery;
     const conditions = [];
@@ -2443,6 +2473,23 @@ const buildTransactionFilters = (reqQuery) => {
     if (to_date) {
         p++; conditions.push(`t.value_date <= $${p}`);
         params.push(to_date);
+    }
+    // v1.80.0 — one investment's entries (and their reversals);
+    // investment_id=any → every entry tagged with an investment.
+    if (reqQuery.investment_id === 'any') {
+        conditions.push(`(t.investment_id IS NOT NULL OR EXISTS (SELECT 1 FROM transactions io WHERE io.id = t.reversal_of AND io.investment_id IS NOT NULL))`);
+    } else if (reqQuery.investment_id && /^\d+$/.test(String(reqQuery.investment_id))) {
+        p++; conditions.push(`(t.investment_id = $${p} OR EXISTS (SELECT 1 FROM transactions io WHERE io.id = t.reversal_of AND io.investment_id = $${p}))`);
+        params.push(parseInt(reqQuery.investment_id, 10));
+    }
+    // v1.78.0 — free-text search (reference, public ID, description) for
+    // the "connect a transaction" picker on a document.
+    const search = typeof reqQuery.search === 'string' ? reqQuery.search.trim().slice(0, 80) : '';
+    if (search) {
+        p++; conditions.push(`(t.description ILIKE $${p} OR EXISTS (
+            SELECT 1 FROM references_registry sr WHERE sr.id = t.reference_id
+            AND (sr.reference_code ILIKE $${p} OR sr.public_id ILIKE $${p})))`);
+        params.push(`%${search.replace(/[%_\\]/g, ch => '\\' + ch)}%`);
     }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -2471,6 +2518,9 @@ const getTransactions = asyncHandler(async (req, res) => {
 
     // Fetch page
     params.push(limit, offset);
+    // v1.78.0 — how many documents each row is connected to (0 before the migration)
+    const docCountSql = await documentLinks.transactionCountSql('t');
+    const docRefsSql = await documentLinks.transactionRefsSql('t');
     const result = await query(`
         SELECT
             t.id,
@@ -2488,6 +2538,12 @@ const getTransactions = asyncHandler(async (req, res) => {
             -- v1.72.0 — a reversal asked for but not yet approved
             EXISTS (SELECT 1 FROM reversal_requests rrq
                     WHERE rrq.transaction_id = t.id AND rrq.status = 'PENDING') AS reversal_pending,
+            ${docCountSql} AS document_count,
+            ${docRefsSql} AS document_refs,
+            -- v1.80.0 — the investment this entry belongs to, and what it was for
+            COALESCE(t.investment_id, ro.investment_id) AS investment_id,
+            inv.name AS investment_name,
+            ${await investmentCostSql()} AS investment_cost_type,
             r.reference_code,
             r.public_id,
             c.code   AS currency_code,
@@ -2503,6 +2559,8 @@ const getTransactions = asyncHandler(async (req, res) => {
         JOIN  category_paths cp      ON cp.category_id = t.category_id
         JOIN  users u                ON u.id  = t.created_by
         JOIN  accounts a             ON a.id  = t.account_id
+        LEFT JOIN transactions ro    ON ro.id = t.reversal_of
+        LEFT JOIN investments inv    ON inv.id = COALESCE(t.investment_id, ro.investment_id)
         ${where}
         ORDER BY t.value_date DESC, t.id DESC
         LIMIT $${p + 1} OFFSET $${p + 2}
@@ -2646,7 +2704,10 @@ const getTransactionById = asyncHandler(async (req, res) => {
         throw createError.notFound('Transaction not found');
     }
 
-    sendSuccess(res, result.rows[0]);
+    // v1.78.0 — the documents connected to it (references always shown;
+    // a personal document's title only to its owner and Treasury).
+    const documents = await documentLinks.listDocumentsForTransaction(result.rows[0].id, req.user);
+    sendSuccess(res, { ...result.rows[0], documents, document_count: documents.length });
 });
 
 module.exports = {

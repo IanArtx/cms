@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { capitalGoalCallsAPI, accountsAPI } from '../../api/endpoints';
 import { formatDate, formatNumber, getErrorMessage } from '../../utils/helpers';
+import { PledgeModal } from './capitalGoalUi';
 import PageHeader from '../../components/common/PageHeader';
 import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
@@ -19,133 +20,14 @@ import StatusBadge from '../../components/common/StatusBadge';
 import { HandRaisedIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
-// SUBMIT / EDIT PLEDGE MODAL
-// Used both for a brand new pledge into an open call, and for editing
-// one of my own pledges that's still PENDING (nothing settled yet —
-// the server itself is the real gate on this, this UI just avoids
-// offering the button where it would obviously fail).
+// MY PLEDGES PANEL
+// v1.78.0 — the page body on its own, so the Capital Goals hub can
+// show it as its "My pledges" tab. The old address
+// /capital-goals/my-calls still works (MyCapitalCallsPage below).
+// PledgeModal now lives in capitalGoalUi.jsx (shared with the hub,
+// the goal page and the dashboards).
 // ============================================================
-const PledgeModal = ({ isOpen, onClose, onSuccess, target, currencies }) => {
-    // `target` is either an open-call row (new pledge) or one of my
-    // existing pledge rows (edit) — both shapes carry enough fields.
-    const isEdit = !!(target && target.pledgeId);
-    const [amount, setAmount] = useState('');
-    const [currencyId, setCurrencyId] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
-
-    useEffect(() => {
-        if (isOpen && target) {
-            setAmount(isEdit ? String(target.pledged_amount) : (target.baseline != null ? String(target.baseline) : ''));
-            setCurrencyId(isEdit ? String(target.currency_id) : '');
-            setError(null);
-        }
-    }, [isOpen, target, isEdit]);
-
-    if (!isOpen || !target) return null;
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        if (currencyId === '' && !isEdit) {
-            setError('Choose a currency');
-            return;
-        }
-        setLoading(true);
-        setError(null);
-        try {
-            if (isEdit) {
-                await capitalGoalCallsAPI.editPledge(target.pledgeId, {
-                    pledged_amount: parseFloat(amount),
-                    currency_id: currencyId ? parseInt(currencyId) : undefined,
-                });
-            } else {
-                await capitalGoalCallsAPI.submitPledge(target.id, {
-                    iteration: target.iteration,
-                    currency_id: parseInt(currencyId),
-                    pledged_amount: parseFloat(amount),
-                });
-            }
-            onSuccess();
-            onClose();
-        } catch (err) {
-            setError(getErrorMessage(err));
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
-            <div className="flex min-h-full items-center justify-center p-4">
-                <div className="relative bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-1">
-                        {isEdit ? 'Edit My Pledge' : 'Pledge Into This Call'}
-                    </h2>
-                    <p className="text-sm text-gray-400 mb-4">
-                        {isEdit
-                            ? `${target.goal_title} — ${target.period}`
-                            : `${target.goal_title} — ${target.period}${target.iteration === 2 ? ' (Iteration 2)' : ''}`}
-                    </p>
-                    {!isEdit && target.iteration === 1 && target.baseline != null && (
-                        <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 mb-4">
-                            Suggested equal share for this month: <strong>{formatNumber(target.baseline)}</strong>.
-                            Enter this amount if you're happy to contribute your equal share, less if you'd like to
-                            contribute less, more if you'd like to contribute more, or zero if you don't wish to
-                            make a call this month — none of these are penalized. Only a pledge you commit to and
-                            then fail to pay by the deadline can attract a late fine.
-                        </p>
-                    )}
-                    {!isEdit && target.iteration === 2 && (
-                        <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 mb-4">
-                            This is a second-round call on the remaining balance after the first deadline passed
-                            without the month being fully met. No late fine ever applies to an iteration 2 pledge.
-                        </p>
-                    )}
-                    {error && (
-                        <div className="mb-4">
-                            <ErrorMessage message={error} onDismiss={() => setError(null)} />
-                        </div>
-                    )}
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label className="label">Amount *</label>
-                            <input type="number" className="input" value={amount}
-                                onChange={e => setAmount(e.target.value)}
-                                min="0" step="0.01" required />
-                        </div>
-                        <div>
-                            <label className="label">Currency *</label>
-                            <select className="input" value={currencyId}
-                                onChange={e => setCurrencyId(e.target.value)}
-                                disabled={isEdit && false} required>
-                                <option value="">Select currency...</option>
-                                {currencies.map(c => (
-                                    <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
-                                ))}
-                            </select>
-                            <p className="text-xs text-gray-400 mt-1">
-                                You can pledge in any active currency — it's converted to the goal's currency at
-                                the exchange rate in effect when the Treasurer approves your payment.
-                            </p>
-                        </div>
-                        <div className="flex justify-end gap-3 pt-2">
-                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-                            <button type="submit" disabled={loading} className="btn-primary">
-                                {loading ? 'Saving...' : isEdit ? 'Save Changes' : 'Submit Pledge'}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// ============================================================
-// MAIN PAGE
-// ============================================================
-const MyCapitalCallsPage = () => {
+export const MyPledgesPanel = ({ onChanged = null }) => {
     const [myPledges, setMyPledges] = useState([]);
     const [openCalls, setOpenCalls] = useState([]);
     const [currencies, setCurrencies] = useState([]);
@@ -227,13 +109,10 @@ const MyCapitalCallsPage = () => {
         },
     ];
 
+    const reload = () => { load(); if (onChanged) onChanged(); };
+
     return (
         <div>
-            <PageHeader
-                title="My Capital Calls"
-                subtitle="Pledge into open monthly capital calls, and track every pledge you've made"
-            />
-
             {error && (
                 <div className="mb-4">
                     <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -308,12 +187,28 @@ const MyCapitalCallsPage = () => {
             <PledgeModal
                 isOpen={!!pledgeTarget}
                 onClose={() => setPledgeTarget(null)}
-                onSuccess={load}
+                onSuccess={reload}
                 target={pledgeTarget}
                 currencies={currencies}
             />
         </div>
     );
 };
+
+// ============================================================
+// MAIN PAGE — /capital-goals/my-calls (kept for old links and
+// notifications; the hub's "My pledges" tab shows the same panel)
+// ============================================================
+const MyCapitalCallsPage = () => (
+    <div>
+        <PageHeader
+            title="My Capital Calls"
+            subtitle="Pledge into open monthly capital calls, and track every pledge you've made"
+            showBack
+            backTo="/capital-goals"
+        />
+        <MyPledgesPanel />
+    </div>
+);
 
 export default MyCapitalCallsPage;

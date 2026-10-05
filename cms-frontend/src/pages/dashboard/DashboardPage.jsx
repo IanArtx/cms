@@ -39,13 +39,14 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/common/StatusBadge';
 import PageHeader from '../../components/common/PageHeader';
 import ShareholderDashboard from './ShareholderDashboard';
+import { CapitalGoalsDashboardSection } from '../capitalGoals/capitalGoalUi';
+import { MeetingActionsCard } from '../meetings/MeetingActionsCard'; // v1.79.0
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import {
     BanknotesIcon,
     ChartBarIcon,
     CalendarDaysIcon,
     TrophyIcon,
-    FlagIcon,
     ClipboardDocumentCheckIcon,
     WalletIcon,
 } from '@heroicons/react/24/outline';
@@ -150,67 +151,6 @@ const PendingApprovalsCard = ({ items }) => (
         </div>
     </div>
 );
-
-// ============================================================
-// CAPITAL GOALS OVERVIEW (v1.56.1) — every ACTIVE goal (Primary and
-// every Secondary), not just the single nearest-ending one the old
-// CapitalGoalCard showed. The Primary goal's own currently open call
-// (if any) is surfaced with a direct "pledge" link, same as before.
-// ============================================================
-const CapitalGoalsOverviewCard = ({ goals, primaryOpenCall }) => {
-    if (!goals || goals.length === 0) return null;
-
-    return (
-        <div className="card">
-            <div className="flex items-center gap-2 mb-4">
-                <FlagIcon className="h-4 w-4 text-primary-600" />
-                <h2 className="section-title mb-0">Capital Goals</h2>
-            </div>
-            <div className="space-y-4">
-                {goals.map((goal) => {
-                    const behind = goal.progress_status === 'BEHIND';
-                    const isPrimary = goal.goal_type === 'PRIMARY';
-                    return (
-                        <Link key={goal.id} to={`/capital-goals/${goal.id}`}
-                            className="block hover:bg-gray-50 rounded-md p-2 -m-2 transition-colors">
-                            <div className="flex items-center gap-2 mb-1">
-                                <p className="text-sm font-medium text-gray-900 truncate">
-                                    {goal.title}
-                                </p>
-                                {isPrimary && (
-                                    <span className="badge-blue text-[10px] px-1.5 py-0.5 flex-shrink-0">PRIMARY</span>
-                                )}
-                                <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${
-                                    behind ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'
-                                }`}>
-                                    {goal.progress_status?.replace('_', ' ')}
-                                </span>
-                            </div>
-                            <div className="flex items-baseline justify-between mb-1">
-                                <p className="text-xs text-gray-500">
-                                    {goal.currency_code} {parseFloat(goal.total_collected).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                                    {' '}of{' '}
-                                    {goal.currency_code} {parseFloat(goal.target_amount).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                                </p>
-                                <p className="text-xs font-bold text-gray-900">{goal.percent_of_target}%</p>
-                            </div>
-                            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full ${behind ? 'bg-red-500' : 'bg-green-500'}`}
-                                    style={{ width: `${Math.min(100, goal.percent_of_target)}%` }} />
-                            </div>
-                            {isPrimary && primaryOpenCall && (
-                                <p className="text-xs text-primary-500 mt-1">
-                                    Call open for {primaryOpenCall.period}
-                                    {primaryOpenCall.already_pledged ? ' — already pledged' : ' — not yet pledged'}
-                                </p>
-                            )}
-                        </Link>
-                    );
-                })}
-            </div>
-        </div>
-    );
-};
 
 // ============================================================
 // MONEY OWED TO / BY THE COMPANY (v1.56.1) — a Treasurer's at-a-
@@ -370,14 +310,12 @@ const DashboardPage = () => {
     const [transactions, setTransactions] = useState([]);
     const [investments,  setInvestments]  = useState([]);
     const [performance,  setPerformance]  = useState(null);
-    const [primaryOpenCall, setPrimaryOpenCall] = useState(null);
     const [currentQuarter, setCurrentQuarter] = useState(null);
     const [capitalGoalTrackingEnabled, setCapitalGoalTrackingEnabled] = useState(true);
     const [loading,      setLoading]      = useState(true);
 
     // --- v1.56.1 additions ---
     const [companyTrend, setCompanyTrend] = useState({ currencyCode: null, trend: [] });
-    const [allGoals, setAllGoals] = useState([]);
     const [pendingApprovals, setPendingApprovals] = useState([]);
     const [moneyOwed, setMoneyOwed] = useState([]);
 
@@ -434,27 +372,16 @@ const DashboardPage = () => {
         loadDashboard();
     }, [hasPermission, hasFinancialAccess, canSeeFinance]);
 
-    // v1.56.1 — every ACTIVE capital goal (Primary + Secondary), for
-    // the new Capital Goals overview. Replaces the old single-
-    // nearest-goal fetch (limit: 1).
+    // v1.78.0 — the Capital Goals section loads its own data
+    // (CapitalGoalsDashboardSection → /capital-goals/overview): every
+    // active goal, this month's call, my pledge, what I owe and the
+    // pledges waiting for approval, with pledging right on the card.
     useEffect(() => {
         if (!hasPermission('CAPITAL_GOAL_VIEW')) return;
-        capitalGoalsAPI.getAll({ status: 'ACTIVE' })
-            .then(res => setAllGoals(res.data.data || []))
-            .catch(() => {});
         capitalGoalsAPI.getTrackingSettings()
             .then(res => setCapitalGoalTrackingEnabled(res.data.data.tracking_enabled))
             .catch(() => {});
     }, [hasPermission]);
-
-    useEffect(() => {
-        capitalGoalCallsAPI.getMyPledges()
-            .then(res => {
-                const openCalls = res.data.data?.open_calls || [];
-                setPrimaryOpenCall(openCalls.find(c => c.goal_type === 'PRIMARY') || null);
-            })
-            .catch(() => {});
-    }, []);
 
     useEffect(() => {
         settingsAPI.getCurrentFiscalQuarter()
@@ -537,7 +464,7 @@ const DashboardPage = () => {
                 mappers.push(rows => rows.map(r => ({
                     key: `pledge-${r.id}`, type: 'Capital Pledge',
                     label: `${r.member_name} pledged ${r.currency_code} ${parseFloat(r.pledged_amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} — ${r.goal_title} (${r.period})`,
-                    date: r.submitted_at, to: '/capital-goals',
+                    date: r.submitted_at, to: `/capital-goals/monthly-calls/${r.monthly_call_id}#approvals`,
                 })));
             }
             // Document signatures — self-scoped, no extra permission gate,
@@ -808,10 +735,16 @@ const DashboardPage = () => {
                 </div>
             )}
 
-            {/* Capital Goals overview — every ACTIVE goal (v1.56.1) */}
-            {capitalGoalTrackingEnabled && (
+            {/* Company meetings (v1.79.0) — confirm attendance, sign written
+                resolutions, meetings I'm called to, URSB filings due.
+                Shows nothing when there is nothing to do. */}
+            <MeetingActionsCard compact />
+
+            {/* Capital Goals — every ACTIVE goal, this month, my pledge,
+                approvals (v1.78.0; was the v1.56.1 overview card) */}
+            {capitalGoalTrackingEnabled && hasPermission('CAPITAL_GOAL_VIEW') && (
                 <div className="mb-6">
-                    <CapitalGoalsOverviewCard goals={allGoals} primaryOpenCall={primaryOpenCall} />
+                    <CapitalGoalsDashboardSection />
                 </div>
             )}
 

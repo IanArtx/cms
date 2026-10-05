@@ -15,7 +15,7 @@
 const router = require('express').Router();
 const { body, param } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
-const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireFinancialAccess } = require('../middleware/auth');
+const { authenticate, requireRoles, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireAnyPermission, requireFinancialAccess } = require('../middleware/auth');
 const investmentsController = require('../controllers/investmentsController');
 const { holdMoneyEntry } = require('../middleware/holdMoneyEntry'); // v1.73.0
 
@@ -126,6 +126,28 @@ router.get('/:id',
 );
 
 // ============================================================
+// v1.80.0 — every ledger entry of one investment, with totals by
+// purpose (buying / running / maintenance) — GET /api/investments/:id/ledger
+// and classifying an older expense — PATCH /api/investments/:id/cost-type
+// ============================================================
+router.get('/:id/ledger',
+    requirePermissions(['INVESTMENT_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    investmentsController.getInvestmentLedger
+);
+router.patch('/:id/cost-type',
+    requireRoles(['Treasurer', 'Admin']),
+    validators.idParam('id'),
+    [
+        body('transaction_id').isInt({ min: 1 }).withMessage('transaction_id is required'),
+        body('cost_type').isIn(['CAPITAL', 'OPERATING', 'MAINTENANCE']).withMessage('cost_type must be CAPITAL, OPERATING or MAINTENANCE'),
+    ],
+    validateRequest,
+    investmentsController.classifyInvestmentExpense
+);
+
+// ============================================================
 // EDIT INVESTMENT (before approval)
 // PATCH /api/investments/:id
 // ============================================================
@@ -183,6 +205,9 @@ router.post('/:id/fund',
             .optional().trim(),
         body('project_id')
             .optional().isInt({ min: 1 }),
+        // v1.78.0 — optional: invest a capital goal's collected money
+        body('capital_goal_id')
+            .optional({ values: 'falsy' }).isInt({ min: 1 }),
     ],
     validateRequest,
     holdMoneyEntry('investments.fund', investmentsController.fundInvestment, { label: 'Investment funding', subject: { type: 'investment', id: r => r.params.id } }), // v1.73.0 — held for approval unless Treasurer/Admin
@@ -238,6 +263,8 @@ router.post('/:id/transactions',
             .optional().trim(),
         body('category_id')
             .optional().isInt({ min: 1 }),
+        // v1.80.0 — what an EXPENSE was for
+        body('cost_type').optional({ values: 'falsy' }).isIn(['CAPITAL', 'OPERATING', 'MAINTENANCE']),
         // v1.70.0 — for a TAX entry
         body('tax_treatment').optional({ values: 'falsy' }).isIn(['FINAL', 'CREDITABLE']),
         body('gross_amount').optional({ values: 'falsy' }).isFloat({ min: 0.01 }),

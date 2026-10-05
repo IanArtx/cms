@@ -8,6 +8,7 @@ const { body } = require('express-validator');
 const { validateRequest, validators, notFutureDate } = require('../middleware/validate');
 const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricted, requirePermissions, requireRoles } = require('../middleware/auth');
 const requisitionsController = require('../controllers/requisitionsController');
+const { uploadSingle } = require('../middleware/upload'); // v1.80.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -18,6 +19,9 @@ router.use(blockFinanceRestricted);
 router.get('/me',
     requisitionsController.getMyRequisitions
 );
+
+// v1.80.0 — investments a money request can be for (names only)
+router.get('/investment-options', requisitionsController.getInvestmentOptions);
 
 // Get all requisitions — Treasurer and Directors
 router.get('/',
@@ -38,8 +42,13 @@ router.get('/',
 // knows exactly which outstanding fine it settles).
 router.post('/',
     [
+        // v1.80.0 — optional when the requisition is for an investment
+        // (its category is then Expense › Investments › <purpose>)
         body('category_id')
-            .isInt({ min: 1 }).withMessage('A valid category is required'),
+            .optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('A valid category is required'),
+        body('investment_id').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Invalid investment'),
+        body('investment_purpose').optional({ values: 'falsy' }).isIn(['CAPITAL', 'OPERATING', 'MAINTENANCE']).withMessage('Invalid purpose'),
+        body('document_ids').optional().isArray(),
         body('title')
             .trim().notEmpty().withMessage('Title is required'),
         body('amount_requested')
@@ -90,9 +99,34 @@ router.patch('/:id',
         body('requisition_type').optional().isIn(['EXPENSE', 'CONTRIBUTION_ACKNOWLEDGEMENT', 'SAVINGS_DEPOSIT', 'SIDE_FUND_CONTRIBUTION', 'FINE_PAYMENT']),
         body('contribution_date').optional({ checkFalsy: true }).isISO8601().custom(notFutureDate),
         body('fine_id').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('Invalid fine'),
+        body('investment_id').optional({ nullable: true, values: 'falsy' }).isInt({ min: 1 }),
+        body('investment_purpose').optional({ nullable: true, values: 'falsy' }).isIn(['CAPITAL', 'OPERATING', 'MAINTENANCE']),
     ],
     validateRequest,
     requisitionsController.editRequisition
+);
+
+// ============================================================
+// v1.80.0 — supporting documents of a requisition (needed before a
+// money-out requisition can be approved). The requester while it is
+// pending, or Treasury; checked in the controller.
+// ============================================================
+router.get('/:id/documents', validators.idParam('id'), validateRequest, requisitionsController.getRequisitionDocuments);
+router.post('/:id/documents',
+    validators.idParam('id'),
+    [body('document_ids').isArray({ min: 1 }).withMessage('Choose at least one document')],
+    validateRequest,
+    requisitionsController.linkRequisitionDocuments
+);
+router.post('/:id/documents/upload',
+    validators.idParam('id'),
+    ...uploadSingle('document', 'documents'),
+    requisitionsController.uploadRequisitionDocument
+);
+router.delete('/:id/documents/:documentId',
+    validators.idParam('id'),
+    validateRequest,
+    requisitionsController.unlinkRequisitionDocument
 );
 
 // Approve a requisition — Treasurer and Assistant Treasurer.

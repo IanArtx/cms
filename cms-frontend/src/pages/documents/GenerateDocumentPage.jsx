@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { documentsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { getErrorMessage } from '../../utils/helpers';
 import { useAuth } from '../../contexts/AuthContext';
@@ -474,6 +474,13 @@ const GenerateDocumentPage = () => {
                     {success}
                 </div>
             )}
+
+            {/* v1.79.0 — statutory meeting documents live with the meeting */}
+            <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                Notices of meetings, proxy forms, registers of attendance, AGM / board minutes, resolutions and certified copies for URSB
+                are produced from the meeting itself, in the standard statutory form — see{' '}
+                <Link to="/meetings" className="underline font-medium">Meetings &amp; resolutions</Link>.
+            </div>
 
             {/* Step 1 */}
             <div className="card mb-6">

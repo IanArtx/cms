@@ -12,6 +12,7 @@
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
+const documentLinks = require('../services/documentLinksService'); // v1.78.0
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
@@ -33,10 +34,16 @@ const {
 // cosmetic on the printed document and never blocks it from being
 // finalised. See extractPersonSignatories() below.
 // ============================================================
-const PERSON_SIGNATORY_DOCUMENT_TYPES = ['MEETING_MINUTES', 'MEETING_AGENDA', 'RESOLUTION'];
+// v1.79.0 — the statutory meeting documents join the list: the notice
+// (signed by the secretary "by order of the board"), the register of
+// attendance (chairperson + secretary certify it), and the certified
+// true copy of a resolution (secretary + a director).
+const PERSON_SIGNATORY_DOCUMENT_TYPES = ['MEETING_MINUTES', 'MEETING_AGENDA', 'RESOLUTION',
+    'NOTICE_OF_MEETING', 'ATTENDANCE_REGISTER', 'CERTIFIED_RESOLUTION'];
 const PERSON_SIGNATORY_FIELDS = [
     { key: 'chairperson', positionTitle: 'Chairman' },
     { key: 'secretary',   positionTitle: 'Secretary' },
+    { key: 'director',    positionTitle: 'Director' },   // v1.79.0 — certified copies
 ];
 
 const extractPersonSignatories = (documentType, templateData) => {
@@ -858,6 +865,15 @@ const getAllDocuments = asyncHandler(async (req, res) => {
         p++; conditions.push(`d.related_record_id = $${p}`);
         params.push(related_record_id);
     }
+    // v1.78.0 — free-text search (title, reference, public ID) for the
+    // document picker on the transaction forms.
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 80) : '';
+    if (search) {
+        p++; conditions.push(`(d.title ILIKE $${p} OR EXISTS (
+            SELECT 1 FROM references_registry sr WHERE sr.id = d.reference_id
+            AND (sr.reference_code ILIKE $${p} OR sr.public_id ILIKE $${p})))`);
+        params.push(`%${search.replace(/[%_\\]/g, ch => '\\' + ch)}%`);
+    }
 
     // Finance-restricted staff (Administrative Officer): hide Financial-
     // category documents (and sub-categories) unless individually
@@ -915,6 +931,8 @@ const getAllDocuments = asyncHandler(async (req, res) => {
     const total = parseInt(countResult.rows[0].total);
 
     params.push(limit, offset);
+    // v1.78.0 — how many transactions each document is connected to
+    const txCountSql = await documentLinks.documentCountSql('d');
     const result = await query(`
         SELECT
             d.id,
@@ -929,6 +947,7 @@ const getAllDocuments = asyncHandler(async (req, res) => {
             d.created_at,
             d.related_record_type,
             d.related_record_id,
+            ${txCountSql} AS transaction_count,
             r.reference_code,
             r.public_id,
             cat.name     AS category_name,
@@ -996,7 +1015,15 @@ const getDocumentById = asyncHandler(async (req, res) => {
     assertPersonalDocumentAccess(req, result.rows[0].owner_user_id);
     await assertDocumentVisible(req, id, result.rows[0].category_full_abbreviation);
 
-    sendSuccess(res, result.rows[0]);
+    // v1.78.0 — connected transactions (details only for people with
+    // access to company finances; everyone else gets the count).
+    const connected = await documentLinks.listTransactionsForDocument(result.rows[0].id, req.user);
+    sendSuccess(res, {
+        ...result.rows[0],
+        transactions: connected.transactions,
+        transaction_count: connected.count,
+        transactions_restricted: !!connected.restricted,
+    });
 });
 
 // ============================================================

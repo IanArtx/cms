@@ -22,6 +22,8 @@ import {
     InvestmentFields, PendingFiles, uploadFiles, RequisitionDocuments, PrerequisiteList, ReversalModal, PurposeBadge,
 } from './requisitionParts'; // v1.80.0
 import { PaperClipIcon, ArrowUturnLeftIcon } from '@heroicons/react/24/outline';
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 
 // ============================================================
 // PRIORITY BADGE
@@ -82,6 +84,11 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
         setFiles([]);
     }, [editingRecord, isOpen]);
 
+    // v1.81.0 — unfinished input kept and put back (attached files are not kept)
+    const draft = useFormDraft(isEdit ? `requisition:edit:${editingRecord.id}` : 'requisition:new', form, setForm, {
+        enabled: isOpen, title: isEdit ? `Edit requisition — ${editingRecord.title || ''}` : 'New requisition', page: isEdit ? '/requisitions' : '/requisitions?new=1',
+    });
+
     if (!isOpen) return null;
 
     const isContribution = form.requisition_type === 'CONTRIBUTION_ACKNOWLEDGEMENT';
@@ -127,6 +134,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                     }
                 }
             }
+            draft.clear();
             onSuccess();
             onClose();
             setForm(BLANK_REQ_FORM);
@@ -155,6 +163,7 @@ const CreateRequisitionModal = ({ isOpen, onClose, onSuccess, categories, editin
                             ? 'Ask the Treasurer to record a side fund payment you\'ve already made. It will be applied to your oldest unpaid dues first.'
                             : 'Request money for a specific purpose. A Treasurer or Assistant Treasurer will review and approve or reject your request.'}
                     </p>
+                    <DraftNotice draft={draft} className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error}

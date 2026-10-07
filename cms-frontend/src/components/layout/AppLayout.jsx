@@ -20,6 +20,7 @@ import ConfirmModal from '../common/ConfirmModal';
 import MobileNav from './MobileNav';
 import { LayoutProvider } from './LayoutContext';
 import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
+import DocumentViewerHost from '../common/DocumentViewerHost'; // v1.81.0
 import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74.0
 import useScrollHints from '../../hooks/useScrollHints'; // v1.77.0
 import { settingsAPI } from '../../api/endpoints';
@@ -56,7 +57,7 @@ const AppLayout = () => {
 
     const confirmLogout = useCallback(async () => {
         setLoggingOut(true);
-        await logout();
+        await logout({ clearDrafts: true }); // v1.81.0 — own sign-out: this device's drafts go too
         // logout() redirects the whole page to /login, so there's no
         // need to reset loggingOut/showLogoutConfirm afterwards.
     }, [logout]);
@@ -122,6 +123,9 @@ const AppLayout = () => {
 
             {/* v1.73.0 — "Sent for approval" notice for held money entries */}
             <HeldEntryNotice />
+
+            {/* v1.81.0 — every document preview / print opens here, on any device */}
+            <DocumentViewerHost />
 
             {/* Shared Logout confirmation — reached from the sidebar and the
                 profile menu (v1.28.2). Idle-timeout logout bypasses it. */}

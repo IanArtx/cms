@@ -409,7 +409,11 @@ export const documentsAPI = {
     getPendingSignatures: ()  => api.get('/documents/pending-signatures'),
     // v1.24.0 — company stamps/seals (Section 4.30)
     getStamps:          (id) => api.get(`/documents/${id}/stamps`),
-    archive:        (id)     => api.post(`/documents/${id}/archive`),
+    archive:        (id, data = {}) => api.post(`/documents/${id}/archive`, data),
+    // v1.81.0 — take a document out of the archive, back among the regular ones
+    unarchive:      (id, reason) => api.post(`/documents/${id}/unarchive`, { reason }),
+    // v1.81.0 — the category tiles (counts per category, archive count)
+    categorySummary: ()      => api.get('/documents/category-summary'),
     // v1.46.0 — remove an already-ARCHIVED document from the archive
     // (soft removal — see deleteDocument in documentsController.js)
     remove:         (id)     => api.delete(`/documents/${id}`),
@@ -841,6 +845,10 @@ export const shareCapitalAPI = {
     approveRefund:          (id, data)   => api.post(`/share-capital/refunds/${id}/approve`, data || {}),
     rejectRefund:           (id, data)   => api.post(`/share-capital/refunds/${id}/reject`, data || {}),
     cancelRefund:           (id, data)   => api.post(`/share-capital/refunds/${id}/cancel`, data || {}),
+    // v1.81.0 — each member's shares registered with URSB
+    getRegisteredByMember:  ()           => api.get('/share-capital/registered-by-member'),
+    getRegisteredForMember: (userId)     => api.get(`/share-capital/registered-by-member/${userId}`),
+    setRegisteredForMember: (userId, data) => api.put(`/share-capital/registered-by-member/${userId}`, data),
 };
 
 // ============================================================
@@ -910,4 +918,14 @@ export const certificatesAPI = {
 // ============================================================
 export const searchAPI = {
     search: (q) => api.get('/search', { params: { q } }),
+};
+
+// ============================================================
+// DRAFTS (v1.81.0) — unfinished forms, the signed-in person's own
+// ============================================================
+export const draftsAPI = {
+    list:   ()          => api.get('/drafts'),
+    get:    (key)       => api.get(`/drafts/${encodeURIComponent(key)}`),
+    save:   (key, body) => api.put(`/drafts/${encodeURIComponent(key)}`, body),
+    remove: (key)       => api.delete(`/drafts/${encodeURIComponent(key)}`),
 };

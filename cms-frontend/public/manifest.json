@@ -1,25 +1,14 @@
 {
-  "short_name": "CMS",
-  "name": "Company Management System",
+  "short_name": "Company",
+  "name": "Company system",
+  "description": "Fallback only (v1.81.0). The app links to the server's manifest, which carries the company's own name and logo: /api/public/branding/manifest.webmanifest",
   "icons": [
-    {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "logo192.png",
-      "type": "image/png",
-      "sizes": "192x192"
-    },
-    {
-      "src": "logo512.png",
-      "type": "image/png",
-      "sizes": "512x512"
-    }
+    { "src": "favicon.ico", "sizes": "64x64 48x48 32x32 16x16", "type": "image/x-icon" },
+    { "src": "logo192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "logo512.png", "type": "image/png", "sizes": "512x512" }
   ],
   "start_url": ".",
   "display": "standalone",
-  "theme_color": "#000000",
+  "theme_color": "#0b1f3a",
   "background_color": "#ffffff"
 }

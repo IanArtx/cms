@@ -17,6 +17,8 @@ import { meetingsAPI, settingsAPI, usersAPI } from '../../api/endpoints';
 import { getErrorMessage, formatDate } from '../../utils/helpers';
 import { renderGovernanceDocument } from '../../utils/governanceTemplates';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
+import useFormDraft, { useDraftFields } from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 import { PlusIcon, TrashIcon, ArrowUpIcon, ArrowDownIcon, EyeIcon, DocumentArrowDownIcon } from '@heroicons/react/24/outline';
 
 export const MEETING_TYPE_LABEL = { AGM: 'Annual General Meeting', EGM: 'Extraordinary General Meeting', BOARD: 'Board meeting' };
@@ -113,6 +115,11 @@ export const MeetingFormModal = ({ isOpen, onClose, onSaved, meeting = null, set
     const [agenda, setAgenda] = useState([]);
     const [error, setError] = useState(null);
     const [saving, setSaving] = useState(false);
+    // v1.81.0 — unfinished input kept and put back
+    const [draftValue, setDraftValue] = useDraftFields({ form: [form, setForm], agenda: [agenda, setAgenda] });
+    const draft = useFormDraft(editing ? `meeting:edit:${meeting.id}` : 'meeting:new', draftValue, setDraftValue, {
+        enabled: isOpen, title: editing ? `Edit meeting — ${meeting.title}` : 'Convene a meeting', page: editing ? `/meetings/${meeting.id}` : '/meetings?new=1',
+    });
 
     useEffect(() => {
         if (!isOpen) return;
@@ -153,6 +160,7 @@ export const MeetingFormModal = ({ isOpen, onClose, onSaved, meeting = null, set
             if (editing || agenda.length) payload.agenda = agenda.filter(a => (a.title || '').trim());
             if (editing) delete payload.meeting_type;
             const res = editing ? await meetingsAPI.update(meeting.id, payload) : await meetingsAPI.create(payload);
+            draft.clear();
             onSaved(res.data.data, res.data.message);
             onClose();
         } catch (err) {
@@ -169,6 +177,7 @@ export const MeetingFormModal = ({ isOpen, onClose, onSaved, meeting = null, set
                 ? 'The notice has already gone out. Changing the date, time, place or agenda means a fresh notice must be issued.'
                 : 'Members (or directors, for a board meeting) are listed on the register automatically.'}>
             <form onSubmit={submit} className="space-y-4">
+                <DraftNotice draft={draft} />
                 {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">{error}</div>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -294,6 +303,14 @@ export const ResolutionFormModal = ({ isOpen, onClose, onSaved, mode = 'meeting'
     const [error, setError] = useState(null);
     const [saving, setSaving] = useState(false);
     const board = meeting && meeting.meeting_type === 'BOARD';
+    // v1.81.0 — unfinished input kept and put back
+    const [draftValue, setDraftValue] = useDraftFields({ form: [form, setForm], clauses: [clauses, setClauses] });
+    const draftKey = mode === 'edit' && resolution ? `resolution:edit:${resolution.id}`
+        : mode === 'written' ? 'resolution:written:new' : meeting ? `resolution:new:meeting:${meeting.id}` : null;
+    const draft = useFormDraft(draftKey, draftValue, setDraftValue, {
+        enabled: isOpen,
+        title: mode === 'edit' && resolution ? `Edit resolution — ${resolution.title}` : mode === 'written' ? 'New written resolution' : `New resolution — ${meeting?.title || ''}`,
+    });
 
     useEffect(() => {
         if (!isOpen) return;
@@ -337,6 +354,7 @@ export const ResolutionFormModal = ({ isOpen, onClose, onSaved, mode = 'meeting'
                     res = await meetingsAPI.addResolution(meeting.id, { ...payload, kind: form.kind });
                 }
             }
+            draft.clear();
             onSaved(res.data.data, res.data.message);
             onClose();
         } catch (err) {
@@ -354,6 +372,7 @@ export const ResolutionFormModal = ({ isOpen, onClose, onSaved, mode = 'meeting'
                 ? 'Circulated to every member (or every director) for a digital signature. It is passed only if everyone agrees.'
                 : 'Voted on a show of hands at the meeting. Write each operative part as a clause beginning "THAT …".'}>
             <form onSubmit={submit} className="space-y-4">
+                <DraftNotice draft={draft} />
                 {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">{error}</div>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {mode === 'meeting' && !board && (

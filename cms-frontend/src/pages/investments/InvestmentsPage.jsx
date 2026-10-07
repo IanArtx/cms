@@ -23,6 +23,8 @@ import {
     ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 
 // Bonds are only ever bought in these standard terms — categorical,
 // not a free-typed duration. Requested directly: "each bond
@@ -230,6 +232,11 @@ const CreateInvestmentModal = ({
         }
     }, [editingRecord, isOpen, canCreateInvestment]);
 
+    // v1.81.0 — unfinished input kept and put back
+    const draft = useFormDraft(editingRecord ? `investment:edit:${editingRecord.id}` : 'investment:new', form, setForm, {
+        enabled: isOpen, title: editingRecord ? 'Edit investment' : 'New investment', page: '/investments',
+    });
+
     if (!isOpen) return null;
 
     const isBond = form.investment_type === 'BOND';
@@ -310,6 +317,7 @@ const CreateInvestmentModal = ({
                     await investmentsAPI.create(payload);
                 }
             }
+            draft.clear();
             onSuccess();
             onClose();
             setForm(BLANK_FORM);
@@ -337,6 +345,7 @@ const CreateInvestmentModal = ({
                     <h2 className="text-lg font-semibold text-gray-900 mb-4">
                         {isEdit ? 'Edit Investment' : isMmf ? 'New Money Market Fund Sub-Account' : 'Create Investment'}
                     </h2>
+                    <DraftNotice draft={draft} money className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />

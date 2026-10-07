@@ -1131,7 +1131,7 @@ const recordVote = asyncHandler(async (req, res) => {
         notifyMany(sec.rows, 'RESOLUTION_FILING_DUE', () => ({
             title: `File ${r.resolution_number} with URSB by ${prettyDate(due)}`,
             body: `Special resolution ${r.resolution_number} "${r.title}" was passed at ${m.title}. A certified copy must be filed with the Registrar by ${prettyDate(due)}.`,
-            link: '/meetings/resolutions', module: 'GOVERNANCE', recordType: 'meeting_resolutions', recordId: r.id,
+            link: `/meetings/resolutions/${r.id}`, module: 'GOVERNANCE', recordType: 'meeting_resolutions', recordId: r.id,
         })).catch(err => logger.warn(`Filing reminder failed: ${err.message}`));
     }
     sendSuccess(res, { ...(await resolutionView({ query }, req.params.rid)), outcome },

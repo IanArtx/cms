@@ -27,6 +27,12 @@ router.use(requireConsent);
 router.use(blockAuditor);
 // Bodyless POSTs (open, close, withdraw…) arrive without req.body.
 router.use((req, res, next) => { if (!req.body) req.body = {}; next(); });
+// v1.81.0 — a meeting id / resolution id is always a number. Anything else
+// (e.g. an old notification pointing at "/meetings/resolutions") is "not
+// found" instead of being answered by another route's data.
+const { createError } = require('../utils/errors');
+router.param('id', (req, res, next, id) => (/^\d+$/.test(String(id)) ? next() : next(createError.notFound('Meeting not found'))));
+router.param('rid', (req, res, next, id) => (/^\d+$/.test(String(id)) ? next() : next(createError.notFound('Resolution not found'))));
 
 // ---- fixed paths first (before /:id) ----
 router.get('/settings', c.getGovernanceSettings);

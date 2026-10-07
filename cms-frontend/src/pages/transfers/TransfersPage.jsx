@@ -22,6 +22,8 @@ import {
     ResponsiveContainer,
 } from 'recharts';
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -196,6 +198,11 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
         }
     }, [editingRecord, isOpen]);
 
+    // v1.81.0 — unfinished input kept and put back
+    const draft = useFormDraft(editingRecord ? `transfer:edit:${editingRecord.id}` : 'transfer:new', form, setForm, {
+        enabled: isOpen, title: editingRecord ? 'Edit transfer' : 'New transfer', page: editingRecord ? '/transfers' : '/transfers?new=1',
+    });
+
     if (!isOpen) return null;
 
     const fromAccount = accounts.find(a => a.id === parseInt(form.from_account_id));
@@ -218,6 +225,7 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
             } else {
                 await transfersAPI.initiate(payload);
             }
+            draft.clear();
             onSuccess();
             onClose();
             setForm(BLANK_TRANSFER_FORM);
@@ -242,6 +250,7 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
                     <h2 className="text-lg font-semibold text-gray-900 mb-4">
                         {isEdit ? 'Edit Transfer' : 'Initiate Transfer'}
                     </h2>
+                    <DraftNotice draft={draft} money className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />

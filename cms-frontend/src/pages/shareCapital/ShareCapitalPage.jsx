@@ -34,6 +34,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { RegisteredByMemberTab } from './RegisteredByMember'; // v1.81.0
 import {
     ScaleIcon,
     ExclamationTriangleIcon,
@@ -1271,6 +1272,7 @@ const ShareCapitalPage = () => {
         { key: 'changes', label: 'Changes', count: overview?.pending?.change_requests || 0 },
         ...(isStaff ? [
             { key: 'allotments', label: 'Allotments & Returns', count: overview?.returns?.overdue || 0 },
+            { key: 'registered', label: 'Registered (URSB)' }, // v1.81.0 — member by member
             { key: 'credits', label: 'Credit & Refunds', count: overview?.pending?.refunds || 0 },
         ] : []),
     ];
@@ -1293,6 +1295,7 @@ const ShareCapitalPage = () => {
             {active === 'mine' && <MySharesTab />}
             {active === 'changes' && <ChangesTab overview={overview} userId={user?.id} canPropose={canPropose} onReload={load} />}
             {active === 'allotments' && isStaff && <AllotmentsTab canFile={canFile} onReload={load} />}
+            {active === 'registered' && isStaff && <RegisteredByMemberTab canEdit={canFile} />}
             {active === 'credits' && isStaff && (
                 <CreditsTab overview={overview} userId={user?.id} canMake={canMakeRefund} canCheck={canCheckRefund} onReload={load} />
             )}

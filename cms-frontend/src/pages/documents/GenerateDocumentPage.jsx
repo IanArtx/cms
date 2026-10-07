@@ -4,7 +4,7 @@
 // documents with company letterhead.
 // ============================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { documentsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { getErrorMessage } from '../../utils/helpers';
@@ -12,6 +12,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import ScaledDocumentFrame from '../../components/common/ScaledDocumentFrame'; // v1.81.0
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 import { DocumentTextIcon, ArrowLeftIcon, EyeIcon } from '@heroicons/react/24/outline';
 import {
     meetingAgendaTemplate,
@@ -303,6 +306,7 @@ const GenerateDocumentPage = () => {
     const [error,            setError]            = useState(null);
     const [success,          setSuccess]          = useState(null);
     const [previewHtml,      setPreviewHtml]      = useState(null);
+    const previewFrameRef = useRef(null); // v1.81.0
     const [title,            setTitle]            = useState('');
     const [categoryId,       setCategoryId]       = useState('');
     const [fieldValues,      setFieldValues]      = useState({});
@@ -315,6 +319,24 @@ const GenerateDocumentPage = () => {
     // documents — the bug this was built to fix.
     const [pendingPayload,   setPendingPayload]   = useState(null);
     const [generated,        setGenerated]        = useState(false);
+
+    // v1.81.0 — what has been filled in so far is kept (this device + your
+    // account) and put back if the page is refreshed, the connection drops
+    // or you leave and come back. One draft per template.
+    const genForm = useMemo(() => ({ title, categoryId, fieldValues, dynamicValues }), [title, categoryId, fieldValues, dynamicValues]);
+    const genFormRef = useRef(genForm);
+    genFormRef.current = genForm;
+    const setGenForm = useCallback((upd) => {
+        const next = typeof upd === 'function' ? upd(genFormRef.current) : upd;
+        setTitle(next.title ?? '');
+        setCategoryId(next.categoryId ?? '');
+        setFieldValues(next.fieldValues || {});
+        setDynamicValues(next.dynamicValues || {});
+    }, []);
+    const draft = useFormDraft(selectedTemplate ? `generate-document:${selectedTemplate.id}` : null, genForm, setGenForm, {
+        enabled: !!selectedTemplate && !generated,
+        title: selectedTemplate ? `${TEMPLATE_FIELDS[selectedTemplate.template_type]?.label || selectedTemplate.name || 'Document'} (generate)` : null,
+    });
 
     // v1.69.1 — each list loads on its own. Before, all three were
     // fetched together (Promise.all), so when the member list was
@@ -428,6 +450,7 @@ const GenerateDocumentPage = () => {
         try {
             await documentsAPI.generate(pendingPayload);
             setGenerated(true);
+            draft.clear(); // v1.81.0 — saved to the library: the draft is no longer needed
             setSuccess(
                 'Document generated and saved to library. ' +
                 'Use "Print / Save as PDF" to download.'
@@ -515,6 +538,7 @@ const GenerateDocumentPage = () => {
                 </div>
             </div>
 
+            {selectedTemplate && config && <DraftNotice draft={draft} className="mb-3" />}
             {selectedTemplate && config && (
                 <form onSubmit={handlePreview}>
                     {/* Step 2 */}
@@ -643,10 +667,7 @@ const GenerateDocumentPage = () => {
                         </div>
                         <div className="flex gap-2">
                             <button
-                                onClick={() => {
-                                    const iframe = document.getElementById('doc-preview');
-                                    iframe.contentWindow.print();
-                                }}
+                                onClick={() => { previewFrameRef.current?.print(); }}
                                 className="btn-secondary flex items-center gap-2"
                             >
                                 <DocumentTextIcon className="h-4 w-4" />
@@ -667,10 +688,9 @@ const GenerateDocumentPage = () => {
                             )}
                         </div>
                     </div>
-                    <div className="border border-gray-200 rounded-lg overflow-hidden">
-                        <iframe id="doc-preview" srcDoc={previewHtml}
-                            style={{ width: '100%', height: '750px', border: 'none' }}
-                            title="Document Preview" />
+                    {/* v1.81.0 — the page shrunk to fit the screen (phones and tablets too) */}
+                    <div className="border border-gray-200 rounded-lg overflow-hidden bg-gray-100 p-2 sm:p-4">
+                        <ScaledDocumentFrame ref={previewFrameRef} html={previewHtml} title="Document Preview" />
                     </div>
                 </div>
             )}

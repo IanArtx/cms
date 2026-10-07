@@ -181,6 +181,9 @@ app.get('/health', (req, res) => {
 // nothing but the database pool, so it works whatever else is broken.
 // ============================================================
 app.use('/api/maintenance', require('./src/routes/maintenance'));
+// v1.81.0 — app icons and the add-to-home-screen manifest, made from the
+// company logo. Public and above the maintenance gate, so the icon never breaks.
+app.use('/api/public/branding', require('./src/routes/publicBranding'));
 app.use('/api', require('./src/middleware/maintenanceGate').maintenanceGate);
 
 app.use('/api/auth',        authLimiter,                    require('./src/routes/auth'));
@@ -211,6 +214,7 @@ app.use('/api/deposits', require('./src/routes/deposits'));
 app.use('/api/requisitions', require('./src/routes/requisitions'));
 app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/notifications', require('./src/routes/notifications'));
+app.use('/api/drafts', require('./src/routes/drafts')); // v1.81.0 — unfinished forms kept per person
 app.use('/api/shares', require('./src/routes/shares'));
 app.use('/api/share-capital', require('./src/routes/shareCapital')); // v1.69.0
 app.use('/api/tax', require('./src/routes/tax')); // v1.70.0

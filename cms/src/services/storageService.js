@@ -200,12 +200,33 @@ const deleteObject = (key) => {
     }
 };
 
+// ============================================================
+// READ a stored file's bytes (v1.81.0) — used to make the app icons
+// from the company logo. Returns null when the file is missing.
+// ============================================================
+const readBuffer = async (key) => {
+    if (!key) return null;
+    if (isS3Configured) {
+        try {
+            const obj = await s3Client.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+            const chunks = [];
+            for await (const c of obj.Body) chunks.push(c);
+            return Buffer.concat(chunks);
+        } catch (err) {
+            return null;
+        }
+    }
+    const filePath = localFilePath(key);
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
+};
+
 module.exports = {
     isS3Configured,
     generateKey,
     toKey,
     uploadBuffer,
     streamInline,
+    readBuffer,
     sendFileDownload,
     copyObject,
     deleteObject,

@@ -1,0 +1,38 @@
+%% v1.81.0 — documents by category / archive / viewer, unfinished forms kept, shares registered with URSB per member, app icons, meeting crash fix
+flowchart TD
+    subgraph DOCS["Documents (/documents)"]
+        L["Library — a tile per top-level category\n(count incl. sub-categories, latest, drafts)\n+ Archive · Awaiting my signature · My documents · All"]
+        L --> C["/documents/category/:id\npath · sub-category tiles · full table\nUpload here (category pre-chosen)"]
+        S["GET /documents/category-summary\nsame visibility rules as the list"] --> L
+        A["Archive (DRAFT/FINAL → ARCHIVED)\nkeeps archived_from_status + archive type"] --> AR["Company Archive\ntiles per archive type, filter"]
+        AR --> U{"Take out of the archive\nreason required"}
+        U --> B["Back to what it was (Draft / Final)\nupload-into-archive → Final\nback in its category · audit log"]
+    end
+
+    subgraph VIEW["Document viewer — every page, every device"]
+        P["Preview / Print / Download"] --> V["In-app viewer\nA4 page shrunk to the screen\nPrint / Save as PDF · New tab · Fit · Close\nBack button closes it"]
+        V --> PDF["Uploaded PDF on a phone/tablet →\nOpen the PDF (device viewer) / Download"]
+    end
+
+    subgraph DRAFT["Unfinished forms (drafts)"]
+        T["Typing in a form"] --> D1["this device (0.3 s)"]
+        T --> D2["your account — form_drafts (2.5 s, and on page close)"]
+        D1 --> R["Form opened again (refresh, back, mis-click,\nlost connection, auto sign-out, other device)\n→ put back + 'Picked up where you left off · Start over'"]
+        D2 --> R
+        R --> SUB["Submitted → draft removed"]
+        SO["Own sign-out → device copies removed\n(account copies stay; 90-day limit)"]
+        M["Profile menu › Unfinished forms (/drafts)\nOpen · Discard"]
+    end
+
+    subgraph REG["Shares registered with URSB (per member)"]
+        O["URSB figure as at a date\n(Secretary / Treasury / Director / Admin)"] --> RG["registered = figure\n+ later allotments with return filed\n+ splits / consolidations"]
+        F["Allotments & Returns: mark return filed"] --> RG
+        RG --> X["excess = held − registered"]
+        X --> T1["Share capital › Registered (URSB)\ntotals · vs company registered shares · overdue returns"]
+        X --> T2["My portfolio — held / registered / excess"]
+    end
+
+    subgraph FIX["Fixes"]
+        N["'File SR … with URSB' notification\nnow links /meetings/resolutions/:id\n(old ones repaired; bad ids → message, not a crash)"]
+        I["App icons from the company logo\n/api/public/branding/… (manifest, apple-touch-icon, favicon)"]
+    end

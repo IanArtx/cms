@@ -18,6 +18,7 @@ import {
     CheckCircleIcon, XCircleIcon, ClockIcon, PaperClipIcon, EyeIcon,
 } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import { viewFile } from '../../utils/documentViewer'; // v1.81.0
 
 const statusBadgeClass = (status) => {
     if (status === 'APPROVED') return 'badge-green';
@@ -132,6 +133,7 @@ const AuditReviewPage = () => {
         setError(null);
         try {
             const res = await auditAPI.previewSubmissionFile(selectedId, fileId);
+            if (viewFile(res.data, { title: 'Submitted file' })) return; // v1.81.0 — in-app viewer
             const url = URL.createObjectURL(res.data);
             window.open(url, '_blank');
             setTimeout(() => URL.revokeObjectURL(url), 10000);

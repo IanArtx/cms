@@ -27,6 +27,8 @@ import { useTabParam } from '../../hooks/useTabParam'; // v1.72.0 — Ledger / R
 import { useConfirm } from '../../contexts/ConfirmContext'; // v1.72.0
 // v1.78.0 — documents connected to transactions (at entry or later)
 import { DocumentPicker, documentIdsOf, TransactionDetailModal, LinkCount } from '../../components/documents/TransactionDocuments';
+import useFormDraft, { useDraftFields } from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -159,6 +161,13 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
             .catch(() => setDepositActive(false));
     }, [isOpen]);
 
+    // v1.81.0 — unfinished input kept and put back
+    const [draftValue, setDraftValue] = useDraftFields({
+        form: [form, setForm], includeSideFund: [includeSideFund, setIncludeSideFund],
+        includeSavings: [includeSavings, setIncludeSavings], includeDeposit: [includeDeposit, setIncludeDeposit], docs: [docs, setDocs],
+    });
+    const draft = useFormDraft('transaction:contribution', draftValue, setDraftValue, { enabled: isOpen, title: 'Record contribution', page: '/transactions?new=contribution' });
+
     if (!isOpen) return null;
 
     const handleSubmit = async (e) => {
@@ -175,6 +184,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                 deposit_amount:   includeDeposit  ? (form.deposit_amount  || undefined) : undefined,
                 document_ids:     documentIdsOf(docs),
             });
+            draft.clear();
             onSuccess();
             onClose();
             setDocs([]);
@@ -219,6 +229,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                         Whole shares are allotted automatically at the share price on the
                         contribution date (converted if the currencies differ).
                     </p>
+                    <DraftNotice draft={draft} money className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -415,6 +426,9 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
     const [docs, setDocs] = useState([]); // v1.78.0 — supporting documents (optional)
+    // v1.81.0 — unfinished input kept and put back
+    const [draftValue, setDraftValue] = useDraftFields({ form: [form, setForm], docs: [docs, setDocs] });
+    const draft = useFormDraft('transaction:expense', draftValue, setDraftValue, { enabled: isOpen, title: 'Record expense', page: '/transactions?new=expense' });
 
     if (!isOpen) return null;
 
@@ -426,6 +440,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
             // v1.70.0 — tax treatment + supplier withholding (see TaxFields)
             const res = await transactionsAPI.recordExpense({ ...expenseTaxPayload(form), document_ids: documentIdsOf(docs) });
             if (res?.data?.data?.withholding) window.alert(res.data.message);
+            draft.clear();
             onSuccess();
             onClose();
             setDocs([]);
@@ -448,6 +463,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
                     <h2 className="text-lg font-semibold text-gray-900 mb-4">
                         Record Expense
                     </h2>
+                    <DraftNotice draft={draft} money className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />

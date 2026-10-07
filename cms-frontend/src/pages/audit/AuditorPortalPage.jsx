@@ -24,6 +24,7 @@ import {
     ArrowDownTrayIcon, EyeIcon, PaperClipIcon, TrashIcon,
     PaperAirplaneIcon, ClockIcon, CheckCircleIcon, XCircleIcon,
 } from '@heroicons/react/24/outline';
+import { viewFile } from '../../utils/documentViewer'; // v1.81.0
 
 // Same renderers DocumentsPage.jsx uses for SYSTEM_GENERATED documents
 // — keep in sync with that file's GENERATED_RENDERERS if a new
@@ -276,6 +277,7 @@ const AuditorPortalPage = () => {
                 return;
             }
 
+            if (viewFile(blob, { title: doc.title, fileName: doc.file_name || doc.title })) return; // v1.81.0 — in-app viewer
             const url = URL.createObjectURL(blob);
             window.open(url, '_blank');
             setTimeout(() => URL.revokeObjectURL(url), 10000);

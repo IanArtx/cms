@@ -9,6 +9,8 @@
 //   3. Full export    — all records exported as a list
 // ============================================================
 
+import { viewHtml } from './documentViewer'; // v1.81.0 — in-app viewer (phones and tablets too)
+
 // These start from env vars / the static logo file as a fallback, but
 // are meant to be overwritten at runtime by setBranding() once the app
 // loads the company's actual settings from the database (Settings >
@@ -3304,7 +3306,12 @@ export const docKit = {
     companyName: () => COMPANY_NAME,
 };
 
+// v1.81.0 — both now open the in-app document viewer (works on phones and
+// tablets too); a computer still goes straight to the print dialog for
+// printDocument. The old new-tab behaviour remains only as a fallback for
+// pages outside the signed-in layout.
 export const printDocument = (html, title = 'Document') => {
+    if (viewHtml(html, title, { autoPrint: true })) return;
     const win = window.open('', '_blank');
     if (!win) {
         alert('Please allow popups for this site to export documents.');
@@ -3325,6 +3332,7 @@ export const printDocument = (html, title = 'Document') => {
 // (Ctrl/Cmd+P) whenever they want.
 // ============================================================
 export const previewDocument = (html, title = 'Document') => {
+    if (viewHtml(html, title)) return;
     const win = window.open('', '_blank');
     if (!win) {
         alert('Please allow popups for this site to preview documents.');

@@ -126,4 +126,24 @@ router.post('/refunds/:id/reject',
 router.post('/refunds/:id/cancel',
     requireRoles(REFUND_MAKERS), validators.idParam('id'), validateRequest, c.cancelRefund);
 
+// ---- v1.81.0 — each member's shares registered with URSB ----
+// The register for the whole company (staff); one member (themselves or
+// staff); entering / correcting a member's URSB figure (the same people
+// who file returns of allotment).
+router.get('/registered-by-member', requireRoles(STAFF), c.getRegisteredByMember);
+router.get('/registered-by-member/:userId', validators.idParam('userId'), validateRequest, c.getRegisteredForMember);
+router.put('/registered-by-member/:userId',
+    requireRoles(RETURN_FILERS),
+    validators.idParam('userId'),
+    [
+        body('shares').isInt({ min: 0 }).withMessage('Registered shares must be a whole number (0 or more)'),
+        body('as_at').isISO8601().withMessage('Give the date the URSB figure is as at'),
+        body('note').optional({ values: 'falsy' }).isString().isLength({ max: 300 }),
+        body('document_id').optional({ values: 'falsy' }).isInt({ min: 1 }),
+        body('change_reason').optional({ values: 'falsy' }).isString().isLength({ max: 500 }),
+    ],
+    validateRequest,
+    c.setRegisteredForMember
+);
+
 module.exports = router;

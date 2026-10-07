@@ -49,6 +49,7 @@ import UsersPage from './pages/users/UsersPage';
 import MemberPortfolioPage from './pages/users/MemberPortfolioPage';
 import ProfilePage from './pages/profile/ProfilePage';
 import GenerateDocumentPage from './pages/documents/GenerateDocumentPage';
+import DraftsPage from './pages/drafts/DraftsPage'; // v1.81.0 — unfinished forms
 import SettingsPage from './pages/settings/SettingsPage';
 import VerifyEmailPage from './pages/auth/VerifyEmailPage';
 import PendingApprovalPage from './pages/auth/PendingApprovalPage';
@@ -169,10 +170,15 @@ function App() {
                             <Route path="capital-goals/:id" element={<CapitalGoalDetailPage />} />
                             <Route path="events" element={<EventsPage />} />
                             <Route path="meetings" element={<MeetingsPage />} />
+                            {/* v1.81.0 — old notifications linked here without a number */}
+                            <Route path="meetings/resolutions" element={<Navigate to="/meetings?tab=resolutions" replace />} />
                             <Route path="meetings/resolutions/:rid" element={<ResolutionDetailPage />} />
                             <Route path="meetings/:id" element={<MeetingDetailPage />} />
                             <Route path="documents/generate" element={<GenerateDocumentPage />} />
                             <Route path="documents" element={<DocumentsPage />} />
+                            <Route path="drafts" element={<DraftsPage />} />
+                            {/* v1.81.0 — one page per document category */}
+                            <Route path="documents/category/:categoryId" element={<DocumentsPage />} />
                             <Route path="reports" element={<ReportsPage />} />
                             <Route path="reports/chart-of-accounts" element={<ChartOfAccountsPage />} />
                             <Route path="reports/general-ledger" element={<GeneralLedgerPage />} />

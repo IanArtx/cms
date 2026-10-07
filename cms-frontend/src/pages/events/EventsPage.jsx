@@ -16,6 +16,8 @@ import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, ClockIco
 import { eventTemplate, printDocument } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 
 const BLANK_EVENT_FORM = {
     event_type_id: '', category_id: '', title: '',
@@ -66,6 +68,11 @@ const CreateEventModal = ({
         }
     }, [editingRecord, isOpen]);
 
+    // v1.81.0 — unfinished input kept and put back
+    const draft = useFormDraft(editingRecord ? `event:edit:${editingRecord.id}` : 'event:new', form, setForm, {
+        enabled: isOpen, title: editingRecord ? 'Edit event' : 'New event', page: editingRecord ? '/events' : '/events?new=1',
+    });
+
     if (!isOpen) return null;
 
     const handleSubmit = async (e) => {
@@ -112,6 +119,7 @@ const CreateEventModal = ({
                     notifications,
                 });
             }
+            draft.clear();
             onSuccess();
             onClose();
             setForm(BLANK_EVENT_FORM);
@@ -145,6 +153,7 @@ const CreateEventModal = ({
                     <h2 className="text-lg font-semibold text-gray-900 mb-4">
                         {isEdit ? 'Edit Event' : 'Create Event'}
                     </h2>
+                    <DraftNotice draft={draft} className="mb-4" />
                     {error && (
                         <div className="mb-4">
                             <ErrorMessage message={error} onDismiss={() => setError(null)} />

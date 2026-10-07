@@ -104,6 +104,8 @@ const assertDocumentVisible = async (req, documentId, categoryFullAbbreviation) 
 // by roles (Secretary, Directors) who should never browse other
 // members' personal receipts.
 // ============================================================
+// v1.81.0 — the kinds of Company Archive document (kept on documents.archive_type)
+const ARCHIVE_TYPES = ['REGISTRATION', 'TAX_FILING', 'MOU', 'ACT', 'LICENSE', 'COMPLIANCE', 'LEGAL', 'OTHER'];
 const TREASURY_ROLES = ['Treasurer', 'Assistant Treasurer', 'Admin'];
 const isTreasury = (req) => (req.user.roles || []).some(r => TREASURY_ROLES.includes(r));
 
@@ -187,6 +189,15 @@ const uploadDocument = asyncHandler(async (req, res) => {
 
         const documentId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, documentId);
+
+        // v1.81.0 — the archive type chosen when uploading into the Company
+        // Archive (registration, tax filing, licence …) is now kept.
+        if (related_record_type === 'COMPANY_ARCHIVE' && (await archiveColumnsReady())) {
+            const at = ARCHIVE_TYPES.includes(String(req.body.archive_type || '').toUpperCase())
+                ? String(req.body.archive_type).toUpperCase() : 'OTHER';
+            await client.query(`UPDATE documents SET archive_type = $1, archived_at = NOW(), archived_by = $2 WHERE id = $3`,
+                [at, req.user.id, documentId]);
+        }
 
         await logAction(req.user.id, ACTIONS.DOCUMENT_UPLOADED, MODULES.DOCUMENTS, {
             ipAddress:   req.ip,
@@ -599,14 +610,30 @@ const createNewVersion = asyncHandler(async (req, res) => {
 // ============================================================
 const archiveDocument = asyncHandler(async (req, res) => {
     const { id } = req.params;
+    // v1.81.0 — remember what the document was (Draft / Final) so it can
+    // go back to exactly that if it is taken out of the archive later, and
+    // keep the archive type (optional, body.archive_type).
+    const ready = await archiveColumnsReady();
+    const archiveType = ARCHIVE_TYPES.includes(String(req.body?.archive_type || '').toUpperCase())
+        ? String(req.body.archive_type).toUpperCase() : null;
 
-    const result = await query(`
+    const result = await query(ready ? `
+        UPDATE documents
+        SET    archived_from_status = status,
+               status = 'ARCHIVED',
+               archived_at = NOW(),
+               archived_by = $2,
+               archive_type = COALESCE($3, archive_type, 'OTHER')
+        WHERE  id = $1
+        AND    status IN ('DRAFT', 'FINAL')
+        RETURNING id, title, status, archived_from_status
+    ` : `
         UPDATE documents
         SET    status = 'ARCHIVED'
         WHERE  id = $1
         AND    status IN ('DRAFT', 'FINAL')
         RETURNING id, title, status
-    `, [id]);
+    `, ready ? [id, req.user.id, archiveType] : [id]);
 
     if (result.rows.length === 0) {
         throw createError.badRequest('Document not found or cannot be archived');
@@ -616,10 +643,71 @@ const archiveDocument = asyncHandler(async (req, res) => {
         ipAddress:   req.ip,
         recordType:  'documents',
         recordId:    parseInt(id),
-        description: `Document archived: ID ${id}`,
+        newValues:   { status: 'ARCHIVED', was: result.rows[0].archived_from_status || null, archive_type: archiveType },
+        description: `Document archived: ID ${id} (${result.rows[0].title})`,
     });
 
     sendSuccess(res, null, 'Document archived successfully');
+});
+
+// ============================================================
+// TAKE A DOCUMENT OUT OF THE ARCHIVE (v1.81.0)
+// POST /api/documents/:id/unarchive  { reason }
+//
+// Requested: "documents in archives can be removed and put among the
+// regular documents". Confirmed: it goes back to what it was before —
+// Draft or Final as it was when archived; a document uploaded straight
+// into the archive becomes Final (unless it is still waiting for
+// signatures, then it stays a Draft). A reason is required and logged.
+// Same permission as archiving (DOCUMENT_ARCHIVE).
+// ============================================================
+const unarchiveDocument = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    if (reason.length < 3) throw createError.badRequest('Give a short reason for taking this document out of the archive.');
+    if (!(await archiveColumnsReady())) throw createError.badRequest('Taking documents out of the archive needs the v1.81.0 database update.');
+
+    const out = await withTransaction(async (client) => {
+        const r = await client.query(`
+            SELECT id, title, status, related_record_type, archived_from_status, approved_at, fully_signed
+            FROM documents WHERE id = $1 AND status NOT IN ('DELETED', 'SUPERSEDED') FOR UPDATE`, [id]);
+        if (!r.rows.length) throw createError.notFound('Document not found');
+        const d = r.rows[0];
+        const inArchive = d.status === 'ARCHIVED' || d.related_record_type === 'COMPANY_ARCHIVE';
+        if (!inArchive) throw createError.badRequest('This document is not in the archive.');
+
+        let next = d.status;
+        if (d.status === 'ARCHIVED') {
+            next = d.archived_from_status || ((d.approved_at || d.fully_signed) ? 'FINAL' : 'DRAFT');
+        } else if (d.status === 'DRAFT') {
+            const pend = await client.query(`SELECT 1 FROM document_signatures
+                WHERE target_type = 'DOCUMENT' AND target_id = $1 AND status = 'PENDING' LIMIT 1`, [id]);
+            if (!pend.rows.length) next = 'FINAL';
+        }
+        await client.query(`
+            UPDATE documents
+            SET    status = $2,
+                   related_record_type = CASE WHEN related_record_type = 'COMPANY_ARCHIVE' THEN NULL ELSE related_record_type END,
+                   related_record_id   = CASE WHEN related_record_type = 'COMPANY_ARCHIVE' THEN NULL ELSE related_record_id END,
+                   archived_from_status = NULL,
+                   archived_at = NULL,
+                   archived_by = NULL,
+                   unarchived_at = NOW(),
+                   unarchived_by = $3,
+                   unarchive_reason = $4
+            WHERE  id = $1`, [id, next, req.user.id, reason]);
+        await logAction(req.user.id, ACTIONS.DOCUMENT_UNARCHIVED, MODULES.DOCUMENTS, {
+            ipAddress:   req.ip,
+            recordType:  'documents',
+            recordId:    parseInt(id),
+            oldValues:   { status: d.status, in_company_archive: d.related_record_type === 'COMPANY_ARCHIVE' },
+            newValues:   { status: next, reason },
+            description: `Document taken out of the archive: ID ${id} (${d.title}) — back to ${next}. Reason: ${reason}`,
+            client,
+        });
+        return { id: parseInt(id), status: next };
+    });
+    sendSuccess(res, out, `Taken out of the archive — the document is ${out.status === 'FINAL' ? 'Final' : 'a Draft'} again and back among the regular documents.`);
 });
 
 // ============================================================
@@ -818,63 +906,21 @@ const getShareReceipts = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
-// GET ALL DOCUMENTS
-// GET /api/documents?document_type=MEETING_MINUTES&status=FINAL
+// WHO MAY SEE WHICH DOCUMENT IN A LIST (shared, v1.81.0)
+// Appends the always-on visibility rules to `conditions` / `params` and
+// returns the new parameter count. Used by GET /documents and by the
+// category tiles (GET /documents/category-summary), so a tile's count is
+// always exactly what that person will find when they open it. Expects
+// the query to join `category_paths cp` on d.category_id.
 // ============================================================
-const getAllDocuments = asyncHandler(async (req, res) => {
-    const { document_type, status, related_record_type, related_record_id } = req.query;
-    const { page, limit, offset } = getPagination(req.query);
-
-    // v1.46.0 — DELETED (soft-removed from the archive) is excluded
-    // here the same way SUPERSEDED always was, so a removed document
-    // disappears from every list view (both the plain "All Documents"
-    // list and the Company Archive tab's OR-in-ARCHIVED condition
-    // below, since a DELETED document is no longer ARCHIVED either).
-    const conditions = ['d.status NOT IN (\'SUPERSEDED\', \'DELETED\')'];
+const appendVisibility = (req, conditions, params) => {
+    let p = params.length;
+    // v1.46.0 — DELETED (soft-removed) and SUPERSEDED versions never show.
+    conditions.push(`d.status NOT IN ('SUPERSEDED', 'DELETED')`);
     // v1.67.0 — personal documents (a member's own Share Purchase
     // Receipts) never appear in the shared list; they live in
     // GET /mine (owner) and GET /share-receipts (Treasury) only.
     conditions.push('d.owner_user_id IS NULL');
-    const params = [];
-    let p = 0;
-
-    if (document_type) {
-        p++; conditions.push(`d.document_type = $${p}`);
-        params.push(document_type.toUpperCase());
-    }
-    if (status) {
-        p++; conditions.push(`d.status = $${p}`);
-        params.push(status.toUpperCase());
-    }
-    if (related_record_type) {
-        if (related_record_type === 'COMPANY_ARCHIVE') {
-            // The Company Archive view shows both documents uploaded
-            // directly into it AND any regular document that's since
-            // been archived via the "Archive" action elsewhere in the
-            // system — otherwise archiving a document just makes it
-            // vanish from the main list without ever landing anywhere
-            // the user can find it again.
-            p++; conditions.push(`(d.related_record_type = $${p} OR d.status = 'ARCHIVED')`);
-            params.push(related_record_type);
-        } else {
-            p++; conditions.push(`d.related_record_type = $${p}`);
-            params.push(related_record_type);
-        }
-    }
-    if (related_record_id) {
-        p++; conditions.push(`d.related_record_id = $${p}`);
-        params.push(related_record_id);
-    }
-    // v1.78.0 — free-text search (title, reference, public ID) for the
-    // document picker on the transaction forms.
-    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 80) : '';
-    if (search) {
-        p++; conditions.push(`(d.title ILIKE $${p} OR EXISTS (
-            SELECT 1 FROM references_registry sr WHERE sr.id = d.reference_id
-            AND (sr.reference_code ILIKE $${p} OR sr.public_id ILIKE $${p})))`);
-        params.push(`%${search.replace(/[%_\\]/g, ch => '\\' + ch)}%`);
-    }
-
     // Finance-restricted staff (Administrative Officer): hide Financial-
     // category documents (and sub-categories) unless individually
     // granted via staff_document_grants. Joined against category_paths'
@@ -916,8 +962,170 @@ const getAllDocuments = asyncHandler(async (req, res) => {
                 WHERE dsv2.target_type = 'DOCUMENT' AND dsv2.target_id = d.id AND dsv2.status = 'PENDING'
                 AND rv2.name = ANY($${rolesParam}::text[])
             )
+            -- v1.81.0 — or someone asked to sign by name (a person slot)
+            OR EXISTS (
+                SELECT 1 FROM document_signatures dsv3
+                WHERE dsv3.target_type = 'DOCUMENT' AND dsv3.target_id = d.id AND dsv3.status = 'PENDING'
+                AND dsv3.required_user_id = $${meParam}
+            )
         )`);
     }
+    return p;
+};
+
+// v1.81.0 — the archive columns exist once migration v1.81.0 has run.
+let archiveColsReady = false;
+const archiveColumnsReady = async () => {
+    if (archiveColsReady) return true;
+    const r = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'documents' AND column_name = 'archived_from_status'`);
+    archiveColsReady = r.rows.length > 0;
+    return archiveColsReady;
+};
+
+// ============================================================
+// CATEGORY TILES (v1.81.0)
+// GET /api/documents/category-summary
+// Every document category with how many documents the caller can see in
+// it (and in its sub-categories), the latest one added, and how many are
+// in the Company Archive. Uses exactly the list's visibility rules.
+// Archived documents are counted in the archive, not in a category.
+// ============================================================
+const getCategorySummary = asyncHandler(async (req, res) => {
+    const conditions = [];
+    const params = [];
+    appendVisibility(req, conditions, params);
+    const where = conditions.join(' AND ');
+    const live = `d.status <> 'ARCHIVED' AND COALESCE(d.related_record_type, '') <> 'COMPANY_ARCHIVE'`;
+
+    const counts = await query(`
+        SELECT d.category_id, COUNT(*)::int AS n, MAX(d.created_at) AS last_added,
+               COUNT(*) FILTER (WHERE d.status = 'DRAFT')::int AS drafts
+        FROM   documents d
+        JOIN   category_paths cp ON cp.category_id = d.category_id
+        WHERE  ${where} AND ${live}
+        GROUP  BY d.category_id`, params);
+    const archived = await query(`
+        SELECT COUNT(*)::int AS n
+        FROM   documents d
+        JOIN   category_paths cp ON cp.category_id = d.category_id
+        WHERE  ${where} AND NOT (${live})`, params);
+    const cats = await query(`
+        SELECT c.id, c.parent_id, c.name, c.abbreviation, c.description,
+               cp.full_path, cp.full_abbreviation
+        FROM   categories c
+        JOIN   category_paths cp ON cp.category_id = c.id
+        WHERE  c.module = 'DOCUMENT' AND c.is_active = TRUE
+        ORDER  BY cp.full_path`);
+
+    const byId = new Map(cats.rows.map(c => [c.id, { ...c, own_count: 0, total_count: 0, drafts: 0, last_added: null, children: [] }]));
+    for (const r of counts.rows) {
+        const c = byId.get(r.category_id);
+        if (c) { c.own_count = r.n; c.drafts = r.drafts; c.last_added = r.last_added; }
+    }
+    // Add each category's documents to every ancestor's total.
+    for (const c of byId.values()) {
+        let cur = c;
+        const seen = new Set();
+        while (cur && !seen.has(cur.id)) {
+            seen.add(cur.id);
+            cur.total_count += c.own_count;
+            if (c.last_added && (!cur.last_added || c.last_added > cur.last_added)) cur.last_added = c.last_added;
+            cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+        }
+        if (c.parent_id && byId.has(c.parent_id)) byId.get(c.parent_id).children.push(c.id);
+    }
+    // Finance-restricted staff: a Financial tile is only shown when something in it was shared with them.
+    const restricted = isFinanceRestrictedStaffRole(req);
+    const list = [...byId.values()].filter(c => !restricted || !isFinanceCategoryAbbrev(c.full_abbreviation) || c.total_count > 0);
+    sendSuccess(res, {
+        categories: list,
+        archive_count: archived.rows[0]?.n || 0,
+        total: counts.rows.reduce((a, r) => a + r.n, 0),
+    });
+});
+
+// ============================================================
+// GET ALL DOCUMENTS
+// GET /api/documents?document_type=MEETING_MINUTES&status=FINAL
+// ============================================================
+const getAllDocuments = asyncHandler(async (req, res) => {
+    const { document_type, status, related_record_type, related_record_id } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
+
+    // v1.46.0 — DELETED (soft-removed from the archive) is excluded
+    // here the same way SUPERSEDED always was, so a removed document
+    // disappears from every list view (both the plain "All Documents"
+    // list and the Company Archive tab's OR-in-ARCHIVED condition
+    // below, since a DELETED document is no longer ARCHIVED either).
+    // The always-on rules (DELETED / SUPERSEDED hidden, personal documents
+    // hidden, Financial documents for finance-restricted staff, documents
+    // still awaiting signatures) are in appendVisibility() below — shared
+    // with the category tiles (v1.81.0) so the counts match the lists.
+    const conditions = [];
+    const params = [];
+    let p = 0;
+
+    if (document_type) {
+        p++; conditions.push(`d.document_type = $${p}`);
+        params.push(document_type.toUpperCase());
+    }
+    if (status) {
+        p++; conditions.push(`d.status = $${p}`);
+        params.push(status.toUpperCase());
+    }
+    if (related_record_type) {
+        if (related_record_type === 'COMPANY_ARCHIVE') {
+            // The Company Archive view shows both documents uploaded
+            // directly into it AND any regular document that's since
+            // been archived via the "Archive" action elsewhere in the
+            // system — otherwise archiving a document just makes it
+            // vanish from the main list without ever landing anywhere
+            // the user can find it again.
+            p++; conditions.push(`(d.related_record_type = $${p} OR d.status = 'ARCHIVED')`);
+            params.push(related_record_type);
+        } else {
+            p++; conditions.push(`d.related_record_type = $${p}`);
+            params.push(related_record_type);
+        }
+    }
+    if (related_record_id) {
+        p++; conditions.push(`d.related_record_id = $${p}`);
+        params.push(related_record_id);
+    }
+    // v1.81.0 — one category (and, unless include_sub=0, everything filed
+    // under its sub-categories) — the category pages.
+    if (req.query.category_id !== undefined && req.query.category_id !== '') {
+        const catId = parseInt(req.query.category_id, 10);
+        if (!Number.isInteger(catId) || catId < 1) throw createError.badRequest('Invalid category');
+        p++;
+        if (String(req.query.include_sub) === '0') {
+            conditions.push(`d.category_id = $${p}`);
+        } else {
+            conditions.push(`d.category_id IN (WITH RECURSIVE sub AS (
+                SELECT id FROM categories WHERE id = $${p}
+                UNION ALL SELECT c.id FROM categories c JOIN sub ON c.parent_id = sub.id)
+                SELECT id FROM sub)`);
+        }
+        params.push(catId);
+    }
+    // v1.81.0 — archived=exclude hides everything in the Company Archive
+    // (uploaded into it or archived later); archived=only shows just those.
+    if (req.query.archived === 'exclude') {
+        conditions.push(`d.status <> 'ARCHIVED' AND COALESCE(d.related_record_type, '') <> 'COMPANY_ARCHIVE'`);
+    } else if (req.query.archived === 'only') {
+        conditions.push(`(d.status = 'ARCHIVED' OR d.related_record_type = 'COMPANY_ARCHIVE')`);
+    }
+    // v1.78.0 — free-text search (title, reference, public ID) for the
+    // document picker on the transaction forms.
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 80) : '';
+    if (search) {
+        p++; conditions.push(`(d.title ILIKE $${p} OR EXISTS (
+            SELECT 1 FROM references_registry sr WHERE sr.id = d.reference_id
+            AND (sr.reference_code ILIKE $${p} OR sr.public_id ILIKE $${p})))`);
+        params.push(`%${search.replace(/[%_\\]/g, ch => '\\' + ch)}%`);
+    }
+
+    p = appendVisibility(req, conditions, params);
 
     const where = 'WHERE ' + conditions.join(' AND ');
 
@@ -933,6 +1141,10 @@ const getAllDocuments = asyncHandler(async (req, res) => {
     params.push(limit, offset);
     // v1.78.0 — how many transactions each document is connected to
     const txCountSql = await documentLinks.documentCountSql('d');
+    // v1.81.0 — archive type / when and why it left the archive
+    const archiveColsSql = (await archiveColumnsReady())
+        ? 'd.archive_type, d.archived_at, d.archived_from_status,'
+        : '';
     const result = await query(`
         SELECT
             d.id,
@@ -947,6 +1159,8 @@ const getAllDocuments = asyncHandler(async (req, res) => {
             d.created_at,
             d.related_record_type,
             d.related_record_id,
+            d.category_id,
+            ${archiveColsSql}
             ${txCountSql} AS transaction_count,
             r.reference_code,
             r.public_id,
@@ -1123,6 +1337,8 @@ module.exports = {
     getDocumentStamps,
     createNewVersion,
     archiveDocument,
+    unarchiveDocument,   // v1.81.0
+    getCategorySummary,  // v1.81.0
     deleteDocument,
     getMyDocuments,
     getShareReceipts,

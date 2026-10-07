@@ -21,6 +21,7 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import Avatar from '../../components/common/Avatar';
 import { useAuth } from '../../contexts/AuthContext';
+import { MemberRegisteredCard } from '../shareCapital/RegisteredByMember'; // v1.81.0
 import {
     PrinterIcon, ShieldCheckIcon, BanknotesIcon, ArrowsRightLeftIcon,
 } from '@heroicons/react/24/outline';
@@ -199,6 +200,9 @@ const MemberPortfolioPage = () => {
                     </table>
                 </div>
             </div>
+
+            {/* v1.81.0 — shares registered with URSB and the excess */}
+            <MemberRegisteredCard userId={targetId} />
 
             {/* Shareholding & contributions */}
             <div className="card mb-6">

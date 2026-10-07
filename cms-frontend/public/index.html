@@ -2,12 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <!-- id="app-favicon" (v1.32.6) — BrandingContext.js swaps this href to
-         the live-uploaded company logo at runtime, so the browser tab icon
-         stays correct even if Settings > Company's logo changes after this
-         file was built. The %PUBLIC_URL%/favicon.ico below is just the
-         pre-JS-load / no-JS fallback. -->
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" id="app-favicon" />
+    <!-- v1.81.0 — every icon comes from the server, made square from the
+         company logo uploaded in Settings › Company (so each company shows
+         its own logo, never the React logo). BrandingContext.js refreshes
+         these addresses once the app has loaded. -->
+    <link rel="icon" href="%REACT_APP_API_URL%/public/branding/favicon.ico" id="app-favicon" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b1f3a" />
     <!-- v1.71.0 — apply the person's Light/Dark/Device choice BEFORE the
@@ -36,12 +35,14 @@
       name="description"
       content="%REACT_APP_COMPANY_NAME% — Company Management System"
     />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
-    <!--
-      manifest.json provides metadata used when your web app is installed on a
-      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
-    -->
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <!-- Home-screen icon (iPhone / iPad) and the "install / add to home
+         screen" details (Android, desktop Chrome / Edge): company name and
+         logo, from the server (v1.81.0). -->
+    <link rel="apple-touch-icon" href="%REACT_APP_API_URL%/public/branding/apple-touch-icon.png" />
+    <link rel="manifest" href="%REACT_APP_API_URL%/public/branding/manifest.webmanifest" crossorigin="anonymous" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="%REACT_APP_COMPANY_NAME%" />
     <!--
       Notice the use of %PUBLIC_URL% in the tags above.
       It will be replaced with the URL of the `public` folder during the build.

@@ -6,6 +6,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authAPI, usersAPI } from '../api/endpoints';
+import { clearDeviceDrafts } from '../utils/draftStore'; // v1.81.0
 
 const AuthContext = createContext(null);
 
@@ -126,11 +127,21 @@ export const AuthProvider = ({ children }) => {
     // --------------------------------------------------------
     // LOGOUT
     // --------------------------------------------------------
-    const logout = useCallback(async () => {
+    // v1.81.0 — { clearDrafts: true } when the person signs out themselves:
+    // the unfinished forms kept on this device are removed too (they stay in
+    // their account). Automatic sign-out after inactivity keeps them, so
+    // nothing typed is lost.
+    const logout = useCallback(async ({ clearDrafts = false } = {}) => {
         try {
             await authAPI.logout();
         } catch {
             // Continue logout even if API call fails
+        }
+        if (clearDrafts) {
+            try {
+                const me = JSON.parse(localStorage.getItem('user') || 'null');
+                if (me?.id) clearDeviceDrafts(me.id);
+            } catch (_) { /* ignore */ }
         }
         localStorage.removeItem('accessToken');
         localStorage.removeItem('refreshToken');

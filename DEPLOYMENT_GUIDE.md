@@ -453,6 +453,27 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Documents by category, drafts, registered shares, app icons** (v1.81.0):
+  run `cms/migration_v1.81.0.sql` on **both** databases **before** pushing
+  the code — `node update_live_database.js --url "…"` then
+  `--apply --confirm=<database name>`. It adds the archive fields on
+  documents, the `form_drafts` and `member_registered_shares` tables and
+  repairs old "file with URSB" notification links. Safe to run twice.
+  The backend now uses the image library **sharp** (already in
+  `cms/package.json`; Render installs it automatically with `npm install`;
+  on your own computer run `npm install` once in `cms`). Afterwards:
+  1. **App icon:** make sure each company has its logo uploaded in
+     **Settings › Company** — the browser tab, the phone home-screen icon
+     and the "install app" name now come from it. People who already
+     added the system to their home screen should remove the shortcut and
+     add it again to pick up the new icon.
+  2. **Registered shares:** the Secretary (or Treasury) opens **Share
+     capital › Registered (URSB)** and enters each member's figure from
+     the URSB register / latest annual return, with the date it is as at.
+     After that, marking a return of allotment as filed updates it.
+  3. Nothing else to set: the Documents page now opens on the category
+     tiles, unfinished forms are kept automatically, and every preview
+     uses the new viewer.
 - **Requisitions, investment costs, meeting documents** (v1.80.0): run
   `cms/migration_v1.80.0.sql` on **both** databases **before** pushing the
   code — `node update_live_database.js --url "…"` then
@@ -559,4 +580,3 @@ flowchart TD
 (This code block renders as a diagram automatically on GitHub. If you
 open this file in a plain text editor instead, the steps above in
 Step 1 through Step 5 are the same information written out in full.)
-

@@ -52,10 +52,21 @@ const applyBrowserChrome = (branding) => {
     if (branding.company_name) {
         document.title = branding.company_name;
     }
-    if (branding.logo_url) {
-        const iconLink = document.getElementById('app-favicon');
-        if (iconLink) iconLink.href = branding.logo_url;
-    }
+    // v1.81.0 — the tab icon, the phone's home-screen icon and the "install
+    // app" details all come from the server, made square from the company
+    // logo (GET /api/public/branding/...). The ?v= part changes whenever the
+    // logo changes, so browsers fetch the new icon instead of an old copy.
+    const api = (process.env.REACT_APP_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+    const v = encodeURIComponent(branding.logo_url || 'none');
+    const setHref = (selector, href) => {
+        const el = document.querySelector(selector);
+        if (el && el.getAttribute('href') !== href) el.setAttribute('href', href);
+    };
+    setHref('#app-favicon', `${api}/public/branding/favicon.ico?v=${v}`);
+    setHref('link[rel="apple-touch-icon"]', `${api}/public/branding/apple-touch-icon.png?v=${v}`);
+    setHref('link[rel="manifest"]', `${api}/public/branding/manifest.webmanifest?v=${v}`);
+    const appTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appTitle && branding.company_name) appTitle.setAttribute('content', branding.company_name.split(/\s+/)[0]);
 };
 
 export const BrandingProvider = ({ children }) => {

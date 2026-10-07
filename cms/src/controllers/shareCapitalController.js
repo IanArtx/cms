@@ -7,7 +7,7 @@
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
-const { asyncHandler } = require('../utils/errors');
+const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { notify, notifyMany } = require('../services/notificationService');
@@ -278,8 +278,41 @@ const cancelRefund = asyncHandler(async (req, res) => {
     sendSuccess(res, result, 'Refund request withdrawn');
 });
 
+// ------------------------------------------------------------
+// EACH MEMBER'S SHARES REGISTERED WITH URSB (v1.81.0)
+// See services/registeredSharesService.js.
+// ------------------------------------------------------------
+const registered = require('../services/registeredSharesService');
+
+const getRegisteredByMember = asyncHandler(async (req, res) => {
+    sendSuccess(res, await registered.getRegister());
+});
+
+// A member may see their own; the staff roles anyone's.
+const getRegisteredForMember = asyncHandler(async (req, res) => {
+    const memberId = parseInt(req.params.userId, 10);
+    const roles = req.user.roles || [];
+    if (memberId !== req.user.id && !roles.some(r => STAFF_VIEW_ROLES.includes(r))) {
+        throw createError.forbidden('You can only see your own registered shares.');
+    }
+    sendSuccess(res, await registered.getMember(memberId));
+});
+
+const setRegisteredForMember = asyncHandler(async (req, res) => {
+    const memberId = parseInt(req.params.userId, 10);
+    const { shares, as_at, note, document_id, change_reason } = req.body;
+    await withTransaction(client => registered.setOpening(client, {
+        userId: memberId, shares: Number(shares), asAt: as_at, note, documentId: document_id ? parseInt(document_id, 10) : null,
+        changeReason: change_reason, by: req.user.id, ipAddress: req.ip,
+    }));
+    sendSuccess(res, await registered.getMember(memberId), 'URSB-registered shares saved');
+});
+
 module.exports = {
     STAFF_VIEW_ROLES,
+    getRegisteredByMember,   // v1.81.0
+    getRegisteredForMember,  // v1.81.0
+    setRegisteredForMember,  // v1.81.0
     getOverview,
     getMyStatement,
     getMemberStatement,

@@ -12,11 +12,13 @@
 //      resolutions and certified copies in the standard form
 // ============================================================
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { meetingsAPI } from '../../api/endpoints';
 import { formatDate, formatDateTime, getErrorMessage, getUploadUrl } from '../../utils/helpers';
 import { useTabParam } from '../../hooks/useTabParam';
+import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
+import DraftNotice from '../../components/common/DraftNotice';
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import {
@@ -412,14 +414,29 @@ const MinutesTab = ({ v, canManage, reload, setError, setNotice }) => {
     const editable = canManage && ['IN_PROGRESS', 'CLOSED'].includes(m.status);
     const [mins, setMins] = useState({});
     const [saving, setSaving] = useState(false);
+    const draftRef = useRef(null);
+    const minsRef = useRef({});
+    // v1.81.0 — only reset the boxes when the SAVED minutes or the agenda
+    // change, not on every refresh of the meeting (that wiped unsaved
+    // typing) — and never over unsaved typing (it is kept as a draft).
+    const savedKey = JSON.stringify([m.id, m.minutes || null, m.agenda || null]);
     useEffect(() => {
+        if (draftRef.current?.isDirty() && Array.isArray(minsRef.current.items)) return;
         const saved = m.minutes || {};
         const items = (m.agenda || []).map(a => {
             const s = (saved.items || []).find(x => Number(x.no) === Number(a.no)) || {};
             return { no: a.no, title: a.title, discussion: s.discussion || '', decision: s.decision || '', action_by: s.action_by || '', action_due: s.action_due || '' };
         });
         setMins({ ...saved, items });
-    }, [m]);
+        draftRef.current?.rebase();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [savedKey]);
+    const draft = useFormDraft(`meeting-minutes:${m.id}`, mins, setMins, {
+        enabled: editable && Array.isArray(mins.items),
+        title: `Minutes — ${m.title}`,
+    });
+    draftRef.current = draft;
+    minsRef.current = mins;
 
     if (!['IN_PROGRESS', 'CLOSED'].includes(m.status)) {
         return <div className="card"><p className="text-sm text-gray-500">The minutes are written once the meeting has opened.</p></div>;
@@ -430,6 +447,7 @@ const MinutesTab = ({ v, canManage, reload, setError, setNotice }) => {
         setSaving(true);
         try {
             const r = await meetingsAPI.saveMinutes(m.id, mins);
+            draft.clear();
             setNotice(r.data.message);
             await reload();
         } catch (err) { setError(getErrorMessage(err)); } finally { setSaving(false); }
@@ -442,6 +460,7 @@ const MinutesTab = ({ v, canManage, reload, setError, setNotice }) => {
     const board = m.meeting_type === 'BOARD';
     return (
         <div className="space-y-4">
+            <DraftNotice draft={draft} show="restored" />
             <div className="card space-y-4">
                 <p className="text-xs text-gray-500">
                     The register (present, proxies, in attendance, apologies), the notice and quorum statement and every resolution with its
@@ -469,7 +488,10 @@ const MinutesTab = ({ v, canManage, reload, setError, setNotice }) => {
                 <div><label className="label">Next meeting</label>{area(mins.next_meeting, setField('next_meeting'), 'e.g. The next meeting will be held on …')}</div>
             </div>
             {editable && (
-                <div className="flex justify-end"><button type="button" className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save minutes'}</button></div>
+                <div className="flex items-center justify-end gap-3 flex-wrap">
+                    <DraftNotice draft={draft} show="status" />
+                    <button type="button" className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save minutes'}</button>
+                </div>
             )}
         </div>
     );
@@ -568,8 +590,13 @@ const MeetingDetailPage = () => {
     const [busy, setBusy] = useState(false);
 
     const reload = useCallback(async () => {
+        // v1.81.0 — only a numbered meeting can be opened here; anything
+        // else (an old link such as /meetings/resolutions) used to load
+        // another list and crash the page.
+        if (!/^\d+$/.test(String(id))) { setError('This meeting does not exist — open it from Meetings & resolutions.'); return; }
         try {
             const r = await meetingsAPI.getById(id);
+            if (!r.data?.data?.meeting) throw new Error('This meeting could not be loaded — open it from Meetings & resolutions.');
             setV(r.data.data);
         } catch (err) {
             setError(getErrorMessage(err));

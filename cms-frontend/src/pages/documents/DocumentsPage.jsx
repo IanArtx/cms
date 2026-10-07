@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useParams, Link } from 'react-router-dom';
 import { documentsAPI, categoriesAPI, staffAccessAPI, usersAPI, certificatesAPI } from '../../api/endpoints';
 import { formatDate, formatFileSize, getErrorMessage, truncate, getUploadUrl } from '../../utils/helpers';
 import {
@@ -35,12 +35,15 @@ import {
     XMarkIcon,
     PencilSquareIcon,
     TrashIcon,
+    ArrowUturnLeftIcon,
 } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 // v1.78.0 — transactions connected to a document
 import { DocumentTransactionsBlock, LinkCount } from '../../components/documents/TransactionDocuments';
 import { renderGovernanceDocument } from '../../utils/governanceTemplates'; // v1.79.0 — statutory meeting documents
+import { viewFile } from '../../utils/documentViewer'; // v1.81.0
+import { LibraryHome, CategoryTiles, categoryChain } from './DocumentLibrary'; // v1.81.0 — category tiles
 
 // Renderers for SYSTEM_GENERATED documents — same client-side template
 // functions GenerateDocumentPage.jsx uses at creation time. Only the
@@ -176,7 +179,10 @@ const openDocument = async (doc, { forceDownload }) => {
         return;
     }
 
-    // UPLOADED — a real file
+    // UPLOADED — a real file. v1.81.0: "Preview" opens the in-app viewer
+    // (images and PDFs shown, PDFs handed to the phone's own viewer on
+    // phones and tablets, anything else offered as a download).
+    if (!forceDownload && viewFile(blob, { title: doc.title, fileName: doc.file_name || doc.title })) return;
     const url = URL.createObjectURL(blob);
     if (!forceDownload && PREVIEWABLE_MIME_TYPES.includes(blob.type)) {
         window.open(url, '_blank');
@@ -210,11 +216,29 @@ const ARCHIVE_TYPES = [
     { value: 'LEGAL', label: 'Legal Agreements' },
     { value: 'OTHER', label: 'Other Foundational Documents' },
 ];
+const ARCHIVE_TYPE_LABEL = Object.fromEntries(ARCHIVE_TYPES.map(t => [t.value, t.label]));
+const isInArchive = (d) => d.status === 'ARCHIVED' || d.related_record_type === 'COMPANY_ARCHIVE';
+
+// v1.81.0 — take a document out of the archive (back among the regular
+// documents, as it was before: Draft or Final). Asks for the reason.
+const takeOutOfArchive = async (confirm, doc) => {
+    const reason = await confirm({
+        title: 'Take out of the archive',
+        message: `"${doc.title}" goes back among the regular documents in its category${doc.status === 'ARCHIVED' ? `, as ${doc.archived_from_status === 'DRAFT' ? 'a Draft' : 'Final'} again` : ''}. Why is it being taken out?`,
+        confirmLabel: 'Take out of the archive',
+        requireInput: true,
+        inputLabel: 'Reason',
+        inputPlaceholder: 'e.g. filed in the archive by mistake',
+    });
+    if (!reason) return null;
+    const res = await documentsAPI.unarchive(doc.id, reason);
+    return res.data;
+};
 
 // ============================================================
 // UPLOAD DOCUMENT MODAL
 // ============================================================
-const UploadModal = ({ isOpen, onClose, onSuccess, categories, isArchive = false }) => {
+const UploadModal = ({ isOpen, onClose, onSuccess, categories, isArchive = false, defaultCategoryId = null }) => {
     const [form, setForm] = useState({
         category_id: '', title: '', document_type: isArchive ? 'OTHER' : 'OTHER',
         related_record_type: '', related_record_id: '',
@@ -223,6 +247,10 @@ const UploadModal = ({ isOpen, onClose, onSuccess, categories, isArchive = false
     const [file,    setFile]    = useState(null);
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    // v1.81.0 — opened from a category page: that category is chosen already
+    useEffect(() => {
+        if (isOpen && defaultCategoryId) setForm(p => ({ ...p, category_id: String(defaultCategoryId) }));
+    }, [isOpen, defaultCategoryId]);
 
     if (!isOpen) return null;
 
@@ -238,8 +266,11 @@ const UploadModal = ({ isOpen, onClose, onSuccess, categories, isArchive = false
             formData.append('title', form.title);
             formData.append('document_type', form.document_type);
             if (isArchive) {
+                // v1.81.0 — the archive type is kept (it was lost before), and no
+                // '0' record id (the server used to reject it, so archive
+                // uploads always failed).
                 formData.append('related_record_type', 'COMPANY_ARCHIVE');
-                formData.append('related_record_id', '0');
+                formData.append('archive_type', form.archive_type);
             }
             await documentsAPI.upload(formData);
             onSuccess();
@@ -416,11 +447,23 @@ const CompanyArchive = ({ categories }) => {
         }
     };
 
+    const handleUnarchive = async (doc) => {
+        setActionLoading(doc.id);
+        try {
+            const r = await takeOutOfArchive(confirm, doc);
+            if (r) setDocuments(prev => prev.filter(d => d.id !== doc.id));
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const loadArchive = useCallback(async () => {
         try {
             setLoading(true);
             const res = await documentsAPI.getAll({
-                related_record_type: 'COMPANY_ARCHIVE',
+                archived: 'only',
                 limit: 100,
             });
             setDocuments(res.data.data || []);
@@ -433,8 +476,9 @@ const CompanyArchive = ({ categories }) => {
 
     useEffect(() => { loadArchive(); }, [loadArchive]);
 
+    // v1.81.0 — by the archive type kept on each document
     const filtered = typeFilter
-        ? documents.filter(d => d.related_record_id === typeFilter)
+        ? documents.filter(d => (d.archive_type || 'OTHER') === typeFilter)
         : documents;
 
     if (loading) return (
@@ -476,20 +520,26 @@ const CompanyArchive = ({ categories }) => {
                         </button>
                     )}
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
-                    {ARCHIVE_TYPES.slice(0, 4).map(type => {
-                        const count = documents.filter(
-                            d => d.document_type === type.value
-                        ).length;
+                {/* v1.81.0 — one tile per archive type; tap to show only those */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+                    {ARCHIVE_TYPES.map(type => {
+                        const count = documents.filter(d => (d.archive_type || 'OTHER') === type.value).length;
+                        const on = typeFilter === type.value;
                         return (
-                            <div key={type.value} className="bg-white bg-opacity-10
-                                rounded-lg p-3">
-                                <p className="text-xs text-primary-200">{type.label}</p>
+                            <button type="button" key={type.value}
+                                onClick={() => setTypeFilter(on ? '' : type.value)}
+                                className={`text-left rounded-lg p-3 transition-colors ${on ? 'bg-white text-primary-900' : 'bg-white bg-opacity-10 hover:bg-opacity-20'}`}>
+                                <p className={`text-xs ${on ? 'text-primary-700' : 'text-primary-200'}`}>{type.label}</p>
                                 <p className="text-xl font-bold mt-1">{count}</p>
-                            </div>
+                            </button>
                         );
                     })}
                 </div>
+                {typeFilter && (
+                    <button type="button" onClick={() => setTypeFilter('')} className="mt-3 text-xs underline text-primary-100">
+                        Showing {ARCHIVE_TYPE_LABEL[typeFilter]} only — show everything
+                    </button>
+                )}
             </div>
 
             {/* Archive Grid */}
@@ -507,7 +557,8 @@ const CompanyArchive = ({ categories }) => {
                 </div>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {documents.map(doc => (
+                    {filtered.length === 0 && <p className="text-sm text-gray-400 col-span-full">Nothing of this type in the archive.</p>}
+                    {filtered.map(doc => (
                         <div key={doc.id} className="card hover:shadow-md
                             transition-shadow border border-gray-100">
                             <div className="flex items-start gap-3">
@@ -522,7 +573,7 @@ const CompanyArchive = ({ categories }) => {
                                         {doc.title}
                                     </p>
                                     <p className="text-xs text-gray-400 mt-0.5">
-                                        {doc.document_type?.replace(/_/g, ' ')}
+                                        {ARCHIVE_TYPE_LABEL[doc.archive_type || 'OTHER']} · {doc.category_trail || doc.category_name}
                                     </p>
                                     <div className="flex items-center gap-2 mt-2 flex-wrap">
                                         <span className="font-mono text-xs
@@ -576,6 +627,18 @@ const CompanyArchive = ({ categories }) => {
                                     <ArrowDownTrayIcon className="h-3.5 w-3.5" />
                                     Download
                                 </button>
+                                {hasPermission('DOCUMENT_ARCHIVE') && (
+                                    <button
+                                        onClick={() => handleUnarchive(doc)}
+                                        disabled={actionLoading === doc.id}
+                                        title="Take out of the archive — back among the regular documents"
+                                        className="flex items-center justify-center gap-1.5
+                                            text-xs font-medium text-emerald-700 py-1.5 px-2 rounded-lg
+                                            border border-emerald-200 hover:bg-emerald-50 transition-colors"
+                                    >
+                                        <ArrowUturnLeftIcon className="h-3.5 w-3.5" />
+                                    </button>
+                                )}
                                 {hasPermission('DOCUMENT_DELETE') && (
                                     <button
                                         onClick={() => handleRemove(doc)}
@@ -1221,6 +1284,10 @@ const DocumentDetailModal = ({ documentId, onClose, onChanged }) => {
 
 const DocumentsPage = () => {
     const { hasPermission, hasRole } = useAuth();
+    // v1.81.0 — /documents/category/:categoryId is one category's own page
+    const { categoryId: categoryParam } = useParams();
+    const categoryId = categoryParam && /^\d+$/.test(categoryParam) ? parseInt(categoryParam, 10) : null;
+    const [summary, setSummary] = useState(null);
     // v1.78.0 — /documents?doc=<id> opens that document's detail window
     const [searchParams, setSearchParams] = useSearchParams();
     const detailId = searchParams.get('doc');
@@ -1242,7 +1309,7 @@ const DocumentsPage = () => {
     const [showUpload, setShowUpload] = useState(false);
     // v1.71.0 — opened from the "+ New" menu (?new=1)
     useNewParam(() => { if (hasPermission('DOCUMENT_UPLOAD')) setShowUpload(true); });
-    const [activeTab,  setActiveTab]  = useTabParam('documents');
+    const [activeTab,  setActiveTab]  = useTabParam('library'); // v1.81.0 — opens on the category tiles
     const [actionLoading, setActionLoading] = useState(null);
     const [grantingDoc, setGrantingDoc] = useState(null);
     const [signaturesTarget, setSignaturesTarget] = useState(null);
@@ -1272,6 +1339,9 @@ const DocumentsPage = () => {
             const params = { page, limit: 20 };
             if (typeFilter)   params.document_type = typeFilter;
             if (statusFilter) params.status        = statusFilter;
+            // v1.81.0 — a category page: that category and its sub-categories,
+            // archived documents left out (they are in the Company Archive)
+            if (categoryId) { params.category_id = categoryId; params.archived = 'exclude'; }
             const res = await documentsAPI.getAll(params);
             setDocuments(res.data.data);
             setPagination(res.data.meta?.pagination);
@@ -1280,7 +1350,7 @@ const DocumentsPage = () => {
         } finally {
             setLoading(false);
         }
-    }, [page, typeFilter, statusFilter]);
+    }, [page, typeFilter, statusFilter, categoryId]);
 
     // v1.44.0 — everything currently awaiting my own signature, across
     // both regular documents and share-certificate signing rounds.
@@ -1297,6 +1367,20 @@ const DocumentsPage = () => {
             setPendingLoading(false);
         }
     }, []);
+
+    // v1.81.0 — the category tiles (counts per category, archive count)
+    const loadSummary = useCallback(async () => {
+        try {
+            const res = await documentsAPI.categorySummary();
+            setSummary(res.data.data);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        }
+    }, []);
+    useEffect(() => { loadSummary(); }, [loadSummary]);
+    // A new category page starts on page 1 with no filters.
+    useEffect(() => { setPage(1); setTypeFilter(''); setStatusFilter(''); }, [categoryId]);
+    const refreshAll = () => { loadDocuments(); loadSummary(); };
 
     useEffect(() => {
         loadDocuments();
@@ -1321,7 +1405,7 @@ const DocumentsPage = () => {
         setActionLoading(id);
         try {
             await documentsAPI.archive(id);
-            loadDocuments();
+            refreshAll();
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -1373,6 +1457,18 @@ const DocumentsPage = () => {
         }
     };
 
+    // v1.81.0 — back among the regular documents
+    const handleUnarchive = async (doc) => {
+        setActionLoading(doc.id);
+        try {
+            if (await takeOutOfArchive(confirm, doc)) refreshAll();
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     const columns = [
         {
             header: 'Reference',
@@ -1416,11 +1512,15 @@ const DocumentsPage = () => {
         },
         {
             header: 'Category',
-            render: row => (
+            render: row => (row.category_id && row.category_id !== categoryId ? (
+                <Link to={`/documents/category/${row.category_id}`} className="text-xs text-gray-500 hover:text-primary-700 hover:underline">
+                    {row.category_trail || row.category_name}
+                </Link>
+            ) : (
                 <span className="text-xs text-gray-500">
                     {row.category_trail || row.category_name}
                 </span>
-            ),
+            )),
         },
         {
             header: 'File',
@@ -1515,6 +1615,17 @@ const DocumentsPage = () => {
                             <ArchiveBoxIcon className="h-4 w-4" />
                         </button>
                     )}
+                    {isInArchive(row) && hasPermission('DOCUMENT_ARCHIVE') && (
+                        <button
+                            onClick={() => handleUnarchive(row)}
+                            disabled={actionLoading === row.id}
+                            className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700
+                                hover:bg-emerald-100 transition-colors"
+                            title="Take out of the archive"
+                        >
+                            <ArrowUturnLeftIcon className="h-4 w-4" />
+                        </button>
+                    )}
                     {row.status === 'ARCHIVED' && hasPermission('DOCUMENT_DELETE') && (
                         <button
                             onClick={() => handleRemove(row.id, row.title)}
@@ -1542,13 +1653,89 @@ const DocumentsPage = () => {
         },
     ];
 
+    // ---- v1.81.0: one category's own page --------------------------------
+    if (categoryId) {
+        const chain = summary ? categoryChain(summary.categories, categoryId) : [];
+        const cat = chain[chain.length - 1];
+        const parent = chain.length > 1 ? chain[chain.length - 2] : null;
+        return (
+            <div>
+                <PageHeader
+                    title={cat ? cat.name : 'Category'}
+                    subtitle={cat ? (cat.description || `Documents filed under ${cat.full_path}`) : (summary ? 'This category does not exist or is not available to you.' : 'Loading…')}
+                    showBack backTo={parent ? `/documents/category/${parent.id}` : '/documents'}
+                    actions={hasPermission('DOCUMENT_UPLOAD') && cat && (
+                        <div className="flex gap-2">
+                            <button onClick={() => navigate('/documents/generate')} className="btn-secondary flex items-center gap-2">
+                                <DocumentTextIcon className="h-4 w-4" /> Generate
+                            </button>
+                            <button onClick={() => setShowUpload(true)} className="btn-primary flex items-center gap-2">
+                                <PlusIcon className="h-4 w-4" /> Upload here
+                            </button>
+                        </div>
+                    )}
+                />
+                {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                {/* Documents › Statutory Records › Resolutions */}
+                <nav aria-label="Category path" className="flex items-center flex-wrap gap-1 text-sm text-gray-500 mb-4">
+                    <Link to="/documents" className="hover:text-primary-700 hover:underline">Documents</Link>
+                    {chain.map((c, i) => (
+                        <span key={c.id} className="flex items-center gap-1">
+                            <span className="text-gray-300">›</span>
+                            {i === chain.length - 1
+                                ? <span className="font-medium text-gray-800 dark:text-gray-200">{c.name}</span>
+                                : <Link to={`/documents/category/${c.id}`} className="hover:text-primary-700 hover:underline">{c.name}</Link>}
+                        </span>
+                    ))}
+                </nav>
+                {cat && cat.children?.length > 0 && (
+                    <section className="mb-6">
+                        <h2 className="section-title mb-3">Sub-categories</h2>
+                        <CategoryTiles categories={summary.categories} parentId={cat.id} />
+                    </section>
+                )}
+                {cat && (
+                    <>
+                        <div className="card mb-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <select className="input" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(1); }}>
+                                    <option value="">All Document Types</option>
+                                    {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                                </select>
+                                <select className="input" value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
+                                    <option value="">Draft and Final</option>
+                                    <option value="DRAFT">Draft</option>
+                                    <option value="FINAL">Final</option>
+                                </select>
+                            </div>
+                            <p className="text-xs text-gray-400 mt-2">
+                                {cat.children?.length ? 'Includes the documents in its sub-categories. ' : ''}Archived documents are in the{' '}
+                                <Link to="/documents?tab=archive" className="underline">Company Archive</Link>.
+                            </p>
+                        </div>
+                        <DataTable columns={columns} data={documents} loading={loading}
+                            emptyMessage="Nothing filed in this category yet" searchable searchPlaceholder="Search this category..."
+                            pagination={pagination} onPageChange={setPage} />
+                    </>
+                )}
+                <UploadModal isOpen={showUpload} onClose={() => setShowUpload(false)} onSuccess={refreshAll}
+                    categories={categories} isArchive={false} defaultCategoryId={categoryId} />
+                <GrantAccessModal isOpen={!!grantingDoc} document={grantingDoc} onClose={() => setGrantingDoc(null)} />
+                <SignaturesModal isOpen={!!signaturesTarget} target={signaturesTarget} onClose={() => setSignaturesTarget(null)}
+                    onSigned={() => { refreshAll(); loadPendingSignatures(); }} />
+                <DocumentDetailModal documentId={detailId} onClose={() => openDetail(null)}
+                    onChanged={(id, count) => setDocuments(list => list.map(d => (d.id === id ? { ...d, transaction_count: count } : d)))} />
+            </div>
+        );
+    }
+
     return (
         <div>
             <PageHeader
                 title="Documents"
                 subtitle="Company document library — upload, generate and manage"
                 actions={
-                    hasPermission('DOCUMENT_UPLOAD') && activeTab === 'documents' && (
+                    hasPermission('DOCUMENT_UPLOAD') && ['documents', 'library'].includes(activeTab) && (
                         <div className="flex gap-2">
                             <button
                                 onClick={() => navigate('/documents/generate')}
@@ -1579,6 +1766,13 @@ const DocumentsPage = () => {
                 by scrolling on a narrow screen instead of overflowing with
                 no way to reach it. */}
             <div className="tab-bar" role="tablist">
+                {/* v1.81.0 — the category tiles */}
+                <button
+                    onClick={() => setActiveTab('library')}
+                    className={`tab ${activeTab === 'library' ? 'tab-active' : ''}`}
+                >
+                    Library
+                </button>
                 <button
                     onClick={() => setActiveTab('documents')}
                     className={`tab ${activeTab === 'documents' ? 'tab-active' : ''}`}
@@ -1632,6 +1826,12 @@ const DocumentsPage = () => {
                     </button>
                 )}
             </div>
+
+            {/* Library — category tiles (v1.81.0) */}
+            {activeTab === 'library' && (
+                <LibraryHome summary={summary} pendingCount={pendingSignatures.length}
+                    isTreasury={isTreasury} onOpenTab={setActiveTab} />
+            )}
 
             {/* All Documents Tab */}
             {activeTab === 'documents' && (
@@ -1734,7 +1934,7 @@ const DocumentsPage = () => {
             <UploadModal
                 isOpen={showUpload}
                 onClose={() => setShowUpload(false)}
-                onSuccess={loadDocuments}
+                onSuccess={refreshAll}
                 categories={categories}
                 isArchive={false}
             />

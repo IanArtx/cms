@@ -44,6 +44,7 @@ import {
     BuildingLibraryIcon,
     ChartBarIcon,
     CheckIcon,
+    PencilSquareIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -652,6 +653,11 @@ const TopBar = ({ onLogoutClick }) => {
                         <button type="button" onClick={() => { setUserMenuOpen(false); navigate('/profile'); }}
                             className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100" style={{ color: 'var(--cms-text-primary)' }}>
                             <UserIcon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} /> My profile
+                        </button>
+                        {/* v1.81.0 — forms started and not yet submitted */}
+                        <button type="button" onClick={() => { setUserMenuOpen(false); navigate('/drafts'); }}
+                            className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100" style={{ color: 'var(--cms-text-primary)' }}>
+                            <PencilSquareIcon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} /> Unfinished forms
                         </button>
                         {!isAuditor && (
                             <button type="button" onClick={() => { setUserMenuOpen(false); navigate('/portfolio'); }}

@@ -79,6 +79,15 @@ router.get('/',
 );
 
 // ============================================================
+// CATEGORY TILES (v1.81.0)
+// GET /api/documents/category-summary — before /:id
+// ============================================================
+router.get('/category-summary',
+    requirePermissions(['DOCUMENT_VIEW']),
+    documentsController.getCategorySummary
+);
+
+// ============================================================
 // UPLOAD A DOCUMENT
 // POST /api/documents/upload
 // ============================================================
@@ -100,7 +109,10 @@ router.post('/upload',
             ])
             .withMessage('Invalid document type'),
         body('related_record_type').optional().trim(),
-        body('related_record_id').optional().isInt({ min: 1 }),
+        // v1.81.0 — 0 / empty allowed: the Company Archive upload sent '0',
+        // which this used to reject, so "Add to Archive" always failed.
+        body('related_record_id').optional({ values: 'falsy' }).isInt({ min: 0 }),
+        body('archive_type').optional({ values: 'falsy' }).isIn(['REGISTRATION', 'TAX_FILING', 'MOU', 'ACT', 'LICENSE', 'COMPLIANCE', 'LEGAL', 'OTHER']).withMessage('Invalid archive type'),
     ],
     validateRequest,
     documentsController.uploadDocument
@@ -296,6 +308,18 @@ router.post('/:id/archive',
     validators.idParam('id'),
     validateRequest,
     documentsController.archiveDocument
+);
+
+// ============================================================
+// TAKE OUT OF THE ARCHIVE (v1.81.0) — back among the regular documents
+// POST /api/documents/:id/unarchive  { reason }
+// ============================================================
+router.post('/:id/unarchive',
+    requirePermissions(['DOCUMENT_ARCHIVE']),
+    validators.idParam('id'),
+    body('reason').trim().isLength({ min: 3, max: 500 }).withMessage('Give a short reason (3–500 characters)'),
+    validateRequest,
+    documentsController.unarchiveDocument
 );
 
 // ============================================================

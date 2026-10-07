@@ -196,6 +196,7 @@ const Sidebar = ({ onLogoutClick }) => {
                 <button
                     key={group.id}
                     type="button"
+                    data-tour={`group-${group.id}`}
                     onClick={(e) => {
                         const r = e.currentTarget.getBoundingClientRect();
                         setFlyout(f => (f?.groupId === group.id ? null : { groupId: group.id, top: r.top }));
@@ -214,6 +215,7 @@ const Sidebar = ({ onLogoutClick }) => {
             <div key={group.id}>
                 <button
                     type="button"
+                    data-tour={`group-${group.id}`}
                     onClick={() => toggleGroup(group.id)}
                     aria-expanded={open}
                     className={cx(linkBase, 'w-full h-10 px-2.5 text-sm text-left',
@@ -273,7 +275,7 @@ const Sidebar = ({ onLogoutClick }) => {
                     </button>
                 </div>
 
-                <nav className={cx('flex-1 overflow-y-auto scrollbar-hidden pb-3', collapsed ? 'px-2' : 'px-3')} aria-label="Pages">
+                <nav data-tour="menu" className={cx('flex-1 overflow-y-auto scrollbar-hidden pb-3', collapsed ? 'px-2' : 'px-3')} aria-label="Pages">
                     <div className="flex flex-col gap-1">
                         {home && topLink(home)}
                     </div>
@@ -296,7 +298,7 @@ const Sidebar = ({ onLogoutClick }) => {
                                         </button>
                                     </div>
                                 )}
-                            <div className="flex flex-col gap-1">
+                            <div className="flex flex-col gap-1" data-tour="shortcuts">
                                 {shortcuts.map(item => shortcutLink(item))}
                                 {!collapsed && shortcuts.length === 0 && (
                                     <p className="px-2.5 text-xs text-[#9fb0c8]">
@@ -321,7 +323,7 @@ const Sidebar = ({ onLogoutClick }) => {
                 </nav>
 
                 {/* You */}
-                <div className={cx('border-t border-white/5', collapsed ? 'p-2 flex flex-col items-center gap-2' : 'p-3')}>
+                <div data-tour="user-card" className={cx('border-t border-white/5', collapsed ? 'p-2 flex flex-col items-center gap-2' : 'p-3')}>
                     {collapsed ? (
                         <>
                             <NavLink to="/portfolio" aria-label="My portfolio" title="My portfolio" className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70">

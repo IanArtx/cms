@@ -31,6 +31,9 @@ const getMyProfile = asyncHandler(async (req, res) => {
             -- the v1.70.0 columns still works)
             to_jsonb(u)->>'tin' AS tin,
             COALESCE(to_jsonb(u)->>'tax_residency', 'RESIDENT') AS tax_residency,
+            -- v1.82.0 — guided tours finished / skipped (NULL on a database
+            -- without the column, and the tour then never starts by itself)
+            to_jsonb(u)->'tours_seen' AS tours_seen,
             bool_or(mc.id IS NOT NULL) AS has_consented,
             COALESCE(
                 json_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
@@ -832,8 +835,32 @@ const getMyPaymentLedger = asyncHandler(async (req, res) => {
     })));
 });
 
+// ============================================================
+// v1.82.0 — GUIDED TOUR: remember that this person finished or skipped a
+// tour, so the main tour does not start by itself again (on any device).
+// PATCH /api/users/me/tours  { tour: 'main' | 'page:<id>', status: 'done' | 'skipped' }
+//                            { reset: true }  — forget them all (start afresh)
+// ============================================================
+const TOUR_ID = /^(main|page:[a-z0-9-]{1,40})$/;
+const updateMyTours = asyncHandler(async (req, res) => {
+    if (req.body?.reset === true) {
+        const r = await query(`UPDATE users SET tours_seen = '{}'::jsonb WHERE id = $1 RETURNING tours_seen`, [req.user.id]);
+        return sendSuccess(res, { tours_seen: r.rows[0]?.tours_seen || {} }, 'Tours will be offered again.');
+    }
+    const tour = String(req.body?.tour || '');
+    const status = req.body?.status === 'skipped' ? 'skipped' : 'done';
+    if (!TOUR_ID.test(tour)) throw createError.badRequest('Unknown tour.');
+    const r = await query(`
+        UPDATE users
+           SET tours_seen = COALESCE(tours_seen, '{}'::jsonb)
+                          || jsonb_build_object($2::text, jsonb_build_object('status', $3::text, 'at', NOW()))
+         WHERE id = $1
+     RETURNING tours_seen`, [req.user.id, tour, status]);
+    return sendSuccess(res, { tours_seen: r.rows[0]?.tours_seen || {} }, 'Saved.');
+});
+
 module.exports = {
-    getMyProfile, updateMyProfile, updateProfilePhoto,
+    getMyProfile, updateMyProfile, updateProfilePhoto, updateMyTours,
     getAllUsers, getUserById, getMemberPortfolio, deactivateUser,
     getDeletionCheck, deleteUserPermanently,
     assignRole, revokeRole, getRoleRequests, getMyRoleRequest,

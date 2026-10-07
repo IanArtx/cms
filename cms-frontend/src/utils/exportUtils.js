@@ -2824,87 +2824,193 @@ export const shareCertificateTemplate = (data) => {
 };
 
 // ============================================================
-// SYSTEM MANUAL TEMPLATE
-// Compiles the full About page (manual steps, module guide, role
-// guide) into one printable/downloadable document with the same
-// letterhead as every other export — used by the "Download Manual"
-// button on the About page.
+// USER MANUAL TEMPLATE (v1.82.0 — replaces the old "System Manual")
+// The downloadable manual from About › Download manual: a cover page,
+// contents, then
+//   Part 1  General      (signing in, the screen, references, approvals …)
+//   Part 2  The pages     (where to find each page, who uses it, what it
+//                          does, its tabs, step-by-step tasks, rules, tips)
+//   Part 3  Roles
+//   Part 4  Where to find what
+// with the company letterhead and "Page x of y" on every page (see
+// getBaseStyles). Built from guide/manualContent.js — the same text as
+// the About page and the guided tours.
+//
+//   userManualTemplate({ chapters, modules, groups, roles, wants,
+//                        complete, roleNames, personName, edition, note })
 // ============================================================
-export const systemManualTemplate = ({ steps = [], modules = [], roles = [] } = {}) => `<!DOCTYPE html>
+export const userManualTemplate = ({
+    chapters = [], modules = [], groups = [], roles = [], wants = [],
+    complete = false, roleNames = [], personName = '', edition = '', note = '',
+} = {}) => {
+    const e = escHtml;
+    const list = (arr, tag = 'ul', cls = '') => (arr && arr.length
+        ? `<${tag}${cls ? ` class="${cls}"` : ''}>${arr.map(x => `<li>${e(x)}</li>`).join('')}</${tag}>` : '');
+    const paras = (arr) => (arr || []).map(p => `<p class="para">${e(p)}</p>`).join('');
+
+    // Numbering: Part 1 chapters 1…n, Part 2 pages carry on from there.
+    const nCh = chapters.length;
+    const usedGroups = groups.filter(g => modules.some(m => m.group === g.id));
+    const ordered = usedGroups.flatMap(g => modules.filter(m => m.group === g.id));
+    const numOf = new Map(ordered.map((m, i) => [m.id, nCh + i + 1]));
+    const rolesNo = nCh + ordered.length + 1;
+
+    const audience = complete
+        ? 'Complete manual — every page, for all roles'
+        : `For ${roleNames.length ? roleNames.join(', ') : 'your role'}${personName ? ` · prepared for ${personName}` : ''}`;
+
+    const sectionHtml = (s) => `
+        <div class="m-sec">
+            <div class="m-h3">${e(s.heading)}</div>
+            ${paras(s.text)}
+            ${list(s.steps, 'ol', 'steps')}
+            ${list(s.bullets)}
+            ${s.note ? `<div class="m-note">${e(s.note)}</div>` : ''}
+        </div>`;
+
+    const chapterHtml = (c, i) => `
+        <div class="m-chapter${i === 0 ? '' : ' m-break-soft'}">
+            <div class="m-head"><div class="m-h2"><span class="m-num">${i + 1}</span>${e(c.title)}</div>
+            ${c.summary ? `<p class="m-summary">${e(c.summary)}</p>` : ''}</div>
+            ${(c.sections || []).map(sectionHtml).join('')}
+        </div>`;
+
+    const moduleHtml = (m) => `
+        <div class="m-chapter m-break-soft">
+            <div class="m-head"><div class="m-h2"><span class="m-num">${numOf.get(m.id)}</span>${e(m.title)}</div>
+            ${m.summary ? `<p class="m-summary">${e(m.summary)}</p>` : ''}</div>
+            <table class="m-facts">
+                <tr><th>Where to find it</th><td>${e(m.where || '')}</td></tr>
+                <tr><th>Who uses it</th><td>${e(m.who || '')}</td></tr>
+            </table>
+            ${m.purpose?.length ? `<div class="m-h3">What it does</div>${paras(m.purpose)}` : ''}
+            ${m.tabs?.length ? `<div class="m-h3">On this page</div>
+                <table class="m-tabs"><tbody>${m.tabs.map(t => `<tr><th>${e(t.name)}</th><td>${e(t.what)}</td></tr>`).join('')}</tbody></table>` : ''}
+            ${m.tasks?.length ? `<div class="m-h3">Step by step</div>${m.tasks.map(t => `
+                <div class="m-task">
+                    <div class="m-task-title">${e(t.title)}${t.who ? ` <span class="m-who">${e(t.who)}</span>` : ''}</div>
+                    ${list(t.steps, 'ol', 'steps')}
+                </div>`).join('')}` : ''}
+            ${(m.details || []).filter(d => d.purpose?.length || d.tasks?.length).map(d => `
+                <div class="m-h3">${e(d.title)}</div>
+                ${paras(d.purpose)}
+                ${(d.tasks || []).map(t => `<div class="m-task"><div class="m-task-title">${e(t.title)}</div>${list(t.steps, 'ol', 'steps')}</div>`).join('')}`).join('')}
+            ${m.rules?.length ? `<div class="m-h3">Rules the system keeps</div>${list(m.rules)}` : ''}
+            ${m.tips?.length ? `<div class="m-h3">Tips</div>${list(m.tips)}` : ''}
+        </div>`;
+
+    return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>System Manual</title>
+    <title>${e(COMPANY_NAME)} — User Manual</title>
     <style>${getBaseStyles()}
-    .manual-step { display:flex; gap:14px; padding:12px 0;
-        border-bottom:1px dotted #e5e7eb; }
-    .manual-step:last-child { border-bottom:none; }
-    .step-num { flex-shrink:0; width:26px; height:26px; border-radius:50%;
-        background:${PRIMARY_COLOR}; color:white; font-size:12px; font-weight:700;
-        display:flex; align-items:center; justify-content:center; }
-    .module-row { padding:10px 0; border-bottom:1px dotted #e5e7eb; }
-    .module-row:last-child { border-bottom:none; }
-    .module-name { font-weight:700; color:${PRIMARY_COLOR}; font-size:11px;
-        text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px; }
-    .toc { background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px;
-        padding:16px 20px; margin-bottom:24px; }
-    .toc-title { font-size:10px; font-weight:700; color:#9ca3af;
-        text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
-    .toc ol { margin-left:18px; font-size:11px; color:#374151; line-height:1.9; }
+    .page { max-width: 860px; }
+    .m-cover { min-height: 250mm; display: flex; flex-direction: column; justify-content: center; align-items: center;
+        text-align: center; page-break-after: always; break-after: page; }
+    .m-cover img { max-height: 110px; max-width: 220px; object-fit: contain; margin-bottom: 26px; }
+    .m-cover .co { font-size: 15px; font-weight: 700; color: ${PRIMARY_COLOR}; letter-spacing: 1px; text-transform: uppercase; }
+    .m-cover .t { font-size: 40px; font-weight: 800; color: #0f172a; margin: 18px 0 8px; }
+    .m-cover .s { font-size: 14px; color: #475569; }
+    .m-cover .a { margin-top: 26px; display: inline-block; padding: 8px 16px; border-radius: 999px; background: ${PRIMARY_COLOR}; color: #fff; font-size: 12px; font-weight: 700; }
+    .m-cover .d { margin-top: 40px; font-size: 11px; color: #64748b; line-height: 1.8; }
+    .m-cover .bar { width: 90px; height: 4px; background: ${ACCENT_COLOR}; border-radius: 4px; margin: 18px auto 0; }
+    .m-part { page-break-before: always; break-before: page; }
+    .m-part-title { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: ${ACCENT_COLOR}; margin-bottom: 4px; }
+    .m-part-name { font-size: 24px; font-weight: 800; color: ${PRIMARY_COLOR}; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 3px solid ${PRIMARY_COLOR}; }
+    .m-toc { font-size: 12px; line-height: 1.75; }
+    .m-toc .p { font-weight: 800; color: ${PRIMARY_COLOR}; margin-top: 12px; text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+    .m-toc .g { font-weight: 700; color: #334155; margin: 6px 0 0 12px; }
+    .m-toc .i { margin-left: 24px; color: #1f2937; }
+    .m-toc .i b { display: inline-block; min-width: 26px; color: ${PRIMARY_COLOR}; }
+    .m-toc .sub { color: #64748b; }
+    .m-chapter { margin: 0 0 22px; }
+    .m-break-soft { page-break-inside: auto; }
+    .m-h2 { font-size: 17px; font-weight: 800; color: #0f172a; margin: 6px 0 6px; display: flex; align-items: center; gap: 10px;
+        page-break-after: avoid; break-after: avoid; page-break-inside: avoid; break-inside: avoid; }
+    .m-head { page-break-inside: avoid; break-inside: avoid; }
+    .m-num { flex-shrink: 0; min-width: 30px; height: 30px; padding: 0 6px; border-radius: 8px; background: ${PRIMARY_COLOR}; color: #fff;
+        font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+    .m-group { font-size: 13px; font-weight: 800; color: ${ACCENT_COLOR}; text-transform: uppercase; letter-spacing: 1px; margin: 22px 0 10px;
+        padding: 6px 10px; background: #f8fafc; border-left: 4px solid ${ACCENT_COLOR}; page-break-after: avoid; break-after: avoid; }
+    .m-summary { font-size: 12px; color: #475569; font-style: italic; margin-bottom: 8px; }
+    .m-h3 { font-size: 12.5px; font-weight: 800; color: ${PRIMARY_COLOR}; margin: 12px 0 5px; page-break-after: avoid; break-after: avoid; }
+    .para { font-size: 11.5px; line-height: 1.65; color: #1f2937; margin-bottom: 6px; }
+    .m-chapter ul, .m-chapter ol { margin: 4px 0 8px 22px; font-size: 11.5px; line-height: 1.6; color: #1f2937; }
+    .m-chapter li { margin-bottom: 3px; page-break-inside: avoid; break-inside: avoid; }
+    ol.steps { list-style: decimal; }
+    ol.steps li::marker { font-weight: 800; color: ${PRIMARY_COLOR}; }
+    .m-facts, .m-tabs { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 11px; }
+    .m-facts th, .m-tabs th { text-align: left; vertical-align: top; width: 150px; padding: 5px 8px; background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+    .m-facts td, .m-tabs td { padding: 5px 8px; border: 1px solid #e2e8f0; color: #1f2937; }
+    .m-tabs tr, .m-facts tr { page-break-inside: avoid; break-inside: avoid; }
+    .m-task { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fcfdff; page-break-inside: avoid; break-inside: avoid; }
+    .m-task-title { font-size: 11.5px; font-weight: 800; color: #0f172a; margin-bottom: 2px; }
+    .m-who { font-weight: 600; font-size: 10px; color: #475569; background: #eef2ff; padding: 1px 6px; border-radius: 999px; margin-left: 4px; }
+    .m-note { font-size: 11px; background: #fffbeb; border: 1px solid #fde68a; color: #78350f; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+    .m-roles td, .m-roles th, .m-wants td, .m-wants th { font-size: 11px; vertical-align: top; }
+    .m-roles tr, .m-wants tr { page-break-inside: avoid; break-inside: avoid; }
+    .m-roles ul { margin: 0 0 0 16px; }
     </style>
 </head>
 <body>
 <div class="page">
-    ${letterhead('System Manual', '', new Date())}
-    <div class="doc-title">System Manual</div>
-    <div class="doc-subtitle">A complete guide to using ${COMPANY_NAME}'s company management system</div>
-
-    <div class="toc">
-        <div class="toc-title">Contents</div>
-        <ol>
-            <li>Getting Started &amp; Step-by-Step Guide</li>
-            <li>Module-by-Module Guide</li>
-            <li>Role Guide — who can do what</li>
-        </ol>
+    <div class="m-cover">
+        <img src="${COMPANY_LOGO_URL}" alt="" onerror="this.style.display='none'" />
+        <div class="co">${e(COMPANY_NAME)}</div>
+        <div class="bar"></div>
+        <div class="t">User Manual</div>
+        <div class="s">How to find your way around the company management system, and how to use every page — step by step.</div>
+        <div class="a">${e(audience)}</div>
+        <div class="d">Edition ${e(edition)} · ${fmt.date(new Date())}<br/>CONFIDENTIAL — for authorised members only</div>
     </div>
 
-    <div class="section">
-        <div class="section-title">1. Getting Started &amp; Step-by-Step Guide</div>
-        ${steps.map(item => `
-        <div class="manual-step">
-            <div class="step-num">${item.step}</div>
-            <div>
-                <strong style="font-size:12px;">${item.title}</strong>
-                <p style="margin-top:4px;color:#374151;font-size:11px;line-height:1.6;">
-                    ${item.content}
-                </p>
-            </div>
-        </div>`).join('')}
+    ${letterhead('User Manual', complete ? 'Complete' : 'For my role', new Date())}
+
+    <div class="m-part-name" style="margin-top:6px;">Contents</div>
+    <div class="m-toc">
+        <div class="p">Part 1 — General</div>
+        ${chapters.map((c, i) => `<div class="i"><b>${i + 1}</b>${e(c.title)}</div>`).join('')}
+        <div class="p">Part 2 — The pages</div>
+        ${usedGroups.map(g => `<div class="g">${e(g.label)}</div>${modules.filter(m => m.group === g.id)
+            .map(m => `<div class="i"><b>${numOf.get(m.id)}</b>${e(m.title)} <span class="sub">— ${e(m.where || '')}</span></div>`).join('')}`).join('')}
+        <div class="p">Part 3 — Roles</div>
+        <div class="i"><b>${rolesNo}</b>What each role does</div>
+        <div class="p">Part 4 — Where to find what</div>
+        <div class="i"><b>${rolesNo + 1}</b>"I want to …" — quick map</div>
+    </div>
+    ${note ? `<div class="m-note" style="margin-top:16px;"><strong>Before you start.</strong> ${e(note)}</div>` : ''}
+
+    <div class="m-part">
+        <div class="m-part-title">Part 1</div>
+        <div class="m-part-name">General</div>
+        ${chapters.map(chapterHtml).join('')}
     </div>
 
-    <div class="section">
-        <div class="section-title">2. Module-by-Module Guide</div>
-        ${modules.map(item => `
-        <div class="module-row">
-            <div class="module-name">${item.module}</div>
-            <p style="font-size:11px;color:#374151;line-height:1.6;">${item.description}</p>
-        </div>`).join('')}
+    <div class="m-part">
+        <div class="m-part-title">Part 2</div>
+        <div class="m-part-name">The pages</div>
+        ${usedGroups.map(g => `<div class="m-group">${e(g.label)}</div>${modules.filter(m => m.group === g.id).map(moduleHtml).join('')}`).join('')}
     </div>
 
-    <div class="section">
-        <div class="section-title">3. Role Guide</div>
-        <table>
-            <thead>
-                <tr><th>Role</th><th>Description</th><th>Typical Permissions</th></tr>
-            </thead>
+    <div class="m-part">
+        <div class="m-part-title">Part 3</div>
+        <div class="m-part-name"><span class="m-num" style="margin-right:10px;">${rolesNo}</span>Roles — what each role does</div>
+        ${note ? `<p class="para">${e(note)}</p>` : ''}
+        <table class="m-roles">
+            <thead><tr><th style="width:140px;">Role</th><th>What it is for</th><th>Typical work</th></tr></thead>
             <tbody>
-                ${roles.map(r => `
-                <tr>
-                    <td class="font-bold">${r.role}</td>
-                    <td>${r.description}</td>
-                    <td>${r.permissions.join(', ')}</td>
-                </tr>`).join('')}
+                ${roles.map(r => `<tr><td class="font-bold">${e(r.role)}</td><td>${e(r.summary)}</td><td>${list(r.does)}</td></tr>`).join('')}
             </tbody>
+        </table>
+    </div>
+
+    <div class="m-part">
+        <div class="m-part-title">Part 4</div>
+        <div class="m-part-name"><span class="m-num" style="margin-right:10px;">${rolesNo + 1}</span>Where to find what</div>
+        <table class="m-wants">
+            <thead><tr><th style="width:45%;">I want to …</th><th>Go to</th></tr></thead>
+            <tbody>${wants.map(w => `<tr><td>${e(w.want)}</td><td>${e(w.where)}</td></tr>`).join('')}</tbody>
         </table>
     </div>
 
@@ -2912,6 +3018,7 @@ export const systemManualTemplate = ({ steps = [], modules = [], roles = [] } = 
 </div>
 </body>
 </html>`;
+};
 
 // ============================================================
 // EXTERNAL AUDIT SUMMARY TEMPLATE

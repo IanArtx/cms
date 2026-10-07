@@ -50,27 +50,28 @@ const MobileNav = () => {
     return (
         <>
             <nav
+                data-tour="bottom-bar"
                 aria-label="Quick navigation"
                 className="md:hidden fixed bottom-0 inset-x-0 z-30 flex items-center justify-around border-t px-1 pb-[env(safe-area-inset-bottom)]"
                 style={{ backgroundColor: 'var(--cms-surface)', borderColor: 'var(--cms-border)', height: 'calc(64px + env(safe-area-inset-bottom))' }}
             >
-                <NavLink to="/" end className={({ isActive }) => `${item} ${isActive ? 'text-primary-700' : ''}`}
+                <NavLink to="/" end data-tour="m-home" className={({ isActive }) => `${item} ${isActive ? 'text-primary-700' : ''}`}
                     style={({ isActive }) => (isActive ? undefined : { color: 'var(--cms-text-muted)' })}>
                     <HomeIcon className="w-6 h-6" />Home
                 </NavLink>
-                <button type="button" onClick={() => setSheet('shortcuts')} className={item} style={{ color: 'var(--cms-text-muted)' }}>
+                <button type="button" data-tour="m-shortcuts" onClick={() => setSheet('shortcuts')} className={item} style={{ color: 'var(--cms-text-muted)' }}>
                     <StarIcon className="w-6 h-6 text-amber-500" />Shortcuts
                 </button>
                 {quickActions.length > 0 ? (
-                    <button type="button" onClick={() => setSheet('new')} aria-label="New"
+                    <button type="button" data-tour="m-new" onClick={() => setSheet('new')} aria-label="New"
                         className="w-14 h-14 -mt-5 rounded-full bg-primary-700 text-white flex items-center justify-center shadow-lg shadow-primary-700/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-300">
                         <PlusIcon className="w-7 h-7" strokeWidth={2.2} />
                     </button>
                 ) : <span className="w-14" />}
-                <button type="button" onClick={() => setNotifOpen(true)} className={item} style={{ color: 'var(--cms-text-muted)' }}>
+                <button type="button" data-tour="m-alerts" onClick={() => setNotifOpen(true)} className={item} style={{ color: 'var(--cms-text-muted)' }}>
                     <BellIcon className="w-6 h-6" />Alerts
                 </button>
-                <button type="button" onClick={() => setMobileOpen(true)} className={item} style={{ color: 'var(--cms-text-muted)' }}>
+                <button type="button" data-tour="m-menu" onClick={() => setMobileOpen(true)} className={item} style={{ color: 'var(--cms-text-muted)' }}>
                     <Bars3Icon className="w-6 h-6" />Menu
                 </button>
             </nav>

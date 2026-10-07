@@ -17,6 +17,9 @@
 //    "Same as my device".
 //  • Bell — the same notifications as before (saved notifications plus
 //    pending approvals and events in the next 7 days).
+//  • (?) Help (v1.82.0) — take the guided tour, tour this page, or open
+//    the manual for this page. The same tours are in the profile menu
+//    (the only place on a phone).
 // ============================================================
 
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
@@ -27,6 +30,8 @@ import { useLayout } from './LayoutContext';
 import { buildBreadcrumb } from './navConfig';
 import { accountsAPI, eventsAPI, transfersAPI, grantsAPI, loansAPI, investmentsAPI, notificationsAPI, moneyApprovalsAPI } from '../../api/endpoints';
 import GlobalSearch from './GlobalSearch';
+import { useTour } from '../tour/TourProvider'; // v1.82.0
+import { moduleForPath } from '../../guide/manualContent';
 import Avatar from '../common/Avatar';
 import {
     Bars3Icon,
@@ -45,6 +50,10 @@ import {
     ChartBarIcon,
     CheckIcon,
     PencilSquareIcon,
+    QuestionMarkCircleIcon,
+    MapIcon,
+    BookOpenIcon,
+    CursorArrowRaysIcon,
 } from '@heroicons/react/24/outline';
 
 // ============================================================
@@ -146,6 +155,9 @@ const TopBar = ({ onLogoutClick }) => {
     const navigate     = useNavigate();
     const location     = useLocation();
     const [userMenuOpen,  setUserMenuOpen]  = useState(false);
+    const [helpOpen,      setHelpOpen]      = useState(false); // v1.82.0
+    const { startMainTour, startPageTour, pageTour } = useTour();
+    const manualModule = moduleForPath(location.pathname);
     const [balancesOpen,  setBalancesOpen]  = useState(false);
     const [searchOpen,    setSearchOpen]    = useState(false);
     const [notifications, setNotifications] = useState([]);
@@ -399,7 +411,16 @@ const TopBar = ({ onLogoutClick }) => {
         } catch {}
     };
 
-    const closeAll = () => { setUserMenuOpen(false); setNotifOpen(false); setBalancesOpen(false); setNewOpen(false); };
+    const closeAll = () => { setUserMenuOpen(false); setNotifOpen(false); setBalancesOpen(false); setNewOpen(false); setHelpOpen(false); };
+
+    // v1.82.0 — the help entries, shared by the (?) menu and the profile menu.
+    const helpItems = isAuditor ? [] : [
+        { id: 'tour', label: 'Take the guided tour', icon: MapIcon, run: () => startMainTour() },
+        { id: 'page', label: pageTour ? `Tour this page` : 'Tour this page (none here)', icon: CursorArrowRaysIcon, disabled: !pageTour, run: () => startPageTour() },
+        { id: 'manual', label: manualModule ? 'Manual for this page' : 'Open the user manual', icon: BookOpenIcon,
+          run: () => navigate(manualModule ? `/about?tab=manual&section=${manualModule.id}` : '/about?tab=manual') },
+    ];
+    const runHelp = (h) => { closeAll(); if (!h.disabled) setTimeout(h.run, 60); };
 
     const iconBtn = 'relative inline-flex items-center justify-center w-10 h-10 rounded-[10px] border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500';
     const iconBtnStyle = (active) => ({
@@ -431,7 +452,7 @@ const TopBar = ({ onLogoutClick }) => {
             </button>
 
             {/* Breadcrumb (full on sm+, current page only on phones) */}
-            <nav aria-label="Breadcrumb" className="min-w-0 flex-1">
+            <nav aria-label="Breadcrumb" data-tour="breadcrumb" className="min-w-0 flex-1">
                 <ol className="hidden sm:flex items-center gap-1.5 text-sm min-w-0" style={{ color: 'var(--cms-text-muted)' }}>
                     {crumbs.map((c, i) => {
                         const last = i === crumbs.length - 1;
@@ -455,6 +476,7 @@ const TopBar = ({ onLogoutClick }) => {
                 <>
                     <button
                         type="button"
+                        data-tour="search"
                         onClick={() => setSearchOpen(true)}
                         className="hidden lg:flex items-center gap-2 w-[300px] xl:w-[360px] h-10 px-3 rounded-[10px] border text-sm text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                         style={{ backgroundColor: 'var(--cms-bg)', borderColor: 'var(--cms-border)', color: 'var(--cms-text-muted)' }}
@@ -463,7 +485,7 @@ const TopBar = ({ onLogoutClick }) => {
                         <span className="flex-1 truncate">{isFinanceBlockedRole ? 'Search pages…' : 'Search pages, records, references…'}</span>
                         <kbd className="text-[11px] font-semibold rounded-md border px-1.5 py-px font-sans" style={{ borderColor: 'var(--cms-border-strong)', color: 'var(--cms-text-secondary)' }}>Ctrl K</kbd>
                     </button>
-                    <button type="button" onClick={() => setSearchOpen(true)} className={`${iconBtn} lg:hidden`} style={iconBtnStyle(false)} aria-label="Search">
+                    <button type="button" data-tour="search" onClick={() => setSearchOpen(true)} className={`${iconBtn} lg:hidden`} style={iconBtnStyle(false)} aria-label="Search">
                         <MagnifyingGlassIcon className="w-5 h-5" />
                     </button>
                 </>
@@ -474,6 +496,7 @@ const TopBar = ({ onLogoutClick }) => {
                 <div className="relative hidden sm:block">
                     <button
                         type="button"
+                        data-tour="balances"
                         onClick={() => { const o = !balancesOpen; closeAll(); setBalancesOpen(o); }}
                         className={`${iconBtn} xl:w-auto xl:px-3 xl:gap-2`}
                         style={iconBtnStyle(balancesOpen)}
@@ -515,6 +538,7 @@ const TopBar = ({ onLogoutClick }) => {
                 <div className="relative hidden md:block">
                     <button
                         type="button"
+                        data-tour="new"
                         onClick={() => { const o = !newOpen; closeAll(); setNewOpen(o); }}
                         className="btn-primary !px-3.5"
                         aria-expanded={newOpen}
@@ -547,6 +571,7 @@ const TopBar = ({ onLogoutClick }) => {
             <button
                 type="button"
                 onClick={toggleTheme}
+                data-tour="theme"
                 className={`${iconBtn} hidden sm:inline-flex`}
                 style={{ ...iconBtnStyle(false), color: isDark ? '#fbbf24' : 'var(--cms-text-secondary)' }}
                 aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -555,10 +580,45 @@ const TopBar = ({ onLogoutClick }) => {
                 {isDark ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
             </button>
 
+            {/* v1.82.0 — Help: guided tour, this page's tour, the manual */}
+            {!isAuditor && (
+                <div className="relative hidden sm:block">
+                    <button
+                        type="button"
+                        data-tour="help"
+                        onClick={() => { const o = !helpOpen; closeAll(); setHelpOpen(o); }}
+                        className={iconBtn}
+                        style={iconBtnStyle(helpOpen)}
+                        aria-label="Help: guided tour and manual"
+                        title="Help"
+                        aria-expanded={helpOpen}
+                        aria-haspopup="menu"
+                    >
+                        <QuestionMarkCircleIcon className="w-5 h-5" />
+                    </button>
+                    <Popover open={helpOpen} onClose={() => setHelpOpen(false)} width={270} label="Help">
+                        <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                            <p className="text-sm font-bold" style={{ color: 'var(--cms-text-primary)' }}>Help</p>
+                            <p className="text-xs" style={{ color: 'var(--cms-text-muted)' }}>{pageTour ? `On this page: ${pageTour.title}` : 'Tours and the user manual'}</p>
+                        </div>
+                        <div className="p-1.5" role="menu">
+                            {helpItems.map(h => (
+                                <button key={h.id} type="button" role="menuitem" disabled={h.disabled} onClick={() => runHelp(h)}
+                                    className="w-full text-left flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    style={{ color: 'var(--cms-text-primary)' }}>
+                                    <h.icon className="w-4 h-4 text-primary-600" /> {h.label}
+                                </button>
+                            ))}
+                        </div>
+                    </Popover>
+                </div>
+            )}
+
             {/* Notifications */}
             <div className="relative">
                 <button
                     type="button"
+                    data-tour="bell"
                     onClick={() => { const o = !notifOpen; closeAll(); setNotifOpen(o); }}
                     className={iconBtn}
                     style={iconBtnStyle(notifOpen)}
@@ -637,6 +697,7 @@ const TopBar = ({ onLogoutClick }) => {
             <div className="relative">
                 <button
                     type="button"
+                    data-tour="profile"
                     onClick={() => { const o = !userMenuOpen; closeAll(); setUserMenuOpen(o); }}
                     className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
                     aria-label="Your account menu"
@@ -666,6 +727,22 @@ const TopBar = ({ onLogoutClick }) => {
                             </button>
                         )}
                     </div>
+                    {/* v1.82.0 — guided tours (the only help entry point on a phone) */}
+                    {helpItems.length > 0 && (
+                        <>
+                            <div className="px-4 pt-2 pb-1 border-t" style={{ borderColor: 'var(--cms-surface-divider)' }}>
+                                <p className="text-[11px] font-bold tracking-[0.08em]" style={{ color: 'var(--cms-text-muted)' }}>HELP</p>
+                            </div>
+                            <div className="p-1.5 pt-0">
+                                {helpItems.map(h => (
+                                    <button key={h.id} type="button" disabled={h.disabled} onClick={() => runHelp(h)}
+                                        className="w-full flex items-center gap-2.5 px-3 h-10 rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" style={{ color: 'var(--cms-text-primary)' }}>
+                                        <h.icon className="w-4 h-4" style={{ color: 'var(--cms-text-muted)' }} /> {h.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
                     <div className="px-4 pt-2 pb-1 border-t" style={{ borderColor: 'var(--cms-surface-divider)' }}>
                         <p className="text-[11px] font-bold tracking-[0.08em]" style={{ color: 'var(--cms-text-muted)' }}>APPEARANCE</p>
                     </div>

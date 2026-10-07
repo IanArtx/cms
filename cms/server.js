@@ -215,6 +215,7 @@ app.use('/api/requisitions', require('./src/routes/requisitions'));
 app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/notifications', require('./src/routes/notifications'));
 app.use('/api/drafts', require('./src/routes/drafts')); // v1.81.0 — unfinished forms kept per person
+app.use('/api/viewer', require('./src/routes/viewer')); // v1.82.1 — document viewer: Save as PDF on phones
 app.use('/api/shares', require('./src/routes/shares'));
 app.use('/api/share-capital', require('./src/routes/shareCapital')); // v1.69.0
 app.use('/api/tax', require('./src/routes/tax')); // v1.70.0

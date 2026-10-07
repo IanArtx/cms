@@ -1,0 +1,16 @@
+%% v1.82.1 — document viewer on phones (PDF pages, Save as PDF) and the end of the ResizeObserver loop
+flowchart TD
+    P["Preview / Print / Download on any page"] --> V{"Document viewer"}
+    V -->|"generated document (HTML)"| G["ScaledDocumentFrame\nheight = content only (screen-only style)\nwatchers stopped on close → no ResizeObserver loop"]
+    V -->|"uploaded file"| D["detectFileType: first bytes → name ending → server type"]
+    D -->|PDF| PC{"device"}
+    PC -->|computer| PF["browser's own PDF viewer"]
+    PC -->|"phone / tablet"| PJ["PdfPages (pdf.js 3.11.174)\npages drawn as you scroll · Zoom"]
+    D -->|picture| IM["shown"]
+    D -->|"web page / text"| SB["sandboxed frame — nothing runs"]
+    D -->|"Word, Excel …"| DL["Download (right file ending)"]
+    G -->|"phone: Save as PDF / Share\ncomputer: Download PDF"| IN["pictures → data: images\nscripts removed"]
+    IN --> API["POST /api/viewer/pdf\nsigned in · 12/min · ≤ 8 MB"]
+    API --> PUP["Puppeteer: JavaScript off\nonly data: requests allowed · 30 s\n@page margins + 'Page x of y'"]
+    PUP --> PDF["real .pdf file → Downloads / Share sheet"]
+    S["Server downloads: name without ending\ngets the stored file's ending (.pdf)"] --> D

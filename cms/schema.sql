@@ -6295,5 +6295,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS member_registered_shares_current
     ON member_registered_shares (user_id) WHERE superseded_at IS NULL;
 
 -- ============================================================
--- END OF SCHEMA — v1.81.0
+-- v1.82.0 — guided tour: which tours each person has finished or
+-- skipped (see migration_v1.82.0.sql)
+-- ============================================================
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tours_seen JSONB NOT NULL DEFAULT '{}'::jsonb;
+COMMENT ON COLUMN users.tours_seen IS
+    'v1.82.0 — guided tours this person has finished or skipped: {tour_id: {status: done|skipped, at}}. The main tour starts by itself only while "main" is missing.';
+
+-- ============================================================
+-- END OF SCHEMA — v1.82.0
 -- ============================================================

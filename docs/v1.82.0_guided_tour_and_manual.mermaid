@@ -1,0 +1,33 @@
+%% v1.82.0 — guided tour (main tour + a tour for every page) and the user manual (About page + PDF), one source of text
+flowchart TD
+    subgraph SRC["One source of text — cms-frontend/src/guide/"]
+        CH["manualChapters.js\nPart 1 general chapters · ROLES · permission note"]
+        MO["manualModules.js\none entry per page: where · who · what it does · tabs\nstep-by-step tasks · rules · tips · page tour · detail pages"]
+        MC["manualContent.js\nmodulesFor(role) · chaptersFor · whereToFind ('I want to …')\npageTourFor(path) · moduleForPath"]
+        CH --> MC
+        MO --> MC
+    end
+
+    subgraph TOUR["Guided tour — components/tour/"]
+        SI["Sign-in → profile has tours_seen\nwithout 'main'"] -->|"after ~1.2 s"| MT["Main tour, built for this person\nwelcome · menu · shortcuts · each menu group they can open\nuser card · breadcrumb · search · balances · + New\nlight/dark · bell · (?) · profile menu · page band · end\n(phone: bottom bar + menu drawer)"]
+        HELP["(?) button · profile menu › HELP · About\n'Go there and take its tour' (?tour=page)"] --> MT
+        HELP --> PT["Tour this page\nits tabs and buttons (from manualModules.js)"]
+        MT --> OV["Overlay: dim · frame the part · card\nBack / Next / Skip · keys · nothing clickable\nparts not on screen (role) are skipped"]
+        PT --> OV
+        OV -->|"Finish = done · Skip/Esc = skipped"| SAVE["PATCH /api/users/me/tours\nusers.tours_seen (JSONB)\n→ not started again on any device"]
+    end
+
+    subgraph ABOUT["About & User manual (/about)"]
+        T1["Company Info"]
+        T2["User manual\nsearch · pages I can use / all pages\nchapter view · open page · take its tour"]
+        T3["Where to find what\nthe menu as you see it · 'I want to …'"]
+        T4["Roles — 10 roles, yours marked"]
+        DL["Download manual\nFor my role | Complete manual"] --> PDF["userManualTemplate → document viewer\ncover · contents · letterhead · Part 1–4\n'Page x of y' on every page → Save as PDF"]
+    end
+
+    MC --> MT
+    MC --> PT
+    MC --> T2
+    MC --> T3
+    MC --> PDF
+    NAV["navConfig.js show(ctx)\n(who may open which page)"] --> MC

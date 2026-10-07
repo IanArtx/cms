@@ -52,6 +52,9 @@ export const usersAPI = {
     getRoleRequests: (params)   => api.get('/users/role-requests', { params }),
     getMyRoleRequest: ()        => api.get('/users/me/role-request'),
     getAllRoles:      ()         => api.get('/users/roles'),
+    // v1.82.0 — guided tour finished / skipped (remembered in the account)
+    markTourSeen:     (tour, status = 'done') => api.patch('/users/me/tours', { tour, status }),
+    resetTours:       ()         => api.patch('/users/me/tours', { reset: true }),
     getShareholding: ()         => api.get('/users/shareholding'),
     getMyPaymentLedger: (limit) => api.get('/users/me/payment-ledger', { params: { limit } }), // v1.56.0
     getShareholders:  ()       => api.get('/users/shareholders'),
@@ -918,6 +921,15 @@ export const certificatesAPI = {
 // ============================================================
 export const searchAPI = {
     search: (q) => api.get('/search', { params: { q } }),
+};
+
+// ============================================================
+// DOCUMENT VIEWER (v1.82.1) — a real PDF of the document being viewed
+// (phones and tablets: "Save as PDF"). The HTML's pictures are already
+// turned into data: images by utils/documentViewer.js.
+// ============================================================
+export const viewerAPI = {
+    pdf: (html, title) => api.post('/viewer/pdf', { html, title }, { responseType: 'blob', timeout: 90000 }),
 };
 
 // ============================================================

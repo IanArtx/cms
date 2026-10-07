@@ -41,4 +41,49 @@ const renderHtmlToPdfBuffer = async (html, options = {}) => {
     }
 };
 
-module.exports = { renderHtmlToPdfBuffer };
+// ============================================================
+// v1.82.1 — turn a document someone is LOOKING AT into a real PDF, so
+// phones and tablets get a proper PDF file ("Save as PDF" in the
+// document viewer) instead of the page's HTML code.
+//
+// The HTML comes from the person's own browser, so it is treated as
+// untrusted:
+//   • JavaScript is switched off in the headless browser;
+//   • every network request is refused except inline data: images (the
+//     browser turns the logo, signatures and stamps into data: images
+//     before sending), so the server never fetches an address chosen by
+//     the caller;
+//   • a time limit stops a document that never finishes.
+// The page size, margins and "Page x of y" come from the document's own
+// @page rules (preferCSSPageSize), exactly as when printing.
+// ============================================================
+const renderViewerHtmlToPdf = async (html, { timeoutMs = 30000 } = {}) => {
+    const puppeteer = require('puppeteer');
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    try {
+        const page = await browser.newPage();
+        await page.setJavaScriptEnabled(false);
+        await page.setRequestInterception(true);
+        page.on('request', (r) => {
+            const url = r.url();
+            if (url.startsWith('data:') || url === 'about:blank') r.continue();
+            else r.abort();
+        });
+        page.setDefaultTimeout(timeoutMs);
+        await page.setContent(html, { waitUntil: 'load', timeout: timeoutMs });
+        return await page.pdf({
+            format: 'A4',
+            printBackground: true,
+            preferCSSPageSize: true,
+            displayHeaderFooter: false,
+            timeout: timeoutMs,
+        });
+    } finally {
+        await browser.close();
+    }
+};
+
+module.exports = { renderHtmlToPdfBuffer, renderViewerHtmlToPdf };

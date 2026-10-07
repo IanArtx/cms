@@ -453,6 +453,32 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Document previews on phones** (v1.82.1): no database change. The
+  website uses a new library, **pdfjs-dist** (already in
+  `cms-frontend/package.json`) — on your own computer run `npm install`
+  once in `cms-frontend` before `npm start`; Render installs it by itself.
+  (npm may print warnings about an optional part called "canvas" that it
+  cannot build — that part is not needed and the warning can be ignored.)
+  "Save as PDF" on phones uses the server's Puppeteer (already used for
+  certificates): on your own computer, if a PDF fails with "Could not find
+  Chrome", run `npx puppeteer browsers install chrome` once in `cms`.
+  Afterwards open a few documents on a phone: an uploaded PDF shows page
+  by page; a receipt or minutes has "Save as PDF" and (on most phones)
+  "Share".
+- **Guided tour and the new user manual** (v1.82.0): run
+  `cms/migration_v1.82.0.sql` on **both** databases **before** pushing the
+  code — `node update_live_database.js --url "…"` then
+  `--apply --confirm=<database name>`. It adds one column,
+  `users.tours_seen` (which guided tours each person has finished or
+  skipped). Safe to run twice. Afterwards:
+  1. Everybody — including people who have used the system for a long
+     time — sees the guided tour once, the next time they sign in. "Not
+     now" or Esc skips it; it is then not offered again by itself (it
+     stays available from the profile menu, the (?) button and About).
+  2. If the code goes live before the migration has run, nothing breaks:
+     the tour simply does not start by itself until the column exists.
+  3. Download the manual once from **About › Download manual ›
+     Complete manual** and keep it with the company records.
 - **Documents by category, drafts, registered shares, app icons** (v1.81.0):
   run `cms/migration_v1.81.0.sql` on **both** databases **before** pushing
   the code — `node update_live_database.js --url "…"` then

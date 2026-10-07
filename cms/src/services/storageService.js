@@ -124,6 +124,9 @@ const streamInline = async (key, res) => {
             res.status(404).end();
             return;
         }
+        // v1.82.1 — say what kind of file it is (pictures had no type when
+        // kept on the computer's own disk, so a browser could not tell).
+        try { res.type(path.extname(filePath) || 'application/octet-stream'); } catch (_) { /* ignore */ }
         fs.createReadStream(filePath).pipe(res);
     }
 };
@@ -137,6 +140,13 @@ const streamInline = async (key, res) => {
 // ============================================================
 const sendFileDownload = async (res, key, downloadFilename) => {
     if (!key) throw createError.notFound('No file is attached to this record');
+
+    // v1.82.1 — a name without an ending ("Minutes AGM") takes the stored
+    // file's ending (".pdf"), so the browser and the phone know what it is.
+    const storedExt = path.extname(String(key));
+    if (downloadFilename && storedExt && !path.extname(String(downloadFilename))) {
+        downloadFilename = `${downloadFilename}${storedExt}`;
+    }
 
     if (isS3Configured) {
         let obj;

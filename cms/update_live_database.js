@@ -12,7 +12,7 @@
 // 1) CHECK (read-only — changes nothing):
 //       node update_live_database.js --url "postgresql://…"
 //    Shows which company/database it reached, and for every version
-//    from 1.58.0 to 1.81.0 whether its migration is already applied.
+//    from 1.58.0 to 1.82.0 whether its migration is already applied.
 //
 // 2) APPLY the missing migrations, oldest first:
 //       node update_live_database.js --url "postgresql://…" --apply --confirm=<database name>
@@ -71,6 +71,8 @@ const VERSIONS = [
     { v: '1.79.0', file: 'migration_v1.79.0.sql', what: 'AGM / EGM / board meetings, register of attendees, resolutions', check: tbl('meeting_resolutions') },
     { v: '1.80.0', file: 'migration_v1.80.0.sql', what: 'requisitions need documents / can be reversed, investment buying vs running costs, meeting document fixes', check: tbl('requisition_document_links') },
     { v: '1.81.0', file: 'migration_v1.81.0.sql', what: 'documents by category / out of the archive, unfinished forms kept, shares registered with URSB per member', check: tbl('form_drafts') },
+    { v: '1.82.0', file: 'migration_v1.82.0.sql', what: 'guided tour (remembers who has taken it)', check: col('users', 'tours_seen') },
+    { v: '1.82.1', file: null, what: '(no database change — document previews on phones, PDF files)' },
 ];
 
 // ---- arguments ------------------------------------------------------
@@ -192,7 +194,7 @@ const printStatus = (rows) => {
         }
 
         if (!missing.length) {
-            console.log('\n✅ This database is up to date (1.81.0). Nothing to apply.');
+            console.log('\n✅ This database is up to date (1.82.0). Nothing to apply.');
             return;
         }
         console.log(`\n${missing.length} migration(s) to apply, in this order: ${missing.map(m => m.v).join(' → ')}`);
@@ -247,7 +249,7 @@ const printStatus = (rows) => {
             console.log('\n⚠️  Still missing: ' + missing.map(m => m.v).join(', '));
             process.exitCode = 1;
         } else {
-            console.log('\n✅ Database is now at 1.81.0.');
+            console.log('\n✅ Database is now at 1.82.0.');
             try {
                 const rc = await client.query(`SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE needs_attention) AS a FROM record_corrections`);
                 console.log(`   Automatic corrections logged by the v1.72.0 repair: ${rc.rows[0].n} (needing a look: ${rc.rows[0].a}) — see Reports › Records check after the code is live.`);

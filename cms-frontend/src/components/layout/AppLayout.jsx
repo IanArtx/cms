@@ -21,6 +21,7 @@ import MobileNav from './MobileNav';
 import { LayoutProvider } from './LayoutContext';
 import HeldEntryNotice from '../common/HeldEntryNotice'; // v1.73.0
 import DocumentViewerHost from '../common/DocumentViewerHost'; // v1.81.0
+import { TourProvider } from '../tour/TourProvider'; // v1.82.0 — guided tour
 import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74.0
 import useScrollHints from '../../hooks/useScrollHints'; // v1.77.0
 import { settingsAPI } from '../../api/endpoints';
@@ -99,6 +100,7 @@ const AppLayout = () => {
 
     return (
         <LayoutProvider>
+        <TourProvider>
         <div className="flex h-[100dvh] overflow-hidden" style={{ backgroundColor: 'var(--cms-bg)' }}>
             {/* Sidebar — static column on wide screens (full or icon strip),
                 slide-in drawer on phones and tablets. */}
@@ -140,6 +142,7 @@ const AppLayout = () => {
                 onCancel={() => setShowLogoutConfirm(false)}
             />
         </div>
+        </TourProvider>
         </LayoutProvider>
     );
 };

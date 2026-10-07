@@ -23,6 +23,8 @@ router.use(authenticate);
 // its role request has been reviewed yet)
 router.get('/me',                   usersController.getMyProfile);
 router.get('/roles',                usersController.getAllRoles);
+// v1.82.0 — guided tour finished / skipped (remembered in the account)
+router.patch('/me/tours',            usersController.updateMyTours);
 // The requester's own most recent role request (or null) — feeds the
 // pending-approval page a pending user is redirected to (Section 3).
 router.get('/me/role-request',      usersController.getMyRoleRequest);

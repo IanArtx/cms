@@ -125,6 +125,20 @@ export const AuthProvider = ({ children }) => {
     }, []);
 
     // --------------------------------------------------------
+    // PATCH USER (v1.82.0)
+    // Merge a few fields into the signed-in user straight away (e.g. the
+    // guided tours seen), without waiting for the server round trip.
+    // --------------------------------------------------------
+    const patchUser = useCallback((fields) => {
+        setUser(prev => {
+            if (!prev) return prev;
+            const next = { ...prev, ...fields };
+            try { localStorage.setItem('user', JSON.stringify(next)); } catch (_) { /* ignore */ }
+            return next;
+        });
+    }, []);
+
+    // --------------------------------------------------------
     // LOGOUT
     // --------------------------------------------------------
     // v1.81.0 — { clearDrafts: true } when the person signs out themselves:
@@ -204,6 +218,7 @@ export const AuthProvider = ({ children }) => {
             logout,
             verify2FA,
             refreshUser,
+            patchUser,
             hasRole,
             hasPermission,
             hasFinancialAccess,

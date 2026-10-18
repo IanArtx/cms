@@ -16,6 +16,16 @@
 // currency with a current rate shows the same totals converted at the
 // rate set today (stated under the chart). The choice is remembered on
 // this device.
+// v1.85.2 — requested: "it should show the actual running totals not
+// the money invested … misleading especially for money market fund
+// investments that keep changing over time with increase from interest
+// and withdrawals". The blue area is now what the company HOLDS at each
+// month end — the books' balance of 1400 Other Investments (projects,
+// bonds, treasury bills: capital put in less capital paid back) plus
+// 1300 Money Market Funds (top-ups less withdrawals plus interest less
+// fees) — the same figure as the Balance Sheet, for OPEN investments
+// only (a closed one counts 0 from the month it closed). The tooltip splits it,
+// and also shows the money put in so far for reference.
 // ============================================================
 
 import { useEffect, useState } from 'react';
@@ -83,9 +93,10 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
             <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
                 {!compact ? (
                     <p className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
-                        Running totals for the whole portfolio, in {cur}: invested so far{' '}
-                        <span className="font-semibold text-gray-700 dark:text-gray-200">{cur} {money(data.totals.invested)}</span>,
-                        returns so far{' '}
+                        Held in open investments now (the books' balance, in {cur}; closed ones count nothing from their closing month):{' '}
+                        <span className="font-semibold text-gray-700 dark:text-gray-200">{cur} {money(data.totals.held ?? data.totals.invested)}</span>
+                        {data.totals.held_mmf ? <> — of which money market funds {cur} {money(data.totals.held_mmf)}</> : null}.
+                        {' '}Returns received so far{' '}
                         <span className="font-semibold text-gray-700 dark:text-gray-200">{cur} {money(data.totals.returned)}</span>.
                     </p>
                 ) : <span />}
@@ -106,9 +117,15 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
                     <CartesianGrid {...theme.gridProps} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} tickFormatter={compactNumber} />
-                    <Tooltip {...theme.tooltipProps} formatter={(v, name) => [`${cur} ${money(v)}`, name]} />
+                    <Tooltip {...theme.tooltipProps}
+                        formatter={(v, name) => [`${cur} ${money(v)}`, name]}
+                        labelFormatter={(label, payload) => {
+                            const p = payload && payload[0] && payload[0].payload;
+                            if (!p || p.held === undefined) return label;
+                            return `${label} — investments ${cur} ${money(p.held_investments)} · money market funds ${cur} ${money(p.held_mmf)} · put in so far ${cur} ${money(p.invested)}`;
+                        }} />
                     <Legend {...theme.legendProps} />
-                    <Area type="monotone" dataKey="invested" name="Invested (total)"
+                    <Area type="monotone" dataKey={series[0] && series[0].held !== undefined ? 'held' : 'invested'} name="Held now (running balance)"
                         stroke={theme.primary} strokeWidth={2} fill={`url(#${inv})`} dot={false} activeDot={{ r: 4 }} />
                     <Area type="monotone" dataKey="returned" name="Returns (total)"
                         stroke={theme.success} strokeWidth={2} fill={`url(#${ret})`} dot={false} activeDot={{ r: 4 }} />

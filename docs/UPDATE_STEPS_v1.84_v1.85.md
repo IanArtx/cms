@@ -1,8 +1,8 @@
-# Updating to v1.84.0 + v1.85.0 + v1.85.1 — step by step
+# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 — step by step
 
 This covers **your computer (local)** first, then **both online companies**. Do the local part first: if something goes wrong there, nothing online is affected.
 
-The three versions:
+The versions:
 - **v1.84.0**
   - Shares are allotted inside the company; certificates and meetings show only URSB-registered shares.
   - Correction of the share register (contributions that were valued at 4,000 instead of the rate of the day).
@@ -12,6 +12,9 @@ The three versions:
 - **v1.85.1** (no database change)
   - Every person involved signs receipts in their own position (recorder, approver, requesting/pledging member).
   - Settle Fines With Savings shows the savings in every currency instead of "NaN".
+- **v1.85.2** (no database change)
+  - The investments page shows what is held in investments now (including money market fund interest and withdrawals), not the money put in over time.
+  - Closed investments count nothing; their gain or loss is listed under "Closed investments", and anything booked after closing is flagged.
 
 > Safety rules
 > - Paste the Render database URL only into your own terminal. Never paste it into a chat or a document.
@@ -130,7 +133,8 @@ Start the backend and frontend the way you normally do (for example `npm run dev
 6. **Reports › Records check:** money market funds, investments and the new **Projects** section should show no differences.
 7. **Profile:** a shareholder sees **Download Latest Registration Certificate**.
 8. **Documents › a share purchase receipt › Preview:** the bottom shows one signature block per person, each with their position.
-9. **Members' funds › Fines › Settle With Savings:** choose a member. Their savings show in each currency (no "NaN"). Fines in another currency than the ones chosen are greyed out with the reason.
+9. **Investments › Portfolio:** the first tile is **Held in Investments Now**. Its money market fund part equals the sum of the funds' balances. The chart shows "Held now (running balance)". If any investment is closed, a **Closed investments** card lists it with its result.
+10. **Members' funds › Fines › Settle With Savings:** choose a member. Their savings show in each currency (no "NaN"). Fines in another currency than the ones chosen are greyed out with the reason.
 
 If all of that works, go online.
 

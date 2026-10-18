@@ -1666,6 +1666,198 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
 // currency. `currencies` lists the ones that can be chosen (a current
 // rate exists).
 // ============================================================
+// ============================================================
+// v1.85.2 — WHAT THE COMPANY HOLDS IN ITS INVESTMENTS, MONTH BY MONTH
+// Requested: the investments page "should show the actual running
+// totals not the money invested … misleading especially for money
+// market fund investments that keep changing over time with increase
+// from interest and withdrawals", then: "closed investments don't
+// contribute to the shown figures since closing an investment means no
+// money is in it anymore or expected from it anymore. Though if an
+// investment made a loss at the time of closure that is recorded and
+// tracked … take into account … reversals that left some investment
+// balances negative despite them being closed".
+//
+// Held at a month end =
+//   Σ OPEN investments: their balance in 1400 Other Investments (the
+//     books, functional currency: capital put in − capital paid back),
+//     the closing entry of the books (INVESTMENT_CLOSURE) left out;
+//   + Σ OPEN money market funds: top-ups − withdrawals + interest − fees,
+//     in the fund's currency, at the rate of that month end.
+// An investment counts 0 from the month it is closed (completed,
+// terminated or cancelled; a fund: closed) — whatever its records show
+// afterwards, e.g. an entry or a reversal dated after it was closed,
+// or a negative balance left by an old reversal. Those are listed under
+// `closed[].after_close` so they can be checked, never added to the total.
+// Every closed one is also listed with its result: money that came back
+// − money put in (cash in the books, reversed entries left out), so a
+// loss made at closure stays recorded and visible.
+// ============================================================
+const CLOSED_INVESTMENT = ['COMPLETED', 'TERMINATED', 'CANCELLED'];
+
+const heldInBooks = async () => {
+    const glService = require('../services/glService');
+    const today = new Date().toISOString().slice(0, 10);
+    const ctx = await glService.getFunctionalContext();
+    const F = ctx.functionalCurrency?.id || (await query(`SELECT functional_currency_id AS id FROM company_settings WHERE id = 1`)).rows[0]?.id;
+    const idInv = ctx.glByCode.get('1400')?.id;
+    const { lines } = await glService.getLedgerLines({ basis: glService.BASIS.FUNCTIONAL, toDate: today });
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const monthOf = (d) => String(d).slice(0, 7);
+
+    // ---- investments ------------------------------------------------
+    const invs = (await query(`
+        SELECT i.id, i.name, i.investment_type, i.status, rr.reference_code,
+               CASE WHEN i.status IN ('COMPLETED', 'TERMINATED', 'CANCELLED')
+                    THEN COALESCE(i.actual_end_date, i.termination_approved_at::date, i.approved_at::date, i.created_at::date)::text END AS closed_on
+        FROM   investments i LEFT JOIN references_registry rr ON rr.id = i.reference_id`)).rows;
+    const invById = new Map(invs.map(i => [i.id, i]));
+    const invMoves = new Map(); // id → Map(month → amount)
+    const afterClose = new Map(); // id → booked to it AFTER it was closed (not counted; to check)
+    for (const l of lines) {
+        if (l.glAccountId !== idInv || !l.date || l.sourceType === 'INVESTMENT_CLOSURE') continue;
+        const amt = (parseFloat(l.debit) || 0) - (parseFloat(l.credit) || 0);
+        if (!amt) continue;
+        const key = l.investmentId || 0;
+        const ci = invById.get(key);
+        if (ci && ci.closed_on && String(l.date).slice(0, 10) > ci.closed_on) afterClose.set(key, (afterClose.get(key) || 0) + amt);
+        if (!invMoves.has(key)) invMoves.set(key, new Map());
+        const mm = invMoves.get(key);
+        mm.set(monthOf(l.date), (mm.get(monthOf(l.date)) || 0) + amt);
+    }
+
+    // ---- money market funds -------------------------------------------
+    const funds = (await query(`
+        SELECT m.id, m.name, m.status, m.currency_id, rr.reference_code,
+               CASE WHEN m.status = 'CLOSED' THEN COALESCE(m.closed_date, m.created_at::date)::text END AS closed_on
+        FROM   mmf_accounts m LEFT JOIN references_registry rr ON rr.id = m.reference_id`)).rows;
+    const fundMoves = new Map(); // id → Map(month → amount in the fund's currency)
+    const fx = (await query(`
+        SELECT x.mmf_account_id AS id, to_char(x.entry_date, 'YYYY-MM') AS m,
+               SUM(CASE WHEN x.entry_type IN ('TOPUP', 'INTEREST') THEN x.amount ELSE -x.amount END)::float8 AS amt
+        FROM   mmf_transactions x
+        WHERE  COALESCE(x.is_reversed, FALSE) = FALSE
+        GROUP  BY 1, 2`)).rows;
+    for (const r of fx) {
+        if (!fundMoves.has(r.id)) fundMoves.set(r.id, new Map());
+        fundMoves.get(r.id).set(r.m, r.amt);
+    }
+
+    // ---- the months to cover --------------------------------------------
+    const allMonths = new Set();
+    for (const mm of invMoves.values()) for (const m of mm.keys()) allMonths.add(m);
+    for (const mm of fundMoves.values()) for (const m of mm.keys()) allMonths.add(m);
+    const months = [];
+    if (allMonths.size) {
+        let [y, m] = [...allMonths].sort()[0].split('-').map(Number);
+        const last = monthOf(today);
+        for (let g = 0; g < 600; g++) {
+            const k = `${y}-${String(m).padStart(2, '0')}`;
+            months.push(k);
+            if (k >= last) break;
+            m += 1; if (m > 12) { m = 1; y += 1; }
+        }
+    }
+    // rate of each fund currency at each month end (today for this month)
+    const curIds = [...new Set(funds.map(f => f.currency_id))].filter(c => c && c !== F);
+    const rateAt = new Map(); // `${cur}|${month}` → rate
+    if (curIds.length && months.length) {
+        const rr = await query(`
+            SELECT c.id, to_char(d, 'YYYY-MM') AS m,
+                   fx_rate_on(c.id, $1, LEAST((date_trunc('month', d) + INTERVAL '1 month - 1 day')::date, CURRENT_DATE))::float8 AS rate
+            FROM   unnest($2::int[]) AS c(id)
+            CROSS JOIN generate_series($3::date, CURRENT_DATE, INTERVAL '1 month') AS d`,
+        [F, curIds, `${months[0]}-01`]);
+        for (const r of rr.rows) rateAt.set(`${r.id}|${r.m}`, r.rate);
+    }
+
+    // ---- month-end balances ----------------------------------------------
+    const series = new Map(); // month → { inv, mmf }
+    const invBal = new Map(); const fundBal = new Map();
+    let unconverted = 0;
+    for (const m of months) {
+        let inv = 0; let mmf = 0;
+        for (const [id, mm] of invMoves) {
+            const b = (invBal.get(id) || 0) + (mm.get(m) || 0);
+            invBal.set(id, b);
+            const i = invById.get(id);
+            if (i && i.closed_on && monthOf(i.closed_on) <= m) continue; // closed: counts 0
+            inv += b;
+        }
+        for (const f of funds) {
+            const mm = fundMoves.get(f.id);
+            const b = (fundBal.get(f.id) || 0) + ((mm && mm.get(m)) || 0);
+            fundBal.set(f.id, b);
+            if (f.closed_on && monthOf(f.closed_on) <= m) continue;
+            if (!b) continue;
+            const rate = f.currency_id === F ? 1 : rateAt.get(`${f.currency_id}|${m}`);
+            if (rate == null) { unconverted += 1; continue; }
+            mmf += b * rate;
+        }
+        series.set(m, { inv: r2(inv), mmf: r2(mmf) });
+    }
+    const nowM = months.length ? series.get(months[months.length - 1]) : { inv: 0, mmf: 0 };
+
+    // ---- closed investments: result at closure, and anything left over ----
+    const results = (await query(`
+        SELECT t.investment_id AS id,
+               SUM(CASE WHEN t.transaction_type = 'DEBIT'  THEN t.functional_amount ELSE 0 END)::float8 AS put_in,
+               SUM(CASE WHEN t.transaction_type = 'CREDIT' THEN t.functional_amount ELSE 0 END)::float8 AS came_back
+        FROM   transactions t
+        WHERE  t.investment_id IS NOT NULL AND t.status = 'POSTED' AND t.is_reversal = FALSE
+        AND    NOT EXISTS (SELECT 1 FROM transactions r WHERE r.reversal_of = t.id AND r.status = 'POSTED')
+        GROUP  BY 1`)).rows;
+    const resById = new Map(results.map(r => [r.id, r]));
+    const fundRes = new Map((await query(`
+        SELECT x.mmf_account_id AS id,
+               SUM(CASE WHEN x.entry_type = 'TOPUP' THEN t.functional_amount ELSE 0 END)::float8 AS put_in,
+               SUM(CASE WHEN x.entry_type = 'WITHDRAWAL' THEN t.functional_amount ELSE 0 END)::float8 AS came_back
+        FROM   mmf_transactions x JOIN transactions t ON t.id = x.transaction_id
+        WHERE  COALESCE(x.is_reversed, FALSE) = FALSE
+        GROUP  BY 1`)).rows.map(r => [r.id, r]));
+    const closed = [];
+    for (const i of invs) {
+        if (!CLOSED_INVESTMENT.includes(i.status)) continue;
+        const r = resById.get(i.id) || { put_in: 0, came_back: 0 };
+        closed.push({
+            kind: 'INVESTMENT', id: i.id, name: i.name, reference_code: i.reference_code, type: i.investment_type,
+            status: i.status, closed_on: i.closed_on,
+            put_in: r2(r.put_in || 0), came_back: r2(r.came_back || 0), result: r2((r.came_back || 0) - (r.put_in || 0)),
+            // capital not recovered (+) / recovered above cost (−) when it closed —
+            // the books take this to investment income on the closing date
+            capital_at_close: r2((invBal.get(i.id) || 0) - (afterClose.get(i.id) || 0)),
+            // booked to it AFTER it was closed (e.g. a late or reversed entry) — not counted, to be checked
+            after_close: r2(afterClose.get(i.id) || 0),
+        });
+    }
+    for (const f of funds) {
+        if (!f.closed_on) continue;
+        const r = fundRes.get(f.id) || { put_in: 0, came_back: 0 };
+        const rate = f.currency_id === F ? 1 : (rateAt.get(`${f.currency_id}|${monthOf(today)}`) || null);
+        closed.push({
+            kind: 'MMF', id: f.id, name: f.name, reference_code: f.reference_code, type: 'MMF', status: f.status, closed_on: f.closed_on,
+            put_in: r2(r.put_in || 0), came_back: r2(r.came_back || 0), result: r2((r.came_back || 0) - (r.put_in || 0)),
+            capital_at_close: null,
+            // still in the fund after it was closed — not counted, to be checked
+            after_close: rate == null ? null : r2((fundBal.get(f.id) || 0) * rate),
+        });
+    }
+    closed.sort((a, b) => String(b.closed_on).localeCompare(String(a.closed_on)));
+    const totalResult = r2(closed.reduce((s2, c) => s2 + c.result, 0));
+    const losses = r2(closed.filter(c => c.result < 0).reduce((s2, c) => s2 + c.result, 0));
+
+    // monthly movement form (what getTotalsOverTime merges): the difference
+    // between consecutive month-end balances
+    const byMonth = new Map();
+    let prev = { inv: 0, mmf: 0 };
+    for (const m of months) {
+        const cur = series.get(m);
+        byMonth.set(m, { inv: cur.inv - prev.inv, mmf: cur.mmf - prev.mmf });
+        prev = cur;
+    }
+    return { byMonth, now: nowM, closed, closedSummary: { count: closed.length, result: totalResult, losses }, unconverted };
+};
+
 const getTotalsOverTime = asyncHandler(async (req, res) => {
     const fc = await query(`SELECT cs.functional_currency_id AS id, c.code FROM company_settings cs JOIN currencies c ON c.id = cs.functional_currency_id WHERE cs.id = 1`);
     const F = fc.rows[0]?.id || null;
@@ -1730,9 +1922,16 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
     const byMonth = new Map();
     let unconverted = 0;
     for (const r of result.rows) {
-        if (!byMonth.has(r.period)) byMonth.set(r.period, { I: 0, R: 0 });
+        if (!byMonth.has(r.period)) byMonth.set(r.period, { I: 0, R: 0, H: 0, M: 0 });
         byMonth.get(r.period)[r.k] += r.amount;
         unconverted += r.missing;
+    }
+    // v1.85.2 — the amount held, from the books
+    const held = await heldInBooks();
+    for (const [period, mv] of held.byMonth) {
+        if (!byMonth.has(period)) byMonth.set(period, { I: 0, R: 0, H: 0, M: 0 });
+        byMonth.get(period).H += mv.inv;
+        byMonth.get(period).M += mv.mmf;
     }
     const series = [];
     if (byMonth.size) {
@@ -1741,15 +1940,19 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
         const last = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
         let [y, m] = months[0].split('-').map(Number);
         const end = months[months.length - 1] > last ? months[months.length - 1] : last;
-        let invested = 0; let returned = 0;
+        let invested = 0; let returned = 0; let heldInv = 0; let heldMmf = 0;
         const round = (n) => Math.round(n * 100) / 100;
         for (let guard = 0; guard < 600; guard++) {
             const key = `${y}-${String(m).padStart(2, '0')}`;
             const mv = byMonth.get(key);
-            if (mv) { invested += mv.I; returned += mv.R; }
+            if (mv) { invested += mv.I; returned += mv.R; heldInv += mv.H || 0; heldMmf += mv.M || 0; }
             series.push({
                 period: key,
                 label: `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1]} ${y}`,
+                // v1.85.2 — held at the end of the month (the books' balance)
+                held: round(heldInv + heldMmf),
+                held_investments: round(heldInv),
+                held_mmf: round(heldMmf),
                 invested: round(invested),
                 returned: round(returned),
             });
@@ -1762,11 +1965,10 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
     if (target.id !== F) {
         const k = target.rate;
         for (const p of series) {
-            p.invested = Math.round(p.invested * k * 100) / 100;
-            p.returned = Math.round(p.returned * k * 100) / 100;
+            for (const f of ['invested', 'returned', 'held', 'held_investments', 'held_mmf']) p[f] = Math.round(p[f] * k * 100) / 100;
         }
     }
-    const lastPoint = series[series.length - 1] || { invested: 0, returned: 0 };
+    const lastPoint = series[series.length - 1] || { invested: 0, returned: 0, held: 0, held_investments: 0, held_mmf: 0 };
     sendSuccess(res, {
         currencyCode: target.code,
         functionalCode: fCode,
@@ -1774,7 +1976,10 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
         rateDate: target.id !== F ? new Date().toISOString().slice(0, 10) : null,
         currencies: options.map(o => ({ id: o.id, code: o.code })),
         series,
-        totals: { invested: lastPoint.invested, returned: lastPoint.returned },
+        totals: {
+            invested: lastPoint.invested, returned: lastPoint.returned,
+            held: lastPoint.held, held_investments: lastPoint.held_investments, held_mmf: lastPoint.held_mmf,
+        },
         unconverted,
     });
 });
@@ -1890,6 +2095,20 @@ const getPortfolioSummary = asyncHandler(async (req, res) => {
         ? Math.round(((totalReturns - totalActualExpenditure) / totalActualExpenditure) * 1000) / 10
         : 0;
 
+    // v1.85.2 — what is held now (the books' balance, books' currency) and
+    // the income earned on what was put in
+    let heldNow = null;
+    try {
+        const h = await heldInBooks();
+        const fc = await query(`SELECT c.code FROM company_settings cs JOIN currencies c ON c.id = cs.functional_currency_id WHERE cs.id = 1`);
+        const r2 = (n) => Math.round(n * 100) / 100;
+        heldNow = {
+            currencyCode: fc.rows[0]?.code || null, total: r2(h.now.inv + h.now.mmf), investments: r2(h.now.inv), mmf: r2(h.now.mmf),
+            closed: h.closed, closedSummary: h.closedSummary, // v1.85.2 — closed ones: not counted, results kept
+        };
+    } catch (_) { heldNow = null; }
+    const incomeOnPutIn = totalActualExpenditure > 0 ? Math.round((totalReturns / totalActualExpenditure) * 1000) / 10 : 0;
+
     sendSuccess(res, {
         currencyCode:           dominantCurrency?.currency_code || null,
         totalCount:             parseInt(c.total_count),
@@ -1900,6 +2119,8 @@ const getPortfolioSummary = asyncHandler(async (req, res) => {
         totalActualExpenditure,
         totalReturns,
         overallRoiPercentage:   overallRoi,
+        heldNow,          // v1.85.2
+        incomeOnPutInPercentage: incomeOnPutIn, // v1.85.2 — returns ÷ money put in
         byStatus: byStatusResult.rows.map(r => ({
             status: r.status,
             count:  parseInt(r.count),

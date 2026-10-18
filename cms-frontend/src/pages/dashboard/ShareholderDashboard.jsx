@@ -212,7 +212,7 @@ const PerformanceCard = ({ performance, inputVsReturn }) => {
                 <div className={hasPerformance ? 'mt-4 pt-4 border-t border-gray-100' : ''}>
                     {/* v1.83.1 — totals over time for the whole portfolio, not one point per investment */}
                     <h3 className="text-xs font-semibold text-gray-500 mb-2">
-                        Invested vs Returns <span className="font-normal text-gray-400">— whole portfolio, over time</span>
+                        Held in investments vs returns <span className="font-normal text-gray-400">— whole portfolio, over time</span>
                     </h3>
                     <InvestmentTotalsChart height={220} idPrefix="shDashInv" compact />
                 </div>

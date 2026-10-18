@@ -57,7 +57,7 @@ const OverviewTile = ({ title, value, subtitle, icon: Icon, color }) => {
             <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-500">{title}</p>
-                    <p className="mt-2 text-2xl font-bold text-gray-900 truncate">{value}</p>
+                    <p className="mt-2 text-xl xl:text-2xl font-bold text-gray-900 break-words leading-tight">{value}</p>
                     {subtitle && <p className="mt-1 text-xs text-gray-400">{subtitle}</p>}
                 </div>
                 <div className={`p-3 rounded-xl shadow-sm flex-shrink-0 ${colors[color]}`}>
@@ -81,26 +81,39 @@ const PortfolioOverview = ({ summary }) => {
     return (
         <div className="mb-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                <OverviewTile
-                    title="Total Invested"
-                    value={`${currency} ${summary.totalActualExpenditure.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
-                    subtitle={`Planned: ${currency} ${summary.totalPlannedBudget.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
-                    icon={BanknotesIcon}
-                    color="blue"
-                />
+                {/* v1.85.2 — what is held now (the books' balance), not the money put in over time */}
+                {summary.heldNow ? (
+                    <OverviewTile
+                        title="Held in Investments Now"
+                        value={`${summary.heldNow.currencyCode} ${summary.heldNow.total.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                        subtitle={`Open investments only. Projects, bonds & bills ${summary.heldNow.investments.toLocaleString('en-US', { maximumFractionDigits: 0 })} · Money market funds ${summary.heldNow.mmf.toLocaleString('en-US', { maximumFractionDigits: 0 })} · Put in so far ${currency} ${summary.totalActualExpenditure.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                        icon={BanknotesIcon}
+                        color="blue"
+                    />
+                ) : (
+                    <OverviewTile
+                        title="Total Invested"
+                        value={`${currency} ${summary.totalActualExpenditure.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                        subtitle={`Planned: ${currency} ${summary.totalPlannedBudget.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                        icon={BanknotesIcon}
+                        color="blue"
+                    />
+                )}
                 <OverviewTile
                     title="Total Returns"
-                    value={`${currency} ${summary.totalReturns.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
+                    value={`${currency} ${summary.totalReturns.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
                     subtitle="Across the whole portfolio"
                     icon={ArrowTrendingUpIcon}
                     color="green"
                 />
+                {/* v1.85.2 — income earned on the money put in (the old "returns − put in"
+                    showed almost every portfolio "in the red" while it was still invested) */}
                 <OverviewTile
-                    title="Overall ROI"
-                    value={`${summary.overallRoiPercentage}%`}
-                    subtitle={summary.overallRoiPercentage >= 0 ? 'In the green' : 'In the red'}
+                    title="Income on Money Put In"
+                    value={`${summary.incomeOnPutInPercentage ?? summary.overallRoiPercentage}%`}
+                    subtitle="Returns received ÷ money put in so far"
                     icon={TrophyIcon}
-                    color={summary.overallRoiPercentage >= 0 ? 'green' : 'yellow'}
+                    color="green"
                 />
                 <OverviewTile
                     title="Active Investments"
@@ -114,7 +127,7 @@ const PortfolioOverview = ({ summary }) => {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* v1.83.1 — totals over time for the whole portfolio (not one bar per investment) */}
                 <div className="card lg:col-span-2">
-                    <h3 className="section-title mb-2">Invested vs Returns — over time</h3>
+                    <h3 className="section-title mb-2">Held in investments vs returns — over time</h3>
                     <InvestmentTotalsChart height={240} idPrefix="invPage" />
                 </div>
 
@@ -143,6 +156,80 @@ const PortfolioOverview = ({ summary }) => {
                     )}
                 </div>
             </div>
+
+            <ClosedInvestmentsCard held={summary.heldNow} />
+        </div>
+    );
+};
+
+// ============================================================
+// CLOSED INVESTMENTS (v1.85.2)
+// Requested: "closed investments don't contribute to the shown figures
+// … Though if an investment made a loss at the time of closure that is
+// recorded and tracked". Each closed investment / fund with what was put
+// in, what came back and the result; anything booked to it after it was
+// closed (e.g. an old reversal) is shown for checking, never counted.
+// ============================================================
+const ClosedInvestmentsCard = ({ held }) => {
+    const [open, setOpen] = useState(false);
+    if (!held || !held.closed || held.closed.length === 0) return null;
+    const cur = held.currencyCode || '';
+    const n0 = (v) => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    const sum = held.closedSummary || {};
+    const flagged = held.closed.filter(c => c.after_close && Math.abs(c.after_close) >= 1);
+    return (
+        <div className="card mt-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <h3 className="section-title mb-0">Closed investments ({held.closed.length})</h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                        Not counted in what is held — nothing is in them or expected from them any more.
+                        Result of all closed ones (money back − money put in):{' '}
+                        <span className={`font-semibold ${sum.result < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{cur} {n0(sum.result)}</span>
+                        {sum.losses < 0 && <> · losses <span className="font-semibold text-red-700">{cur} {n0(sum.losses)}</span></>}
+                    </p>
+                </div>
+                <button type="button" className="btn-secondary text-sm" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Show'} list</button>
+            </div>
+            {flagged.length > 0 && (
+                <p className="mt-3 text-xs text-amber-800 bg-amber-50 rounded-lg px-3 py-2">
+                    {flagged.length} closed investment{flagged.length === 1 ? ' has' : 's have'} entries dated after {flagged.length === 1 ? 'it was' : 'they were'} closed
+                    (for example an old reversal). They are not counted in what is held; please check them on the investment's ledger.
+                </p>
+            )}
+            {open && (
+                <div className="overflow-x-auto mt-3">
+                    <table className="min-w-full text-sm">
+                        <thead>
+                            <tr className="text-left text-xs uppercase text-gray-400 border-b border-gray-100">
+                                <th className="py-2 pr-3">Investment</th><th className="py-2 pr-3">Closed</th>
+                                <th className="py-2 pr-3 text-right">Put in</th><th className="py-2 pr-3 text-right">Came back</th>
+                                <th className="py-2 pr-3 text-right">Result</th><th className="py-2">To check</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {held.closed.map(c => (
+                                <tr key={`${c.kind}-${c.id}`} className="border-b border-gray-50">
+                                    <td className="py-2 pr-3">
+                                        <Link to={c.kind === 'MMF' ? `/mmf/${c.id}` : `/investments/${c.id}`} className="text-primary-700 hover:underline">{c.name}</Link>
+                                        <span className="block text-[11px] text-gray-400 font-mono">{c.reference_code} · {String(c.status || '').toLowerCase()}</span>
+                                    </td>
+                                    <td className="py-2 pr-3 whitespace-nowrap">{formatDate(c.closed_on)}</td>
+                                    <td className="py-2 pr-3 text-right tabular-nums">{n0(c.put_in)}</td>
+                                    <td className="py-2 pr-3 text-right tabular-nums">{n0(c.came_back)}</td>
+                                    <td className={`py-2 pr-3 text-right tabular-nums font-semibold ${c.result < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                                        {c.result < 0 ? 'Loss ' : c.result > 0 ? 'Gain ' : ''}{n0(c.result)}
+                                    </td>
+                                    <td className="py-2 text-xs text-amber-800">
+                                        {c.after_close && Math.abs(c.after_close) >= 1 ? `${cur} ${n0(c.after_close)} booked after closing` : '—'}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    <p className="text-[11px] text-gray-400 mt-2">Amounts in {cur} (the books' currency); reversed entries are left out. Money back includes returns and capital repaid.</p>
+                </div>
+            )}
         </div>
     );
 };

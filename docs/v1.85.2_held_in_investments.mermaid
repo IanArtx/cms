@@ -1,0 +1,14 @@
+%% v1.85.2 — the investments page shows what is HELD (the books' balance), not the money put in over time
+flowchart LR
+    subgraph BOOKS["Books (functional currency, as on the Balance Sheet)"]
+        A1400["1400 Other Investments\ncapital put in − capital paid back\n− cost taken out when closed"]
+        A1300["1300 Money Market Funds\ntop-ups − withdrawals + interest − fees\n(+ revaluation of a foreign fund)"]
+    end
+    A1400 --> H["Held now = OPEN investments 1400 + OPEN funds 1300\n(month-end running balance)"]
+    A1300 --> H
+    H --> T1["Tile: Held in Investments Now\n(split + money put in so far for reference)"]
+    H --> C["Chart: Held now vs Returns (total)\nInvestments page and shareholder dashboard"]
+    R["Returns received (income)"] --> C
+    R --> T2["Tile: Income on Money Put In = returns ÷ money put in"]
+    CL["Closed (completed / terminated / cancelled; fund closed)"] -->|"count 0 from the closing month"| H
+    CL --> CC["Closed investments card: put in · came back · result (gain/loss)\n+ anything booked after closing, flagged to check"]

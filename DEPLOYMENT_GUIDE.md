@@ -453,6 +453,8 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Investments page shows what is held now** (v1.85.2): no database change,
+  nothing to run — push the code.
 - **Signatories in their own positions; settling fines with savings**
   (v1.85.1): no database change. Push the code, then once per database run
   `node update_live_database.js --url "…" --script

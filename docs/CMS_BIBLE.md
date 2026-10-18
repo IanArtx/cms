@@ -1,7 +1,7 @@
 # The CMS Bible
 ### The Complete Technical Reference for the ZWECK TUKULA Ltd Company Management System
 
-**Version documented:** 1.85.1
+**Version documented:** 1.85.2
 **Last updated:** 18 October 2026
 **Status:** Living document — update this file in the same session as any code change (see "How to Keep This Document Alive" near the end).
 
@@ -2781,6 +2781,18 @@ Requested directly: "the settlement of fine form with savings shows NaN even whe
 
 No database change. Diagram `docs/v1.85.1_signatories_and_fine_savings.mermaid`.
 
+#### 51. The Investments Page Shows What Is Held Now (v1.85.2)
+
+Requested directly: "on the investments main page it should show the actual running totals not the money invested over because this value is generally misleading especially for money market fund investments that keep changing over time with increase from interest and withdrawals".
+
+**51.1 The figure.** *Held now* = the books' balance (functional currency, the same as the Balance Sheet) of **1400 Other Investments** (projects, bonds, treasury bills: capital put in, less capital paid back, less the cost taken out when an investment is closed) plus **1300 Money Market Funds** (top-ups, less withdrawals, plus interest, less management fees, plus the revaluation of a fund in another currency). Worked out by `investmentsController.heldInBooks()` from `glService.getLedgerLines` (FUNCTIONAL basis), so it can never disagree with the financial statements.
+
+**51.2 Screens.** `GET /api/investments/totals-over-time` adds per month `held`, `held_investments`, `held_mmf` (and the same in `totals`); the chart (Investments page and shareholder dashboard) draws *Held now (running balance)* and *Returns (total)*; its tooltip splits the amount held and shows the money put in so far. `GET /api/investments/portfolio-summary` adds `heldNow { total, investments, mmf, currencyCode }` and `incomeOnPutInPercentage` (returns ÷ money put in). Tiles: **Held in Investments Now** (with the split and the money put in so far for reference) replaces *Total Invested*; **Income on Money Put In** replaces *Overall ROI*, which was (returns − money put in) ÷ money put in and showed a portfolio still invested as "in the red". The currency switch is unchanged.
+
+**51.3 Closed investments count nothing** (requested: "closed investments don't contribute to the shown figures since closing an investment means no money is in it anymore or expected from it anymore. Though if an investment made a loss at the time of closure that is recorded and tracked … take into account of gone-bad reversals that left some investment balances negative despite them being closed"). `heldInBooks()` works per investment (1400 lines by `investmentId`, the books' closing entry left out) and per fund (`mmf_transactions`, at the month-end rate): an investment that is COMPLETED / TERMINATED / CANCELLED (closing date: `actual_end_date`, else the termination approval, else the approval / creation date) and a fund that is CLOSED (`closed_date`) count 0 from the month they closed, whatever is booked to them afterwards. `portfolio-summary.heldNow.closed[]` lists each one with money put in, money that came back (posted, reversed pairs left out, books' currency), **result** (gain/loss), the capital left at closing, and **anything booked after it closed** (e.g. an old reversal — shown for checking, never counted); `closedSummary` = count, total result, total losses. Investments page: card **Closed investments** (total result and losses, a warning when something was booked after closing, the list on request).
+
+No database change. Diagram `docs/v1.85.2_held_in_investments.mermaid`.
+
 ---
 
 ## 5. Deployment Guide
@@ -3019,6 +3031,7 @@ Derived from the `cms/migration_vX.X.0.sql` files' own header comments — each 
 
 | Version | What changed |
 |---|---|
+| 1.85.2 | **The investments page shows what is held now.** Tile and chart use the books' balance of 1400 Other Investments + 1300 Money Market Funds (interest, withdrawals and fees included) instead of the money put in over time, open investments only (a closed one counts nothing from the month it closed; its gain or loss is kept in a *Closed investments* list, with anything booked after closing flagged); *Income on Money Put In* (returns ÷ money put in) replaces the misleading *Overall ROI*. No database change. See §51. |
 | 1.85.1 | **Every party signs in their own position; fine settlement with savings in any currency.** Share purchase receipts list everyone involved (recorder, approver of a held entry, requesting member, pledging member, confirming member) with their position and signature; investment income/expense receipts show the recorder and the approver; transaction statements show the approver. `backfill_v1.85.1_receipt_signatories.js` updates receipts already issued. Settle Fines With Savings no longer shows NaN: savings per currency, fines in one currency at a time, received into an account in that currency. No database change. See §50. |
 | 1.85.0 | **Projects on their own, inside an investment, or added later; documents on project and investment pages.** New Projects page and project page (budget, spending, milestones, status, documents); a project on its own is paid with Record Expense (project chosen) and keeps its expenses when later added to an investment; inside an investment it is funded through the investment. Upload or add existing documents (proposal, report, bond certificate …) straight on project and investment pages. Project spending checked against its entries (project page and Records check). Migration `migration_v1.85.0.sql`. See §49. |
 | 1.84.0 | **Shares allotted inside the company; certificates and meetings on URSB-registered shares; share-register correction.** Certificates (new type REGISTRATION, basis REGISTERED) show only URSB-registered shares with the shares before, the increase and the effective date, issued automatically when a return of allotment is marked filed or a URSB figure is entered, plus a one-time "Issue certificates for registered shares"; meetings, quorum, polls and minutes use registered shares as at the meeting date; allotments stay in the company's register and the excess is flagged as before. `rebuild_share_register_v1.84.0.js` revalues contribution credit at the books' rate of the day and adds correction allotments (`rate_correction`). Migration `migration_v1.84.0.sql`. See §48. |

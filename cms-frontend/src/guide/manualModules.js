@@ -522,7 +522,7 @@ export const MODULES = [
         who: 'People with investment view; investment managers create; an approver approves.',
         summary: 'All investments — standard projects, bonds, treasury bills and money market funds — in one portfolio. Projects have their own page (Investments › Projects).',
         purpose: [
-            'Shows total invested, total returns, overall return on investment and active investments, with charts. Each investment has its own page.',
+            'Shows what the company holds in its investments now (the books\' balance: projects, bonds and bills, plus money market funds with their interest and withdrawals), the returns received, the income earned on the money put in, and the active investments. The chart shows the amount held and the returns month by month. Each investment has its own page.',
             'Buying or expanding an investment is capital; its day-to-day running costs and income are "operational" and tracked in its operating budget.',
         ],
         tasks: [
@@ -535,7 +535,7 @@ export const MODULES = [
             },
         ],
         tour: [
-            { target: 'title', text: 'The whole portfolio: invested, returns and return on investment. Click an investment to open it.' },
+            { target: 'title', text: 'The whole portfolio: what is held now, the returns received and the income on the money put in. Click an investment to open it.' },
             { button: 'New Investment', text: 'Add a standard investment, bond, treasury bill or money market fund.' },
         ],
         match: [/^\/mmf\//],

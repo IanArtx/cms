@@ -24,6 +24,7 @@ const { wrapEmail } = require('../services/emailTemplates');
 const taxService = require('../services/taxService');
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 const investmentCost = require('../services/investmentCostService'); // v1.80.0 — buying vs running
+const { positionSql } = require('../services/signatoryService'); // v1.85.1
 
 // ============================================================
 // v1.40.0 SHARED HELPERS
@@ -1986,10 +1987,20 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                         ir.return_date, ir.notes, ir.created_at,
                         ir.is_reversed, ir.reversed_at,
                         rr.reference_code AS return_reference,
-                        retcreator.first_name || ' ' || retcreator.last_name AS recorded_by_name
+                        retcreator.first_name || ' ' || retcreator.last_name AS recorded_by_name,
+                        -- v1.85.1 — recorder and approver, each with their position and signature
+                        ${positionSql('ir.created_by')} AS recorded_by_position,
+                        retcreator.signature_path AS recorded_by_signature,
+                        rtx.approved_by AS approved_by_id, ir.created_by AS recorded_by_id,
+                        retappr.first_name || ' ' || retappr.last_name AS approved_by_name,
+                        ${positionSql('rtx.approved_by')} AS approved_by_position,
+                        retappr.signature_path AS approved_by_signature,
+                        rtx.approved_at
                     FROM investment_returns ir
                     JOIN references_registry rr ON rr.id = ir.reference_id
                     JOIN users retcreator        ON retcreator.id = ir.created_by
+                    LEFT JOIN transactions rtx   ON rtx.id = ir.transaction_id
+                    LEFT JOIN users retappr      ON retappr.id = rtx.approved_by
                     WHERE ir.investment_id = i.id
                 ) ret_data
             ) AS returns,
@@ -2019,10 +2030,20 @@ const getInvestmentById = asyncHandler(async (req, res) => {
                         it.entry_date, it.created_at,
                         it.is_reversed, it.reversed_at,
                         opr.reference_code AS reference_code,
-                        opcreator.first_name || ' ' || opcreator.last_name AS recorded_by_name
+                        opcreator.first_name || ' ' || opcreator.last_name AS recorded_by_name,
+                        -- v1.85.1 — recorder and approver, each with their position and signature
+                        ${positionSql('it.created_by')} AS recorded_by_position,
+                        opcreator.signature_path AS recorded_by_signature,
+                        otx.approved_by AS approved_by_id, it.created_by AS recorded_by_id,
+                        opappr.first_name || ' ' || opappr.last_name AS approved_by_name,
+                        ${positionSql('otx.approved_by')} AS approved_by_position,
+                        opappr.signature_path AS approved_by_signature,
+                        otx.approved_at
                     FROM investment_transactions it
                     JOIN references_registry opr ON opr.id = it.reference_id
                     JOIN users opcreator          ON opcreator.id = it.created_by
+                    LEFT JOIN transactions otx    ON otx.id = it.transaction_id
+                    LEFT JOIN users opappr        ON opappr.id = otx.approved_by
                     WHERE it.investment_id = i.id
                 ) op_data
             ) AS operations,

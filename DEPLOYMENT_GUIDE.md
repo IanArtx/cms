@@ -453,6 +453,12 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Signatories in their own positions; settling fines with savings**
+  (v1.85.1): no database change. Push the code, then once per database run
+  `node update_live_database.js --url "…" --script
+  backfill_v1.85.1_receipt_signatories.js --dry-run` and again without
+  `--dry-run` — receipts issued before then list everyone involved (only
+  the list of signatories is added; figures are not touched).
 - **Projects on their own or inside an investment; documents on project and
   investment pages** (v1.85.0): on **both** databases, before pushing the code,
   run `node update_live_database.js --url "…"` then `--apply

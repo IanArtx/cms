@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { investmentsAPI, categoriesAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
-import { investmentEntryTemplate, printDocument } from '../../utils/exportUtils';
+import { investmentEntryTemplate, printDocument, recordParties } from '../../utils/exportUtils';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
@@ -499,6 +499,14 @@ const OperatingBudgetCard = ({ investment }) => {
             notes:                op.description,
             recorded_by_name:     op.recorded_by_name,
             recorded_at:          op.created_at,
+            // v1.85.1 — recorder and approver, each in their own position
+            parties: recordParties({
+                recordedBy: op.recorded_by_name, recordedPosition: op.recorded_by_position,
+                recordedSignature: op.recorded_by_signature, recordedAt: op.created_at,
+                approvedBy: op.approved_by_name, approvedPosition: op.approved_by_position,
+                approvedSignature: op.approved_by_signature, approvedAt: op.approved_at || op.created_at,
+                sameUser: op.approved_by_id != null && op.approved_by_id === op.recorded_by_id,
+            }),
         }), op.reference_code);
     };
 
@@ -2099,6 +2107,14 @@ const InvestmentDetailPage = () => {
                                                 notes:                r.notes,
                                                 recorded_by_name:     r.recorded_by_name,
                                                 recorded_at:          r.created_at,
+            // v1.85.1 — recorder and approver, each in their own position
+            parties: recordParties({
+                recordedBy: r.recorded_by_name, recordedPosition: r.recorded_by_position,
+                recordedSignature: r.recorded_by_signature, recordedAt: r.created_at,
+                approvedBy: r.approved_by_name, approvedPosition: r.approved_by_position,
+                approvedSignature: r.approved_by_signature, approvedAt: r.approved_at || r.created_at,
+                sameUser: r.approved_by_id != null && r.approved_by_id === r.recorded_by_id,
+            }),
                                             }), r.return_reference)}
                                             className="text-gray-400 hover:text-primary-700"
                                             title="Preview / print receipt"

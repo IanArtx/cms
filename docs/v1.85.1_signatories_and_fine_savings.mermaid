@@ -1,0 +1,17 @@
+%% v1.85.1 — every party signs in their own position; fine settlement shows savings per currency
+flowchart TD
+    subgraph SIGN["Who signs a system-issued receipt"]
+        A1["Recorded directly by the Treasurer"] --> P1["Recorded and approved by — Treasurer"]
+        A2["Recorded by the Assistant Treasurer,\nheld, approved by the Treasurer"] --> P2["Recorded by — Assistant Treasurer\nApproved by — Treasurer"]
+        A3["Contribution acknowledgement requisition"] --> P3["Requested by — Shareholder\nApproved and recorded by — approver"]
+        A4["Capital call pledge payment"] --> P4["Pledged by — Shareholder\nApproved by — approver"]
+        A5["Savings → capital conversion"] --> P5["Entered by — Treasury\nConfirmed by — Shareholder"]
+    end
+    P1 & P2 & P3 & P4 & P5 --> SB["signatoryService.buildParties:\nname · position (most senior role) · signature snapshot · date"]
+    SB --> R["Share purchase receipt: trail + one signature block per person"]
+    INV["Investment return / operational entry\n(created_by + transactions.approved_by)"] --> IR["Investment receipt: recorder and approver"]
+    OLD["Receipts issued before v1.85.1"] -->|"backfill_v1.85.1_receipt_signatories.js"| R
+    subgraph FINE["Settle fines with savings"]
+        B["GET /savings/balance/:user → balances per currency"] --> F["Form lists every currency\n(0 where only fines exist)"]
+        F --> S["Fines chosen in one currency → that currency's savings;\nreceived into Primary if same currency, else the first operational account in it"]
+    end

@@ -892,6 +892,11 @@ const confirmSavingsCapitalConversion = asyncHandler(async (req, res) => {
                 notes:             `Redirected from savings (${conversion.reference_code})${conversion.notes ? ` — ${conversion.notes}` : ''}`,
                 recordedByUserId:  req.user.id,
                 accountId:         conversion.destination_account_id,
+                // v1.85.1 — entered by the Treasury, confirmed by the member
+                receiptParties: [
+                    { action: 'Entered by', userId: conversion.entered_by, at: conversion.created_at },
+                    { action: 'Confirmed by', userId: req.user.id },
+                ],
             });
 
         await client.query(`

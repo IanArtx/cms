@@ -76,6 +76,7 @@ const VERSIONS = [
     { v: '1.83.0', file: 'migration_v1.83.0.sql', what: 'BoU rates suggested daily, rate sources, realised FX on transfers', check: tbl('fx_rate_suggestions') },
     { v: '1.83.1', file: null, what: '(no database change — smooth exchange-rate charts, investment totals over time)' },
     { v: '1.84.0', file: 'migration_v1.84.0.sql', what: 'registered-share certificates, REGISTRATION type, share-register correction flag', check: col('share_allotments', 'rate_correction') },
+    { v: '1.85.1', file: null, what: '(no database change — every party signs receipts in their own position; fine settlement savings per currency)' },
     { v: '1.85.0', file: 'migration_v1.85.0.sql', what: 'projects on their own or inside an investment, project spending, documents on project/investment pages', check: col('transactions', 'project_id') },
 ];
 

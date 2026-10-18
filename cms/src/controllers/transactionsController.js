@@ -31,6 +31,7 @@ const shareCapitalService = require('../services/shareCapitalService');
 const taxService = require('../services/taxService');
 const reversalLinks = require('../services/reversalLinksService'); // v1.72.0
 const moneyApprovalContext = require('../services/moneyApprovalContext'); // v1.73.0
+const signatoryService = require('../services/signatoryService'); // v1.85.1 — every party signs in their own position
 const postingTracker = require('../services/postingTracker'); // v1.78.0
 const documentLinks = require('../services/documentLinksService'); // v1.78.0
 const exchangeRateService = require('../services/exchangeRateService'); // v1.83.0 — realised FX on transfers
@@ -549,6 +550,7 @@ const issueSharePurchaseReceipt = async (client, {
     contributor, contributionId, amount, currencyId,
     contributionDate, recordedByUserId, contributionReferenceCode,
     allotment, // v1.69.0 — shareCapitalService.allotForContribution's result
+    parties = null, // v1.85.1 — [{ action, userId, at }]; default: the recorder (+ the approver of a held entry)
 }) => {
     const currencyResult = await client.query(
         `SELECT code, symbol FROM currencies WHERE id = $1`,
@@ -604,6 +606,20 @@ const issueSharePurchaseReceipt = async (client, {
     }
 
     const signedAt = new Date();
+    // v1.85.1 — every person involved signs in their own position. The
+    // receipt used to print only the person who posted it, labelled
+    // "Treasurer" — the final approver, or even the member, when the
+    // contribution came through an approval step.
+    let signatories = [];
+    try {
+        let list = parties;
+        if (!list) {
+            list = [{ action: 'Recorded by', userId: recordedByUserId, at: signedAt }];
+            const ctx = moneyApprovalContext.get();
+            if (ctx && ctx.approvedBy) list.push({ action: 'Approved by', userId: ctx.approvedBy, at: signedAt });
+        }
+        signatories = await signatoryService.buildParties(client, list, { snapshotPrefix: `share-receipt-${contributionId}` });
+    } catch (_) { signatories = []; }
     const categoryId = await getOrCreateCategory(client, { ...SHARE_RECEIPT_CATEGORY, createdBy: recordedByUserId });
 
     const { referenceId, referenceCode } = await generateReference(
@@ -646,6 +662,7 @@ const issueSharePurchaseReceipt = async (client, {
         recorded_by_name:   treasurerName,
         treasurer_name:     treasurerName,
         treasurer_signature_url: signatureSnapshotUrl,
+        signatories, // v1.85.1 — [{ action, name, position, signature_url, at }]
         signed_at:          signedAt.toISOString(),
         generated_date:     signedAt.toISOString(),
     };
@@ -718,6 +735,7 @@ const creditShareholderContribution = async (client, {
     // approvePledgePayment passes this as true to avoid double-counting
     // the exact same money it's already attributing itself).
     skipCapitalGoalAutoAttribution = false,
+    receiptParties = null, // v1.85.1 — who signs the share purchase receipt (see issueSharePurchaseReceipt)
 }) => {
     // Get the contributor's details
     const contributorResult = await client.query(`
@@ -878,6 +896,7 @@ const creditShareholderContribution = async (client, {
             recordedByUserId,
             contributionReferenceCode: referenceCode,
             allotment,
+            parties: receiptParties,
         });
         await client.query('RELEASE SAVEPOINT share_purchase_receipt');
     } catch (err) {
@@ -2573,6 +2592,7 @@ const getTransactions = asyncHandler(async (req, res) => {
             cat.name AS category_name,
             cp.full_path AS category_trail,
             u.first_name || ' ' || u.last_name AS created_by_name,
+            (SELECT ap.first_name || ' ' || ap.last_name FROM users ap WHERE ap.id = t.approved_by) AS approved_by_name, -- v1.85.1
             a.name AS account_name
         FROM  transactions t
         JOIN  references_registry r  ON r.id  = t.reference_id
@@ -2710,6 +2730,7 @@ const getTransactionById = asyncHandler(async (req, res) => {
             cat.name AS category_name,
             cp.full_path AS category_trail,
             u.first_name || ' ' || u.last_name AS created_by_name,
+            (SELECT ap.first_name || ' ' || ap.last_name FROM users ap WHERE ap.id = t.approved_by) AS approved_by_name, -- v1.85.1
             a.name AS account_name,
             a.account_type
         FROM  transactions t

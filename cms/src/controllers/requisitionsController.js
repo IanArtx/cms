@@ -444,6 +444,11 @@ const approveRequisition = asyncHandler(async (req, res) => {
                 categoryId:        req_.category_id,
                 notes:             review_notes || req_.purpose,
                 recordedByUserId:  req.user.id,
+                // v1.85.1 — the member who asked, and the person who approved it
+                receiptParties: [
+                    { action: 'Requested by', userId: req_.requested_by, at: req_.created_at },
+                    { action: 'Approved and recorded by', userId: req.user.id },
+                ],
                 // v1.69.1 — the account the member actually paid into
                 // (any currency; shares are valued by conversion at the
                 // rate on the contribution date). Primary if not chosen.

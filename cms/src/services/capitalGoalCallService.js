@@ -759,6 +759,11 @@ const approvePledgePayment = async (client, {
         notes:              notes || `Capital goal call — ${monthlyCall.period} (iteration ${pledge.iteration})`,
         recordedByUserId:  approvedByUserId,
         accountId,
+        // v1.85.1 — the member who pledged and paid, and the approver
+        receiptParties: [
+            { action: 'Pledged by', userId: pledge.user_id, at: pledge.submitted_at || pledge.created_at },
+            { action: 'Approved by', userId: approvedByUserId },
+        ],
         // This IS the capital-goal-call settlement itself — must not
         // re-trigger the ordinary-contribution auto-attribution path
         // (see creditShareholderContribution's own comment), or the

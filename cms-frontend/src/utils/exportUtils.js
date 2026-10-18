@@ -607,6 +607,50 @@ const documentTrail = (entries = []) => {
 };
 
 // ============================================================
+// EVERY PARTY SIGNS IN THEIR OWN POSITION (v1.85.1)
+// Requested: "all parties involved get signatories positions and
+// reflect their respective positions". `parties` =
+//   [{ action: 'Recorded by', name, position, signature_url, at }]
+// (signatoryService.buildParties on the server, or built from a record's
+// recorder / approver). One signature block per person, wrapping onto a
+// new row after three; plus the matching rows for the document trail.
+// ============================================================
+const partiesSignatureSection = (parties = []) => {
+    const list = (parties || []).filter(p => p && p.name);
+    if (!list.length) return '';
+    return `
+    <div class="signature-section" style="flex-wrap:wrap; row-gap:28px;">
+        ${list.map(p => `
+        <div class="signature-block" style="min-width:150px;">
+            ${p.action}: <strong>${escapeText(p.name)}</strong><br>
+            Position: ${escapeText(p.position || '—')}<br>
+            Signature: ${p.signature_url
+                ? `<img src="${resolveUploadUrl(p.signature_url)}" alt="Signature" style="height:32px;display:block;margin-top:2px;" />`
+                : '_______________'}<br>
+            Date: ${p.at ? fmt.date(p.at) : '_______________'}
+        </div>`).join('')}
+    </div>`;
+};
+const partiesTrail = (parties = []) => (parties || [])
+    .filter(p => p && p.name)
+    .map(p => ({ role: p.action, name: p.position ? `${p.name} (${p.position})` : p.name, date: p.at }));
+// recorder + approver of one record → parties (the approver only when it
+// is someone else; one person doing both is shown once)
+export const recordParties = ({ recordedBy, recordedPosition, recordedSignature, recordedAt,
+    approvedBy, approvedPosition, approvedSignature, approvedAt, sameUser = false } = {}) => {
+    if (!recordedBy && !approvedBy) return [];
+    if (approvedBy && (sameUser || approvedBy === recordedBy)) {
+        return [{ action: 'Recorded and approved by', name: recordedBy || approvedBy, position: recordedPosition || approvedPosition, signature_url: recordedSignature || approvedSignature, at: approvedAt || recordedAt }];
+    }
+    const out = [];
+    if (recordedBy) out.push({ action: 'Recorded by', name: recordedBy, position: recordedPosition, signature_url: recordedSignature, at: recordedAt });
+    if (approvedBy) out.push({ action: 'Approved by', name: approvedBy, position: approvedPosition, signature_url: approvedSignature, at: approvedAt });
+    return out;
+};
+const escapeText = (v) => String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// ============================================================
 // MAP A "tx_*"-PREFIXED ROW INTO transactionTemplate()'S SHAPE (v1.32.0)
 // Self-service list endpoints that aren't themselves the Transactions
 // ledger (side-fund/dues/me, savings/me, savings/handouts/me) return
@@ -811,6 +855,9 @@ export const transactionTemplate = (transactions, options = {}) => {
 
     ${isSingle ? documentTrail([
         { role: 'Recorded By', name: transactions.created_by_name, date: transactions.created_at },
+        // v1.85.1 — the approver of an entry that was held for approval
+        (transactions.approved_by_name && transactions.approved_by_name !== transactions.created_by_name)
+            ? { role: 'Approved By', name: transactions.approved_by_name, date: transactions.approved_at || transactions.created_at } : null,
     ]) : ''}
 
     ${footer(ref)}
@@ -1536,9 +1583,10 @@ export const investmentEntryTemplate = (entry) => `<!DOCTYPE html>
         <p style="font-size:11px;color:#374151;line-height:1.7;">${entry.notes}</p>
     </div>` : ''}
 
-    ${documentTrail([
-        { role: 'Recorded By', name: entry.recorded_by_name, date: entry.recorded_at },
-    ])}
+    ${(entry.parties && entry.parties.length)
+        // v1.85.1 — the recorder and the approver, each in their own position
+        ? `${documentTrail(partiesTrail(entry.parties))}${partiesSignatureSection(entry.parties)}`
+        : documentTrail([{ role: 'Recorded By', name: entry.recorded_by_name, date: entry.recorded_at }])}
 
     ${footer(entry.reference_code)}
 </div>
@@ -2021,20 +2069,21 @@ export const sharePurchaseReceiptTemplate = (data) => {
         <p style="font-size:11px;color:#6b7280;line-height:1.7;">${data.notes}</p>
     </div>` : ''}
 
-    ${documentTrail([
+    ${(data.signatories && data.signatories.length)
+        // v1.85.1 — every person involved, in their own position
+        ? `${documentTrail(partiesTrail(data.signatories))}${partiesSignatureSection(data.signatories)}`
+        : `${documentTrail([
         { role: 'Recorded By', name: data.recorded_by_name, date: data.contribution_date },
-        { role: 'Prepared By', name: data.treasurer_name,   date: data.generated_date },
     ])}
-
     <div class="signature-section">
         <div class="signature-block">
-            Treasurer: ${data.treasurer_name || '_______________'}<br>
+            Recorded by: ${data.treasurer_name || '_______________'}<br>
             Signature: ${data.treasurer_signature_url
                 ? `<img src="${resolveUploadUrl(data.treasurer_signature_url)}" alt="Signature" style="height:32px;display:block;margin-top:2px;" />`
                 : '_______________'}<br>
             Date: ${data.signed_at ? fmt.date(data.signed_at) : '_______________'}
         </div>
-    </div>
+    </div>`}
 
     <p style="margin-top:24px; font-size:9.5px; color:#9ca3af; text-align:center; line-height:1.5;">
         This receipt confirms the capital contribution and shares recorded above as of the date shown.

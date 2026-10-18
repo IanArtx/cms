@@ -95,16 +95,21 @@ const prepareSettlement = async (client, { userId, fineIds, destinationAccountId
             FROM   accounts
             WHERE  id = $1 AND is_active = TRUE AND account_type != 'SAVINGS'
         `, [destinationAccountId])
+        // v1.85.1 — the Primary account when the fines are in its currency;
+        // otherwise the first active operational account in the fines'
+        // currency (a UGX fine could never settle into a EUR Primary).
         : await client.query(`
             SELECT id, currency_id
             FROM   accounts
-            WHERE  account_type = 'PRIMARY' AND is_active = TRUE
-        `);
+            WHERE  is_active = TRUE AND account_type IN ('PRIMARY', 'SECONDARY') AND currency_id = $1
+            ORDER  BY CASE WHEN account_type = 'PRIMARY' THEN 0 ELSE 1 END, id
+            LIMIT  1
+        `, [fineCurrencyId]);
     if (destAccountResult.rows.length === 0) {
         throw createError.badRequest(
             destinationAccountId
                 ? 'The selected destination account was not found, is inactive, or is a Savings account'
-                : 'Primary account has not been set up yet'
+                : 'There is no active Primary or operational account in the fines\' currency to receive this settlement'
         );
     }
     const destAccount = destAccountResult.rows[0];

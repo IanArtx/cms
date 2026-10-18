@@ -443,17 +443,33 @@ const SettleFinesModal = ({ isOpen, onClose, onSuccess, mode, members, allFines,
 
     const selectedFines = outstandingFines.filter(f => selected[f.id]);
     const selectedTotal = selectedFines.reduce((sum, f) => sum + parseFloat(f.amount), 0);
-    const principalBalance = balance ? parseFloat(balance.principal_balance) : 0;
+    // v1.85.1 — the balance endpoint returns one row per currency
+    // ({ balances: [{ currency_code, principal_balance, … }] }); reading
+    // a single principal_balance off it gave "NaN". Every currency the
+    // member saves in is listed, and the fines chosen must all be in one
+    // currency (money is never converted between accounts) — that
+    // currency's savings pay them.
+    const balanceRows = !balance ? [] : Array.isArray(balance.balances) ? balance.balances
+        : (balance.principal_balance !== undefined ? [balance] : []);
+    const balanceByCode = new Map(balanceRows.map(b => [b.currency_code, parseFloat(b.principal_balance) || 0]));
+    // a currency the member has fines in but no savings shows as 0
+    const shownBalances = [...balanceRows];
+    for (const f of outstandingFines) {
+        if (!shownBalances.some(b => b.currency_code === f.currency_code)) shownBalances.push({ currency_code: f.currency_code, principal_balance: 0 });
+    }
+    const selectedCurrency = selectedFines.length ? selectedFines[0].currency_code : null;
+    const principalBalance = selectedCurrency ? (balanceByCode.get(selectedCurrency) || 0) : 0;
     const remainingAfter = principalBalance - selectedTotal;
     const overBalance = selectedTotal > principalBalance;
-    // savings_balances carries no currency of its own — the Savings
-    // account is a system-wide singleton, so its currency is looked up
-    // from the accounts list (same source FinesPage already loads for
-    // Clear Fine's own currency-matching UI).
-    const savingsCurrency = accounts?.find(a => a.account_type === 'SAVINGS')?.currency_code;
+    const savingsCurrency = selectedCurrency;
+    const blockedReason = (fine) => {
+        if (selectedCurrency && fine.currency_code !== selectedCurrency && !selected[fine.id]) return `different currency from the fines chosen (${selectedCurrency})`;
+        if (balance && !(balanceByCode.get(fine.currency_code) > 0)) return `no ${fine.currency_code} savings`;
+        return null;
+    };
 
     const toggleFine = (fine) => {
-        if (savingsCurrency && fine.currency_code !== savingsCurrency) return;
+        if (blockedReason(fine) && !selected[fine.id]) return;
         setSelected(p => ({ ...p, [fine.id]: !p[fine.id] }));
     };
 
@@ -515,8 +531,18 @@ const SettleFinesModal = ({ isOpen, onClose, onSuccess, mode, members, allFines,
                         {balance && (
                             <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 text-sm space-y-1">
                                 <p className="text-primary-700">
-                                    Savings balance: <span className="font-bold">{formatNumber(principalBalance)} {savingsCurrency}</span>
+                                    Savings balance{shownBalances.length > 1 ? 's' : ''}:{' '}
+                                    {shownBalances.length === 0
+                                        ? <span className="font-bold">nothing saved yet</span>
+                                        : shownBalances.map((b, i) => (
+                                            <span key={b.currency_code} className={`font-bold ${selectedCurrency && b.currency_code !== selectedCurrency ? 'opacity-50' : ''}`}>
+                                                {i > 0 ? ' · ' : ''}{formatNumber(b.principal_balance)} {b.currency_code}
+                                            </span>
+                                        ))}
                                 </p>
+                                {shownBalances.length > 1 && (
+                                    <p className="text-xs text-gray-500">Fines are paid from the savings in their own currency — choose fines in one currency at a time.</p>
+                                )}
                                 {selectedTotal > 0 && (
                                     <>
                                         <p className="text-gray-600">
@@ -540,7 +566,8 @@ const SettleFinesModal = ({ isOpen, onClose, onSuccess, mode, members, allFines,
                                 ) : (
                                     <div className="border border-gray-200 rounded-lg divide-y max-h-56 overflow-y-auto">
                                         {outstandingFines.map(f => {
-                                            const mismatched = savingsCurrency && f.currency_code !== savingsCurrency;
+                                            const why = blockedReason(f);
+                                            const mismatched = !!why;
                                             return (
                                                 <label key={f.id}
                                                     className={`flex items-center justify-between gap-3 px-3 py-2 text-sm ${mismatched ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'}`}>
@@ -550,7 +577,7 @@ const SettleFinesModal = ({ isOpen, onClose, onSuccess, mode, members, allFines,
                                                         <span>
                                                             <span className="font-mono text-xs text-primary-700">{f.reference_code}</span>
                                                             {' — '}{reasonLabel(f.reason)}
-                                                            {mismatched && <span className="text-xs text-red-500 ml-1">(different currency)</span>}
+                                                            {mismatched && <span className="text-xs text-red-500 ml-1">({why})</span>}
                                                         </span>
                                                     </span>
                                                     <span className="font-bold text-gray-900">{formatNumber(f.amount)} {f.currency_code}</span>

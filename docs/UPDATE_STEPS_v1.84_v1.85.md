@@ -1,14 +1,17 @@
-# Updating to v1.84.0 + v1.85.0 — step by step
+# Updating to v1.84.0 + v1.85.0 + v1.85.1 — step by step
 
 This covers **your computer (local)** first, then **both online companies**. Do the local part first: if something goes wrong there, nothing online is affected.
 
-The two versions:
+The three versions:
 - **v1.84.0**
   - Shares are allotted inside the company; certificates and meetings show only URSB-registered shares.
   - Correction of the share register (contributions that were valued at 4,000 instead of the rate of the day).
 - **v1.85.0**
   - Projects can be on their own, inside an investment, or added to one later.
   - Documents can be uploaded on project and investment pages.
+- **v1.85.1** (no database change)
+  - Every person involved signs receipts in their own position (recorder, approver, requesting/pledging member).
+  - Settle Fines With Savings shows the savings in every currency instead of "NaN".
 
 > Safety rules
 > - Paste the Render database URL only into your own terminal. Never paste it into a chat or a document.
@@ -93,6 +96,15 @@ node update_live_database.js --script apply_fixed_rates_v1.76.0.js --dry-run
 
 If either step says "nothing to correct" or "the opening share conversion has not run", this database needs nothing. That is fine.
 
+### A6b. Signatories on receipts already issued (v1.85.1)
+```
+node update_live_database.js --script backfill_v1.85.1_receipt_signatories.js --dry-run
+node update_live_database.js --script backfill_v1.85.1_receipt_signatories.js
+```
+- The dry run lists every share purchase receipt with who will appear on it, for example "Recorded by Amy (Assistant Treasurer); Approved by Salomon (Treasurer)".
+- If the list looks right, run the second line. It must end with "✅ Saved — N receipt(s) now list everyone involved."
+- Only the signatories are added; amounts, shares and dates stay as issued. Running it again changes nothing.
+
 ### A7. Frontend packages
 In a terminal in the `cms-frontend` folder:
 ```
@@ -117,6 +129,8 @@ Start the backend and frontend the way you normally do (for example `npm run dev
    - There is an **Investment documents** card.
 6. **Reports › Records check:** money market funds, investments and the new **Projects** section should show no differences.
 7. **Profile:** a shareholder sees **Download Latest Registration Certificate**.
+8. **Documents › a share purchase receipt › Preview:** the bottom shows one signature block per person, each with their position.
+9. **Members' funds › Fines › Settle With Savings:** choose a member. Their savings show in each currency (no "NaN"). Fines in another currency than the ones chosen are greyed out with the reason.
 
 If all of that works, go online.
 
@@ -159,7 +173,14 @@ node update_live_database.js --url "…" --script rebuild_share_register_v1.84.0
 - Save (the third line) only if every check in the dry run said ✅.
 - "Nothing to correct" means that company is fine.
 
-### B6. Repeat B1–B5 for the other company
+### B5b. Signatories on receipts already issued (v1.85.1)
+```
+node update_live_database.js --url "…" --script backfill_v1.85.1_receipt_signatories.js --dry-run
+node update_live_database.js --url "…" --script backfill_v1.85.1_receipt_signatories.js
+```
+Save (the second line) only if the people listed in the dry run look right.
+
+### B6. Repeat B1–B5b for the other company
 Use the **other** database's URL.
 
 ---

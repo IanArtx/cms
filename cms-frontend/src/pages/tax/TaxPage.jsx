@@ -655,7 +655,7 @@ const YearPanel = ({ yearId, roles, onChanged }) => {
                         <label className="flex items-start gap-2 text-sm">
                             <input type="checkbox" checked={y.fxRevaluationTaxable}
                                 onChange={e => act(() => taxAPI.updateYearOptions(yearId, { fx_revaluation_taxable: e.target.checked }), 'Saved')} />
-                            <span>Treat foreign exchange gains and losses (revaluation) as taxable / deductible. Untick to leave the net FX result out of this year's computation.</span>
+                            <span>Treat unrealised foreign exchange gains and losses (month-end revaluation) as taxable / deductible. Untick to leave the net revaluation result out of this year's computation. Realised results of transfers (currency actually converted) always stay in.</span>
                         </label>
                         <h4 className="section-title pt-2">Add an adjustment</h4>
                         <p className="text-xs text-gray-500">E.g. capital allowances (wear and tear) on assets bought, exempt income, or an expense not deductible that the categories did not catch. In UGX.</p>

@@ -12,7 +12,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useState } from 'react';
-import { shareCapitalAPI } from '../../api/endpoints';
+import { shareCapitalAPI, certificatesAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import { ExclamationTriangleIcon, CheckCircleIcon, BuildingLibraryIcon } from '@heroicons/react/24/outline';
@@ -88,8 +88,44 @@ const SetFigureModal = ({ row, onClose, onSaved }) => {
     );
 };
 
+// ---- v1.84.0: certificates for the shares registered today ------------------
+// Requested: "shares are alloted internally ... but issued officially when
+// registered at the URSB ... first now only what is registered". One
+// REGISTRATION certificate per member with registered shares, as they stand
+// today; afterwards a certificate is issued automatically each time a
+// member's registered shares change (return filed / URSB figure entered).
+const IssueRegisteredButton = () => {
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [err, setErr] = useState(null);
+    const go = async () => {
+        setBusy(true); setMsg(null); setErr(null);
+        try { const r = await certificatesAPI.issueRegisteredNow(); setMsg(r.data.message || 'Done.'); }
+        catch (e) { setErr(getErrorMessage(e)); } finally { setBusy(false); }
+    };
+    return (
+        <div className="card !p-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm text-gray-600 dark:text-gray-300 flex-1 min-w-[14rem]">
+                    <p className="font-semibold text-gray-800 dark:text-gray-100">Share certificates follow URSB registration</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                        A certificate shows only the shares registered with URSB. When a return of allotment is marked filed, or a URSB figure is entered,
+                        the member gets a registration certificate showing the increase and the effective date (after signing). Use this button once
+                        to issue certificates for the shares registered today; it will not issue twice for the same figures.
+                    </p>
+                </div>
+                <button type="button" className="btn-primary text-sm" disabled={busy} onClick={go}>
+                    {busy ? 'Issuing…' : 'Issue certificates for registered shares'}
+                </button>
+            </div>
+            {msg && <p className="text-sm text-green-700 dark:text-green-400">{msg}</p>}
+            {err && <ErrorMessage message={err} onDismiss={() => setErr(null)} />}
+        </div>
+    );
+};
+
 // ---- the whole company -------------------------------------------------
-export const RegisteredByMemberTab = ({ canEdit }) => {
+export const RegisteredByMemberTab = ({ canEdit, canIssue }) => {
     const [data, setData] = useState(null);
     const [error, setError] = useState(null);
     const [editing, setEditing] = useState(null);
@@ -108,6 +144,7 @@ export const RegisteredByMemberTab = ({ canEdit }) => {
     return (
         <div className="space-y-4">
             {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            {(canIssue ?? canEdit) && <IssueRegisteredButton />}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 {tiles.map(([label, v, cls]) => (
                     <div key={label} className="card !p-4">

@@ -130,10 +130,21 @@ export const MODULES = [
         purpose: [
             'Shows each account — the Primary (Euro) account, the operational accounts (for example UGX) and the Savings account — with its current balance. Open an account to see its full ledger, inflows and outflows and a balance chart.',
             'Also where the Treasurer keeps the reference exchange rates, the share (issue) price and each account\'s floor limit.',
+            'Bank of Uganda daily rates (since 1.83): every weekday morning the system reads Bank of Uganda\'s published opening rates (bou.or.ug) and SUGGESTS the day\'s rate for each of the company\'s currencies. Nothing enters the books until a Treasurer, Assistant Treasurer or Admin approves it; the approved rate then shows "Bank of Uganda · approved by …". A rate you entered by hand is never replaced.',
         ],
         tasks: [
             { title: 'Add an operational account in another currency', who: 'Admin', steps: ['Click New Account.', 'Choose its type (Secondary), currency, name, reference prefix and bank details (bank, branch, account number, SWIFT). Tick "No real bank behind it" for a virtual account.', 'Save. It appears in the list and in transfers.'] },
-            { title: 'Set an exchange rate', who: 'Treasurer', steps: ['In Currency Exchange Rates click Set Rate.', 'Choose the currency, enter the rate and the date it applies from, and save. Market History keeps every rate.'] },
+            { title: 'Set an exchange rate', who: 'Treasurer', steps: ['In Currency Exchange Rates click Set Rate.', 'Choose the currency, enter the rate and the date it applies from, and save. Market History keeps every rate.', 'It is recorded as "Entered by hand" with your name. Enter it the way the pair is already kept (1 EUR = … UGX); the opposite direction is refused with the converted figure.'] },
+            {
+                title: 'Approve the day\'s Bank of Uganda rates', who: 'Treasurer / Assistant Treasurer / Admin',
+                steps: [
+                    'You are notified "Exchange rates for <date> ready to approve" (or open Money › Accounts › Bank of Uganda daily rates).',
+                    'Each waiting rate shows the middle rate (the one used), BoU\'s buying and selling rates, the rate on file before it and the change in %.',
+                    'Click Approve. A rate marked "Please check" (it moved more than the limit, the backup source disagrees, or BoU\'s table is old) first needs the "I have checked this rate" tick.',
+                    'Or click Reject and say why — nothing changes in the books.',
+                    '"Approve all not flagged" approves every waiting rate that is not marked "Please check". "Check BoU now" reads the table straight away instead of waiting for the next scheduled check.',
+                ],
+            },
             { title: 'Set or propose the share price', who: 'Treasurer', steps: ['In the share price card click Set Price (the first time; every active shareholder is notified).', 'Once a price exists the button reads Propose a Change: enter the new price; it goes to Members\' funds › Share capital › Changes for approval.'] },
             { title: 'Update a floor limit', who: 'Treasurer / Assistant Treasurer', steps: ['Open the account.', 'Click Update Floor Limit, enter the new limit and a note.', 'The floor can be changed once every six months.'] },
             { title: 'Record money in or out of one account', who: 'Treasurer / Assistant Treasurer', steps: ['Open the account (Open — details and connected documents).', 'Click Record Inflow or Record Expense and fill in the form (see Transactions).'] },
@@ -141,11 +152,14 @@ export const MODULES = [
         rules: [
             'The Primary Account receives shareholders\' contributions; money leaves it only by transfer to an operational account, or as spending that never takes it below its floor limit.',
             'The Savings Account never has a floor limit.',
+            'Two rates for the same currency pair can never start on the same day. The daily Bank of Uganda check never replaces a rate already on file: if you typed one, the BoU suggestion for that date is closed as "Hand-entered rate kept".',
+            'Approving a Bank of Uganda rate (or typing one) re-values the affected entries in UGX, but only in months not yet closed by the month-end revaluation.',
         ],
         tour: [
             { target: 'title', text: 'Every company account and its live balance. Click an account to open its ledger.' },
             { button: 'New Account', text: 'Add another operational account or currency (Admin).' },
-            { button: 'Set Rate', text: 'Keep the exchange rates used to value foreign-currency money.' },
+            { button: 'Set Rate', text: 'Keep the exchange rates used to value foreign-currency money. A rate typed here is marked "Entered by hand".' },
+            { tourId: 'bou-rates', title: 'Bank of Uganda daily rates', text: 'Each weekday the system suggests BoU\'s rate for each currency. A person approves or rejects it — nothing enters the books by itself, and hand-entered rates are never replaced.' },
             { button: 'Set Price', title: 'Share price', text: 'Set the share (issue) price. Every active shareholder is notified.' },
             { button: 'Propose a Change', title: 'Share price', text: 'Once a price is set, changes are proposed here and approved under Members\' funds › Share capital › Changes.' },
             { button: 'Record Inflow', text: 'Inside an open account: record money coming in.' },
@@ -213,7 +227,10 @@ export const MODULES = [
         where: 'Menu › Money › Transfers. Quick: + New › Transfer between accounts.',
         who: 'Financial roles see it; the Treasurer starts transfers; approvals as below.',
         summary: 'Moving money between the Primary Account and the operational accounts, with the exchange rate.',
-        purpose: ['Every transfer records the amount sent, the exchange rate, the amount received and any bank charges on either side, so the two accounts always agree.'],
+        purpose: [
+            'Every transfer records the amount sent, the exchange rate, the amount received and any bank charges on either side, so the two accounts always agree.',
+            'Since 1.83 the form compares the bank\'s rate with the rate on file for the value date (the approved Bank of Uganda rate, or one entered by hand) and says how much more or less the receiving account gets. That difference is booked as a realised exchange gain or loss when the transfer is approved.',
+        ],
         tasks: [
             {
                 title: 'Move money from the Primary Account to an operational account', who: 'Treasurer',
@@ -221,6 +238,7 @@ export const MODULES = [
                     'Click New Transfer.',
                     'From: the Primary Account. To: the operational account.',
                     'Enter the Amount Sent and the Exchange Rate the bank used; the amount received is worked out.',
+                    'Below the rate, check the comparison with the rate on file. If the gap is bigger than the warning limit (3 % unless changed in Settings › Currencies), check the bank\'s figure — and that it is "UGX per 1 EUR", not the other way round — then tick "I have checked the bank\'s rate".',
                     'Enter the Sending Bank Charge and Receiving Bank Charge if any, the category and the value date, and a description.',
                     'Save. It waits for approval and only moves the money once approved.',
                 ],
@@ -232,9 +250,10 @@ export const MODULES = [
             'Primary → operational: one Treasurer approval.',
             'Operational → Primary: three different Directors must approve.',
             'The sending account may not go below its floor limit.',
+            'The books always use the bank\'s rate. The difference from the rate on file is a realised exchange gain (account 4610) or loss (5610); the month-end revaluation of balances stays in 4600 / 5600.',
         ],
         tour: [
-            { button: 'New Transfer', text: 'Start a transfer: from, to, amount, exchange rate and bank charges.' },
+            { button: 'New Transfer', text: 'Start a transfer: from, to, amount, exchange rate and bank charges. The form shows the rate on file for that day next to the bank\'s rate.' },
             { target: 'title', text: 'Each transfer shows its status. Open one to Approve or Reject it.' },
         ],
     },
@@ -418,14 +437,15 @@ export const MODULES = [
             { name: 'Overview', what: 'Nominal value per share, issue price, shares in issue, members, and the opening conversion of contributions into whole shares.' },
             { name: 'My Shares', what: 'Your whole shares, your share credit (money not yet enough for a whole share) and your allotments.' },
             { name: 'Changes', what: 'Proposed changes to the share price or registered capital — two approvers plus a FINAL resolution from Documents.' },
-            { name: 'Allotments & Returns', what: 'Shares allotted; the return of allotment must be filed with URSB within 60 days ("Mark … filed").' },
-            { name: 'Registered (URSB)', what: 'Each shareholder\'s shares as registered with URSB, and any excess not yet registered.' },
+            { name: 'Allotments & Returns', what: 'Shares allotted inside the company; the return of allotment must be filed with URSB within 60 days ("Mark … filed"). "Rate correction" marks shares added by the v1.84.0 correction.' },
+            { name: 'Registered (URSB)', what: 'Each shareholder\'s shares as registered with URSB, and any excess not yet registered. Share certificates, and the shareholding shown in meetings and minutes, use the registered shares only.' },
             { name: 'Credit & Refunds', what: 'Members with share credit and refund requests.' },
         ],
         tasks: [
             { title: 'Propose a change', steps: ['Open Changes and click Propose a change.', 'Enter the new value (Use suggested gives the suggested issue price) and choose the FINAL resolution from Documents.', 'Two different approvers click Approve & apply.'] },
             { title: 'File returns of allotment', steps: ['Open Allotments & Returns.', 'Select the allotments filed (Select this month\'s unfiled), then mark them filed.'] },
             { title: 'Record shares registered with URSB', steps: ['Open Registered (URSB) and enter each member\'s registered shares from the URSB register once; filed returns add to them afterwards.'] },
+            { title: 'Issue share certificates for registered shares', who: 'Admin / Secretary / Treasurer', steps: ['Open Registered (URSB) and click Issue certificates for registered shares (once, to start).', 'From then on, marking a return of allotment filed or entering a URSB figure issues a registration certificate by itself, showing the shares registered before, the increase and the effective date.', 'The certificates are emailed once the signatories have signed (Reports › Certificate Signing Rounds).'] },
         ],
         tour: [
             { tab: 'Overview', text: 'The share capital at a glance.' },
@@ -500,7 +520,7 @@ export const MODULES = [
         id: 'portfolio', navId: 'portfolio', group: 'investments', title: 'Investments portfolio', path: '/investments',
         where: 'Menu › Investments › Portfolio.',
         who: 'People with investment view; investment managers create; an approver approves.',
-        summary: 'All investments — standard projects, bonds, treasury bills and money market funds — in one portfolio.',
+        summary: 'All investments — standard projects, bonds, treasury bills and money market funds — in one portfolio. Projects have their own page (Investments › Projects).',
         purpose: [
             'Shows total invested, total returns, overall return on investment and active investments, with charts. Each investment has its own page.',
             'Buying or expanding an investment is capital; its day-to-day running costs and income are "operational" and tracked in its operating budget.',
@@ -530,6 +550,7 @@ export const MODULES = [
                     { title: 'Bond coupons', steps: ['In Bond Coupon Schedule, Mark Paid or Record Actual Payment for each coupon.'] },
                     { title: 'Treasury bill maturity', steps: ['Click Record maturity on the treasury bill card.'] },
                     { title: 'Close the investment', steps: ['Click Terminate Investment, confirm the records are up to date, read the Termination Report and send it; an approver clicks Approve & Close Investment.'] },
+                    { title: 'Projects and documents', steps: ['Projects card: New project creates a project inside this investment; click a project to open it.', 'Investment documents: Upload the proposal, bond certificate or agreement straight onto the page, or Add existing.'] },
                 ],
                 tour: [
                     { target: 'title', text: 'One investment: budget, spending, returns and its transactions.' },
@@ -549,6 +570,42 @@ export const MODULES = [
                 ],
             },
         ],
+    },
+    // v1.85.0
+    {
+        id: 'projects', navId: 'projects', group: 'investments', title: 'Projects', path: '/projects',
+        where: 'Menu › Investments › Projects (also the Projects card on an investment\'s page).',
+        who: 'People with investment view; investment managers create, edit and change status; the Treasury records the money.',
+        summary: 'Projects on their own or inside an investment: budget, spending, milestones and documents.',
+        purpose: [
+            'A project can stand on its own, sit inside an investment, or be added to an investment later.',
+            'On its own: each payment is an expense (Record spending, or Record Expense with the project chosen). Inside an investment: money is funding of the investment with the project chosen, and counts in the investment\'s cost.',
+            'When a project on its own is added to an investment, what was already spent stays recorded as expenses — entries in the books are never rewritten.',
+        ],
+        tasks: [
+            { title: 'Create a project', steps: ['Click New project.', 'Name, budget and currency (or choose the investment — then its currency is used), dates, category and the responsible person.', 'Or, on an investment\'s page, click New project in the Projects card.'] },
+            { title: 'Record money for it', who: 'Treasury', steps: ['On its own: open the project and click Record spending (or Money › Transactions › Record Expense and choose the project). The account must be in the project\'s currency.', 'Inside an investment: on the investment\'s page use the funding button and choose the project.'] },
+            { title: 'Add it to an investment later', steps: ['Open the project and click Add to an investment; only investments in the same currency are listed.', 'Take out of the investment is possible only while no investment money has been recorded for it.'] },
+            { title: 'Status and milestones', steps: ['Status: pending → active → on hold / completed / cancelled. On hold and cancelled need a note; re-opening needs a reason. No money can be recorded for a completed or cancelled project.', 'Milestones: Add, then change each one\'s status (completed records the date).'] },
+            { title: 'Documents', steps: ['In Project documents click Upload for a new file (proposal, report, contract, certificate …) or Add existing for a document already in Documents that belongs to nothing yet.', 'The same card is on each investment\'s page (e.g. bond certificates). Take off removes it from the page only — it stays in Documents.'] },
+        ],
+        rules: [
+            'Spending = investment funding for it + expenses recorded while it was on its own, without reversed entries. A reversal takes the amount off automatically.',
+            'A project and its investment always use the same currency.',
+        ],
+        tour: [
+            { target: 'title', text: 'Every project, on its own or inside an investment. Click one to open it.' },
+            { button: 'New project', text: 'Create a project — on its own or inside an investment.' },
+        ],
+        details: [{
+            id: 'project-detail', title: 'One project', match: [/^\/projects\/\d+/],
+            purpose: ['Budget, spending, where its money comes from, milestones and documents.'],
+            tour: [
+                { target: 'title', text: 'One project: budget, spending, milestones and documents.' },
+                { button: 'Status', text: 'Start, hold, complete, cancel or re-open the project.' },
+                { button: 'Upload', text: 'Upload the proposal and other documents straight onto the project.' },
+            ],
+        }],
     },
     {
         id: 'loans', navId: 'loans', group: 'investments', title: 'Loans', path: '/loans',
@@ -622,7 +679,7 @@ export const MODULES = [
         tasks: [
             { title: 'See a month\'s report', steps: ['Choose the month and year.', 'Click General Report (the company) or My Report (your own).', 'Print it from the viewer.'] },
             { title: 'Send the monthly reports now', who: 'Treasury / Admin', steps: ['Click Send Monthly Reports and confirm. (They also go out by themselves on the 1st: general 08:00, personal 09:00.)'] },
-            { title: 'Issue share certificates', steps: ['Click Issue Certificates (also automatic on the 1st at 10:00). Signing rounds are listed under Certificate Signing Rounds.'] },
+            { title: 'Issue share certificates', steps: ['Click Issue Certificates (also automatic on the 1st at 10:00). Certificates show the shares registered with URSB only. Signing rounds (monthly, annual and registration) are listed under Certificate Signing Rounds.'] },
             { title: 'Send an announcement', steps: ['Click Send Announcement: subject, message and an optional link.'] },
             { title: 'Financial statements', steps: ['Click Financial Statements: Trial Balance, General Ledger, Balance Sheet, Income Statement, Cash Flow Statement, FX & Revaluation (month-end closing) and Ledger Accounts.'] },
             { title: 'Check the records agree', steps: ['Click Records check: every account, investment and fund compared with the ledger. "Check again" re-runs it; anything with a difference is listed.'] },
@@ -831,7 +888,7 @@ export const MODULES = [
         summary: 'Everything that configures the system.',
         tabs: [
             { name: 'Company', what: 'Name, logo, address, motto, mission, vision and values (also used on documents and the app icon).' },
-            { name: 'Currencies', what: 'Currencies in use.' },
+            { name: 'Currencies', what: 'Currencies in use, and the daily Bank of Uganda rate settings: on/off, when to flag a daily rate, and when a transfer\'s bank rate needs checking.' },
             { name: 'Roles', what: 'Which permissions each role has — tick and save.' },
             { name: 'Categories', what: 'The category trees for money, documents and events.' },
             { name: 'Signatories', what: 'Who signs which kind of document.' },

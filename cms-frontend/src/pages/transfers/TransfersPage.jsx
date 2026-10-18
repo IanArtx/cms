@@ -18,12 +18,13 @@ import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, FunnelIc
 import { transferTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 import {
-    BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+    BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer,
 } from 'recharts';
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
 import DraftNotice from '../../components/common/DraftNotice';
+import TransferRateCheck from '../../components/fx/TransferRateCheck'; // v1.83.0
 
 // Reads an axios error whose response body is a Blob (because the
 // request used responseType: 'blob') and tries to recover the JSON
@@ -139,26 +140,41 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
 
             {pairs.length > 0 && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-                    {pairs.map((pair, idx) => (
+                    {pairs.map((pair, idx) => {
+                        // v1.83.1 — smooth line, no dots, gradient fill; scale hugs the rates
+                        const color = theme.series[idx % theme.series.length];
+                        const vals = rateByPair[pair].map(d => parseFloat(d.rate)).filter(v => !Number.isNaN(v));
+                        const lo = vals.length ? Math.min(...vals) : 0; const hi = vals.length ? Math.max(...vals) : 0;
+                        const pad = Math.max((hi - lo) * 0.15, hi * 0.01);
+                        const step = 5 * Math.pow(10, Math.floor(Math.log10(Math.max(hi, 1e-9))) - 2); // tidy axis numbers
+                        const gradId = `trRateGrad${idx}`;
+                        return (
                         <div className="card" key={pair}>
                             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
                                 Exchange Rate — {pair}
                             </h4>
                             <ResponsiveContainer width="100%" height={180}>
-                                <LineChart data={rateByPair[pair]}>
+                                <AreaChart data={rateByPair[pair]}>
+                                    <defs>
+                                        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={color} stopOpacity={0.35} />
+                                            <stop offset="95%" stopColor={color} stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="date" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} />
+                                    <XAxis dataKey="date" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                        domain={['auto', 'auto']}
+                                        domain={vals.length ? [Math.max(0, Math.floor((lo - pad) / step) * step), Math.ceil((hi + pad) / step) * step] : ['auto', 'auto']}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
-                                    <Line type="monotone" dataKey="rate" stroke={theme.series[idx % theme.series.length]}
-                                        strokeWidth={2} dot={false} />
-                                </LineChart>
+                                    <Area type="monotone" dataKey="rate" stroke={color} strokeWidth={2}
+                                        fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4 }} />
+                                </AreaChart>
                             </ResponsiveContainer>
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -178,7 +194,12 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
     const [form, setForm] = useState(BLANK_TRANSFER_FORM);
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
+    // v1.83.0 — "I have checked the bank's rate" (asked again whenever
+    // the rate, amount or date changes)
+    const [rateConfirmed, setRateConfirmed] = useState(false);
     const isEdit = !!editingRecord;
+
+    useEffect(() => { setRateConfirmed(false); }, [form.exchange_rate, form.value_date, form.from_account_id, form.to_account_id, isOpen]);
 
     useEffect(() => {
         if (editingRecord) {
@@ -218,7 +239,11 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
         setLoading(true);
         setError(null);
         try {
-            const payload = { ...form, exchange_rate: sameCurrency ? undefined : form.exchange_rate };
+            const payload = {
+                ...form,
+                exchange_rate: sameCurrency ? undefined : form.exchange_rate,
+                rate_difference_confirmed: !sameCurrency && rateConfirmed ? true : undefined,
+            };
             if (isEdit) {
                 const { from_account_id, to_account_id, ...editable } = payload;
                 await transfersAPI.update(editingRecord.id, editable);
@@ -354,6 +379,19 @@ const TransferModal = ({ isOpen, onClose, onSuccess, accounts, categories, editi
                                 </p>
                             </div>
                         </div>
+
+                        {/* v1.83.0 — the bank's rate against the rate on file */}
+                        {!sameCurrency && fromAccount && toAccount && (
+                            <TransferRateCheck
+                                fromCode={fromAccount.currency_code}
+                                toCode={toAccount.currency_code}
+                                rate={form.exchange_rate}
+                                amountSent={form.amount_sent}
+                                date={form.value_date}
+                                confirmed={rateConfirmed}
+                                onConfirmedChange={setRateConfirmed}
+                            />
+                        )}
 
                         {/* Amount preview */}
                         {amountReceived && toAccount && (

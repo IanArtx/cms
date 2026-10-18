@@ -132,7 +132,7 @@ const ResolutionDetailPage = () => {
                                     <thead>
                                         <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
                                             <th className="py-2 pr-3">Name</th>
-                                            {r.kind === 'WRITTEN_MEMBERS' && <th className="py-2 pr-3 text-right">Shares</th>}
+                                            {r.kind === 'WRITTEN_MEMBERS' && <th className="py-2 pr-3 text-right">Registered shares</th>}
                                             <th className="py-2 pr-3">Decision</th>
                                             <th className="py-2 pr-3">Signed</th>
                                         </tr>

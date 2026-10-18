@@ -204,6 +204,8 @@ const DOCUMENT_TYPES = [
     // v1.79.0 — statutory meeting documents (generated from Meetings;
     // a signed paper copy can also be uploaded under these types)
     'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'RESOLUTION', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION',
+    // v1.85.0 — also uploaded directly on project / investment pages
+    'PROJECT_PROPOSAL', 'PROJECT_REPORT', 'BOND_CERTIFICATE',
 ];
 
 const ARCHIVE_TYPES = [
@@ -1251,6 +1253,9 @@ const DocumentDetailModal = ({ documentId, onClose, onChanged }) => {
                                 <Row label="Type">{(doc.document_type || '').replace(/_/g, ' ').toLowerCase()}{doc.source === 'SYSTEM_GENERATED' ? ' (generated)' : ''}</Row>
                                 <Row label="Category">{doc.category_trail || doc.category_name || '—'}</Row>
                                 {doc.file_name && <Row label="File">{doc.file_name}{doc.file_size_bytes ? ` · ${formatFileSize(doc.file_size_bytes)}` : ''}</Row>}
+                                {/* v1.85.0 — on a project / investment page */}
+                                {doc.related_record_type === 'projects' && doc.related_record_id && <Row label="On project"><Link className="text-primary-700 hover:underline" to={`/projects/${doc.related_record_id}`}>Open the project</Link></Row>}
+                                {doc.related_record_type === 'investments' && doc.related_record_id && <Row label="On investment"><Link className="text-primary-700 hover:underline" to={`/investments/${doc.related_record_id}`}>Open the investment</Link></Row>}
                                 <Row label="Version">v{doc.version}</Row>
                                 <Row label="Status"><StatusBadge status={doc.status} /></Row>
                                 <Row label="Created">{doc.created_by_name}, {formatDate(doc.created_at)}</Row>
@@ -1328,6 +1333,7 @@ const DocumentsPage = () => {
         'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT',
         'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER',
         'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION', // v1.79.0
+        'PROJECT_PROPOSAL', 'PROJECT_REPORT', 'BOND_CERTIFICATE', // v1.85.0
     ];
 
     const [typeFilter,   setTypeFilter]   = useState('');

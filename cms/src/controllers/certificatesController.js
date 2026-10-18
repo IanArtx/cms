@@ -13,6 +13,7 @@ const {
     issueCertificatesForAllShareholders,
     emailRoundCertificates,
     getLatestSignedCertificate,
+    issueForCurrentRegisteredHoldings,
 } = require('../services/certificateService');
 const { signSlot, getSignatureStatus } = require('../services/signatureService');
 const { applyStamps, getAppliedStamps } = require('../services/stampService');
@@ -34,8 +35,8 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const issueOne = asyncHandler(async (req, res) => {
     const { certificate_type, user_id } = req.body;
 
-    if (!['MONTHLY', 'ANNUAL'].includes(certificate_type)) {
-        throw createError.badRequest('certificate_type must be MONTHLY or ANNUAL');
+    if (!['MONTHLY', 'ANNUAL', 'REGISTRATION'].includes(certificate_type)) {
+        throw createError.badRequest('certificate_type must be MONTHLY, ANNUAL or REGISTRATION');
     }
 
     let targetUserId = req.user.id;
@@ -53,7 +54,9 @@ const issueOne = asyncHandler(async (req, res) => {
     const result = await getLatestSignedCertificate(targetUserId, certificate_type);
     if (!result) {
         throw createError.notFound(
-            `No signed ${certificate_type === 'ANNUAL' ? 'annual' : 'monthly'} certificate is available yet for this member — it will be available once the next batch is issued and fully signed.`
+            certificate_type === 'REGISTRATION'
+                ? 'No signed registration certificate is available yet for this member — one is issued when shares are registered with URSB, and can be downloaded once it is fully signed.'
+                : `No signed ${certificate_type === 'ANNUAL' ? 'annual' : 'monthly'} certificate is available yet for this member — it will be available once the next batch is issued and fully signed.`
         );
     }
 
@@ -279,4 +282,22 @@ const signRound = asyncHandler(async (req, res) => {
             : 'Signature recorded');
 });
 
-module.exports = { issueOne, getMine, getAll, issueNow, getRounds, getRoundById, signRound };
+// ============================================================
+// ISSUE CERTIFICATES FOR THE SHARES REGISTERED NOW (v1.84.0)
+// POST /api/certificates/registration/issue-current
+// "first now only what is registered": one registration certificate per
+// member for the shares registered with URSB today (skipping members
+// already certified at that number). Into the open REGISTRATION signing
+// round; emailed once fully signed.
+// ============================================================
+const issueRegisteredNow = asyncHandler(async (req, res) => {
+    const result = await issueForCurrentRegisteredHoldings({ issuedBy: req.user.id });
+    await logAction(req.user.id, ACTIONS.CERTIFICATE_ISSUED, MODULES.SYSTEM, {
+        ipAddress: req.ip, recordType: 'certificate_signing_rounds', recordId: result.roundId || null,
+        description: `Registration certificates issued for registered shares: ${result.issued || 0}`,
+    }).catch(() => {});
+    if (result.blocked) return sendSuccess(res, result, result.blockedReason);
+    sendSuccess(res, result, result.message || `${result.issued} registration certificate(s) issued — waiting for signatures before they are emailed.`);
+});
+
+module.exports = { issueOne, getMine, getAll, issueNow, getRounds, getRoundById, signRound, issueRegisteredNow };

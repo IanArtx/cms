@@ -1049,7 +1049,7 @@ const AllotmentsTab = ({ canFile, onReload }) => {
                                                 <td className="py-2 pr-3">{formatDate(r.allotment_date)}</td>
                                                 <td className="py-2 pr-3 font-mono text-xs">{r.reference_code}</td>
                                                 <td className="py-2 pr-3">{r.member_name}</td>
-                                                <td className="py-2 pr-3">{SOURCE_LABELS[r.source] || r.source}</td>
+                                                <td className="py-2 pr-3">{SOURCE_LABELS[r.source] || r.source}{r.rate_correction && <span className="ml-1 inline-block whitespace-nowrap text-[10px] font-semibold rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-800" title="Added by the v1.84.0 share-register correction: the contribution valued at the exchange rate of its day instead of 4,000">Rate correction</span>}</td>
                                                 <td className="py-2 pr-3 text-right font-semibold">{r.shares > 0 ? '+' : ''}{whole(r.shares)}{r.shares_beyond_registered > 0 && <span className="ml-1 text-xs text-amber-700" title="Beyond the registered number of shares">({whole(r.shares_beyond_registered)} over)</span>}</td>
                                                 <td className="py-2 pr-3 text-right">{money(r.issue_price, 0)} / {money(r.nominal_value, 0)}</td>
                                                 <td className="py-2 pr-3 text-right">{money(r.share_capital_amount, 0)}</td>
@@ -1295,7 +1295,7 @@ const ShareCapitalPage = () => {
             {active === 'mine' && <MySharesTab />}
             {active === 'changes' && <ChangesTab overview={overview} userId={user?.id} canPropose={canPropose} onReload={load} />}
             {active === 'allotments' && isStaff && <AllotmentsTab canFile={canFile} onReload={load} />}
-            {active === 'registered' && isStaff && <RegisteredByMemberTab canEdit={canFile} />}
+            {active === 'registered' && isStaff && <RegisteredByMemberTab canEdit={canFile} canIssue={hasRole(['Admin', 'Secretary', 'Treasurer'])} />}
             {active === 'credits' && isStaff && (
                 <CreditsTab overview={overview} userId={user?.id} canMake={canMakeRefund} canCheck={canCheckRefund} onReload={load} />
             )}

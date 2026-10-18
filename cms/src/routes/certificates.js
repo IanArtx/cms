@@ -22,8 +22,8 @@ router.use(blockFinanceRestricted);
 // ============================================================
 router.post('/',
     [
-        body('certificate_type').isIn(['MONTHLY', 'ANNUAL'])
-            .withMessage('certificate_type must be MONTHLY or ANNUAL'),
+        body('certificate_type').isIn(['MONTHLY', 'ANNUAL', 'REGISTRATION'])
+            .withMessage('certificate_type must be MONTHLY, ANNUAL or REGISTRATION'),
         body('user_id').optional().isInt(),
     ],
     validateRequest,
@@ -70,6 +70,15 @@ router.post('/issue-now',
     ],
     validateRequest,
     certificatesController.issueNow
+);
+
+// ============================================================
+// REGISTRATION CERTIFICATES FOR THE SHARES REGISTERED NOW (v1.84.0)
+// POST /api/certificates/registration/issue-current
+// ============================================================
+router.post('/registration/issue-current',
+    requireRoles(['Admin', 'Secretary', 'Treasurer']),
+    certificatesController.issueRegisteredNow
 );
 
 // ============================================================

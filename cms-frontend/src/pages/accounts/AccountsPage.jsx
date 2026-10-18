@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { accountsAPI, transactionsAPI, sharesAPI, exchangeRatesAPI, categoriesAPI } from '../../api/endpoints';
 import { formatCurrency, formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
@@ -16,6 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { ExpenseTaxFields, InflowTaxFields, expenseTaxPayload, inflowTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
 import { DocumentPicker, documentIdsOf, TransactionDetailModal, LinkCount } from '../../components/documents/TransactionDocuments'; // v1.78.0
+import BouRatesPanel from '../../components/fx/BouRatesPanel'; // v1.83.0
 import {
     PlusIcon,
     BuildingLibraryIcon,
@@ -1340,6 +1341,12 @@ const SetExchangeRateModal = ({ isOpen, onClose, onSuccess, currencies, fixedRat
                         does affect how future contributions in this
                         currency pair convert into shares.
                     </p>
+                    <p className="text-xs text-gray-500 mb-4">
+                        Recorded as <strong>entered by hand</strong> by you. The daily Bank of Uganda
+                        check never replaces it — a BoU suggestion for the same date is closed
+                        as "hand-entered rate kept". Enter it the way the pair is already kept
+                        (e.g. 1 EUR = … UGX).
+                    </p>
                     {fixedRates.length > 0 && (
                         <p className="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
                             {fixedRates.map(f => f.description).join('; ')} — fixed by company decision, so a
@@ -1471,6 +1478,12 @@ const ExchangeRatesCard = ({ rates, fixedRates = [], canEdit, onEditClick }) => 
                         <p className="text-xs text-gray-400">
                             since {formatDate(r.effective_from)}
                         </p>
+                        {/* v1.83.0 — where the rate came from */}
+                        <p className="text-[11px] text-gray-400 mt-0.5" data-testid="rate-source">
+                            {r.source === 'BOU' ? `Bank of Uganda · approved by ${r.set_by_name}`
+                                : r.source === 'ALLRATESTODAY' ? `BoU table (AllRatesToday) · approved by ${r.set_by_name}`
+                                : `Entered by hand · ${r.set_by_name}`}
+                        </p>
                     </div>
                 ))}
             </div>
@@ -1563,22 +1576,36 @@ const MarketHistoryCharts = () => {
                 {pairs.filter(k => byPair[k].length > 1).map((pairKey, idx) => {
                     const data = byPair[pairKey];
                     const color = theme.series[idx % theme.series.length];
+                    // v1.83.1 — smooth line, no dots, gradient fill (same style as
+                    // the other trend charts); the scale hugs the rates so changes show.
+                    const vals = data.map(d => d.rate);
+                    const lo = Math.min(...vals); const hi = Math.max(...vals);
+                    const pad = Math.max((hi - lo) * 0.15, hi * 0.01);
+                    const step = 5 * Math.pow(10, Math.floor(Math.log10(Math.max(hi, 1e-9))) - 2); // tidy axis numbers
+                    const gradId = `fxRateGrad${idx}`;
                     return (
                         <div className="card" key={pairKey}>
                             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
                                 Exchange Rate — {pairKey}
                             </h4>
                             <ResponsiveContainer width="100%" height={200}>
-                                <LineChart data={data}>
+                                <AreaChart data={data}>
+                                    <defs>
+                                        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={color} stopOpacity={0.35} />
+                                            <stop offset="95%" stopColor={color} stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                    <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
+                                        domain={[Math.max(0, Math.floor((lo - pad) / step) * step), Math.ceil((hi + pad) / step) * step]}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
                                         formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
-                                    <Line type="stepAfter" dataKey="rate" stroke={color}
-                                        strokeWidth={2} dot={{ r: 3, fill: color }} />
-                                </LineChart>
+                                    <Area type="monotone" dataKey="rate" stroke={color} strokeWidth={2}
+                                        fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4 }} />
+                                </AreaChart>
                             </ResponsiveContainer>
                         </div>
                     );
@@ -1779,6 +1806,8 @@ const AccountsPage = () => {
 
     const canEditRates = hasRole(['Treasurer', 'Assistant Treasurer', 'Admin']);
     const navigate = useNavigate();
+    const location = useLocation();
+    const focusBou = new URLSearchParams(location.search).get('fx') === 'bou'; // v1.83.0 — from notifications
     const isAdmin = hasRole(['Admin']);
 
     const loadData = async () => {
@@ -1943,6 +1972,10 @@ const AccountsPage = () => {
                 canEdit={canEditRates}
                 onEditClick={() => setShowRateModal(true)}
             />
+
+            {/* v1.83.0 — Bank of Uganda rates suggested each weekday, approved here */}
+            <BouRatesPanel canDecide={canEditRates} focus={focusBou}
+                onRatesChanged={() => exchangeRatesAPI.getCurrent().then(r => setExchangeRates(r.data.data || [])).catch(() => {})} />
 
             {/* Market History — share price + exchange rate trends, once
                 per page, before the account tiles below (v1.50.0) */}

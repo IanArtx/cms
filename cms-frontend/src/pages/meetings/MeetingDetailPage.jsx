@@ -171,7 +171,7 @@ const AttendanceTab = ({ v, canManage, reload, setError }) => {
                     <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
                         <th className="py-2 pr-3">Name</th>
                         <th className="py-2 pr-3">Capacity</th>
-                        {isCounted && general && <th className="py-2 pr-3 text-right">Shares</th>}
+                        {isCounted && general && <th className="py-2 pr-3 text-right" title="Shares registered with URSB on the day of the meeting (v1.84.0)">Registered shares</th>}
                         <th className="py-2 pr-3">Attendance</th>
                         <th className="py-2 pr-3">Signature (by the person)</th>
                         {editable && (!isCounted || past) && <th className="py-2" />}
@@ -186,7 +186,7 @@ const AttendanceTab = ({ v, canManage, reload, setError }) => {
                                 <td className="py-2 pr-3 text-right tabular-nums">
                                     {editable && past && !a.confirmed_at ? (
                                         <input type="number" min="0" className="input py-1 text-sm w-24 text-right" defaultValue={a.shares_held ?? ''}
-                                            title="Shares held on the day of the meeting" disabled={busy === a.id}
+                                            title="Shares registered with URSB on the day of the meeting" disabled={busy === a.id}
                                             onBlur={e => saveShares(a, e.target.value)} />
                                     ) : (a.shares_held != null ? Number(a.shares_held).toLocaleString('en-GB') : '—')}
                                 </td>
@@ -258,7 +258,7 @@ const AttendanceTab = ({ v, canManage, reload, setError }) => {
                     <form onSubmit={addPerson} className="grid grid-cols-1 sm:grid-cols-[1fr_140px_auto] gap-2 mt-3">
                         <PersonSelect value={extraPerson.user_id} people={people} placeholder={`Add a ${general ? 'member' : 'director'} not listed…`}
                             onChange={id => setExtraPerson(x => ({ ...x, user_id: id }))} />
-                        {general ? <input type="number" min="0" className="input" placeholder="Shares held" value={extraPerson.shares_held}
+                        {general ? <input type="number" min="0" className="input" placeholder="Registered shares" value={extraPerson.shares_held}
                             onChange={e => setExtraPerson(x => ({ ...x, shares_held: e.target.value }))} /> : <span />}
                         <button type="submit" className="btn-secondary" disabled={!extraPerson.user_id}>Add</button>
                     </form>

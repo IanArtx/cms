@@ -784,6 +784,14 @@ const getLedgerLines = async ({ accountId = null, fromDate = null, toDate = null
         unconverted = unconverted.concat(v170.unconverted);
     }
 
+    // v1.83.0 — realised exchange results of transfers (before the
+    // revaluation, which then revalues what is left).
+    const realised = await fxService.getRealisedTransferLines({
+        throughDate: endDate, accountId,
+        glByCode: ctx.glByCode, functionalCurrency: ctx.functionalCurrency, currencyCodeById: ctx.currencyCodeById,
+    });
+    lines = lines.concat(realised);
+
     const stored = await fxService.getStoredRevaluationLines({
         throughDate: endDate, accountId,
         glByCode: ctx.glByCode, functionalCurrency: ctx.functionalCurrency, currencyCodeById: ctx.currencyCodeById,
@@ -941,7 +949,7 @@ const computeGeneralLedger = async ({ glAccountId = null, accountId = null, from
             const detail = inRange.map(l => {
                 running += sign(l);
                 const showOriginal = basis === BASIS.FUNCTIONAL && l.originalCurrencyCode && l.originalCurrencyCode !== l.currencyCode;
-                const isRevaluation = l.sourceType === 'FX_REVALUATION' || l.sourceType === 'FX_REVALUATION_PROVISIONAL';
+                const isRevaluation = l.sourceType === 'FX_REVALUATION' || l.sourceType === 'FX_REVALUATION_PROVISIONAL' || l.sourceType === 'FX_REALISED';
                 return {
                     date: l.date, description: l.description, referenceCode: l.referenceCode,
                     categoryTrail: l.categoryTrail, sourceType: l.sourceType,
@@ -1091,16 +1099,30 @@ const computeIncomeStatement = async ({ accountId = null, fromDate, toDate, basi
         // `fxDetail` and shown beneath the line, and stay separate in the
         // Trial Balance and General Ledger, where accounts are listed
         // individually.
-        const fxGainRow = revenue.find(r => r.code === FX_GAIN_GL_CODE);
-        const fxLossRow = expenses.find(r => r.code === FX_LOSS_GL_CODE);
+        // v1.83.0 — the REALISED results of transfers (4610 gains / 5610
+        // losses) are folded into the same net line; the breakdown keeps
+        // realised (conversions that happened) and unrealised (month-end
+        // revaluation of balances still held) apart.
+        const FX_CODES_REV = [FX_GAIN_GL_CODE, fxService.REALISED_GAIN_GL_CODE];
+        const FX_CODES_EXP = [FX_LOSS_GL_CODE, fxService.REALISED_LOSS_GL_CODE];
+        const amt = (rows, code) => (rows.find(r => r.code === code) || { amount: 0 }).amount;
+        const hasFx = revenue.some(r => FX_CODES_REV.includes(r.code)) || expenses.some(r => FX_CODES_EXP.includes(r.code));
         let fxDetail = null;
-        if (fxGainRow || fxLossRow) {
-            const gains = fxGainRow ? fxGainRow.amount : 0;
-            const losses = fxLossRow ? fxLossRow.amount : 0;
+        if (hasFx) {
+            const unrealisedGains = amt(revenue, FX_GAIN_GL_CODE);
+            const unrealisedLosses = amt(expenses, FX_LOSS_GL_CODE);
+            const realisedGains = amt(revenue, fxService.REALISED_GAIN_GL_CODE);
+            const realisedLosses = amt(expenses, fxService.REALISED_LOSS_GL_CODE);
+            const gains = round2(unrealisedGains + realisedGains);
+            const losses = round2(unrealisedLosses + realisedLosses);
             const net = round2(gains - losses);
-            fxDetail = { gains, losses, net };
-            const keepRevenue = revenue.filter(r => r.code !== FX_GAIN_GL_CODE);
-            const keepExpenses = expenses.filter(r => r.code !== FX_LOSS_GL_CODE);
+            fxDetail = {
+                gains, losses, net,
+                realised: { gains: realisedGains, losses: realisedLosses, net: round2(realisedGains - realisedLosses) },
+                unrealised: { gains: unrealisedGains, losses: unrealisedLosses, net: round2(unrealisedGains - unrealisedLosses) },
+            };
+            const keepRevenue = revenue.filter(r => !FX_CODES_REV.includes(r.code));
+            const keepExpenses = expenses.filter(r => !FX_CODES_EXP.includes(r.code));
             revenue.length = 0; revenue.push(...keepRevenue);
             expenses.length = 0; expenses.push(...keepExpenses);
             if (net > 0) {
@@ -1166,7 +1188,9 @@ const computeCashFlowStatement = async ({ accountId = null, fromDate, toDate, ba
         const ledger = await getLedgerLines({ accountId, fromDate, toDate, basis });
         meta = ledger.meta;
         txLines = ledger.lines.filter(l => l.sourceType === 'TRANSACTION');
-        fxLinesInRange = ledger.lines.filter(l => (l.sourceType === 'FX_REVALUATION' || l.sourceType === 'FX_REVALUATION_PROVISIONAL') && cashIds.has(l.glAccountId));
+        // v1.83.0 — realised differences on transfers move cash's UGX value
+        // without any cash flowing: they belong with the exchange effect.
+        fxLinesInRange = ledger.lines.filter(l => (l.sourceType === 'FX_REVALUATION' || l.sourceType === 'FX_REVALUATION_PROVISIONAL' || l.sourceType === 'FX_REALISED') && cashIds.has(l.glAccountId));
     } else {
         const ledger = await getTransactionLedgerLines({ accountId, fromDate, toDate, basis });
         txLines = ledger.lines;

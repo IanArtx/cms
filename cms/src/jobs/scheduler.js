@@ -16,6 +16,9 @@
 //   9. Capital goal call deadlines — every day at 00:30
 //  10. Service fee monthly period generation — every day at 00:35
 //  11. Service fee due-date reminders — every day at 08:45
+//  12. Bank of Uganda exchange rates (v1.83.0) — Monday to Friday at
+//      10:15, 13:15 and 16:15 Kampala time: suggests the day's rates
+//      for a person to approve (never fills them in by itself)
 // ============================================================
 
 const cron = require('node-cron');
@@ -974,6 +977,33 @@ const scheduleTaxDeadlineReminders = () => {
 };
 
 // ============================================================
+// BANK OF UGANDA EXCHANGE RATES (v1.83.0)
+// Monday to Friday at 10:15, 13:15 and 16:15 Kampala time. BoU puts
+// its OPENING RATES table online at about 09:50; the later runs pick up
+// a late file. Each run only SUGGESTS rates (one per currency per
+// date — a second run the same day adds nothing new); the Treasurer,
+// Assistant Treasurer or an Admin approves or rejects them under
+// Money › Accounts. A rate already on file for the date — above all one
+// entered by hand — is never replaced. See fxFeedService.runFeed.
+// ============================================================
+const scheduleBouExchangeRates = () => {
+    const cronExpression = process.env.BOU_RATES_CRON || '15 10,13,16 * * 1-5';
+    scheduleJob('BouExchangeRates', cronExpression, async () => {
+        logger.info('Starting Bank of Uganda exchange rate job...');
+        try {
+            const fxFeedService = require('../services/fxFeedService');
+            const result = await fxFeedService.runFeed({ trigger: 'SCHEDULE' });
+            logger.info(`Bank of Uganda exchange rate job completed — ${result.status}`);
+        } catch (err) {
+            logger.error('Bank of Uganda exchange rate job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+    logger.info(`Bank of Uganda exchange rates scheduled: ${cronExpression}`);
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -995,6 +1025,7 @@ const startAllJobs = () => {
     scheduleDocumentSignatureReminders();
     scheduleAuditAccessExpiryReminders();
     scheduleTaxDeadlineReminders();
+    scheduleBouExchangeRates();
     logger.info('All scheduled jobs started successfully');
 };
 

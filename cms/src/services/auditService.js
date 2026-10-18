@@ -166,6 +166,11 @@ const ACTIONS = {
     INVESTMENT_SETTLEMENT_FUNDED:        'INVESTMENT_SETTLEMENT_FUNDED',
     INVESTMENT_SETTLEMENT_VALUE_RECORDED:'INVESTMENT_SETTLEMENT_VALUE_RECORDED',
     PROJECT_CREATED:        'PROJECT_CREATED',
+    PROJECT_UPDATED:        'PROJECT_UPDATED',          // v1.85.0
+    PROJECT_STATUS_CHANGED: 'PROJECT_STATUS_CHANGED',   // v1.85.0
+    PROJECT_LINKED:         'PROJECT_LINKED',           // v1.85.0 — added to an investment
+    PROJECT_UNLINKED:       'PROJECT_UNLINKED',         // v1.85.0 — taken out of an investment
+    DOCUMENT_ATTACHED:      'DOCUMENT_ATTACHED',        // v1.85.0 — document put on a project / investment page
     MILESTONE_UPDATED:      'MILESTONE_UPDATED',
     // Money Market Fund sub-accounts (v1.28.0)
     MMF_ACCOUNT_CREATED:    'MMF_ACCOUNT_CREATED',

@@ -22,6 +22,9 @@
 //     rate's date that is NOT inside a month already revalued and
 //     closed. Closed months keep their values — that's what makes
 //     them final.
+// v1.83.0 — every rate records its SOURCE: entered by hand, or a
+// Bank of Uganda rate suggested by the daily feed and approved by a
+// person. Hand-entered rates are never overwritten by the feed.
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
@@ -29,6 +32,8 @@ const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess, sendCreated, sendPaginated, getPagination } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const fxService = require('../services/fxService');
+const exchangeRateService = require('../services/exchangeRateService');
+const fxFeedService = require('../services/fxFeedService');
 
 // ============================================================
 // GET CURRENT EXCHANGE RATES
@@ -40,6 +45,7 @@ const fxService = require('../services/fxService');
 const getCurrentRates = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT cer.id, cer.rate, cer.effective_from, cer.notes,
+               COALESCE(to_jsonb(cer)->>'source', 'MANUAL') AS source, to_jsonb(cer)->>'source_detail' AS source_detail,
                bc.id AS base_currency_id, bc.code AS base_currency_code,
                tc.id AS target_currency_id, tc.code AS target_currency_code, tc.symbol AS target_currency_symbol,
                u.first_name || ' ' || u.last_name AS set_by_name
@@ -65,85 +71,20 @@ const getCurrentRates = asyncHandler(async (req, res) => {
 const setExchangeRate = asyncHandler(async (req, res) => {
     const { base_currency_id, target_currency_id, rate, effective_from, notes } = req.body;
 
-    if (!base_currency_id || !target_currency_id) {
-        throw createError.badRequest('base_currency_id and target_currency_id are required');
-    }
-    if (parseInt(base_currency_id) === parseInt(target_currency_id)) {
-        throw createError.badRequest('base_currency_id and target_currency_id must be different currencies');
-    }
-    if (!rate || parseFloat(rate) <= 0) {
-        throw createError.badRequest('rate must be a positive number');
-    }
-    const effectiveDate = effective_from ? String(effective_from).slice(0, 10) : fxService.todayStr();
+    // v1.83.0 — the rules now live in exchangeRateService.setRate, shared
+    // with approving a Bank of Uganda suggestion. A rate typed here is
+    // recorded as "entered by hand" (source MANUAL), and any BoU
+    // suggestion still waiting for the same pair and date is closed —
+    // the hand-entered rate is never replaced by the daily feed.
+    const newRate = await withTransaction((client) => exchangeRateService.setRate(client, {
+        baseCurrencyId: base_currency_id, targetCurrencyId: target_currency_id, rate,
+        effectiveDate: effective_from, userId: req.user.id, notes,
+        source: 'MANUAL', ipAddress: req.ip,
+    }));
 
-    // v1.76.0 — a fixed-rate company decision covers this date: only
-    // the fixed rate itself may be entered for it (either direction).
-    const fixedRule = await fxService.fixedRateRuleFor(parseInt(base_currency_id, 10), parseInt(target_currency_id, 10), effectiveDate);
-    if (fixedRule && !fxService.matchesFixedRule(fixedRule, parseInt(base_currency_id, 10), rate)) {
-        throw createError.conflict(
-            `By company decision the rate is fixed at ${fxService.describeFixedRule(fixedRule)}. ` +
-            `A different rate can only start on or after ${fixedRule.valid_before}.`
-        );
-    }
-
-    const newRate = await withTransaction(async (client) => {
-        const duplicate = await client.query(`
-            SELECT id, rate FROM currency_exchange_rates
-            WHERE  base_currency_id = $1 AND target_currency_id = $2 AND effective_from = $3
-        `, [base_currency_id, target_currency_id, effectiveDate]);
-        if (duplicate.rows.length > 0) {
-            throw createError.conflict(
-                `A rate for this currency pair already starts on ${effectiveDate} (${duplicate.rows[0].rate}). ` +
-                `Pick a different start date — rates already used by the books are never overwritten.`
-            );
-        }
-
-        // The rate that was covering effectiveDate now stops there.
-        await client.query(`
-            UPDATE currency_exchange_rates
-            SET    effective_to = $1
-            WHERE  base_currency_id = $2 AND target_currency_id = $3
-            AND    effective_from < $1
-            AND    (effective_to IS NULL OR effective_to > $1)
-        `, [effectiveDate, base_currency_id, target_currency_id]);
-
-        // The new rate runs until the next later rate starts, if any.
-        const next = await client.query(`
-            SELECT MIN(effective_from)::text AS next_from FROM currency_exchange_rates
-            WHERE  base_currency_id = $1 AND target_currency_id = $2 AND effective_from > $3
-        `, [base_currency_id, target_currency_id, effectiveDate]);
-        const effectiveTo = next.rows[0].next_from || null;
-
-        const result = await client.query(`
-            INSERT INTO currency_exchange_rates
-                (base_currency_id, target_currency_id, rate, effective_from, effective_to, set_by, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, base_currency_id, target_currency_id, rate,
-                      effective_from::text AS effective_from, effective_to::text AS effective_to, notes
-        `, [base_currency_id, target_currency_id, rate, effectiveDate, effectiveTo, req.user.id, notes || null]);
-
-        await logAction(req.user.id, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.SYSTEM, {
-            ipAddress:   req.ip,
-            recordType:  'currency_exchange_rates',
-            recordId:    result.rows[0].id,
-            newValues:   result.rows[0],
-            description: `Exchange rate set to ${rate} effective ${effectiveDate}${effectiveTo ? ` until ${effectiveTo}` : ''}`,
-            client,
-        });
-
-        // v1.66.0 — re-value the transactions this rate affects.
-        const fx = await fxService.recomputeFunctionalAmounts(client, { fromDate: effectiveDate });
-
-        return { ...result.rows[0], fx };
-    });
-
-    let message = `Exchange rate set to ${rate}, effective ${effectiveDate}`;
-    if (newRate.effective_to) message += ` until ${newRate.effective_to}`;
-    message += `. ${newRate.fx.recalculated} transaction(s) re-valued in UGX`;
-    if (newRate.fx.keptInClosedMonths > 0) {
-        message += `; ${newRate.fx.keptInClosedMonths} transaction(s) in months already closed (through ${newRate.fx.lastRevaluedPeriodEnd}) kept their existing values`;
-    }
-    if (newRate.fx.stillMissing > 0) message += `; ${newRate.fx.stillMissing} transaction(s) still have no rate`;
+    let message = `Exchange rate set to ${rate}, effective ${newRate.effective_from}`;
+    message += exchangeRateService.describeRevaluation(newRate);
+    if (newRate.fx.realisedTransfers > 0) message += `; exchange results of ${newRate.fx.realisedTransfers} transfer leg(s) recalculated`;
     sendCreated(res, newRate, message + '.');
 });
 
@@ -160,6 +101,7 @@ const getRateHistory = asyncHandler(async (req, res) => {
     const result = await query(`
         SELECT cer.id, cer.rate, cer.effective_from, cer.effective_to,
                cer.notes, cer.created_at,
+               COALESCE(to_jsonb(cer)->>'source', 'MANUAL') AS source, to_jsonb(cer)->>'source_detail' AS source_detail,
                bc.code AS base_currency_code,
                tc.code AS target_currency_code,
                u.first_name || ' ' || u.last_name AS set_by_name
@@ -190,9 +132,98 @@ const getFixedRates = asyncHandler(async (req, res) => {
     })));
 });
 
+// ============================================================
+// DAILY BANK OF UGANDA RATES (v1.83.0)
+// The feed only SUGGESTS rates; a Treasurer, Assistant Treasurer or
+// Admin approves each one (a person stays in the loop). Approved rates
+// are recorded with their source ("Bank of Uganda"). A rate already on
+// file for that date — above all one entered by hand — is never
+// replaced.
+// ============================================================
+const listSuggestions = asyncHandler(async (req, res) => {
+    sendSuccess(res, await fxFeedService.listSuggestions({ status: req.query.status || 'PENDING', limit: req.query.limit }));
+});
+
+const approveSuggestion = asyncHandler(async (req, res) => {
+    const out = await fxFeedService.approveSuggestion({
+        id: parseInt(req.params.id, 10), userId: req.user.id,
+        confirmFlagged: req.body.confirm_flagged === true || req.body.confirm_flagged === 'true', ipAddress: req.ip,
+    });
+    sendSuccess(res, out, out.message);
+});
+
+// Approve every waiting suggestion that is NOT flagged. Flagged ones
+// are left for a person to look at one by one.
+const approveAllSuggestions = asyncHandler(async (req, res) => {
+    const waiting = await fxFeedService.listSuggestions({ status: 'PENDING', limit: 200 });
+    const results = [];
+    for (const s of waiting.filter(x => !x.flagged)) {
+        try {
+            const out = await fxFeedService.approveSuggestion({ id: s.id, userId: req.user.id, ipAddress: req.ip });
+            results.push({ id: s.id, currency: s.base_currency_code, ok: true, kept: out.kept, message: out.message });
+        } catch (e) {
+            results.push({ id: s.id, currency: s.base_currency_code, ok: false, message: e.message });
+        }
+    }
+    const approved = results.filter(r => r.ok && !r.kept).length;
+    const kept = results.filter(r => r.ok && r.kept).length;
+    const failed = results.filter(r => !r.ok).length;
+    const flaggedLeft = waiting.filter(x => x.flagged).length;
+    let message = `${approved} rate(s) approved`;
+    if (kept) message += `; ${kept} kept the rate already on file`;
+    if (failed) message += `; ${failed} could not be approved`;
+    if (flaggedLeft) message += `; ${flaggedLeft} flagged rate(s) still need checking one by one`;
+    sendSuccess(res, { results, approved, kept, failed, flaggedLeft }, message + '.');
+});
+
+const rejectSuggestion = asyncHandler(async (req, res) => {
+    const row = await fxFeedService.rejectSuggestion({ id: parseInt(req.params.id, 10), userId: req.user.id, reason: req.body.reason, ipAddress: req.ip });
+    sendSuccess(res, row, 'Suggested rate rejected — nothing was changed in the books.');
+});
+
+const getFeedStatus = asyncHandler(async (req, res) => {
+    sendSuccess(res, await fxFeedService.feedStatus());
+});
+
+const runFeedNow = asyncHandler(async (req, res) => {
+    const out = await fxFeedService.runFeed({ trigger: 'BY_HAND', userId: req.user.id });
+    sendSuccess(res, out, out.message);
+});
+
+const updateFeedSettings = asyncHandler(async (req, res) => {
+    const { enabled, jump_limit_pct, transfer_warn_pct } = req.body;
+    const settings = await fxFeedService.updateFeedSettings({
+        enabled, jumpLimitPct: jump_limit_pct, transferWarnPct: transfer_warn_pct, userId: req.user.id,
+    });
+    sendSuccess(res, settings, 'Daily rate settings saved.');
+});
+
+// GET /api/exchange-rates/reference?from=&to=&date= — the rate on file
+// for a date (used by the transfer form to compare the bank's rate).
+const getReferenceRate = asyncHandler(async (req, res) => {
+    // Either a currency id or its code (the account lists carry codes).
+    const resolve = async (v) => {
+        if (/^\d+$/.test(String(v || ''))) return parseInt(v, 10);
+        const r = await query('SELECT id FROM currencies WHERE UPPER(code) = UPPER($1)', [String(v || '')]);
+        return r.rows[0]?.id || null;
+    };
+    const from = await resolve(req.query.from);
+    const to = await resolve(req.query.to);
+    if (!from || !to) throw createError.badRequest('from and to must be known currencies');
+    sendSuccess(res, await fxFeedService.referenceRate({ fromCurrencyId: from, toCurrencyId: to, date: req.query.date }));
+});
+
 module.exports = {
     getCurrentRates,
     setExchangeRate,
     getRateHistory,
     getFixedRates,
+    listSuggestions,
+    approveSuggestion,
+    approveAllSuggestions,
+    rejectSuggestion,
+    getFeedStatus,
+    runFeedNow,
+    updateFeedSettings,
+    getReferenceRate,
 };

@@ -1,0 +1,19 @@
+%% v1.84.0 — shares allotted inside the company, certificates and meetings on URSB-registered shares, share-register correction
+flowchart TD
+    C["Contribution (books value in UGX)"] --> CR["Share credit"]
+    CR -->|"floor(credit ÷ issue price)"| AL["Allotment — allotted inside the company\n(My Shares, ownership %, dividends)"]
+    AL --> RET{"Return of allotment\nmarked filed?"}
+    RET -->|"no"| EXC["Excess — not yet registered\n(flagged, due date, overdue)"]
+    RET -->|"yes"| REG["Registered with URSB"]
+    URSB["URSB figure entered / corrected\n(as at a date)"] --> REG
+    REG -->|"registered shares changed"| RCERT["REGISTRATION certificate\nbefore · increase · effective date"]
+    RCERT --> SIGN["Signing round (SHARE_CERTIFICATE)"] --> MAIL["Emailed once fully signed"]
+    REG --> MEET["Meetings, attendance, polls, minutes\n= registered shares as at the meeting date"]
+    REG --> MON["Monthly / annual certificates\n= registered shares only"]
+    subgraph FIX["One-time: rebuild_share_register_v1.84.0.js (option A)"]
+        R1["Replay with today's values = today's register"] --> R2["Replay with books values"]
+        R2 --> R3["Credit entries set to books value"]
+        R2 --> R4["Correction allotments (rate_correction)\ndated on the contribution"]
+    end
+    R4 --> AL
+    START["Issue certificates for registered shares\n(once, Registered (URSB) tab)"] --> RCERT

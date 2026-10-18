@@ -1127,8 +1127,11 @@ const computeWorksheet = async (yearOrId, depth = 0) => {
     if (Math.abs(penalties) >= 0.01) addBacks.push({ key: 'PENALTIES', label: 'Tax penalties and late payment interest', amount: round2(penalties), auto: true });
     const netFx = round2(fxGains - fxLosses);
     if (!year.fx_revaluation_taxable && Math.abs(netFx) >= 0.01) {
-        if (netFx < 0) addBacks.push({ key: 'FX', label: 'Net foreign exchange loss (excluded from tax for this year)', amount: round2(-netFx), auto: true });
-        else deductions.push({ key: 'FX', label: 'Net foreign exchange gain (excluded from tax for this year)', amount: netFx, auto: true });
+        // v1.83.0 — only the UNREALISED month-end revaluation (4600 / 5600)
+        // is excluded; realised results of transfers (4610 / 5610) stay in
+        // the taxable profit.
+        if (netFx < 0) addBacks.push({ key: 'FX', label: 'Net unrealised foreign exchange loss — month-end revaluation (excluded from tax for this year; realised exchange results stay in)', amount: round2(-netFx), auto: true });
+        else deductions.push({ key: 'FX', label: 'Net unrealised foreign exchange gain — month-end revaluation (excluded from tax for this year; realised exchange results stay in)', amount: netFx, auto: true });
     }
 
     // (d) Income already taxed at source as FINAL tax is not taxed again.

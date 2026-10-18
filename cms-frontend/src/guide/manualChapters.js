@@ -341,6 +341,8 @@ export const GENERAL_CHAPTERS = [
                 heading: 'Exchange rates',
                 text: [
                     'Every transfer between accounts in different currencies records the rate used, and every entry in a foreign currency also stores its value in the company\'s book currency (UGX), so totals in different currencies can always be added up and checked. The Treasurer keeps the reference rates under Money › Accounts › Set Rate.',
+                    'Where the reference rates come from: each weekday the system reads Bank of Uganda\'s published opening rates and suggests them; a Treasurer, Assistant Treasurer or Admin approves each one. Every rate shows its source — "Bank of Uganda, approved by …" or "Entered by hand". A rate already on file for a date, above all one typed by hand, is never replaced.',
+                    'Realised and unrealised differences: when a transfer converts money at the bank\'s rate, the difference from the reference rate of that day is a REALISED gain or loss (accounts 4610 / 5610), booked on the day of the transfer. At each month end, the foreign-currency balances still held are re-valued at the month-end rate; that difference is UNREALISED (4600 / 5600). Together they add up to exactly what the month-end revaluation alone used to show — only the split is new. Months already closed keep their figures.',
                 ],
             },
             {

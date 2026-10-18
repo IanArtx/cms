@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { investmentsAPI, categoriesAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import { investmentEntryTemplate, printDocument } from '../../utils/exportUtils';
@@ -35,6 +35,8 @@ import {
 } from 'recharts';
 import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
 import InvestmentLedger from './InvestmentLedger'; // v1.80.0
+import RecordDocuments from '../../components/documents/RecordDocuments'; // v1.85.0
+import ProjectFormModal from '../projects/ProjectForm'; // v1.85.0
 import { INVESTMENT_PURPOSES } from '../requisitions/requisitionParts'; // v1.80.0
 
 // v1.60.0 — the fixed set of standard bond durations, matching how
@@ -119,15 +121,16 @@ const RecordExpenseModal = ({ isOpen, onClose, onSuccess, investment, categories
                                     ...p, value_date: e.target.value }))}
                                 required />
                         </div>
-                        {investment.projects?.length > 0 && (
+                        {/* v1.85.0 — only open projects (not completed / cancelled) */}
+                        {investment.projects?.some(p => !['COMPLETED', 'CANCELLED'].includes(p.status)) && (
                             <div>
                                 <label className="label">Project (optional)</label>
                                 <select className="input" value={form.project_id}
                                     onChange={e => setForm(p => ({
                                         ...p, project_id: e.target.value }))}>
                                     <option value="">Not linked to a project</option>
-                                    {investment.projects.map(p => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    {investment.projects.filter(p => !['COMPLETED', 'CANCELLED'].includes(p.status)).map(p => (
+                                        <option key={p.id} value={p.id}>{p.name} ({p.project_reference})</option>
                                     ))}
                                 </select>
                             </div>
@@ -1556,6 +1559,7 @@ const InvestmentDetailPage = () => {
     const [showRejectTermModal,  setShowRejectTermModal]  = useState(false);
     const [termActionLoading, setTermActionLoading] = useState(false);
     const [termActionError,   setTermActionError]   = useState(null);
+    const [showNewProject, setShowNewProject] = useState(false); // v1.85.0
 
     const loadInvestment = useCallback(async () => {
         try {
@@ -1987,12 +1991,20 @@ const InvestmentDetailPage = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Projects */}
                 <div className="card">
-                    <h3 className="section-title mb-4">
-                        Projects ({projects.length})
-                    </h3>
+                    <div className="flex items-center justify-between gap-2 mb-4">
+                        <h3 className="section-title mb-0">
+                            Projects ({projects.length})
+                        </h3>
+                        {/* v1.85.0 — projects can now be created here (or on Investments › Projects and added later) */}
+                        {hasPermission('INVESTMENT_MANAGE') && !['CANCELLED', 'TERMINATED', 'COMPLETED'].includes(investment.status) && (
+                            <button type="button" className="btn-secondary text-sm" onClick={() => setShowNewProject(true)}>
+                                New project
+                            </button>
+                        )}
+                    </div>
                     {projects.length === 0 ? (
                         <p className="text-sm text-gray-400 text-center py-8">
-                            No projects under this investment yet
+                            No projects under this investment yet. A project on its own can also be added from its page (Investments › Projects).
                         </p>
                     ) : (
                         <div className="space-y-4">
@@ -2006,9 +2018,9 @@ const InvestmentDetailPage = () => {
                                     <div key={p.id} className="border-b border-gray-100
                                         last:border-0 pb-4 last:pb-0">
                                         <div className="flex items-center justify-between mb-1">
-                                            <p className="text-sm font-medium text-gray-900">
+                                            <Link to={`/projects/${p.id}`} className="text-sm font-medium text-gray-900 hover:text-primary-700 hover:underline">
                                                 {p.name}
-                                            </p>
+                                            </Link>
                                             <StatusBadge status={p.status} />
                                         </div>
                                         <p className="text-xs text-gray-400 mb-2">
@@ -2101,6 +2113,11 @@ const InvestmentDetailPage = () => {
                 </div>
             </div>
 
+            {/* v1.85.0 — documents directly on the investment page (proposal, bond certificate …) */}
+            <div className="mt-6">
+                <RecordDocuments recordType="investments" recordId={investment.id} title="Investment documents" />
+            </div>
+
             {/* Details footer */}
             <div className="card mt-6">
                 <h3 className="section-title mb-4">Details</h3>
@@ -2138,6 +2155,12 @@ const InvestmentDetailPage = () => {
                 )}
             </div>
 
+            <ProjectFormModal
+                isOpen={showNewProject}
+                investmentId={investment.id}
+                onClose={() => setShowNewProject(false)}
+                onSaved={(pid) => { setShowNewProject(false); navigate(`/projects/${pid}`); }}
+            />
             <RecordExpenseModal
                 isOpen={showExpenseModal}
                 onClose={() => setShowExpenseModal(false)}

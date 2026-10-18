@@ -16,10 +16,12 @@
 //                        that an Admin had given a MANUAL rate (by
 //                        default they keep it and are listed)
 //
-// RUN IT BEFORE THE OPENING SHARE CONVERSION (update guide step C2).
+// BEST RUN BEFORE THE OPENING SHARE CONVERSION (update guide step C2).
 // Whole shares and share credit are worked out from each contribution's
-// UGX value; the script refuses to run once shares have been allotted,
-// so the share register is always built from the corrected values.
+// UGX value. v1.83.1: after the conversion it still runs, but saves
+// nothing unless every contribution keeps exactly the UGX value its
+// shares were allotted from (check_fixed_rate_share_impact_v1.83.1.js
+// shows this in advance).
 //
 // WHAT IT CHANGES (everything in ONE database transaction — if any
 // check fails, nothing is saved):
@@ -60,6 +62,10 @@
 // rate-table transaction before the cut-off now uses the fixed rate.
 //
 // Safe to run again: a second run finds nothing left to change.
+//
+// v1.83.0 — on a database that has realised exchange results (accounts
+// 4610/5610), they are worked out again for the new reference rates
+// (step 8b). Order does not matter: run this before or after v1.83.0.
 // ============================================================
 
 const path = require('path');
@@ -136,16 +142,20 @@ const columnExists = async (c, t, col) => (await c.query(
         const setBy = (setter.rows[0] || (await c.query(`SELECT id FROM users ORDER BY id LIMIT 1`)).rows[0] || {}).id;
         if (!setBy) throw new Stop('No user exists to record as the person who made this change.');
 
-        // ---------------- 1. the share register must not be built yet --------
+        // ---------------- 1. the share register --------------------------------
+        // v1.83.1 — once the opening share conversion has run, whole shares
+        // and share credit come from each contribution's UGX value. The
+        // correction may still go ahead, but only if NO contribution's UGX
+        // value changes (checked in step 9 against every member's share
+        // credit entry). If even one would change, nothing is saved and the
+        // share register has to be rebuilt instead.
+        let shareRegisterBuilt = false;
         if (await tableExists(c, 'share_capital_settings')) {
             const sc = (await c.query(`SELECT opening_converted_at FROM share_capital_settings WHERE id = 1`)).rows[0];
             const allots = (await c.query(`SELECT COUNT(*)::int AS n FROM share_allotments`)).rows[0].n;
-            if ((sc && sc.opening_converted_at) || allots > 0) {
-                throw new Stop(
-                    `The opening share conversion has already run on this database (${allots} allotment(s) on file). ` +
-                    `Whole shares and share credit were worked out from the OLD UGX values, so changing them now would ` +
-                    `leave the share register and the books disagreeing. Nothing was changed — ask for a version of this ` +
-                    `correction that also rebuilds the share register.`);
+            shareRegisterBuilt = !!((sc && sc.opening_converted_at) || allots > 0);
+            if (shareRegisterBuilt) {
+                console.log(`\n   The share register already exists (${allots} allotment(s)). Allowed only if no contribution changes value — checked before saving.`);
             }
         }
 
@@ -380,6 +390,17 @@ const columnExists = async (c, t, col) => (await c.query(
                 WHERE dd.exchange_rate IS NOT NULL AND d.declaration_date < $1`, [r.valid_before]);
         }
 
+        // ---------------- 8b. realised exchange results (v1.83.0) ------------------
+        // The reference rate of transfers before the cut-off has just changed,
+        // so their realised gain/loss (v1.83.0, accounts 4610/5610) is worked
+        // out again. Months already closed are left alone by the function.
+        // Databases older than v1.83.0 do not have it — nothing to do there.
+        const hasRealised = (await c.query(`SELECT to_regproc('recompute_transfer_fx') IS NOT NULL AS ok`)).rows[0].ok;
+        if (hasRealised) {
+            const n = (await c.query('SELECT recompute_transfer_fx(NULL) AS n')).rows[0].n;
+            console.log(`\n   Realised exchange results of transfers worked out again (v1.83.0): ${n} transfer leg(s) on file.`);
+        }
+
         // ---------------- 9. checks ---------------------------------------------------
         const problems = [];
         for (const r of ruleInfo) {
@@ -416,6 +437,32 @@ const columnExists = async (c, t, col) => (await c.query(
             WHERE t.status = 'POSTED' AND t.functional_amount IS NULL ORDER BY t.value_date LIMIT 20`)).rows;
         if (missing.length) problems.push(`${missing.length}+ posted transaction(s) have no UGX value: ` + missing.map(m => `#${m.id} ${m.d} ${m.code} ${m.amount}`).join('; '));
 
+        if (shareRegisterBuilt) {
+            // Only contributions whose UGX value THIS run changes (compared
+            // with the snapshot taken before any change). Differences that
+            // were already there are not caused by the fixed rate — they are
+            // listed by check_fixed_rate_share_impact (section 0) instead.
+            const moved = (await c.query(`
+                SELECT e.contribution_id, e.entry_date::text AS d, e.amount AS credit_value,
+                       t.functional_amount AS ugx_value, b.functional_amount AS ugx_before,
+                       u.first_name || ' ' || u.last_name AS name
+                FROM   member_capital_credit_entries e
+                JOIN   users u ON u.id = e.user_id
+                JOIN   LATERAL (SELECT id, functional_amount FROM transactions
+                                WHERE contribution_id = e.contribution_id AND is_reversal = FALSE ORDER BY id LIMIT 1) t ON TRUE
+                JOIN   fx_before b ON b.id = t.id
+                JOIN   shareholder_contributions sc ON sc.id = e.contribution_id
+                WHERE  e.entry_type = 'CONTRIBUTION' AND sc.currency_id <> $1
+                AND    b.functional_amount IS DISTINCT FROM t.functional_amount`, [F])).rows;
+            if (moved.length) {
+                problems.push(`${moved.length} contribution(s) would change UGX value although shares were already allotted from them — `
+                    + moved.slice(0, 10).map(m => `${m.d} ${m.name}: UGX ${m.ugx_before} → ${m.ugx_value} (share credit ${m.credit_value})`).join('; ')
+                    + '. The share register must be rebuilt for these — ask for that version.');
+            } else {
+                console.log('   ✅ Share register unaffected: no contribution changes UGX value in this run.');
+            }
+        }
+
         if (problems.length) {
             throw new Stop('A check failed, so nothing was saved:\n   - ' + problems.join('\n   - '));
         }
@@ -451,7 +498,7 @@ const columnExists = async (c, t, col) => (await c.query(
             await c.query('COMMIT');
             console.log('\n✅ Saved.');
             if (runsRemoved.length) console.log(`   Next: Financial Statements › FX & Revaluation › run the revaluation through ${runsRemoved[runsRemoved.length - 1].period_end} again.`);
-            console.log('   Then carry on with the opening share conversion (update guide step C2).');
+            if (!shareRegisterBuilt) console.log('   Then carry on with the opening share conversion (update guide step C2).');
         }
     } catch (err) {
         await c.query('ROLLBACK').catch(() => {});

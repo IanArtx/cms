@@ -2724,9 +2724,14 @@ export const memberPortfolioTemplate = (data) => {
 // certificate).
 // ============================================================
 export const shareCertificateTemplate = (data) => {
-    const label = data.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly';
+    // v1.84.0 — REGISTRATION type; basis REGISTERED = shares registered with
+    // URSB (previous, increase, effective date shown).
+    const label = data.certificate_type === 'ANNUAL' ? 'Annual' : data.certificate_type === 'REGISTRATION' ? 'Registration' : 'Monthly';
+    const registered = data.basis === 'REGISTERED';
     const periodDisplay = data.certificate_type === 'ANNUAL'
         ? data.period_label
+        : data.certificate_type === 'REGISTRATION'
+        ? (data.effective_date ? fmt.date(data.effective_date) : data.period_label)
         : `${String(data.period_label).slice(0, 4)}-${String(data.period_label).slice(4, 6)}`;
     const shareValueDisplay = data.share_value != null
         ? `${data.currency_symbol || data.currency_code || ''} ${fmt.amount(data.share_value)}`
@@ -2754,16 +2759,31 @@ export const shareCertificateTemplate = (data) => {
         is the registered holder of <strong>${fmt.num(data.shares_held)}</strong> shares of
         <strong>${COMPANY_NAME}</strong>, representing
         <strong>${data.percentage != null ? fmt.num(data.percentage) : '—'}%</strong>
-        of the total issued shares, as recorded in the company's shareholding register${asOfDisplay ? ` as of ${asOfDisplay}` : ''}.
+        of the total ${registered ? 'registered' : 'issued'} shares, as recorded in the company's ${registered ? 'register of members as registered with the Uganda Registration Services Bureau' : 'shareholding register'}${asOfDisplay ? ` as of ${asOfDisplay}` : ''}${registered && data.effective_date ? `, effective ${fmt.date(data.effective_date)}` : ''}.
     </p>
 
     <div class="meta-box cols-3">
         <div class="meta-item">
-            <div class="meta-label">Shares Held</div>
+            <div class="meta-label">${registered ? 'Registered Shares Held' : 'Shares Held'}</div>
             <div class="meta-value large">${fmt.num(data.shares_held)}</div>
         </div>
+        ${registered && data.registered_previous != null ? `
         <div class="meta-item">
-            <div class="meta-label">Percentage of Issued Shares</div>
+            <div class="meta-label">Shares Registered Before</div>
+            <div class="meta-value">${fmt.num(data.registered_previous)}</div>
+        </div>` : ''}
+        ${registered && data.registered_increase != null ? `
+        <div class="meta-item">
+            <div class="meta-label">${data.registered_increase < 0 ? 'Decrease' : 'Increase'}</div>
+            <div class="meta-value">${data.registered_increase >= 0 ? '+' : ''}${fmt.num(data.registered_increase)}</div>
+        </div>` : ''}
+        ${registered && data.effective_date ? `
+        <div class="meta-item">
+            <div class="meta-label">Effective Date (registered)</div>
+            <div class="meta-value">${fmt.date(data.effective_date)}</div>
+        </div>` : ''}
+        <div class="meta-item">
+            <div class="meta-label">Percentage of ${registered ? 'Registered' : 'Issued'} Shares</div>
             <div class="meta-value large">${data.percentage != null ? fmt.num(data.percentage) : '—'}%</div>
         </div>
         <div class="meta-item">
@@ -2812,9 +2832,9 @@ export const shareCertificateTemplate = (data) => {
     </div>
 
     <p class="confidential">
-        This certificate is issued for record-keeping and transparency purposes based on the
-        company's internal shareholding register as of the date above. It does not, of itself,
-        constitute a negotiable or transferable instrument.
+        ${registered
+            ? 'This certificate shows only shares registered with the Uganda Registration Services Bureau as of the date above. Shares allotted by the company but not yet registered are not included. It does not, of itself, constitute a negotiable or transferable instrument.'
+            : 'This certificate is issued for record-keeping and transparency purposes based on the company\'s internal shareholding register as of the date above. It does not, of itself, constitute a negotiable or transferable instrument.'}
     </p>
 
     ${footer()}

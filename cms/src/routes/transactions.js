@@ -189,6 +189,7 @@ router.post('/expenses',
         body('payee_tin').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
         body('payee_residency').optional({ values: 'falsy' }).isIn(['RESIDENT', 'NON_RESIDENT']),
         body('apply_wht').optional().isBoolean(),
+        body('project_id').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Invalid project'), // v1.85.0
     ],
     documentIdsValidators,
     validateRequest,

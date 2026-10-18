@@ -345,6 +345,7 @@ const STAMPABLE_DOCUMENT_TYPES = [
     'AUDITOR_FEEDBACK', 'AUDIT_REPORT', 'OTHER', 'SHARE_CERTIFICATE',
     // v1.79.0 — statutory meeting documents
     'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION',
+    'BOND_CERTIFICATE', 'PROJECT_PROPOSAL', 'PROJECT_REPORT', // v1.85.0
 ];
 
 // ============================================================

@@ -982,7 +982,21 @@ const ProfilePage = () => {
                                         <DocumentTextIcon className="h-4 w-4" />
                                         {certLoading === 'ANNUAL' ? 'Preparing...' : 'Download Annual Certificate'}
                                     </button>
+                                    {/* v1.84.0 — certificate issued when shares are registered with URSB */}
+                                    <button
+                                        onClick={() => handleDownloadCertificate('REGISTRATION')}
+                                        disabled={certLoading !== null}
+                                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg
+                                            bg-white/10 hover:bg-white/20 text-white text-xs
+                                            font-medium transition-colors disabled:opacity-50"
+                                    >
+                                        <DocumentTextIcon className="h-4 w-4" />
+                                        {certLoading === 'REGISTRATION' ? 'Preparing...' : 'Download Latest Registration Certificate'}
+                                    </button>
                                 </div>
+                                <p className="text-[11px] text-white/70 mt-2">
+                                    Certificates show only the shares registered with URSB. Shares allotted by the company but not yet registered are shown in your portfolio.
+                                </p>
                                 {certError && (
                                     <p className="text-xs text-red-200 mt-2">{certError}</p>
                                 )}

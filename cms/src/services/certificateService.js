@@ -18,9 +18,26 @@
 //      (puppeteer), and emails it as an attachment. Since v1.64.0
 //      this path is always point-in-time (as_of_date) and always
 //      signing-gated — see issueCertificatesForAllShareholders below.
+//
+// v1.84.0 — CERTIFICATES SHOW REGISTERED SHARES ONLY. Requested:
+// "shares are alloted internally within the company but issued
+// officially when registered at the URSB … get their share certificates
+// once the register is updated … The share certificates should also
+// show the increase and effective date." So every certificate from
+// v1.84.0 on (basis REGISTERED) shows the shares registered with URSB as
+// at its date (registeredSharesService.registeredAsOf), the shares
+// registered before, the increase and the effective (registration) date.
+// A third type, REGISTRATION, is issued automatically whenever a
+// member's registered shares change (return of allotment marked filed,
+// or the URSB figure entered/changed) — into an open signing round, and
+// emailed once fully signed, like the monthly/annual batches. Shares
+// allotted inside the company but not yet registered (the overflow) are
+// tracked on the portfolio, never certified. Certificates issued before
+// v1.84.0 keep basis INTERNAL.
 // ============================================================
 
 const shareCapitalService = require('./shareCapitalService');
+const registeredShares = require('./registeredSharesService'); // v1.84.0
 const { query, withTransaction } = require('../config/database');
 const { createError } = require('../utils/errors');
 const { generateReference, linkReferenceToRecord, MODULE_CODES } = require('./referenceService');
@@ -54,6 +71,18 @@ const formatLongDate = (d) => new Date(d).toLocaleDateString('en-GB', {
     day: 'numeric', month: 'long', year: 'numeric',
 });
 
+const TYPE_LABEL = { MONTHLY: 'Monthly', ANNUAL: 'Annual', REGISTRATION: 'Registration' };
+const CERT_TYPES = Object.keys(TYPE_LABEL);
+
+// v1.84.0 columns present (database at v1.84.0)?
+let regColumns = null;
+const hasRegisteredColumns = async (db = null) => {
+    if (regColumns !== null) return regColumns;
+    const r = await (db || { query }).query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'share_certificates' AND column_name = 'basis'`);
+    regColumns = r.rows.length > 0;
+    return regColumns;
+};
+
 // ============================================================
 // COMPUTE A SHAREHOLDER'S FIGURES
 // shares held, percentage, price per share, share value.
@@ -71,11 +100,30 @@ const formatLongDate = (d) => new Date(d).toLocaleDateString('en-GB', {
 // of period-end", not whatever is live at send time.
 // ============================================================
 const getShareholderFigures = async (userId, asOfDate = null) => {
+    // v1.84.0 — registered shares (URSB) as at the date, when the
+    // database has the registered-shares record and the v1.84.0 columns.
+    let registeredHolding = null;
+    if (await hasRegisteredColumns()) {
+        const reg = await registeredShares.registeredAsOf(null, asOfDate);
+        if (reg.ready) {
+            const shares = reg.byUser.get(userId) || 0;
+            if (shares <= 0) {
+                throw createError.badRequest(asOfDate
+                    ? `This member had no shares registered with URSB as of ${asOfDate} — a certificate is issued only for registered shares.`
+                    : 'This member has no shares registered with URSB yet — a certificate is issued only for registered shares.');
+            }
+            registeredHolding = {
+                shares_held: shares,
+                percentage: reg.total > 0 ? ((shares / reg.total) * 100).toFixed(4) : '0.0000',
+                total_registered: reg.total,
+            };
+        }
+    }
     // v1.69.0 — once converted to whole shares, a historical holding is
     // rebuilt exactly from the dated allotments (share_allotments) rather
     // than from whichever registry row happened to exist on that date.
     let allotmentHolding = null;
-    if (asOfDate && await shareCapitalService.isOpeningConverted()) {
+    if (!registeredHolding && asOfDate && await shareCapitalService.isOpeningConverted()) {
         const { byUser, total } = await shareCapitalService.getHoldingsAsOf(asOfDate);
         const shares = byUser.get(userId) || 0;
         allotmentHolding = {
@@ -83,7 +131,9 @@ const getShareholderFigures = async (userId, asOfDate = null) => {
             percentage: total > 0 ? ((shares / total) * 100).toFixed(4) : '0.0000',
         };
     }
-    const holdingResult = allotmentHolding
+    const holdingResult = registeredHolding
+        ? { rows: [registeredHolding] }
+        : allotmentHolding
         ? { rows: allotmentHolding.shares_held > 0 ? [allotmentHolding] : [] }
         : asOfDate
         ? await query(`
@@ -135,6 +185,8 @@ const getShareholderFigures = async (userId, asOfDate = null) => {
         : null;
 
     return {
+        basis:            registeredHolding ? 'REGISTERED' : 'INTERNAL',
+        total_registered: registeredHolding ? registeredHolding.total_registered : null,
         shares_held:      parseFloat(holding.shares_held || 0),
         percentage:       holding.percentage,
         price_per_share:  sharePrice?.price_per_share || null,
@@ -157,9 +209,9 @@ const getShareholderFigures = async (userId, asOfDate = null) => {
 // certificate path; the bulk pipeline below always passes an
 // explicit periodLabel/asOfDate of its own.
 // ============================================================
-const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel, asOfDate = null }) => {
-    if (!['MONTHLY', 'ANNUAL'].includes(certificateType)) {
-        throw createError.badRequest('certificateType must be MONTHLY or ANNUAL');
+const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel, asOfDate = null, registration = null }) => {
+    if (!CERT_TYPES.includes(certificateType)) {
+        throw createError.badRequest('certificateType must be MONTHLY, ANNUAL or REGISTRATION');
     }
 
     const userResult = await query(
@@ -173,6 +225,31 @@ const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel
 
     const figures = await getShareholderFigures(userId, asOfDate);
 
+    // v1.84.0 — what was registered before, the increase, and the date
+    // the shares shown became registered.
+    let regInfo = { previous: null, increase: null, effectiveDate: null };
+    if (figures.basis === 'REGISTERED') {
+        if (registration) {
+            regInfo = {
+                previous: registration.previous,
+                increase: figures.shares_held - (registration.previous || 0),
+                effectiveDate: registration.effectiveDate || asOfDate || null,
+            };
+        } else {
+            const prev = await query(`
+                SELECT shares_held FROM share_certificates
+                WHERE  user_id = $1 AND basis = 'REGISTERED' AND COALESCE(as_of_date, issued_at::date) < $2::date
+                ORDER  BY COALESCE(as_of_date, issued_at::date) DESC, id DESC LIMIT 1`,
+            [userId, asOfDate || new Date().toISOString().slice(0, 10)]);
+            const previous = prev.rows.length ? parseInt(prev.rows[0].shares_held, 10) : null;
+            regInfo = {
+                previous,
+                increase: previous === null ? null : figures.shares_held - previous,
+                effectiveDate: await registeredShares.lastRegistrationDate(null, userId, asOfDate),
+            };
+        }
+    }
+
     const now = new Date();
     const ym = periodLabel || (certificateType === 'ANNUAL'
         ? String(now.getFullYear())
@@ -182,10 +259,10 @@ const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel
         const { referenceId, referenceCode } = await generateReference(
             client,
             MODULE_CODES.SHARE_CERTIFICATE,
-            certificateType,
+            certificateType === 'REGISTRATION' ? 'REG' : certificateType,
             'SHARE_CERTIFICATE',
             issuedBy || userId,
-            ym
+            certificateType === 'REGISTRATION' ? String(ym).slice(0, 6) : ym
         );
 
         const result = await client.query(`
@@ -202,6 +279,13 @@ const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel
         ]);
 
         await linkReferenceToRecord(client, referenceId, result.rows[0].id);
+        if (await hasRegisteredColumns(client)) {
+            await client.query(`
+                UPDATE share_certificates
+                SET    basis = $2, registered_previous = $3, registered_increase = $4, effective_date = $5, total_registered = $6
+                WHERE  id = $1`,
+            [result.rows[0].id, figures.basis, regInfo.previous, regInfo.increase, regInfo.effectiveDate, figures.total_registered]);
+        }
 
         await logAction(issuedBy || userId, ACTIONS.CERTIFICATE_ISSUED, MODULES.SYSTEM, {
             recordType:  'share_certificates',
@@ -218,6 +302,9 @@ const issueCertificate = async ({ userId, certificateType, issuedBy, periodLabel
             certificate_type: certificateType,
             period_label:     ym,
             as_of_date:       asOfDate,
+            registered_previous: regInfo.previous,
+            registered_increase: regInfo.increase,
+            effective_date:      regInfo.effectiveDate,
         };
     });
 
@@ -251,9 +338,16 @@ const renderCertificateHtml = async (cert, signatures = null, stamps = null) => 
 
     const issuedDate = formatLongDate(cert.issued_at);
     const asOfDisplay = cert.as_of_date ? formatLongDate(cert.as_of_date) : null;
-    const periodDisplay = cert.certificate_type === 'ANNUAL'
-        ? cert.period_label
-        : `${cert.period_label.slice(0, 4)}-${cert.period_label.slice(4, 6)}`;
+    const pl = String(cert.period_label || '');
+    const periodDisplay = cert.certificate_type === 'ANNUAL' ? pl
+        : cert.certificate_type === 'REGISTRATION' ? (cert.effective_date ? formatLongDate(cert.effective_date) : pl)
+        : `${pl.slice(0, 4)}-${pl.slice(4, 6)}`;
+    const registered = cert.basis === 'REGISTERED';
+    const n0 = (v) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    const changeRows = registered ? `
+            ${cert.registered_previous != null ? `<tr><td class="label">Shares Registered Before</td><td class="value">${n0(cert.registered_previous)}</td></tr>` : ''}
+            ${cert.registered_increase != null ? `<tr><td class="label">${cert.registered_increase < 0 ? 'Decrease' : 'Increase'}</td><td class="value">${cert.registered_increase >= 0 ? '+' : ''}${n0(cert.registered_increase)}</td></tr>` : ''}
+            ${cert.effective_date ? `<tr><td class="label">Effective Date (registered)</td><td class="value">${formatLongDate(cert.effective_date)}</td></tr>` : ''}` : '';
 
     const shareValueDisplay = cert.share_value != null
         ? `${cert.currency_symbol || cert.currency_code || ''} ${parseFloat(cert.share_value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
@@ -307,16 +401,17 @@ const renderCertificateHtml = async (cert, signatures = null, stamps = null) => 
             is the registered holder of <strong>${parseFloat(cert.shares_held).toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong>
             shares of <strong>${branding.company_name}</strong>, representing
             <strong>${cert.percentage != null ? parseFloat(cert.percentage).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}%</strong>
-            of the total issued shares, as recorded in the company's shareholding register${asOfDisplay ? ` as of ${asOfDisplay}` : ''}.
+            of the total ${registered ? 'registered' : 'issued'} shares, as recorded in the company's ${registered ? 'register of members as registered with the Uganda Registration Services Bureau' : 'shareholding register'}${asOfDisplay ? ` as of ${asOfDisplay}` : ''}${registered && cert.effective_date ? `, effective ${formatLongDate(cert.effective_date)}` : ''}.
         </p>
 
         <table class="figures">
-            <tr><td class="label">Shares Held</td><td class="value">${parseFloat(cert.shares_held).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td></tr>
-            <tr><td class="label">Percentage of Issued Shares</td><td class="value">${cert.percentage != null ? parseFloat(cert.percentage).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}%</td></tr>
+            <tr><td class="label">${registered ? 'Registered Shares Held' : 'Shares Held'}</td><td class="value">${parseFloat(cert.shares_held).toLocaleString('en-US', { maximumFractionDigits: 2 })}</td></tr>
+            ${changeRows}
+            <tr><td class="label">Percentage of ${registered ? 'Registered' : 'Issued'} Shares</td><td class="value">${cert.percentage != null ? parseFloat(cert.percentage).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}%</td></tr>
             <tr><td class="label">Price Per Share</td><td class="value">${cert.price_per_share != null ? `${cert.currency_symbol || cert.currency_code} ${parseFloat(cert.price_per_share).toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—'}</td></tr>
             <tr><td class="label">Share Value</td><td class="value">${shareValueDisplay}</td></tr>
-            <tr><td class="label">Certificate Type</td><td class="value">${cert.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly'}</td></tr>
-            <tr><td class="label">Period</td><td class="value">${periodDisplay}</td></tr>
+            <tr><td class="label">Certificate Type</td><td class="value">${TYPE_LABEL[cert.certificate_type] || cert.certificate_type}</td></tr>
+            <tr><td class="label">${cert.certificate_type === 'REGISTRATION' ? 'Registered On' : 'Period'}</td><td class="value">${periodDisplay}</td></tr>
             ${asOfDisplay ? `<tr><td class="label">Shareholding As Of</td><td class="value">${asOfDisplay}</td></tr>` : ''}
             <tr><td class="label">Date Issued</td><td class="value">${issuedDate}</td></tr>
         </table>
@@ -342,9 +437,9 @@ const renderCertificateHtml = async (cert, signatures = null, stamps = null) => 
         </div>
 
         <p class="disclaimer">
-            This certificate is issued for record-keeping and transparency purposes based on the
-            company's internal shareholding register as of the date above. It does not, of itself,
-            constitute a negotiable or transferable instrument.
+            ${registered
+                ? `This certificate shows only shares registered with the Uganda Registration Services Bureau as of the date above. Shares allotted by the company but not yet registered are not included. It does not, of itself, constitute a negotiable or transferable instrument.`
+                : `This certificate is issued for record-keeping and transparency purposes based on the company's internal shareholding register as of the date above. It does not, of itself, constitute a negotiable or transferable instrument.`}
         </p>
     </body>
     </html>`;
@@ -382,7 +477,7 @@ const emailCertificateToUser = async (cert, signatures = null, stamps = null) =>
     const html = await renderCertificateHtml(cert, signatures, stamps);
     const pdfBuffer = await renderCertificatePdfBuffer(html);
 
-    const label = cert.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly';
+    const label = TYPE_LABEL[cert.certificate_type] || 'Monthly';
     const asOfText = cert.as_of_date ? ` as of ${formatLongDate(cert.as_of_date)}` : '';
 
     await sendEmail({
@@ -418,6 +513,8 @@ const getLatestSignedCertificate = async (userId, certificateType) => {
     const result = await query(`
         SELECT sc.id, sc.certificate_type, sc.period_label, sc.shares_held, sc.percentage,
                sc.price_per_share, sc.currency_id, sc.share_value, sc.issued_at, sc.as_of_date,
+               to_jsonb(sc)->>'basis' AS basis, (to_jsonb(sc)->>'registered_previous')::int AS registered_previous,
+               (to_jsonb(sc)->>'registered_increase')::int AS registered_increase, to_jsonb(sc)->>'effective_date' AS effective_date,
                sc.signing_round_id,
                c.code AS currency_code, c.symbol AS currency_symbol,
                r.reference_code,
@@ -428,7 +525,7 @@ const getLatestSignedCertificate = async (userId, certificateType) => {
         JOIN   users u ON u.id = sc.user_id
         LEFT JOIN currencies c ON c.id = sc.currency_id
         WHERE  sc.user_id = $1 AND sc.certificate_type = $2
-        ORDER  BY sc.as_of_date DESC NULLS LAST, sc.issued_at DESC
+        ORDER  BY sc.as_of_date DESC NULLS LAST, sc.issued_at DESC, sc.id DESC
         LIMIT  1
     `, [userId, certificateType]);
 
@@ -445,7 +542,7 @@ const getLatestSignedCertificate = async (userId, certificateType) => {
             id: row.id,
             reference_code: row.reference_code,
             issued_at: row.issued_at,
-            as_of_date: row.as_of_date,
+            as_of_date: row.as_of_date ? (row.as_of_date instanceof Date ? `${row.as_of_date.getFullYear()}-${String(row.as_of_date.getMonth() + 1).padStart(2, '0')}-${String(row.as_of_date.getDate()).padStart(2, '0')}` : String(row.as_of_date).slice(0, 10)) : null,
             certificate_type: row.certificate_type,
             period_label: row.period_label,
             shares_held: row.shares_held,
@@ -455,6 +552,10 @@ const getLatestSignedCertificate = async (userId, certificateType) => {
             currency_code: row.currency_code,
             currency_symbol: row.currency_symbol,
             share_value: row.share_value,
+            basis: row.basis || 'INTERNAL',
+            registered_previous: row.registered_previous,
+            registered_increase: row.registered_increase,
+            effective_date: row.effective_date,
             user: { id: row.user_id, first_name: row.first_name, last_name: row.last_name, email: row.email },
         },
         signatures,
@@ -514,6 +615,8 @@ const emailRoundCertificates = async (roundId) => {
     const certsResult = await query(`
         SELECT sc.id, sc.certificate_type, sc.period_label, sc.shares_held, sc.percentage,
                sc.price_per_share, sc.currency_id, sc.share_value, sc.issued_at, sc.as_of_date,
+               to_jsonb(sc)->>'basis' AS basis, (to_jsonb(sc)->>'registered_previous')::int AS registered_previous,
+               (to_jsonb(sc)->>'registered_increase')::int AS registered_increase, to_jsonb(sc)->>'effective_date' AS effective_date,
                c.code AS currency_code, c.symbol AS currency_symbol,
                r.reference_code,
                u.id AS user_id, u.first_name, u.last_name, u.email
@@ -532,7 +635,7 @@ const emailRoundCertificates = async (roundId) => {
             id: row.id,
             reference_code: row.reference_code,
             issued_at: row.issued_at,
-            as_of_date: row.as_of_date,
+            as_of_date: row.as_of_date ? (row.as_of_date instanceof Date ? `${row.as_of_date.getFullYear()}-${String(row.as_of_date.getMonth() + 1).padStart(2, '0')}-${String(row.as_of_date.getDate()).padStart(2, '0')}` : String(row.as_of_date).slice(0, 10)) : null,
             certificate_type: row.certificate_type,
             period_label: row.period_label,
             shares_held: row.shares_held,
@@ -542,6 +645,10 @@ const emailRoundCertificates = async (roundId) => {
             currency_code: row.currency_code,
             currency_symbol: row.currency_symbol,
             share_value: row.share_value,
+            basis: row.basis || 'INTERNAL',
+            registered_previous: row.registered_previous,
+            registered_increase: row.registered_increase,
+            effective_date: row.effective_date,
             user: { id: row.user_id, first_name: row.first_name, last_name: row.last_name, email: row.email },
         };
 
@@ -663,14 +770,24 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
     // shareholding as of that date) — this matches the same
     // effective_from/effective_to range logic getShareholderFigures
     // itself uses.
-    const shareholders = await query(`
-        SELECT DISTINCT sr.user_id
-        FROM   shareholding_registry sr
-        JOIN   users u ON u.id = sr.user_id AND u.is_active = TRUE
-        WHERE  sr.effective_from <= $1
-        AND    (sr.effective_to IS NULL OR sr.effective_to > $1)
-        AND    sr.shares_held > 0
-    `, [asOfDate]);
+    // v1.84.0 — certificates are only for REGISTERED shares: members with
+    // shares registered with URSB as of the date (when the database has
+    // the registered-shares record).
+    let shareholders;
+    const reg = (await hasRegisteredColumns()) ? await registeredShares.registeredAsOf(null, asOfDate) : { ready: false };
+    if (reg.ready) {
+        const ids = [...reg.byUser.entries()].filter(([, n]) => n > 0).map(([id]) => id);
+        shareholders = await query(`SELECT id AS user_id FROM users WHERE id = ANY($1::int[]) AND is_active = TRUE`, [ids]);
+    } else {
+        shareholders = await query(`
+            SELECT DISTINCT sr.user_id
+            FROM   shareholding_registry sr
+            JOIN   users u ON u.id = sr.user_id AND u.is_active = TRUE
+            WHERE  sr.effective_from <= $1
+            AND    (sr.effective_to IS NULL OR sr.effective_to > $1)
+            AND    sr.shares_held > 0
+        `, [asOfDate]);
+    }
 
     // Checked BEFORE opening a round — a round nothing could ever sign
     // (and so could never leave OPEN) shouldn't be created at all; this
@@ -781,7 +898,116 @@ const issueCertificatesForAllShareholders = async (certificateType, issuedBy = n
     };
 };
 
+// ============================================================
+// REGISTRATION CERTIFICATES (v1.84.0)
+// Issued when a member's registered shares change. `changes`:
+// [{ userId, previous, effectiveDate }] — previous = registered shares
+// before the change. Each certificate shows the registered shares as at
+// effectiveDate, the shares before, the increase and the effective date.
+// All go into the open REGISTRATION signing round (a new one is opened
+// when none is open); signatories are told; emailed once fully signed.
+// Never throws for one member's problem — returns per-member results.
+// ============================================================
+const openRegistrationRound = async (issuedBy) => {
+    const open = await query(`
+        SELECT * FROM certificate_signing_rounds
+        WHERE  certificate_type = 'REGISTRATION' AND status = 'OPEN'
+        ORDER  BY id DESC LIMIT 1`);
+    if (open.rows.length) return { round: open.rows[0], created: false };
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const used = await query(`SELECT COUNT(*)::int AS n FROM certificate_signing_rounds WHERE certificate_type = 'REGISTRATION' AND period_label LIKE $1`, [`${day}%`]);
+    const label = used.rows[0].n ? `${day}-${used.rows[0].n + 1}` : day;
+    const round = await openOrGetSigningRound('REGISTRATION', label, issuedBy, new Date().toISOString().slice(0, 10));
+    return { round, created: true };
+};
+
+const issueRegistrationCertificates = async ({ changes, issuedBy = null }) => {
+    if (!(await hasRegisteredColumns())) return { issued: 0, skipped: changes.length, reason: 'database before v1.84.0' };
+    const requiredRoles = await getRequiredRoles('SHARE_CERTIFICATE');
+    if (requiredRoles.length === 0) {
+        await notifyAdminsSigningNotConfigured('REGISTRATION', 'registration');
+        return { issued: 0, blocked: true, blockedReason: 'No signatory is configured for Share Certificates (Settings).' };
+    }
+    const { round } = await openRegistrationRound(issuedBy);
+    await withTransaction(client => ensureSignatureSlots(client, 'CERTIFICATE_ROUND', round.id, 'SHARE_CERTIFICATE'));
+    const results = [];
+    for (const ch of changes) {
+        try {
+            const cert = await issueCertificate({
+                userId: ch.userId, certificateType: 'REGISTRATION', issuedBy,
+                periodLabel: String(ch.effectiveDate || '').replace(/-/g, '') || undefined,
+                asOfDate: ch.effectiveDate || null,
+                registration: { previous: ch.previous || 0, effectiveDate: ch.effectiveDate || null },
+            });
+            await query('UPDATE share_certificates SET signing_round_id = $1 WHERE id = $2', [round.id, cert.id]);
+            results.push({ userId: ch.userId, ok: true, reference: cert.reference_code });
+        } catch (err) {
+            results.push({ userId: ch.userId, ok: false, error: err.message });
+        }
+    }
+    const issued = results.filter(r => r.ok).length;
+    if (issued) {
+        const signatories = await query(`
+            SELECT DISTINCT u.id, u.first_name, u.email
+            FROM   user_roles ur JOIN users u ON u.id = ur.user_id AND u.is_active = TRUE
+            WHERE  ur.role_id = ANY($1::int[]) AND ur.revoked_at IS NULL`, [requiredRoles.map(r => r.role_id)]);
+        await notifyMany(signatories.rows, 'CERTIFICATE_ROUND_OPENED', (recipient) => ({
+            title: 'Registration share certificates need your signature',
+            body: `${issued} certificate(s) for shares newly registered with URSB are waiting on your signature.`,
+            link: '/profile', module: 'SYSTEM', recordType: 'certificate_signing_rounds', recordId: round.id,
+            email: {
+                subject: 'Registration share certificates awaiting your signature',
+                html: `<p>Dear ${recipient.first_name},</p><p>${issued} Certificate(s) of Shares for shares newly registered with URSB are waiting on your signature. Please sign in to review and sign.</p>`,
+            },
+        })).catch(() => {});
+    }
+    return { issued, roundId: round.id, results };
+};
+
+// Registered shares of the given members right now (for before/after).
+const registeredNow = async (userIds) => {
+    const reg = await registeredShares.registeredAsOf(null, null);
+    return new Map(userIds.map(id => [Number(id), reg.byUser.get(Number(id)) || 0]));
+};
+
+// Compare before/after and issue certificates for every member whose
+// registered shares changed. Called AFTER the change is committed.
+const issueForRegistrationChanges = async ({ before, effectiveDate, issuedBy }) => {
+    const after = await registeredNow([...before.keys()]);
+    const changes = [];
+    for (const [userId, prev] of before) {
+        const now = after.get(userId) || 0;
+        if (now !== prev && now > 0) changes.push({ userId, previous: prev, effectiveDate });
+    }
+    if (!changes.length) return { issued: 0, results: [] };
+    return issueRegistrationCertificates({ changes, issuedBy });
+};
+
+// "First now only what is registered" — one certificate per member for
+// the shares registered today (previous = their last registered
+// certificate, or 0), effective on their last registration date.
+const issueForCurrentRegisteredHoldings = async ({ issuedBy }) => {
+    const reg = await registeredShares.registeredAsOf(null, null);
+    const changes = [];
+    for (const [userId, shares] of reg.byUser) {
+        if (shares <= 0) continue;
+        const prev = await query(`
+            SELECT shares_held FROM share_certificates WHERE user_id = $1 AND basis = 'REGISTERED'
+            ORDER BY issued_at DESC, id DESC LIMIT 1`, [userId]);
+        const previous = prev.rows.length ? parseInt(prev.rows[0].shares_held, 10) : 0;
+        if (prev.rows.length && previous === shares) continue; // already certified at this number
+        changes.push({ userId, previous, effectiveDate: await registeredShares.lastRegistrationDate(null, userId) });
+    }
+    if (!changes.length) return { issued: 0, results: [], message: 'Every member already has a certificate for the shares registered today.' };
+    return issueRegistrationCertificates({ changes, issuedBy });
+};
+
 module.exports = {
+    issueRegistrationCertificates,
+    issueForRegistrationChanges,
+    issueForCurrentRegisteredHoldings,
+    registeredNow,
+    TYPE_LABEL,
     getShareholderFigures,
     issueCertificate,
     renderCertificateHtml,

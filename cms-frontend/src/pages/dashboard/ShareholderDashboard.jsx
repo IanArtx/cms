@@ -48,21 +48,14 @@ import {
     ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import {
-    ResponsiveContainer, AreaChart, Area, LineChart, Line,
+    ResponsiveContainer, AreaChart, Area,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import PageHeader from '../../components/common/PageHeader';
 import { CapitalGoalsDashboardSection } from '../capitalGoals/capitalGoalUi';
 import { MeetingActionsCard } from '../meetings/MeetingActionsCard'; // v1.79.0
+import InvestmentTotalsChart from '../../components/charts/InvestmentTotalsChart'; // v1.83.1
 
-// Shortens a long investment/bond name for an x-axis tick label —
-// the full name still shows in the tooltip on hover. Charts whose
-// x-axis is "one point per record" rather than a fixed calendar
-// period (unlike the inflow/outflow trend above) can grow arbitrarily
-// long as more investments are added, so labels need to degrade
-// gracefully rather than overlap.
-const truncateLabel = (value, max = 14) =>
-    (value && value.length > max) ? `${value.slice(0, max)}…` : value;
 
 // ============================================================
 // INFLOW / OUTFLOW TREND — gradient area chart (v1.56.1)
@@ -173,7 +166,6 @@ const PendingPledgeBanner = ({ due, count }) => {
 // remains but with an addition of a chart of input vs return."
 // ============================================================
 const PerformanceCard = ({ performance, inputVsReturn }) => {
-    const theme = useChartTheme();
     const hasPerformance = performance && performance.count > 0;
     const hasChart = inputVsReturn && inputVsReturn.length > 0;
 
@@ -218,35 +210,11 @@ const PerformanceCard = ({ performance, inputVsReturn }) => {
             )}
             {hasChart && (
                 <div className={hasPerformance ? 'mt-4 pt-4 border-t border-gray-100' : ''}>
+                    {/* v1.83.1 — totals over time for the whole portfolio, not one point per investment */}
                     <h3 className="text-xs font-semibold text-gray-500 mb-2">
-                        Input vs Return <span className="font-normal text-gray-400">— every investment</span>
+                        Invested vs Returns <span className="font-normal text-gray-400">— whole portfolio, over time</span>
                     </h3>
-                    <ResponsiveContainer width="100%" height={220}>
-                        <LineChart data={inputVsReturn} margin={{ top: 4, right: 8, left: 0, bottom: 8 }}>
-                            <CartesianGrid {...theme.gridProps} />
-                            <XAxis
-                                dataKey="name"
-                                tick={{ fontSize: 10, ...theme.axisTick }}
-                                tickLine={false}
-                                interval="preserveStartEnd"
-                                angle={-35}
-                                textAnchor="end"
-                                height={54}
-                                tickFormatter={truncateLabel}
-                            />
-                            <YAxis tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                tickFormatter={compactNumber} />
-                            <Tooltip
-                                {...theme.tooltipProps}
-                                formatter={(v, name) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }), name]}
-                            />
-                            <Legend {...theme.legendProps} verticalAlign="top" height={28} />
-                            <Line type="monotone" dataKey="invested" name="Invested"
-                                stroke={theme.neutral} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                            <Line type="monotone" dataKey="returned" name="Returned"
-                                stroke={theme.success} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                        </LineChart>
-                    </ResponsiveContainer>
+                    <InvestmentTotalsChart height={220} idPrefix="shDashInv" compact />
                 </div>
             )}
         </div>

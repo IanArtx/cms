@@ -197,6 +197,7 @@ app.use('/api/transfers',    require('./src/routes/transfers'));
 app.use('/api/grants',       require('./src/routes/grants'));
 app.use('/api/loans',        require('./src/routes/loans'));
 app.use('/api/investments',  require('./src/routes/investments'));
+app.use('/api/projects',     require('./src/routes/projects')); // v1.85.0 — projects on their own or inside an investment
 app.use('/api/mmf',          require('./src/routes/mmf'));
 app.use('/api/capital-goals', require('./src/routes/capitalGoals'));
 app.use('/api/payment-acknowledgements', require('./src/routes/paymentAcknowledgements'));

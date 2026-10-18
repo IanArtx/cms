@@ -13,16 +13,16 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
-import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import { useChartTheme } from '../../hooks/useChartTheme';
 import {
     PlusIcon, CheckIcon, PencilIcon, BanknotesIcon,
     ArrowTrendingUpIcon, TrophyIcon, ChartPieIcon,
 } from '@heroicons/react/24/outline';
 
 import {
-    ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
-    XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+    ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
 } from 'recharts';
+import InvestmentTotalsChart from '../../components/charts/InvestmentTotalsChart'; // v1.83.1
 import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
 import DraftNotice from '../../components/common/DraftNotice';
 
@@ -70,12 +70,11 @@ const OverviewTile = ({ title, value, subtitle, icon: Icon, color }) => {
 
 const STATUS_COLOR_KEYS = ['primary', 'success', 'warning', 'accent', 'danger', 'neutral'];
 
-const PortfolioOverview = ({ summary, inputVsReturn }) => {
+const PortfolioOverview = ({ summary }) => {
     const theme = useChartTheme();
 
     if (!summary) return null;
 
-    const hasChartData = inputVsReturn && inputVsReturn.length > 0;
     const hasStatusData = summary.byStatus && summary.byStatus.length > 0;
     const currency = summary.currencyCode || '';
 
@@ -113,30 +112,10 @@ const PortfolioOverview = ({ summary, inputVsReturn }) => {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* v1.83.1 — totals over time for the whole portfolio (not one bar per investment) */}
                 <div className="card lg:col-span-2">
-                    <h3 className="section-title mb-4">Input vs Return</h3>
-                    {hasChartData ? (
-                        <ResponsiveContainer width="100%" height={240}>
-                            <BarChart data={inputVsReturn}>
-                                <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="name" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false}
-                                    interval={0} angle={-15} textAnchor="end" height={45} />
-                                <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
-                                    tickFormatter={compactNumber} />
-                                <Tooltip
-                                    {...theme.tooltipProps}
-                                    formatter={(v, name) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }), name]}
-                                />
-                                <Legend {...theme.legendProps} />
-                                <Bar dataKey="invested" name="Invested" fill={theme.primary} radius={[6, 6, 0, 0]} />
-                                <Bar dataKey="returned" name="Returned" fill={theme.success} radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="flex items-center justify-center h-48 text-gray-300 text-sm">
-                            Nothing funded yet
-                        </div>
-                    )}
+                    <h3 className="section-title mb-2">Invested vs Returns — over time</h3>
+                    <InvestmentTotalsChart height={240} idPrefix="invPage" />
                 </div>
 
                 <div className="card">
@@ -724,7 +703,6 @@ const InvestmentsPage = () => {
     const [accounts,    setAccounts]    = useState([]);
     const [categories,  setCategories]  = useState([]);
     const [portfolioSummary, setPortfolioSummary] = useState(null);
-    const [inputVsReturn,    setInputVsReturn]    = useState([]);
     const [loading,     setLoading]     = useState(true);
     const [error,       setError]       = useState(null);
     const [showCreate,  setShowCreate]  = useState(false);
@@ -796,9 +774,6 @@ const InvestmentsPage = () => {
     useEffect(() => {
         investmentsAPI.getPortfolioSummary()
             .then(res => setPortfolioSummary(res.data.data))
-            .catch(() => {});
-        investmentsAPI.getInputVsReturn()
-            .then(res => setInputVsReturn(res.data.data || []))
             .catch(() => {});
     }, []);
 
@@ -978,7 +953,7 @@ const InvestmentsPage = () => {
                 </div>
             )}
 
-            <PortfolioOverview summary={portfolioSummary} inputVsReturn={inputVsReturn} />
+            <PortfolioOverview summary={portfolioSummary} />
 
             <DataTable
                 columns={columns}

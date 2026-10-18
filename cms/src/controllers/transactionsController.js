@@ -33,6 +33,7 @@ const reversalLinks = require('../services/reversalLinksService'); // v1.72.0
 const moneyApprovalContext = require('../services/moneyApprovalContext'); // v1.73.0
 const postingTracker = require('../services/postingTracker'); // v1.78.0
 const documentLinks = require('../services/documentLinksService'); // v1.78.0
+const exchangeRateService = require('../services/exchangeRateService'); // v1.83.0 — realised FX on transfers
 const { assertNotOwnApproval } = require('../services/approvalGuard'); // v1.72.0
 
 // v1.70.0 — a tax amount as a percentage of the gross (for the register).
@@ -289,6 +290,12 @@ const postTransaction = async (client, {
         SET    current_balance = $1
         WHERE  id = $2
     `, [balanceAfterTotal, accountId]);
+
+    // v1.83.0 — a transfer leg (or the reversal of one) has a realised
+    // exchange result: work it out now, in the same database transaction.
+    if (transferId || reversalOf) {
+        await exchangeRateService.recomputeTransferFx(client, valueDate);
+    }
 
     return { transactionId, balanceBefore: balanceAsOfDate, balanceAfter: balanceAfterAsOfDate };
 };
@@ -1661,6 +1668,7 @@ const recordExpense = asyncHandler(async (req, res) => {
         payee_tin,
         payee_residency,
         apply_wht,
+        project_id, // v1.85.0 — optional: a project on its own this money was spent on
     } = req.body;
     if (tax_treatment && !taxService.EXPENSE_TREATMENTS.includes(tax_treatment)) {
         throw createError.badRequest('tax_treatment must be DEDUCTIBLE, NOT_DEDUCTIBLE or CAPITAL');
@@ -1730,6 +1738,16 @@ const recordExpense = asyncHandler(async (req, res) => {
 
         await linkReferenceToRecord(client, referenceId, transactionId);
 
+        // v1.85.0 — spent on a project on its own: checked (open, same
+        // currency, not inside an investment) and counted in its spending.
+        let project = null;
+        if (project_id) {
+            project = await require('./projectsController').recordExpenseForProject(client, {
+                projectId: parseInt(project_id, 10), transactionId, amount: parseFloat(amount),
+                accountCurrencyId: account.currency_id, userId: req.user.id,
+            });
+        }
+
         let whtRecord = null;
         if (wht) {
             whtRecord = await taxService.recordWithholding(client, {
@@ -1765,6 +1783,7 @@ const recordExpense = asyncHandler(async (req, res) => {
             balance_before: balanceBefore,
             balance_after:  balanceAfter,
         }, `Expense recorded successfully. Reference: ${referenceCode}` +
+           (project ? ` — counted in project ${project.reference_code} (${project.name})` : '') +
            (whtRecord ? (wht.isShadow
                ? ` — 6% withholding of ${wht.tax} recorded as SHADOW (the company is not a designated withholding agent on that date — full amount paid)`
                : ` — ${wht.tax} withheld (${whtRecord.referenceCode}); pay it to URA by the 15th of next month`) : ''));
@@ -2250,8 +2269,11 @@ const executeReversal = async (client, { transactionId, reason, userId, ip }) =>
     const sub = await reversalLinks.applySubledger(client, group, { userId, reversalOf });
     // v1.80.0 — a paid requisition is marked REVERSED
     const reqNote = await reversalLinks.markRequisitionsReversed(client, { reversalOf, reason, userId });
-    const subledger = reqNote
-        ? { ...(sub || {}), summary: [sub && sub.summary, reqNote].filter(Boolean).join('; ') }
+    // v1.85.0 — an expense for a project on its own comes off its spending
+    const projNote = await require('./projectsController').reverseProjectSpending(client, { reversalOf, userId });
+    const extra = [reqNote, projNote].filter(Boolean).join('; ');
+    const subledger = extra
+        ? { ...(sub || {}), summary: [sub && sub.summary, extra].filter(Boolean).join('; ') }
         : sub;
     return { tx, group, results, subledger };
 };

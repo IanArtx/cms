@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI, investmentsAPI } from '../../api/endpoints';
+import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI, investmentsAPI, projectsAPI } from '../../api/endpoints';
 import { Link, useSearchParams } from 'react-router-dom'; // v1.80.0
 import { CostTypeBadge } from '../investments/InvestmentLedger'; // v1.80.0
 import { formatDate, getErrorMessage, getInflowTypeLabel } from '../../utils/helpers';
@@ -421,11 +421,18 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
 const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
     const [form, setForm] = useState({
         account_id: '', amount: '', category_id: '',
-        description: '', value_date: ''
+        description: '', value_date: '', project_id: ''
     });
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
     const [docs, setDocs] = useState([]); // v1.78.0 — supporting documents (optional)
+    // v1.85.0 — open projects on their own (a project inside an investment
+    // is paid through the investment's Fund instead)
+    const [projects, setProjects] = useState([]);
+    useEffect(() => {
+        if (!isOpen) return;
+        projectsAPI.getOptions({ standalone: 1 }).then(r => setProjects(r.data.data || [])).catch(() => setProjects([]));
+    }, [isOpen]);
     // v1.81.0 — unfinished input kept and put back
     const [draftValue, setDraftValue] = useDraftFields({ form: [form, setForm], docs: [docs, setDocs] });
     const draft = useFormDraft('transaction:expense', draftValue, setDraftValue, { enabled: isOpen, title: 'Record expense', page: '/transactions?new=expense' });
@@ -445,7 +452,7 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
             onClose();
             setDocs([]);
             setForm({ account_id: '', amount: '', category_id: '',
-                description: '', value_date: '' });
+                description: '', value_date: '', project_id: '' });
         } catch (err) {
             setError(getErrorMessage(err));
         } finally {
@@ -520,6 +527,22 @@ const ExpenseModal = ({ isOpen, onClose, onSuccess, categories, accounts }) => {
                                     ...p, value_date: e.target.value }))}
                                 required />
                         </div>
+                        {(() => {
+                            const code = (accounts.find(a => String(a.id) === String(form.account_id)) || {}).currency_code;
+                            const list = projects.filter(p => !code || p.currency_code === code);
+                            if (!projects.length) return null;
+                            return (
+                                <div>
+                                    <label className="label">Project (optional)</label>
+                                    <select className="input" value={form.project_id}
+                                        onChange={e => setForm(p => ({ ...p, project_id: e.target.value }))}>
+                                        <option value="">Not for a project</option>
+                                        {list.map(p => <option key={p.id} value={p.id}>{p.name} ({p.reference_code})</option>)}
+                                    </select>
+                                    <p className="text-xs text-gray-400 mt-1">Projects on their own, in the account's currency. A project inside an investment is paid through the investment's Fund.</p>
+                                </div>
+                            );
+                        })()}
                         <ExpenseTaxFields form={form} setForm={setForm}
                             currencyCode={(accounts.find(a => String(a.id) === String(form.account_id)) || {}).currency_code} />
                         <DocumentPicker value={docs} onChange={setDocs} label="Receipt / invoice" />

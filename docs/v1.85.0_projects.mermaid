@@ -1,0 +1,21 @@
+%% v1.85.0 — projects on their own, inside an investment, or added later; documents on project and investment pages
+flowchart TD
+    NEW["New project\n(Investments › Projects, or an investment's Projects card)"] --> Q{"Inside an investment?"}
+    Q -->|"no"| OWN["Project on its own\ncurrency chosen"]
+    Q -->|"yes"| IN["Project inside an investment\ncurrency = the investment's"]
+    OWN -->|"Record spending / Record Expense (project chosen)\nsame currency, project open"| EXP["Expense in the books\n+ project_spending row\n+ transactions.project_id"]
+    IN -->|"Fund (project chosen)\nmust be this investment's open project"| FUND["Investment funding (capital, 1400)\n+ investment_funding.project_id\n+ transactions.project_id"]
+    OWN -->|"Add to an investment\n(same currency)"| IN
+    IN -->|"Take out — only while no funding recorded"| OWN
+    EXP --> SPENT["Project spent = funding + expenses (not reversed)\n= projects.actual_expenditure (checked on every read and in Records check)"]
+    FUND --> SPENT
+    REV["Reversal approved"] -->|"expense"| EXP2["project_spending reversed, spending reduced"]
+    REV -->|"funding"| FUND2["investment_funding reversed, investment and project spending reduced"]
+    OWN -.-> NOTE["Spent before joining an investment stays an expense —\nposted entries are never rewritten"]
+    subgraph DOCS["Documents on the page"]
+        UP["Upload (proposal, report, bond certificate, contract …)\nrelated_record_type projects / investments"]
+        ATT["Add existing (only documents that belong to nothing yet)"]
+        DET["Take off (document stays in Documents)"]
+    end
+    OWN --- DOCS
+    IN --- DOCS

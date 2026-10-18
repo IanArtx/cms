@@ -453,6 +453,66 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Projects on their own or inside an investment; documents on project and
+  investment pages** (v1.85.0): on **both** databases, before pushing the code,
+  run `node update_live_database.js --url "…"` then `--apply
+  --confirm=<database name>` (safe to run twice; it applies 1.84.0 too if that
+  is still missing). Nothing already recorded changes value. Afterwards open
+  Reports › Records check — the new Projects section should show no
+  differences.
+- **Share certificates and meetings on URSB-registered shares; share-register
+  correction** (v1.84.0): on **both** databases, before pushing the code, run
+  `node update_live_database.js --url "…"` then `--apply --confirm=<database
+  name>` (adds the REGISTRATION certificate type and the new columns; safe to
+  run twice). Then, only where the 4,000 check showed differences, run
+  `node update_live_database.js --url "…" --script
+  rebuild_share_register_v1.84.0.js --dry-run`, read the report, and run it
+  again without `--dry-run` to save. Push the code. Finally an Admin,
+  Secretary or Treasurer opens Share capital › Registered (URSB) and clicks
+  **Issue certificates for registered shares** once. The correction
+  allotments show as awaiting a return of allotment until it is filed with
+  URSB and marked filed — that issues their registration certificates.
+- **Charts** (v1.83.1): no database change. Exchange-rate charts (Money ›
+  Accounts › Market History and Money › Transfers) are now smooth gradient
+  areas without dots; the investment charts (Investments › Portfolio and the
+  shareholder dashboard) show the whole portfolio's money invested and
+  returns as running totals over time, in UGX, instead of one point per
+  investment. Push the code; nothing to run. Two helper scripts came with
+  it: `check_fixed_rate_share_impact_v1.83.1.js` (read-only report of what
+  the 4,000 rule would change in the share register) and an updated
+  `apply_fixed_rates_v1.76.0.js` that may run after the opening share
+  conversion as long as no contribution changes value.
+- **Bank of Uganda rates every weekday, the transfer rate check, realised
+  exchange results** (v1.83.0): run `cms/migration_v1.83.0.sql` on **both**
+  databases **before** pushing the code — `node update_live_database.js
+  --url "…"` then `--apply --confirm=<database name>`. Safe to run twice. It
+  adds the source of every rate (all existing rates become "Entered by
+  hand"), the suggestion and run-log tables, three settings, the accounts
+  4610 / 5610 (realised exchange gains / losses) and the realised result of
+  every transfer since the last month you closed (closed months are not
+  touched). Afterwards:
+  1. Nothing else is required: the server reads Bank of Uganda's published
+     opening rates Monday to Friday at 10:15, 13:15 and 16:15 Kampala time
+     and the Treasurer, Assistant Treasurer and Admins get a notice and an
+     email when rates are waiting. Approve them under **Money › Accounts ›
+     Bank of Uganda daily rates** (or press **Check BoU now** to try at
+     once). Nothing enters the books until someone approves; rates you
+     type with **Set Rate** are never replaced.
+  2. Look at **Compliance › Reports & ledger › Financial Statements ›
+     Income Statement**: the "Net foreign exchange" line now shows the
+     realised and unrealised parts underneath (the total is unchanged).
+  3. Settings › Currencies › **Daily Bank of Uganda rates**: switch the
+     check off, or change the 3 % limits, if you wish.
+  4. *Optional backup source.* Only if you decide to use AllRatesToday as a
+     backup / cross-check: get a key from their site yourself, then put it
+     in `cms/.env` as `BOU_RATES_API_KEY=…` on your computer and, on
+     Render, add an environment variable `BOU_RATES_API_KEY` to **each**
+     backend service (Environment › Add environment variable). Never paste
+     the key in a chat or a document. Without it everything works from
+     Bank of Uganda alone. (`BOU_RATES_CRON` can change the schedule —
+     not normally needed.)
+  5. If your computer's or Render's network blocks bou.or.ug, the run log
+     on the Accounts page says so; enter the day's rate by hand as before.
 - **Document previews on phones** (v1.82.1): no database change. The
   website uses a new library, **pdfjs-dist** (already in
   `cms-frontend/package.json`) — on your own computer run `npm install`

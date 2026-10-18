@@ -198,6 +198,23 @@ export const loansAPI = {
 };
 
 // ============================================================
+// PROJECTS (v1.85.0) — on their own, inside an investment, or added
+// to one later
+// ============================================================
+export const projectsAPI = {
+    getAll:          (params)        => api.get('/projects', { params }),
+    getOptions:      (params)        => api.get('/projects/options', { params }),
+    getById:         (id)            => api.get(`/projects/${id}`),
+    create:          (data)          => api.post('/projects', data),
+    update:          (id, data)      => api.put(`/projects/${id}`, data),
+    setStatus:       (id, data)      => api.post(`/projects/${id}/status`, data),
+    addToInvestment: (id, investment_id) => api.post(`/projects/${id}/investment`, { investment_id }),
+    removeFromInvestment: (id, reason)   => api.post(`/projects/${id}/investment/remove`, { reason }),
+    addMilestone:    (id, data)      => api.post(`/projects/${id}/milestones`, data),
+    updateMilestone: (id, mid, data) => api.patch(`/projects/${id}/milestones/${mid}`, data),
+};
+
+// ============================================================
 // INVESTMENTS
 // ============================================================
 export const investmentsAPI = {
@@ -226,6 +243,7 @@ export const investmentsAPI = {
     recordTreasuryBillMaturity: (id, data) => api.post(`/investments/${id}/treasury-bill-maturity`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
     getInputVsReturn:      () => api.get('/investments/input-vs-return'), // v1.56.0
+    getTotalsOverTime:     (params) => api.get('/investments/totals-over-time', { params }), // v1.83.1 — whole portfolio, cumulative; v1.84.0 ?currency=
     getPortfolioSummary:   () => api.get('/investments/portfolio-summary'), // v1.57.0
     // v1.40.0
     updateCouponSchedule:     (id, data) => api.patch(`/investments/${id}/coupon-schedule`, data),
@@ -417,6 +435,9 @@ export const documentsAPI = {
     unarchive:      (id, reason) => api.post(`/documents/${id}/unarchive`, { reason }),
     // v1.81.0 — the category tiles (counts per category, archive count)
     categorySummary: ()      => api.get('/documents/category-summary'),
+    // v1.85.0 — put a document on / take it off a project or investment page
+    attachToRecord:   (id, record_type, record_id) => api.post(`/documents/${id}/attach`, { record_type, record_id }),
+    detachFromRecord: (id, record_type, record_id) => api.post(`/documents/${id}/detach`, { record_type, record_id }),
     // v1.46.0 — remove an already-ARCHIVED document from the archive
     // (soft removal — see deleteDocument in documentsController.js)
     remove:         (id)     => api.delete(`/documents/${id}`),
@@ -898,6 +919,16 @@ export const exchangeRatesAPI = {
     setRate:    (data)   => api.post('/exchange-rates', data),
     getHistory: (params) => api.get('/exchange-rates/history', { params }),
     getFixed:   ()       => api.get('/exchange-rates/fixed'),   // v1.76.0 — company fixed-rate decisions
+    // v1.83.0 — daily Bank of Uganda rates: suggested, then approved by a person
+    getSuggestions:    (params)   => api.get('/exchange-rates/suggestions', { params }),
+    approveSuggestion: (id, data) => api.post(`/exchange-rates/suggestions/${id}/approve`, data || {}),
+    approveAll:        ()         => api.post('/exchange-rates/suggestions/approve-all'),
+    rejectSuggestion:  (id, data) => api.post(`/exchange-rates/suggestions/${id}/reject`, data),
+    getFeed:           ()         => api.get('/exchange-rates/feed'),
+    runFeed:           ()         => api.post('/exchange-rates/feed/run'),
+    updateFeedSettings:(data)     => api.patch('/exchange-rates/feed/settings', data),
+    // the rate on file for a date (from/to: currency id or code)
+    getReference:      (params)   => api.get('/exchange-rates/reference', { params }),
 };
 
 // ============================================================
@@ -914,6 +945,8 @@ export const certificatesAPI = {
     getRounds:      ()   => api.get('/certificates/rounds'),
     getRoundById:   (id) => api.get(`/certificates/rounds/${id}`),
     signRound:      (id) => api.post(`/certificates/rounds/${id}/sign`),
+    // v1.84.0 — registration certificates for everyone's current URSB-registered shares
+    issueRegisteredNow: () => api.post('/certificates/registration/issue-current'),
 };
 
 // ============================================================

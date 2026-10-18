@@ -123,6 +123,7 @@ const RecordChecksPage = () => {
 
     const funds       = (data?.funds || []).filter(f => !onlyDiffs || !f.ok);
     const investments = (data?.investments || []).filter(i => !onlyDiffs || !i.ok);
+    const projects    = (data?.projects || []).filter(i => !onlyDiffs || !i.ok); // v1.85.0
     const corrections = data?.corrections || [];
     const summary     = data?.summary || {};
 
@@ -130,7 +131,7 @@ const RecordChecksPage = () => {
         <div>
             <PageHeader
                 title="Records check"
-                subtitle="Stored fund and investment figures compared with their own entries, and every automatic correction"
+                subtitle="Stored fund, investment and project figures compared with their own entries, and every automatic correction"
                 showBack backTo="/reports"
                 actions={
                     <button onClick={load} className="btn-secondary flex items-center gap-2" disabled={loading}>
@@ -255,6 +256,47 @@ const RecordChecksPage = () => {
                                                     <div className="text-xs text-gray-400">{fmt(i.expected_returns)}</div>
                                                 </td>
                                                 <td className="px-2 py-2 text-right">{i.reversed_entries}</td>
+                                                <td className="px-2 py-2"><OkOrDiff ok={i.ok} /></td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </Section>
+
+                    {/* 2b. Projects (v1.85.0) */}
+                    <Section
+                        icon={ChartBarIcon}
+                        title={`Projects${summary.projects_with_differences ? ` — ${summary.projects_with_differences} with a difference` : ''}`}
+                        subtitle={'"Spent" = investment funding for the project + expenses recorded while it was on its own. Reversed entries are left out.'}
+                    >
+                        {projects.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-6">Nothing to show</p>
+                        ) : (
+                            <div className="overflow-x-auto -mx-2">
+                                <table className="min-w-full text-sm">
+                                    <thead>
+                                        <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
+                                            <th className="px-2 py-2 font-medium">Project</th>
+                                            <th className="px-2 py-2 font-medium text-right">Spent (stored / worked out)</th>
+                                            <th className="px-2 py-2 font-medium">Result</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {projects.map(i => (
+                                            <tr key={i.id} className="border-b border-gray-50 last:border-0 align-top">
+                                                <td className="px-2 py-2">
+                                                    <Link to={`/projects/${i.id}`} className="font-medium text-primary-700 hover:underline">{i.name}</Link>
+                                                    <div className="mt-0.5 flex items-center gap-1.5">
+                                                        <StatusBadge status={i.status} />
+                                                        <span className="text-[11px] text-gray-400 font-mono">{i.reference_code}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-2 py-2 text-right whitespace-nowrap">
+                                                    {i.currency_code} {fmt(i.stored_spent)}
+                                                    <div className="text-xs text-gray-400">{fmt(i.expected_spent)}</div>
+                                                </td>
                                                 <td className="px-2 py-2"><OkOrDiff ok={i.ok} /></td>
                                             </tr>
                                         ))}

@@ -32,6 +32,7 @@ import {
     BuildingLibraryIcon,
     InformationCircleIcon,
     ClipboardDocumentListIcon,
+    WrenchScrewdriverIcon, // v1.85.0 — Projects
     WalletIcon,
     ShieldCheckIcon,
     FlagIcon,
@@ -119,6 +120,10 @@ export const NAV_ITEMS = [
     { id: 'portfolio', label: 'Portfolio', href: '/investments', match: ['/mmf'], group: 'investments', icon: ChartBarIcon,
       show: (c) => (c.hasPermission('INVESTMENT_VIEW') || c.hasPermission('MMF_VIEW')) && !c.isAdminOfficer,
       keywords: 'investments money market mmf fixed deposit bond treasury bill t-bill' },
+    // v1.85.0 — projects on their own or inside an investment
+    { id: 'projects', label: 'Projects', href: '/projects', group: 'investments', icon: WrenchScrewdriverIcon,
+      show: (c) => c.hasPermission('INVESTMENT_VIEW') && !c.isAdminOfficer,
+      keywords: 'project milestone budget proposal borehole construction' },
     { id: 'loans', label: 'Loans', href: '/loans', group: 'investments', icon: CreditCardIcon,
       show: (c) => c.hasPermission('LOAN_VIEW') && !c.isAdminOfficer, keywords: 'borrow lend repayment interest' },
     { id: 'grants', label: 'Grants', href: '/grants', group: 'investments', icon: GiftIcon,
@@ -213,6 +218,7 @@ export const SUB_PAGE_LABELS = [
     { pattern: /^\/capital-goals\/monthly-calls\//, label: 'Monthly call' },
     { pattern: /^\/capital-goals\/\d+/,         label: 'Goal' },
     { pattern: /^\/investments\/\d+/,           label: 'Investment' },
+    { pattern: /^\/projects\/\d+/,              label: 'Project' }, // v1.85.0
     { pattern: /^\/mmf\/\d+/,                   label: 'Money market fund' },
     { pattern: /^\/loans\/received\/\d+/,       label: 'Loan received' },
     { pattern: /^\/loans\/given\/\d+/,          label: 'Loan given' },

@@ -107,6 +107,13 @@ router.get('/input-vs-return',
     investmentsController.getInputVsReturn
 );
 
+// Whole-portfolio totals over time, cumulative, in UGX (v1.83.1) — also
+// declared before GET /:id.
+router.get('/totals-over-time',
+    requireFinancialAccess('INVESTMENT_VIEW'),
+    investmentsController.getTotalsOverTime
+);
+
 // Portfolio Overview headline figures + status breakdown (v1.57.0) —
 // same routing-order reasoning as the two routes above.
 router.get('/portfolio-summary',
@@ -459,7 +466,12 @@ router.post('/:id/projects',
             .optional().isInt({ min: 1 }),
     ],
     validateRequest,
-    investmentsController.createProject
+    // v1.85.0 — the same as POST /api/projects with this investment chosen
+    // (sets the project's currency and checks the investment's status).
+    (req, res, next) => {
+        req.body.investment_id = req.params.id;
+        return require('../controllers/projectsController').createProject(req, res, next);
+    }
 );
 
 // Get single project

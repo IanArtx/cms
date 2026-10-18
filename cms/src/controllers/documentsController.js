@@ -1327,7 +1327,82 @@ const createTemplate = asyncHandler(async (req, res) => {
     sendCreated(res, result.rows[0], 'Template created successfully');
 });
 
+// ============================================================
+// DOCUMENTS ON A PROJECT / INVESTMENT PAGE (v1.85.0)
+// Requested: "From the proposal to other related documents can be
+// directly uploaded on the project or investment page (like bond
+// certificates)". A document uploaded there carries
+// related_record_type 'projects' / 'investments'. An existing document
+// that belongs to nothing yet can be put on the page; one already
+// belonging to another record (a meeting, a contribution, the archive …)
+// cannot be moved. Taking it off the page leaves the document itself
+// untouched in Documents.
+//   POST /api/documents/:id/attach  { record_type, record_id }
+//   POST /api/documents/:id/detach  { record_type, record_id }
+// ============================================================
+const PAGE_RECORD_TYPES = { projects: 'project', investments: 'investment' };
+
+const attachDocument = asyncHandler(async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const { record_type, record_id } = req.body;
+    if (!PAGE_RECORD_TYPES[record_type]) throw createError.badRequest('Documents can be put on a project or an investment page.');
+    await withTransaction(async (client) => {
+        const rec = await client.query(`SELECT id FROM ${record_type} WHERE id = $1`, [record_id]);
+        if (!rec.rows.length) throw createError.notFound(`That ${PAGE_RECORD_TYPES[record_type]} was not found.`);
+        const d = await client.query(`
+            SELECT d.id, d.title, d.status, d.related_record_type, d.related_record_id, r.reference_code
+            FROM   documents d JOIN references_registry r ON r.id = d.reference_id
+            WHERE  d.id = $1 FOR UPDATE OF d`, [id]);
+        if (!d.rows.length) throw createError.notFound('Document not found');
+        const doc = d.rows[0];
+        if (['DELETED', 'SUPERSEDED', 'ARCHIVED'].includes(doc.status)) {
+            throw createError.badRequest(`This document is ${doc.status.toLowerCase()} — it cannot be put on a page.`);
+        }
+        if (doc.related_record_type === record_type && Number(doc.related_record_id) === Number(record_id)) {
+            throw createError.badRequest('This document is already on this page.');
+        }
+        if (doc.related_record_type) {
+            throw createError.badRequest('This document already belongs to another record, so it stays there. Upload a copy here instead if needed.');
+        }
+        await client.query(`UPDATE documents SET related_record_type = $1, related_record_id = $2 WHERE id = $3`, [record_type, record_id, id]);
+        await logAction(req.user.id, ACTIONS.DOCUMENT_ATTACHED || 'DOCUMENT_ATTACHED', MODULES.DOCUMENTS, {
+            ipAddress: req.ip, recordType: 'documents', recordId: id,
+            newValues: { related_record_type: record_type, related_record_id: record_id },
+            description: `Document ${doc.reference_code} put on ${PAGE_RECORD_TYPES[record_type]} #${record_id}`,
+            client,
+        });
+        sendSuccess(res, { id }, `${doc.reference_code} is now on this ${PAGE_RECORD_TYPES[record_type]}'s page.`);
+    });
+});
+
+const detachDocument = asyncHandler(async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const { record_type, record_id } = req.body;
+    if (!PAGE_RECORD_TYPES[record_type]) throw createError.badRequest('Only documents on a project or an investment page can be taken off here.');
+    await withTransaction(async (client) => {
+        const d = await client.query(`
+            SELECT d.id, d.related_record_type, d.related_record_id, r.reference_code
+            FROM   documents d JOIN references_registry r ON r.id = d.reference_id
+            WHERE  d.id = $1 FOR UPDATE OF d`, [id]);
+        if (!d.rows.length) throw createError.notFound('Document not found');
+        const doc = d.rows[0];
+        if (doc.related_record_type !== record_type || Number(doc.related_record_id) !== Number(record_id)) {
+            throw createError.badRequest('This document is not on this page.');
+        }
+        await client.query(`UPDATE documents SET related_record_type = NULL, related_record_id = NULL WHERE id = $1`, [id]);
+        await logAction(req.user.id, ACTIONS.DOCUMENT_ATTACHED || 'DOCUMENT_ATTACHED', MODULES.DOCUMENTS, {
+            ipAddress: req.ip, recordType: 'documents', recordId: id,
+            oldValues: { related_record_type: record_type, related_record_id: record_id }, newValues: { related_record_type: null },
+            description: `Document ${doc.reference_code} taken off ${PAGE_RECORD_TYPES[record_type]} #${record_id} (the document itself is kept)`,
+            client,
+        });
+        sendSuccess(res, { id }, `${doc.reference_code} taken off this page. It is still in Documents.`);
+    });
+});
+
 module.exports = {
+    attachDocument,      // v1.85.0
+    detachDocument,      // v1.85.0
     uploadDocument,
     generateDocument,
     approveDocument,

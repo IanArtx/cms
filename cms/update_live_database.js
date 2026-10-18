@@ -12,7 +12,7 @@
 // 1) CHECK (read-only — changes nothing):
 //       node update_live_database.js --url "postgresql://…"
 //    Shows which company/database it reached, and for every version
-//    from 1.58.0 to 1.82.0 whether its migration is already applied.
+//    from 1.58.0 to 1.85.0 whether its migration is already applied.
 //
 // 2) APPLY the missing migrations, oldest first:
 //       node update_live_database.js --url "postgresql://…" --apply --confirm=<database name>
@@ -73,6 +73,10 @@ const VERSIONS = [
     { v: '1.81.0', file: 'migration_v1.81.0.sql', what: 'documents by category / out of the archive, unfinished forms kept, shares registered with URSB per member', check: tbl('form_drafts') },
     { v: '1.82.0', file: 'migration_v1.82.0.sql', what: 'guided tour (remembers who has taken it)', check: col('users', 'tours_seen') },
     { v: '1.82.1', file: null, what: '(no database change — document previews on phones, PDF files)' },
+    { v: '1.83.0', file: 'migration_v1.83.0.sql', what: 'BoU rates suggested daily, rate sources, realised FX on transfers', check: tbl('fx_rate_suggestions') },
+    { v: '1.83.1', file: null, what: '(no database change — smooth exchange-rate charts, investment totals over time)' },
+    { v: '1.84.0', file: 'migration_v1.84.0.sql', what: 'registered-share certificates, REGISTRATION type, share-register correction flag', check: col('share_allotments', 'rate_correction') },
+    { v: '1.85.0', file: 'migration_v1.85.0.sql', what: 'projects on their own or inside an investment, project spending, documents on project/investment pages', check: col('transactions', 'project_id') },
 ];
 
 // ---- arguments ------------------------------------------------------
@@ -194,7 +198,7 @@ const printStatus = (rows) => {
         }
 
         if (!missing.length) {
-            console.log('\n✅ This database is up to date (1.82.0). Nothing to apply.');
+            console.log('\n✅ This database is up to date (1.85.0). Nothing to apply.');
             return;
         }
         console.log(`\n${missing.length} migration(s) to apply, in this order: ${missing.map(m => m.v).join(' → ')}`);
@@ -227,6 +231,13 @@ const printStatus = (rows) => {
                 console.log('FAILED');
                 console.error(`\n❌ ${m.file} failed: ${err.message}`);
                 console.error('   Nothing from this file was saved (it runs as one transaction). Everything before it IS saved.');
+                // v1.85.0 — a table / function created by the PostgreSQL administrator
+                // ("postgres") on a LOCAL database cannot be changed by the system's user.
+                if (/must be owner of/i.test(err.message) && !url) {
+                    console.error('   This is your LOCAL database: some tables or functions belong to the PostgreSQL administrator.');
+                    console.error('   Fix it once with:  node fix_local_table_owner.js   (look), then  node fix_local_table_owner.js --apply');
+                    console.error('   and run this tool again.');
+                }
                 console.error('   Do not push the new code yet. Send this message to Claude; run this tool again once fixed —');
                 console.error('   it carries on from here.');
                 process.exitCode = 1;
@@ -249,7 +260,7 @@ const printStatus = (rows) => {
             console.log('\n⚠️  Still missing: ' + missing.map(m => m.v).join(', '));
             process.exitCode = 1;
         } else {
-            console.log('\n✅ Database is now at 1.82.0.');
+            console.log('\n✅ Database is now at 1.85.0.');
             try {
                 const rc = await client.query(`SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE needs_attention) AS a FROM record_corrections`);
                 console.log(`   Automatic corrections logged by the v1.72.0 repair: ${rc.rows[0].n} (needing a look: ${rc.rows[0].a}) — see Reports › Records check after the code is live.`);

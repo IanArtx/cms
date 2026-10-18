@@ -1404,6 +1404,7 @@ const listAllotments = async ({ month = null, userId = null, pendingReturnsOnly 
                sa.registered_shares, sa.total_shares_after, sa.shares_beyond_registered,
                sa.return_due_date::text AS return_due_date, sa.return_filed_at::text AS return_filed_at,
                sa.return_reference, sa.status, sa.reversed_at::text AS reversed_at, sa.reversal_reason, sa.notes,
+               COALESCE((to_jsonb(sa)->>'rate_correction')::boolean, FALSE) AS rate_correction,
                rr.reference_code, c.code AS currency_code,
                u.first_name || ' ' || u.last_name AS member_name,
                (sa.status = 'ACTIVE' AND sa.return_due_date IS NOT NULL AND sa.return_filed_at IS NULL
@@ -1654,6 +1655,8 @@ module.exports = {
     allotForContribution,
     reverseContribution,
     recalculateShareholding,
+    createAllotment,   // v1.84.0 — used by rebuild_share_register_v1.84.0.js
+    addCreditEntry,    // v1.84.0
     runOpeningConversion,
     previewOpeningConversion,
     listChangeRequests,

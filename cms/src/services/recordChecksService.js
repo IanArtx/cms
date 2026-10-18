@@ -101,6 +101,27 @@ const getRecordChecks = async () => {
         };
     });
 
+    // v1.85.0 — every project's spending against its entries (investment
+    // funding for it + expenses while it was on its own, not reversed)
+    const hasProjSpend = (await query(`SELECT to_regclass('public.project_spending') IS NOT NULL AS ok`)).rows[0].ok;
+    const projRows = !hasProjSpend ? [] : (await query(`
+        SELECT p.id, p.name, p.status, r.reference_code, c.code AS currency_code, p.actual_expenditure,
+               COALESCE((SELECT SUM(f.amount) FROM investment_funding f WHERE f.project_id = p.id AND NOT f.is_reversed), 0)
+             + COALESCE((SELECT SUM(s.amount) FROM project_spending s WHERE s.project_id = p.id AND NOT s.is_reversed), 0) AS expected
+        FROM   projects p
+        JOIN   references_registry r ON r.id = p.reference_id
+        LEFT JOIN currencies c ON c.id = p.currency_id
+        ORDER  BY p.name
+    `)).rows.map(p => {
+        const differences = Math.abs(num(p.actual_expenditure) - num(p.expected)) > 0.005
+            ? [{ field: 'actual_expenditure', stored: num(p.actual_expenditure), expected: num(p.expected) }] : [];
+        return {
+            id: p.id, name: p.name, reference_code: p.reference_code, status: p.status, currency_code: p.currency_code,
+            stored_spent: num(p.actual_expenditure), expected_spent: num(p.expected),
+            ok: differences.length === 0, differences,
+        };
+    });
+
     const corrections = await query(`
         SELECT id, run_label, record_type, record_id, record_name, field_name, old_value, new_value,
                note, needs_attention, created_at
@@ -112,10 +133,12 @@ const getRecordChecks = async () => {
     return {
         funds: fundRows,
         investments: invRows,
+        projects: projRows, // v1.85.0
         corrections: corrections.rows,
         summary: {
             funds_with_differences: fundRows.filter(r => !r.ok).length,
             investments_with_differences: invRows.filter(r => !r.ok).length,
+            projects_with_differences: projRows.filter(r => !r.ok).length, // v1.85.0
             corrections_needing_attention: corrections.rows.filter(r => r.needs_attention).length,
         },
     };

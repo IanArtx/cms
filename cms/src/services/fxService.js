@@ -437,10 +437,87 @@ const matchesFixedRule = (f, fromId, rate) => {
     return Math.abs(parseFloat(rate) - direct) <= Math.max(1e-9, Math.abs(direct) * 1e-6);
 };
 
+// ============================================================
+// v1.83.0 — realised exchange results of transfers
+// (transaction_fx_results, see migration_v1.83.0.sql). Each stored
+// adjustment becomes a pair of ledger lines shaped exactly like a
+// revaluation: the UGX carrying value of the foreign-currency cash
+// moves (its foreign amount does not) against 4610 / 5610.
+// ============================================================
+const REALISED_GAIN_GL_CODE = '4610';
+const REALISED_LOSS_GL_CODE = '5610';
+
+let sourceColumnKnown = null;
+const rateSourceColumnExists = async (client = null) => {
+    if (sourceColumnKnown !== null) return sourceColumnKnown;
+    const run = client ? (t, p) => client.query(t, p) : (t, p) => query(t, p);
+    const r = await run(`SELECT 1 FROM information_schema.columns WHERE table_name = 'currency_exchange_rates' AND column_name = 'source'`);
+    sourceColumnKnown = r.rows.length > 0;
+    return sourceColumnKnown;
+};
+
+let realisedTableKnown = null;
+const getRealisedTransferLines = async ({ throughDate, accountId = null, glByCode, functionalCurrency, currencyCodeById }) => {
+    if (realisedTableKnown === null) {
+        const r = await query(`SELECT to_regclass('transaction_fx_results') IS NOT NULL AS ok`);
+        realisedTableKnown = r.rows[0].ok;
+    }
+    if (!realisedTableKnown) return [];
+    const gainGl = glByCode.get(REALISED_GAIN_GL_CODE);
+    const lossGl = glByCode.get(REALISED_LOSS_GL_CODE);
+    const cashGl = glByCode.get('1000');
+    if (!gainGl || !lossGl || !cashGl) return [];
+    const params = [throughDate];
+    let accountFilter = '';
+    if (accountId) { params.push(accountId); accountFilter = `AND t.account_id = $${params.length}`; }
+    const rows = await query(`
+        SELECT x.transaction_id, x.transfer_id, x.value_date::text AS value_date, x.currency_id,
+               x.amount, x.reference_rate, x.reference_value, x.actual_value, x.adjustment,
+               t.account_id, rr.reference_code, tr.exchange_rate AS transfer_rate
+        FROM   transaction_fx_results x
+        JOIN   transactions t ON t.id = x.transaction_id AND t.status = 'POSTED'
+        LEFT JOIN references_registry rr ON rr.id = t.reference_id
+        LEFT JOIN transfers tr ON tr.id = x.transfer_id
+        WHERE  x.value_date <= $1 ${accountFilter}
+        ORDER  BY x.value_date, x.transaction_id
+    `, params);
+    const lines = [];
+    for (const r of rows.rows) {
+        const adj = round2(parseFloat(r.adjustment));
+        if (!(Math.abs(adj) >= 0.01)) continue;
+        const isGain = adj > 0;
+        const amount = Math.abs(adj);
+        const curCode = currencyCodeById.get(r.currency_id) || '';
+        const description = `Realised exchange ${isGain ? 'gain' : 'loss'} on transfer — ${curCode} ${parseFloat(r.amount).toLocaleString('en-US', { maximumFractionDigits: 2 })} `
+            + `at the transfer's rate vs ${parseFloat(r.reference_rate)} (reference rate on ${r.value_date})`;
+        const common = {
+            date: r.value_date, accountId: r.account_id, description, referenceCode: r.reference_code || null,
+            categoryTrail: null, sourceType: 'FX_REALISED', sourceId: r.transaction_id,
+            currencyId: functionalCurrency.id, currencyCode: functionalCurrency.code, currencySymbol: functionalCurrency.symbol,
+            originalDebit: 0, originalCredit: 0, fxRate: parseFloat(r.reference_rate), fxRateSource: 'REALISED',
+        };
+        lines.push({
+            ...common, lineRole: 'REVALUED_BALANCE', glAccountId: cashGl.id,
+            debit: isGain ? amount : 0, credit: isGain ? 0 : amount,
+            originalCurrencyId: r.currency_id, originalCurrencyCode: curCode,
+        });
+        lines.push({
+            ...common, lineRole: 'FX_RESULT', glAccountId: isGain ? gainGl.id : lossGl.id,
+            debit: isGain ? 0 : amount, credit: isGain ? amount : 0,
+            originalCurrencyId: functionalCurrency.id, originalCurrencyCode: functionalCurrency.code,
+        });
+    }
+    return lines;
+};
+
 module.exports = {
     BASIS,
     FX_GAIN_GL_CODE,
     FX_LOSS_GL_CODE,
+    REALISED_GAIN_GL_CODE,
+    REALISED_LOSS_GL_CODE,
+    rateSourceColumnExists,
+    getRealisedTransferLines,
     round2,
     toDateStr,
     todayStr,

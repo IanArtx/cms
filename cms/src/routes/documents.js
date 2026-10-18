@@ -55,7 +55,7 @@ router.post('/templates',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER', 'BOND_CERTIFICATE', 'PROJECT_PROPOSAL', 'PROJECT_REPORT', // v1.85.0
                 // v1.79.0 — statutory meeting documents
                 'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
@@ -103,7 +103,7 @@ router.post('/upload',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER', 'BOND_CERTIFICATE', 'PROJECT_PROPOSAL', 'PROJECT_REPORT', // v1.85.0
                 // v1.79.0 — statutory meeting documents
                 'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
@@ -135,7 +135,7 @@ router.post('/generate',
             .isIn([
                 'MEETING_MINUTES', 'MEETING_AGENDA', 'INVESTMENT_PROPOSAL',
                 'FINANCIAL_REPORT_GENERAL', 'FINANCIAL_REPORT_INDIVIDUAL',
-                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER',
+                'RECEIPT', 'RESOLUTION', 'CONTRACT', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'OTHER', 'BOND_CERTIFICATE', 'PROJECT_PROPOSAL', 'PROJECT_REPORT', // v1.85.0
                 // v1.79.0 — statutory meeting documents
                 'NOTICE_OF_MEETING', 'PROXY_FORM', 'ATTENDANCE_REGISTER', 'WRITTEN_RESOLUTION', 'CERTIFIED_RESOLUTION'
             ])
@@ -298,6 +298,17 @@ router.post('/:id/new-version',
     validateRequest,
     documentsController.createNewVersion
 );
+
+// ============================================================
+// PUT ON / TAKE OFF A PROJECT OR INVESTMENT PAGE (v1.85.0)
+// ============================================================
+const pageRecordRules = [
+    validators.idParam('id'),
+    body('record_type').isIn(['projects', 'investments']).withMessage('Choose a project or an investment'),
+    body('record_id').isInt({ min: 1 }).withMessage('Invalid record'),
+];
+router.post('/:id/attach', requirePermissions(['DOCUMENT_UPLOAD']), pageRecordRules, validateRequest, documentsController.attachDocument);
+router.post('/:id/detach', requirePermissions(['DOCUMENT_UPLOAD']), pageRecordRules, validateRequest, documentsController.detachDocument);
 
 // ============================================================
 // ARCHIVE DOCUMENT

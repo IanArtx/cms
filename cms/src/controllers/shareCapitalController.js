@@ -13,6 +13,7 @@ const { logAction, ACTIONS, MODULES } = require('../services/auditService');
 const { notify, notifyMany } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const svc = require('../services/shareCapitalService');
+const certificates = require('../services/certificateService'); // v1.84.0 — registration certificates
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 
 // Roles that may see every member's shares and credit (the register).
@@ -96,10 +97,19 @@ const getAllotments = asyncHandler(async (req, res) => {
 
 const markReturnsFiled = asyncHandler(async (req, res) => {
     const { allotment_ids, filed_at, return_reference } = req.body;
+    // v1.84.0 — the members whose registered shares may change, before.
+    const ids = Array.isArray(allotment_ids) ? allotment_ids.map(Number) : [];
+    const owners = ids.length ? (await query('SELECT DISTINCT user_id FROM share_allotments WHERE id = ANY($1::int[])', [ids])).rows.map(r => r.user_id) : [];
+    const before = await certificates.registeredNow(owners);
     const result = await withTransaction(client => svc.markReturnsFiled(client, {
         allotmentIds: allotment_ids, filedAt: filed_at, returnReference: return_reference, userId: req.user.id,
     }));
-    sendSuccess(res, result, `${result.updated} allotment(s) marked as filed`);
+    // Registered shares changed → registration certificates (signing round).
+    const certs = await certificates.issueForRegistrationChanges({
+        before, effectiveDate: (filed_at ? String(filed_at).slice(0, 10) : new Date().toISOString().slice(0, 10)), issuedBy: req.user.id,
+    }).catch(err => ({ issued: 0, error: err.message }));
+    sendSuccess(res, { ...result, certificates: certs },
+        `${result.updated} allotment(s) marked as filed${certs.issued ? `; ${certs.issued} registration certificate(s) waiting for signature` : ''}${certs.blocked ? ` — ${certs.blockedReason}` : ''}`);
 });
 
 // ------------------------------------------------------------
@@ -301,11 +311,16 @@ const getRegisteredForMember = asyncHandler(async (req, res) => {
 const setRegisteredForMember = asyncHandler(async (req, res) => {
     const memberId = parseInt(req.params.userId, 10);
     const { shares, as_at, note, document_id, change_reason } = req.body;
+    const before = await certificates.registeredNow([memberId]); // v1.84.0
     await withTransaction(client => registered.setOpening(client, {
         userId: memberId, shares: Number(shares), asAt: as_at, note, documentId: document_id ? parseInt(document_id, 10) : null,
         changeReason: change_reason, by: req.user.id, ipAddress: req.ip,
     }));
-    sendSuccess(res, await registered.getMember(memberId), 'URSB-registered shares saved');
+    const certs = await certificates.issueForRegistrationChanges({
+        before, effectiveDate: String(as_at).slice(0, 10), issuedBy: req.user.id,
+    }).catch(err => ({ issued: 0, error: err.message }));
+    sendSuccess(res, { ...(await registered.getMember(memberId)), certificates: certs },
+        `URSB-registered shares saved${certs.issued ? ' — a registration certificate is waiting for signature' : ''}`);
 });
 
 module.exports = {

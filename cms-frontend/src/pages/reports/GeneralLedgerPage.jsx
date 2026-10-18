@@ -610,11 +610,25 @@ const BalanceSheetTab = ({ accounts }) => {
 // glService.computeIncomeStatement); the gross figures behind it are
 // shown underneath so nothing is hidden.
 // ============================================================
+// v1.83.0 — split into realised (transfers: bank rate vs the reference
+// rate of the day, 4610 / 5610) and unrealised (month-end revaluation,
+// 4600 / 5600) when the server sends the split.
 const FxDetailNote = ({ detail, display }) => (detail ? (
-    <p className="text-xs text-gray-400 mt-0.5">
-        FX gains {display.money(detail.gains)} less FX losses {display.money(detail.losses)} — revaluation of foreign-currency
-        balances; gains and losses on the two sides of the same transaction (e.g. a EUR loan and the EUR cash that repaid it) offset here.
-    </p>
+    <div className="text-xs text-gray-400 mt-0.5 space-y-0.5">
+        {detail.realised && (detail.realised.gains || detail.realised.losses) ? (
+            <>
+                <p>Realised (currency converted on transfers, at the bank's rate against the day's reference rate):
+                    gains {display.money(detail.realised.gains)} less losses {display.money(detail.realised.losses)}.</p>
+                <p>Unrealised (month-end revaluation of balances still held):
+                    gains {display.money(detail.unrealised.gains)} less losses {display.money(detail.unrealised.losses)}.</p>
+            </>
+        ) : (
+            <p>
+                FX gains {display.money(detail.gains)} less FX losses {display.money(detail.losses)} — revaluation of foreign-currency
+                balances; gains and losses on the two sides of the same transaction (e.g. a EUR loan and the EUR cash that repaid it) offset here.
+            </p>
+        )}
+    </div>
 ) : null);
 
 const IncomeStatementTab = ({ accounts, fyStart }) => {

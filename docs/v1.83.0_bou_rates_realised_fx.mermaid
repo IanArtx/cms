@@ -1,0 +1,33 @@
+%% v1.83.0 — Bank of Uganda rates suggested daily (a person approves), the bank's rate checked on every transfer, realised vs unrealised exchange results
+flowchart TD
+    subgraph FEED["Every weekday 10:15 · 13:15 · 16:15 (Kampala) — or 'Check BoU now'"]
+        BOU["bou.or.ug › OPENING RATES.xlsx\n(middle · buying · selling, UGX per 1 unit)"] -->|read| PARSE["bouRatesService\nunzip + read cells · date next to 'EXCHANGE RATES FOR'"]
+        ART["AllRatesToday (optional key BOU_RATES_API_KEY)\nsame BoU table"] -.->|"backup if BoU down /\ncross-check if both work"| PARSE
+        PARSE --> EACH{"for each active currency\n(not UGX)"}
+        EACH -->|"suggestion for that date exists"| SKIP1["nothing new"]
+        EACH -->|"fixed-rate company decision covers it"| SKIP2["skipped"]
+        EACH -->|"a rate is ALREADY on file for that date\n(e.g. typed by hand)"| KEPT["suggestion recorded as\nHAND-ENTERED RATE KEPT\n(nothing changes)"]
+        EACH -->|otherwise| SUG["fx_rate_suggestions: PENDING\nflagged if: jump > 3 %, cross-check > 0.5 %, table > 5 days old"]
+        SUG --> NOTE["in-app notice + email to\nTreasurer · Assistant Treasurer · Admin"]
+        PARSE -->|"both sources fail"| FAIL["run logged FAILED\nTreasury told once that day"]
+    end
+    SUG --> DEC{"Money › Accounts ›\nBank of Uganda daily rates"}
+    DEC -->|"Approve (flagged: tick 'I have checked this rate')"| SET["exchangeRateService.setRate\nsource BOU · approved by …"]
+    DEC -->|"Reject + reason"| REJ["REJECTED — books unchanged"]
+    HAND["Set Rate (typed by a person)"] -->|"source MANUAL"| SET
+    HAND -->|"closes a waiting suggestion\nfor the same date"| KEPT
+    SET --> RULES["refused if a rate already starts that day (either direction)\nrefused if typed against the pair's direction\nfixed-rate decisions respected"]
+    RULES --> REVAL["re-value open-month entries in UGX\n+ recompute_transfer_fx(date)"]
+
+    subgraph TRANSFER["Transfer form"]
+        TF["bank's rate entered"] --> CMP["compare with rate on file for value date\n(GET /api/exchange-rates/reference)"]
+        CMP -->|"gap ≤ 3 %"| OK["save"]
+        CMP -->|"gap > 3 %"| TICK["'I have checked the bank's rate'\n(server refuses without it)"] --> OK
+        OK --> STORE["transfers.reference_rate · rate_gap_pct · rate_gap_confirmed_by"]
+    end
+    STORE -->|"approved & posted"| RF["transaction_fx_results\nadjustment = value at reference rate − UGX actually received/paid"]
+    RF --> GL["4610 Realised FX gains / 5610 Realised FX losses\n(on the transfer date; cash 1000 adjusted in UGX only)"]
+    MONTH["month-end revaluation (unchanged)"] --> UGL["4600 / 5600 unrealised"]
+    GL --> IS["Income Statement: ONE 'Net foreign exchange' line\nrealised and unrealised shown underneath\n(total = what revaluation alone showed before)"]
+    UGL --> IS
+    CLOSED["months already closed when v1.83.0 was installed\n(company_settings.fx_realised_from)"] -.->|"never change"| RF

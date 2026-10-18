@@ -747,6 +747,11 @@ async function postInvestmentFunding(client, investment, {
 
     await linkReferenceToRecord(client, txRefId, transactionId);
     await investmentCost.setCostType(client, transactionId, 'CAPITAL');
+    // v1.85.0 — the ledger entry carries its project
+    if (projectId) {
+        const hasCol = await client.query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'project_id'`);
+        if (hasCol.rows.length) await client.query('UPDATE transactions SET project_id = $1 WHERE id = $2', [projectId, transactionId]);
+    }
 
     const fundingRow = await client.query(`
         INSERT INTO investment_funding (
@@ -810,6 +815,14 @@ const fundInvestment = asyncHandler(async (req, res) => {
             throw createError.badRequest(
                 'Investment must be active before funding'
             );
+        }
+
+        // v1.85.0 — the project chosen must be one of this investment's
+        // projects and still open.
+        if (project_id) {
+            await require('./projectsController').assertFundingProject(client, {
+                projectId: parseInt(project_id, 10), investmentId: investment.id,
+            });
         }
 
         // v1.78.0 — investing a capital goal's money: never more than the
@@ -1624,6 +1637,145 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
         invested:        parseFloat(r.invested),
         returned:        parseFloat(r.returned),
     })));
+});
+
+// ============================================================
+// TOTALS OVER TIME — money invested and returns, whole portfolio
+// GET /api/investments/totals-over-time            (v1.83.1)
+// Requested: the investment charts should "only use totals over time of
+// invested money and returns instead of individual investments".
+// One monthly series for the whole portfolio (investments, bonds,
+// treasury bills and MMF together), cumulative, in the books' currency
+// (UGX). Each event is built with exactly the rules behind the
+// "Total Invested" / "Total Returns" figures, so the last point equals
+// them (checked investment by investment):
+//   INVESTED — every posted ledger payment tagged to an investment
+//     (funding, purchase, running costs, tax), unless it was reversed
+//     = actual_expenditure; plus MMF top-ups not reversed
+//     = total_principal_in. Valued in UGX at the entry's own UGX value.
+//   RETURNS — investment_returns not reversed: the face value repaid
+//     with a bond's final coupon counts 0 (capital back, not income), a
+//     treasury bill's maturity counts only the discount (proceeds −
+//     price paid), everything else its amount = total_returns; plus MMF
+//     interest less management fees. Valued at the rate on its date.
+// Anything without a rate is left out and counted in `unconverted`.
+// v1.84.0 — ?currency=EUR (code or id) shows the same series in another
+// currency, converted at the rate set TODAY (the current rate on file),
+// like "Show in EUR" on the financial statements. Default: the books'
+// currency. `currencies` lists the ones that can be chosen (a current
+// rate exists).
+// ============================================================
+const getTotalsOverTime = asyncHandler(async (req, res) => {
+    const fc = await query(`SELECT cs.functional_currency_id AS id, c.code FROM company_settings cs JOIN currencies c ON c.id = cs.functional_currency_id WHERE cs.id = 1`);
+    const F = fc.rows[0]?.id || null;
+    const fCode = fc.rows[0]?.code || '';
+    const options = (await query(`
+        SELECT c.id, c.code, fx_rate_on($1, c.id, CURRENT_DATE)::float8 AS rate
+        FROM   currencies c
+        WHERE  c.is_active = TRUE AND fx_rate_on($1, c.id, CURRENT_DATE) IS NOT NULL
+        ORDER  BY (c.id = $1) DESC, c.code
+    `, [F])).rows;
+    let target = options.find(o => o.id === F) || { id: F, code: fCode, rate: 1 };
+    const wanted = req.query.currency ? String(req.query.currency).trim() : '';
+    if (wanted) {
+        const hit = options.find(o => String(o.id) === wanted || o.code.toUpperCase() === wanted.toUpperCase());
+        if (!hit) throw createError.badRequest(`No current exchange rate from ${fCode} to ${wanted} is set, so the chart cannot be shown in it.`);
+        target = hit;
+    }
+
+    const result = await query(`
+        WITH spent AS (
+            SELECT t.value_date AS d, t.functional_amount AS ugx
+            FROM   transactions t
+            WHERE  t.investment_id IS NOT NULL AND t.transaction_type = 'DEBIT'
+            AND    t.status = 'POSTED' AND t.is_reversal = FALSE
+            AND    NOT EXISTS (SELECT 1 FROM transactions r WHERE r.reversal_of = t.id AND r.status = 'POSTED')
+        ),
+        mmf_in AS (
+            SELECT x.entry_date AS d, x.amount * fx_rate_on(m.currency_id, $1, x.entry_date) AS ugx
+            FROM   mmf_transactions x JOIN mmf_accounts m ON m.id = x.mmf_account_id
+            WHERE  x.entry_type = 'TOPUP' AND COALESCE(x.is_reversed, FALSE) = FALSE
+        ),
+        rets AS (
+            SELECT r.return_date AS d,
+                   (CASE
+                       WHEN r.return_type = 'PRINCIPAL' AND r.notes LIKE '%alongside final coupon #%' THEN 0
+                       WHEN r.return_type = 'PRINCIPAL' AND i.investment_type = 'TREASURY_BILL'
+                            THEN GREATEST(0, r.amount - COALESCE(i.settlement_value, 0))
+                       ELSE r.amount END) * fx_rate_on(i.currency_id, $1, r.return_date) AS ugx
+            FROM   investment_returns r JOIN investments i ON i.id = r.investment_id
+            WHERE  COALESCE(r.is_reversed, FALSE) = FALSE
+        ),
+        mmf_ret AS (
+            SELECT x.entry_date AS d,
+                   (CASE WHEN x.entry_type = 'INTEREST' THEN x.amount ELSE -x.amount END)
+                   * fx_rate_on(m.currency_id, $1, x.entry_date) AS ugx
+            FROM   mmf_transactions x JOIN mmf_accounts m ON m.id = x.mmf_account_id
+            WHERE  x.entry_type IN ('INTEREST', 'MANAGEMENT_FEE') AND COALESCE(x.is_reversed, FALSE) = FALSE
+        ),
+        ev AS (
+            SELECT 'I' AS k, d, ugx FROM spent UNION ALL
+            SELECT 'I', d, ugx FROM mmf_in UNION ALL
+            SELECT 'R', d, ugx FROM rets UNION ALL
+            SELECT 'R', d, ugx FROM mmf_ret
+        )
+        SELECT to_char(date_trunc('month', d), 'YYYY-MM') AS period, k,
+               COALESCE(SUM(ugx), 0)::float8 AS amount,
+               COUNT(*) FILTER (WHERE ugx IS NULL)::int AS missing
+        FROM   ev WHERE d IS NOT NULL
+        GROUP  BY 1, 2 ORDER BY 1
+    `, [F]);
+
+    const byMonth = new Map();
+    let unconverted = 0;
+    for (const r of result.rows) {
+        if (!byMonth.has(r.period)) byMonth.set(r.period, { I: 0, R: 0 });
+        byMonth.get(r.period)[r.k] += r.amount;
+        unconverted += r.missing;
+    }
+    const series = [];
+    if (byMonth.size) {
+        const months = [...byMonth.keys()].sort();
+        const now = new Date();
+        const last = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        let [y, m] = months[0].split('-').map(Number);
+        const end = months[months.length - 1] > last ? months[months.length - 1] : last;
+        let invested = 0; let returned = 0;
+        const round = (n) => Math.round(n * 100) / 100;
+        for (let guard = 0; guard < 600; guard++) {
+            const key = `${y}-${String(m).padStart(2, '0')}`;
+            const mv = byMonth.get(key);
+            if (mv) { invested += mv.I; returned += mv.R; }
+            series.push({
+                period: key,
+                label: `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1]} ${y}`,
+                invested: round(invested),
+                returned: round(returned),
+            });
+            if (key >= end) break;
+            m += 1; if (m > 12) { m = 1; y += 1; }
+        }
+    }
+    // Another currency: every point at today's rate (a translation for
+    // reading convenience — the books stay in the functional currency).
+    if (target.id !== F) {
+        const k = target.rate;
+        for (const p of series) {
+            p.invested = Math.round(p.invested * k * 100) / 100;
+            p.returned = Math.round(p.returned * k * 100) / 100;
+        }
+    }
+    const lastPoint = series[series.length - 1] || { invested: 0, returned: 0 };
+    sendSuccess(res, {
+        currencyCode: target.code,
+        functionalCode: fCode,
+        rateUsed: target.id !== F ? target.rate : null,
+        rateDate: target.id !== F ? new Date().toISOString().slice(0, 10) : null,
+        currencies: options.map(o => ({ id: o.id, code: o.code })),
+        series,
+        totals: { invested: lastPoint.invested, returned: lastPoint.returned },
+        unconverted,
+    });
 });
 
 // ============================================================
@@ -3022,6 +3174,7 @@ module.exports = {
     getInvestmentById,
     getPerformanceSummary,
     getInputVsReturn,
+    getTotalsOverTime,
     getPortfolioSummary,
     getProjectById,
 };

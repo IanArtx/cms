@@ -9,6 +9,8 @@
 //   - A transfer creates TWO transactions (debit + credit)
 //   - Both legs are atomic — either both succeed or neither does
 //   - Exchange rate and all approvers are permanently recorded
+//   - v1.83.0: the bank's rate is compared with the rate on file for
+//     the value date; a gap above the warning limit must be confirmed
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
@@ -24,6 +26,7 @@ const { rowsToCsv, sendCsv } = require('../utils/csv');
 const { normalizeDateInput } = require('../utils/dateUtils');
 const { assertNotOwnRecord } = require('../services/approvalGuard'); // v1.72.0
 const capitalGoalFunds = require('../services/capitalGoalFundsService'); // v1.78.0
+const fxFeedService = require('../services/fxFeedService'); // v1.83.0
 
 // ============================================================
 // INITIATE A TRANSFER
@@ -43,6 +46,7 @@ const initiateTransfer = asyncHandler(async (req, res) => {
         sending_bank_charge,
         receiving_bank_charge,
         capital_goal_id, // v1.78.0 — moving a capital goal's collected money towards its investment
+        rate_difference_confirmed, // v1.83.0 — "I have checked the bank's rate"
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -97,6 +101,7 @@ const initiateTransfer = asyncHandler(async (req, res) => {
         const effectiveExchangeRate = sameCurrency ? 1 : parseFloat(exchange_rate);
 
         const amountReceived = parseFloat(amount_sent) * effectiveExchangeRate;
+
         const sendingCharge   = parseFloat(sending_bank_charge   || 0);
         const receivingCharge = parseFloat(receiving_bank_charge  || 0);
 
@@ -113,6 +118,14 @@ const initiateTransfer = asyncHandler(async (req, res) => {
             });
         }
 
+        // v1.83.0 — compare the bank's rate with the rate on file for the
+        // value date (BoU or hand-entered). The bank's rate is still what
+        // the books use; a large gap must be confirmed first.
+        const rateCheck = sameCurrency ? null : await fxFeedService.checkTransferRate(client, {
+            fromCurrencyId: from.currency_id, toCurrencyId: to.currency_id, rate: effectiveExchangeRate,
+            date: value_date, amountSent: amount_sent,
+            confirmed: rate_difference_confirmed === true || rate_difference_confirmed === 'true',
+        });
         // Generate transfer reference
         const { referenceId, referenceCode } = await generateReference(
             client,
@@ -168,6 +181,7 @@ const initiateTransfer = asyncHandler(async (req, res) => {
 
         const transferId = transferResult.rows[0].id;
         await linkReferenceToRecord(client, referenceId, transferId);
+        if (rateCheck) await fxFeedService.recordTransferRateCheck(client, transferId, rateCheck, req.user.id);
         if (goalLink) {
             await client.query('UPDATE transfers SET capital_goal_id = $1 WHERE id = $2', [goalLink.goal.id, transferId]);
         }
@@ -237,6 +251,7 @@ const editTransfer = asyncHandler(async (req, res) => {
         amount_sent, exchange_rate, category_id,
         description, value_date,
         sending_bank_charge, receiving_bank_charge,
+        rate_difference_confirmed, // v1.83.0
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -286,6 +301,13 @@ const editTransfer = asyncHandler(async (req, res) => {
             });
         }
 
+        // v1.83.0 — same check as when it was entered, on the new figures.
+        const rateCheck = sameCurrency ? null : await fxFeedService.checkTransferRate(client, {
+            fromCurrencyId: transfer.from_currency_id, toCurrencyId: transfer.to_currency_id, rate: newExchangeRate,
+            date: value_date || transfer.value_date, amountSent: newAmountSent,
+            confirmed: rate_difference_confirmed === true || rate_difference_confirmed === 'true',
+        });
+
         const updated = await client.query(`
             UPDATE transfers
             SET    amount_sent            = $1,
@@ -306,6 +328,8 @@ const editTransfer = asyncHandler(async (req, res) => {
             receiving_bank_charge !== undefined ? receiving_bank_charge : null,
             id,
         ]);
+
+        if (rateCheck) await fxFeedService.recordTransferRateCheck(client, id, rateCheck, req.user.id);
 
         await logAction(req.user.id, ACTIONS.TRANSFER_UPDATED, MODULES.FINANCE, {
             ipAddress:   req.ip,

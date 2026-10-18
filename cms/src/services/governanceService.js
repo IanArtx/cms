@@ -118,7 +118,29 @@ const quorumRequired = (settings, meeting) =>
 // the shareholding register.
 // v1.80.0 — `asOf` (a past meeting's date): shares from the register
 // row in force on that date instead of today's.
+// v1.84.0 — the shares shown (and counted in a poll) are the shares
+// REGISTERED with URSB as at the meeting date — requested: "minutes that
+// record attendance with a showing of the shareholding shows only the
+// registered shares one holds in order not have issues during filing".
+// Shares allotted inside the company but not yet registered are not
+// shown. Falls back to the shareholding register on a database without
+// the registered-shares record.
 const loadMembers = async (db, asOf = null) => {
+    const registered = require('./registeredSharesService');
+    const reg = await registered.registeredAsOf(db, asOf);
+    if (reg.ready) {
+        const r = await db.query(`
+            SELECT u.id AS user_id, u.first_name || ' ' || u.last_name AS name
+            FROM   users u
+            WHERE  u.is_active = TRUE
+            AND   (u.id = ANY($1::int[])
+                   OR EXISTS (SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id = ur.role_id
+                              WHERE ur.user_id = u.id AND ur.revoked_at IS NULL AND ro.name = 'Shareholder'))
+        `, [[...reg.byUser.keys()]]);
+        return r.rows
+            .map(x => ({ ...x, shares_held: reg.byUser.get(x.user_id) || 0 }))
+            .sort((a, b) => (b.shares_held - a.shares_held) || a.name.localeCompare(b.name));
+    }
     const shareJoin = asOf
         ? `LEFT JOIN LATERAL (
                SELECT s.shares_held FROM shareholding_registry s

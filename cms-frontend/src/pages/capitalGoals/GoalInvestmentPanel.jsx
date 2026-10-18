@@ -34,6 +34,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { money, StatTile } from './capitalGoalUi';
+import TransferRateCheck from '../../components/fx/TransferRateCheck'; // v1.83.0
 import {
     ArrowRightIcon, BanknotesIcon, BriefcaseIcon, CheckCircleIcon, ArrowsRightLeftIcon, LinkSlashIcon,
 } from '@heroicons/react/24/outline';
@@ -203,6 +204,9 @@ const MoveModal = ({ isOpen, onClose, onSuccess, funds }) => {
     const from = form && fromOptions.find(a => String(a.account_id) === String(form.from_account_id));
     const to = form && (funds.all_accounts || []).find(a => String(a.id) === String(form.to_account_id));
     const sameCurrency = !!(from && to && from.currency_id === to.currency_id);
+    // v1.83.0 — "I have checked the bank's rate", asked again when the figures change
+    const [rateConfirmed, setRateConfirmed] = useState(false);
+    useEffect(() => { setRateConfirmed(false); }, [form?.exchange_rate, form?.value_date, form?.to_account_id, isOpen]);
 
     // Suggest the current rate when the currencies differ (editable).
     useEffect(() => {
@@ -240,6 +244,7 @@ const MoveModal = ({ isOpen, onClose, onSuccess, funds }) => {
                 value_date: form.value_date,
                 description: form.description || undefined,
                 capital_goal_id: funds.goal.id,
+                rate_difference_confirmed: !sameCurrency && rateConfirmed ? true : undefined,
             });
             onSuccess('Transfer started. The Treasurer approves it as every transfer — until then the amount is set aside so it cannot be moved twice.');
             onClose();
@@ -319,6 +324,11 @@ const MoveModal = ({ isOpen, onClose, onSuccess, funds }) => {
                                     )}
                                 </div>
                             </div>
+                            {!sameCurrency && from && to && (
+                                <TransferRateCheck fromCode={from.currency_code} toCode={to.currency_code}
+                                    rate={form.exchange_rate} amountSent={form.amount_sent} date={form.value_date}
+                                    confirmed={rateConfirmed} onConfirmedChange={setRateConfirmed} />
+                            )}
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="label">Sending bank charge</label>

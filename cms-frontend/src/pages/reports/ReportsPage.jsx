@@ -128,7 +128,7 @@ const SigningRoundsPanel = () => {
                                 >
                                     <div>
                                         <span className="text-sm font-medium text-gray-900">
-                                            {round.certificate_type === 'ANNUAL' ? 'Annual' : 'Monthly'} — {round.period_label}
+                                            {round.certificate_type === 'ANNUAL' ? 'Annual' : round.certificate_type === 'REGISTRATION' ? 'Registration' : 'Monthly'} — {round.period_label}
                                         </span>
                                         <span className="text-xs text-gray-400 ml-2">
                                             {round.certificate_count} certificate(s)

@@ -18,6 +18,16 @@
 //
 // A member with no URSB figure entered yet starts from 0 — every filed
 // allotment counts — and is flagged "URSB figure not entered".
+//
+// v1.84.0 — "covered by the URSB figure" now means: allotted on or
+// before the figure's date AND already in the system when the figure was
+// entered. An allotment added later (e.g. by the v1.84.0 share-register
+// correction, dated back to the contribution) is NOT assumed to be in the
+// URSB figure: it counts as registered only once its return is filed.
+// Certificates and meeting registers now use the REGISTERED shares
+// (registeredAsOf below); the shares allotted inside the company stay the
+// basis of ownership, dividends and the books, and the difference is the
+// overflow still to be registered.
 // The figures are records of what URSB holds; they never change anyone's
 // shares, money or the books.
 // ============================================================
@@ -53,8 +63,10 @@ const memberRows = async ({ userId = null } = {}) => {
         ),
         opening AS (
             SELECT m.user_id, m.id AS opening_id, m.shares AS opening_shares, m.as_at, m.note, m.document_id,
-                   m.recorded_at, rb.first_name || ' ' || rb.last_name AS recorded_by_name
-            FROM   member_registered_shares m
+                   m.recorded_at, m.created_seen_at, rb.first_name || ' ' || rb.last_name AS recorded_by_name
+            FROM   (SELECT mm.*, (SELECT MIN(x.recorded_at) FROM member_registered_shares x
+                                      WHERE x.user_id = mm.user_id) AS created_seen_at
+                    FROM member_registered_shares mm) m
             LEFT JOIN users rb ON rb.id = m.recorded_by
             WHERE  m.superseded_at IS NULL
         )
@@ -64,20 +76,20 @@ const memberRows = async ({ userId = null } = {}) => {
                o.recorded_at, o.recorded_by_name,
                COALESCE((SELECT SUM(a.shares) FROM share_allotments a
                    WHERE a.user_id = u.id AND a.status = 'ACTIVE'
-                   AND (o.as_at IS NULL OR a.allotment_date > o.as_at)
+                   AND NOT (o.as_at IS NOT NULL AND a.allotment_date <= o.as_at AND a.created_at <= o.created_seen_at)
                    AND (a.return_due_date IS NULL OR a.return_filed_at IS NOT NULL)), 0) AS added_since,
                COALESCE((SELECT SUM(a.shares) FROM share_allotments a
                    WHERE a.user_id = u.id AND a.status = 'ACTIVE'
-                   AND (o.as_at IS NULL OR a.allotment_date > o.as_at)
+                   AND NOT (o.as_at IS NOT NULL AND a.allotment_date <= o.as_at AND a.created_at <= o.created_seen_at)
                    AND a.return_due_date IS NOT NULL AND a.return_filed_at IS NULL), 0) AS awaiting_filing,
                (SELECT COUNT(*) FROM share_allotments a
                    WHERE a.user_id = u.id AND a.status = 'ACTIVE'
-                   AND (o.as_at IS NULL OR a.allotment_date > o.as_at)
+                   AND NOT (o.as_at IS NOT NULL AND a.allotment_date <= o.as_at AND a.created_at <= o.created_seen_at)
                    AND a.return_due_date IS NOT NULL AND a.return_filed_at IS NULL
                    AND a.return_due_date < CURRENT_DATE) AS overdue_returns,
                (SELECT MIN(a.return_due_date) FROM share_allotments a
                    WHERE a.user_id = u.id AND a.status = 'ACTIVE'
-                   AND (o.as_at IS NULL OR a.allotment_date > o.as_at)
+                   AND NOT (o.as_at IS NOT NULL AND a.allotment_date <= o.as_at AND a.created_at <= o.created_seen_at)
                    AND a.return_due_date IS NOT NULL AND a.return_filed_at IS NULL)::text AS next_return_due
         FROM   members mm
         JOIN   users u ON u.id = mm.user_id
@@ -193,4 +205,64 @@ const setOpening = async (client, { userId, shares, asAt, note, documentId, chan
     return { id: ins.rows[0].id };
 };
 
-module.exports = { tableReady, getRegister, getMember, setOpening };
+// ------------------------------------------------------------
+// Registered shares of every member AS AT a date (v1.84.0) — for
+// certificates and meeting registers. `db` is a client or { query }.
+//   URSB figure (if dated on/before the date)
+// + allotments not covered by it whose return was filed by the date
+// + splits / consolidations (no return) dated by the date.
+// Before a member's URSB figure date, the allotments that figure covers
+// are counted by their own dates (best estimate of the register then).
+// Returns { byUser: Map(user_id -> shares), total, ready }.
+// ------------------------------------------------------------
+const registeredAsOf = async (db, date = null) => {
+    const runner = db || { query };
+    if (!(await tableReady())) return { byUser: new Map(), total: 0, ready: false };
+    const d = date || new Date().toISOString().slice(0, 10);
+    const r = await runner.query(`
+        WITH opening AS (
+            SELECT m.user_id, m.shares, m.as_at,
+                   (SELECT MIN(x.recorded_at) FROM member_registered_shares x WHERE x.user_id = m.user_id) AS created_seen_at
+            FROM   member_registered_shares m WHERE m.superseded_at IS NULL
+        ),
+        people AS (
+            SELECT user_id FROM opening UNION SELECT user_id FROM share_allotments WHERE status = 'ACTIVE'
+        )
+        SELECT p.user_id,
+               CASE WHEN o.as_at IS NOT NULL AND o.as_at <= $1::date THEN o.shares ELSE 0 END
+             + COALESCE((SELECT SUM(a.shares) FROM share_allotments a
+                   WHERE a.user_id = p.user_id AND a.status = 'ACTIVE'
+                   AND NOT (o.as_at IS NOT NULL AND a.allotment_date <= o.as_at AND a.created_at <= o.created_seen_at)
+                   AND ((a.return_filed_at IS NOT NULL AND a.return_filed_at <= $1::date)
+                        OR (a.return_due_date IS NULL AND a.allotment_date <= $1::date))), 0)
+             + CASE WHEN o.as_at IS NOT NULL AND o.as_at > $1::date THEN
+                   COALESCE((SELECT SUM(a.shares) FROM share_allotments a
+                       WHERE a.user_id = p.user_id AND a.status = 'ACTIVE'
+                       AND a.allotment_date <= $1::date AND a.allotment_date <= o.as_at
+                       AND a.created_at <= o.created_seen_at), 0)
+               ELSE 0 END AS registered
+        FROM   people p LEFT JOIN opening o ON o.user_id = p.user_id
+    `, [d]);
+    const byUser = new Map();
+    let total = 0;
+    for (const x of r.rows) {
+        const n = int(x.registered);
+        if (n !== 0) { byUser.set(x.user_id, n); total += n; }
+    }
+    return { byUser, total, ready: true };
+};
+
+// The latest date a member's registered shares changed on or before
+// `date`: their URSB figure date or the last filed return.
+const lastRegistrationDate = async (db, userId, date = null) => {
+    const runner = db || { query };
+    const d = date || new Date().toISOString().slice(0, 10);
+    const r = await runner.query(`
+        SELECT GREATEST(
+            (SELECT MAX(as_at) FROM member_registered_shares WHERE user_id = $1 AND superseded_at IS NULL AND as_at <= $2::date),
+            (SELECT MAX(return_filed_at) FROM share_allotments WHERE user_id = $1 AND status = 'ACTIVE' AND return_filed_at <= $2::date)
+        )::text AS d`, [userId, d]);
+    return r.rows[0].d || null;
+};
+
+module.exports = { tableReady, getRegister, getMember, setOpening, registeredAsOf, lastRegistrationDate };

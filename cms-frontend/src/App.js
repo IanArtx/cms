@@ -29,6 +29,8 @@ import LoansPage from './pages/loans/LoansPage';
 import LoanDetailPage from './pages/loans/LoanDetailPage';
 import InvestmentsPage from './pages/investments/InvestmentsPage';
 import InvestmentDetailPage from './pages/investments/InvestmentDetailPage';
+import ProjectsPage from './pages/projects/ProjectsPage'; // v1.85.0
+import ProjectDetailPage from './pages/projects/ProjectDetailPage'; // v1.85.0
 import MmfDetailPage from './pages/mmf/MmfDetailPage';
 import CapitalGoalsPage from './pages/capitalGoals/CapitalGoalsPage';
 import CapitalGoalDetailPage from './pages/capitalGoals/CapitalGoalDetailPage';
@@ -155,6 +157,8 @@ function App() {
                             <Route path="loans/given/:id" element={<LoanDetailPage loanType="given" />} />
                             <Route path="investments" element={<InvestmentsPage />} />
                             <Route path="investments/:id" element={<InvestmentDetailPage />} />
+                            <Route path="projects" element={<ProjectsPage />} />
+                            <Route path="projects/:id" element={<ProjectDetailPage />} />
                             {/* v1.60.0 — MMF's own list page folded into the unified
                                 Investments page; redirect any old bookmark/link. The
                                 detail page (topup/withdrawal/interest/fee actions) stays. */}

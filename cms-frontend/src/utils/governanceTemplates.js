@@ -386,7 +386,7 @@ export const attendanceRegisterTemplate = (data) => {
         </tr>`).join('');
 
     const quorumText = t.quorum_met
-        ? `A quorum of ${esc(t.quorum_required)} ${general ? 'members' : 'directors'} being present (${esc(t.present)} present${general ? `, holding ${shares(t.shares_present)} of ${shares(t.shares_total)} shares, ${esc(t.shares_present_pct)}%` : ''}), the meeting was duly constituted${cite(st, 'quorum')}.`
+        ? `A quorum of ${esc(t.quorum_required)} ${general ? 'members' : 'directors'} being present (${esc(t.present)} present${general ? `, holding ${shares(t.shares_present)} of ${shares(t.shares_total)} registered shares, ${esc(t.shares_present_pct)}%` : ''}), the meeting was duly constituted${cite(st, 'quorum')}.`
         : `The quorum required is ${esc(t.quorum_required ?? '—')} ${general ? 'members' : 'directors'}; ${esc(t.present ?? 0)} ${t.present === 1 ? 'was' : 'were'} recorded present.`;
 
     const body = `
@@ -402,7 +402,7 @@ export const attendanceRegisterTemplate = (data) => {
         </div>
         <h3>${general ? 'Members' : 'Directors'}</h3>
         <table>
-            <thead><tr><th style="width:30px;">#</th><th>Name</th><th>Capacity</th>${general ? '<th class="text-right">Shares held</th><th class="text-right">% of shares</th>' : ''}<th>Attendance</th><th>Signature</th></tr></thead>
+            <thead><tr><th style="width:30px;">#</th><th>Name</th><th>Capacity</th>${general ? '<th class="text-right">Registered shares</th><th class="text-right">% of registered</th>' : ''}<th>Attendance</th><th>Signature</th></tr></thead>
             <tbody>
                 ${rows || `<tr><td colspan="${general ? 7 : 5}" class="text-center muted">No ${general ? 'members' : 'directors'} on the register</td></tr>`}
                 ${general ? `<tr class="total-row"><td></td><td colspan="2">Total</td><td class="text-right">${shares(totalShares)}</td><td class="text-right">100.00%</td><td colspan="2"></td></tr>` : ''}
@@ -421,7 +421,7 @@ export const attendanceRegisterTemplate = (data) => {
                 <tr><td>Present online</td><td class="text-right">${esc(t.online ?? 0)}</td><td>Represented by proxy</td><td class="text-right">${esc(t.by_proxy ?? 0)}</td></tr>
                 <tr><td>Apologies</td><td class="text-right">${esc(t.apologies ?? 0)}</td><td>Absent</td><td class="text-right">${esc((t.absent ?? 0) + (t.not_marked ?? 0))}</td></tr>
                 <tr><td><strong>Total present</strong></td><td class="text-right"><strong>${esc(t.present ?? 0)}</strong></td><td>Quorum required</td><td class="text-right">${esc(t.quorum_required ?? '—')}</td></tr>
-                ${general ? `<tr><td>Shares represented</td><td class="text-right">${shares(t.shares_present)} of ${shares(t.shares_total)}</td><td>% represented</td><td class="text-right">${esc(t.shares_present_pct ?? 0)}%</td></tr>` : ''}
+                ${general ? `<tr><td>Registered shares represented</td><td class="text-right">${shares(t.shares_present)} of ${shares(t.shares_total)}</td><td>% represented</td><td class="text-right">${esc(t.shares_present_pct ?? 0)}%</td></tr>` : ''}
             </tbody>
         </table>
         <p style="margin-top:10px;">${quorumText}</p>
@@ -454,7 +454,7 @@ export const statutoryMinutesTemplate = (data) => {
     let n = 0;
     const mno = () => { n += 1; return `MIN ${String(n).padStart(2, '0')}/${tag}/${year}`; };
 
-    const personLine = (a) => `${esc(a.name)}${a.designation && !['Member', 'Director'].includes(a.designation) ? ` — ${esc(a.designation)}` : ''}${general && a.shares_held ? ` <span class="muted">(${shares(a.shares_held)} shares)</span>` : ''}${a.status === 'PRESENT_VIRTUAL' ? ' <span class="muted">[online]</span>' : ''}`;
+    const personLine = (a) => `${esc(a.name)}${a.designation && !['Member', 'Director'].includes(a.designation) ? ` — ${esc(a.designation)}` : ''}${general && a.shares_held ? ` <span class="muted">(${shares(a.shares_held)} registered shares)</span>` : ''}${a.status === 'PRESENT_VIRTUAL' ? ' <span class="muted">[online]</span>' : ''}`;
     const list = (arr, f = personLine) => (arr.length ? `<ol class="items" style="margin-bottom:6px;">${arr.map(a => `<li>${f(a)}</li>`).join('')}</ol>` : '<p class="muted">None.</p>');
 
     const resolutions = (data.resolutions || []).filter(r => r.result !== 'PENDING');
@@ -502,7 +502,7 @@ export const statutoryMinutesTemplate = (data) => {
 
         <h3>Present</h3>
         ${list(present)}
-        ${general ? `<h3>Represented by proxy</h3>${list(proxies, a => `${esc(a.name)} <span class="muted">(${shares(a.shares_held)} shares)</span>, represented by ${esc(a.proxy_name || '—')}`)}` : ''}
+        ${general ? `<h3>Represented by proxy</h3>${list(proxies, a => `${esc(a.name)} <span class="muted">(${shares(a.shares_held)} registered shares)</span>, represented by ${esc(a.proxy_name || '—')}`)}` : ''}
         <h3>In attendance</h3>
         ${list(inAtt, a => `${esc(a.name)} — ${esc(a.designation || 'In attendance')}`)}
         <h3>Apologies</h3>
@@ -513,7 +513,7 @@ export const statutoryMinutesTemplate = (data) => {
             <div><span class="mno">${mno()}</span> &nbsp; <span class="mtitle">Opening, notice and quorum</span></div>
             <p>${mins.opening ? multiline(mins.opening) : `${esc(m.chairperson_name || 'The Chairperson')} took the chair and called the meeting to order at ${clock(m.opened_at && !m.recorded_after_event ? new Date(m.opened_at).toTimeString().slice(0, 5) : m.start_time)}.`}</p>
             ${noticeSentence ? `<p>${noticeSentence}</p>` : ''}
-            <p>${t.quorum_met !== false ? `The Chairperson declared that a quorum was present (${esc(m.quorum_at_opening ?? t.present ?? '—')} ${general ? 'members' : 'directors'} present; ${esc(t.quorum_required ?? '—')} required${cite(st, 'quorum')})${general && t.shares_total ? `, representing ${esc(t.shares_present_pct)}% of the issued shares` : ''}, and that the meeting was duly constituted.` : 'No quorum was recorded.'}</p>
+            <p>${t.quorum_met !== false ? `The Chairperson declared that a quorum was present (${esc(m.quorum_at_opening ?? t.present ?? '—')} ${general ? 'members' : 'directors'} present; ${esc(t.quorum_required ?? '—')} required${cite(st, 'quorum')})${general && t.shares_total ? `, representing ${esc(t.shares_present_pct)}% of the registered shares` : ''}, and that the meeting was duly constituted.` : 'No quorum was recorded.'}</p>
             ${mins.declarations ? `<p><strong>Declarations of interest:</strong> ${multiline(mins.declarations)}</p>` : ''}
         </div>
         ${mins.previous_minutes ? `

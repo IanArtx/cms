@@ -1,0 +1,17 @@
+%% v1.83.1 — investment totals over time, smooth FX charts, fixed rate after the share conversion
+flowchart TD
+    subgraph INV["GET /api/investments/totals-over-time (UGX, monthly, cumulative)"]
+        L["ledger payments tagged to an investment\n(posted, not reversed)"] --> I["Invested"]
+        T["MMF top-ups (not reversed)"] --> I
+        R["investment_returns (not reversed)\nbond face value with final coupon = 0\nT-bill maturity = discount only"] --> RT["Returns"]
+        M["MMF interest − management fees"] --> RT
+    end
+    I --> C["InvestmentTotalsChart\nInvestments › Portfolio · shareholder dashboard"]
+    RT --> C
+    C -->|"last point"| TILES["= Total Invested / Total Returns tiles"]
+    FX["exchange-rate history"] --> FXC["Market History & Transfers charts\nsmooth gradient area, no dots, tidy scale"]
+    subgraph RATE["4,000 rule after the opening share conversion"]
+        CHK["check_fixed_rate_share_impact_v1.83.1.js\nread-only replay + self-check"] --> APPLY["apply_fixed_rates_v1.76.0.js"]
+        APPLY -->|"every contribution keeps its UGX value"| SAVE["saved (+ realised FX recomputed)"]
+        APPLY -->|"any contribution would change"| STOP["nothing saved — share register rebuild needed"]
+    end

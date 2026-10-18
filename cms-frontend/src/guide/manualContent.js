@@ -17,7 +17,7 @@ import { MODULES, MODULE_GROUPS } from './manualModules';
 
 export { GENERAL_CHAPTERS, ROLES, PERMISSION_NOTE, MODULES, MODULE_GROUPS };
 
-export const MANUAL_EDITION = '1.82.0';
+export const MANUAL_EDITION = '1.83.0';
 
 // ------------------------------------------------------------
 // "I want to …" — the quick map (Part 4). `page` is a module id.
@@ -29,6 +29,7 @@ const WANTS = [
     { want: 'Correct a wrong money entry', where: 'Money › Transactions › open the entry › Request reversal', page: 'transactions' },
     { want: 'Move money from the Euro account to the UGX account', where: 'Money › Transfers › New Transfer', page: 'transfers' },
     { want: 'Set an exchange rate or the share price', where: 'Money › Accounts › Set Rate / Set Price (Propose a Change)', page: 'accounts' },
+    { want: 'Approve today\'s Bank of Uganda exchange rates', where: 'Money › Accounts › Bank of Uganda daily rates › Approve', page: 'accounts' },
     { want: 'Change an account\'s floor limit', where: 'Money › Accounts › open the account › Update Floor Limit', page: 'accounts' },
     { want: 'Ask the company for money', where: 'Money › Requisitions › New Requisition › Money Request', page: 'requisitions' },
     { want: 'Have a payment I made recorded', where: 'Money › Requisitions › New Requisition › Acknowledge My Contribution', page: 'requisitions' },

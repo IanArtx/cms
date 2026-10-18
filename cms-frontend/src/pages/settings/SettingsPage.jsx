@@ -40,6 +40,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { GovernanceSettingsPanel } from '../meetings/meetingUi'; // v1.79.0
 import MaintenanceSettings from '../../components/maintenance/MaintenanceSettings'; // v1.74.0
+import BouFeedSettings from '../../components/fx/BouFeedSettings'; // v1.83.0
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
 // ============================================================
@@ -172,6 +173,7 @@ const PermissionsModal = ({ isOpen, role, onClose, onSuccess }) => {
 // CURRENCIES TAB
 // ============================================================
 const CurrenciesTab = () => {
+    const { hasRole } = useAuth();
     const [currencies, setCurrencies] = useState([]);
     const [loading,    setLoading]    = useState(true);
     const [error,      setError]      = useState(null);
@@ -360,6 +362,9 @@ const CurrenciesTab = () => {
                 </table>
                 </div>
             </div>
+
+            {/* v1.83.0 — daily Bank of Uganda rates */}
+            <BouFeedSettings canEdit={hasRole(['Admin', 'Treasurer'])} />
         </div>
     );
 };
@@ -1023,11 +1028,14 @@ const SIGNABLE_TYPES = [
     { key: 'RESOLUTION',                  label: 'Resolutions' },
     { key: 'LOAN_AGREEMENT',              label: 'Loan Agreements' },
     { key: 'GRANT_AGREEMENT',             label: 'Grant Agreements' },
-    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual rounds)' },
+    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual/registration rounds)' },
     { key: 'CONTRACT',                    label: 'Contracts' },
     { key: 'MEETING_MINUTES',             label: 'Meeting Minutes' },
     { key: 'MEETING_AGENDA',              label: 'Meeting Agendas' },
     { key: 'INVESTMENT_PROPOSAL',         label: 'Investment Proposals' },
+    { key: 'PROJECT_PROPOSAL',            label: 'Project Proposals' },          // v1.85.0
+    { key: 'PROJECT_REPORT',              label: 'Project Reports' },            // v1.85.0
+    { key: 'BOND_CERTIFICATE',            label: 'Bond / Security Certificates' }, // v1.85.0
     { key: 'FINANCIAL_REPORT_GENERAL',    label: 'Financial Reports (General)' },
     { key: 'FINANCIAL_REPORT_INDIVIDUAL', label: 'Financial Reports (Individual)' },
     { key: 'RECEIPT',                     label: 'Receipts' },
@@ -1158,11 +1166,14 @@ const STAMPABLE_TYPES = [
     { key: 'RESOLUTION',                  label: 'Resolutions' },
     { key: 'LOAN_AGREEMENT',              label: 'Loan Agreements' },
     { key: 'GRANT_AGREEMENT',             label: 'Grant Agreements' },
-    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual rounds) — one stamp only' },
+    { key: 'SHARE_CERTIFICATE',           label: 'Share Certificates (monthly/annual/registration rounds) — one stamp only' },
     { key: 'CONTRACT',                    label: 'Contracts' },
     { key: 'MEETING_MINUTES',             label: 'Meeting Minutes' },
     { key: 'MEETING_AGENDA',              label: 'Meeting Agendas' },
     { key: 'INVESTMENT_PROPOSAL',         label: 'Investment Proposals' },
+    { key: 'PROJECT_PROPOSAL',            label: 'Project Proposals' },          // v1.85.0
+    { key: 'PROJECT_REPORT',              label: 'Project Reports' },            // v1.85.0
+    { key: 'BOND_CERTIFICATE',            label: 'Bond / Security Certificates' }, // v1.85.0
     { key: 'FINANCIAL_REPORT_GENERAL',    label: 'Financial Reports (General)' },
     { key: 'FINANCIAL_REPORT_INDIVIDUAL', label: 'Financial Reports (Individual)' },
     { key: 'RECEIPT',                     label: 'Receipts' },

@@ -34,6 +34,8 @@ const globalSearch = asyncHandler(async (req, res) => {
         SELECT id, first_name, last_name, email
         FROM   users
         WHERE  is_active = TRUE
+        -- v1.87.0 — only people who hold a role
+        AND    EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.is_active = TRUE WHERE ur.user_id = users.id AND ur.revoked_at IS NULL)
         AND    (first_name ILIKE $1 OR last_name ILIKE $1 OR email ILIKE $1
                 OR (first_name || ' ' || last_name) ILIKE $1)
         ORDER  BY first_name

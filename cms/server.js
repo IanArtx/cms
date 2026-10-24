@@ -24,6 +24,15 @@ const { streamInline, isS3Configured } = require('./src/services/storageService'
 // ============================================================
 const app = express();
 
+// v1.86.0 — the app runs behind Render's proxy, which passes the visitor's
+// real address in X-Forwarded-For. Trusting exactly that one hop makes
+// req.ip the visitor's address (kept as an account's "registered from" IP,
+// and used by the rate limits — without it every visitor looked like the
+// same proxy address and shared one allowance). Only the hop Render adds is
+// trusted, so a visitor cannot fake their address. TRUST_PROXY_HOPS can
+// change the number of hops; 0 switches it off.
+app.set('trust proxy', parseInt(process.env.TRUST_PROXY_HOPS ?? '1', 10) || false);
+
 // ============================================================
 // SECURITY MIDDLEWARE
 // These run on every request before routes are evaluated.
@@ -63,6 +72,8 @@ app.use(cors({
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    // v1.86.1 — lets the page read a download's file name (register of members)
+    exposedHeaders: ['Content-Disposition'],
 }));
 
 // Rate limits are much looser in development so page reloads and repeated
@@ -106,6 +117,16 @@ const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: isDev ? 200 : 10,
     message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// v1.86.0 — creating accounts: at most 5 per IP per hour in production,
+// so a script cannot fill the members list with fake sign-ups.
+const registerLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: isDev ? 200 : 5,
+    message: { success: false, message: 'Too many registrations from this connection. Please try again in an hour.' },
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -186,6 +207,7 @@ app.use('/api/maintenance', require('./src/routes/maintenance'));
 app.use('/api/public/branding', require('./src/routes/publicBranding'));
 app.use('/api', require('./src/middleware/maintenanceGate').maintenanceGate);
 
+app.use('/api/auth/register', registerLimiter); // v1.86.0
 app.use('/api/auth',        authLimiter,                    require('./src/routes/auth'));
 app.use('/api/users',                                       require('./src/routes/users'));
 app.use('/api/categories',                                  require('./src/routes/categories'));
@@ -226,6 +248,8 @@ app.use('/api/certificates', require('./src/routes/certificates'));
 app.use('/api/search', require('./src/routes/search'));
 
 app.use('/api/audit', require('./src/routes/audit'));
+app.use('/api/access', require('./src/routes/access'));
+app.use('/api/member-register', require('./src/routes/memberRegister')); // v1.86.1 — register of members and officers // v1.86.0 — access requests, invitations, blocked addresses
 app.use('/api/staff-access', require('./src/routes/staffAccess'));
 app.use('/api/service-fees', require('./src/routes/serviceFees'));
 

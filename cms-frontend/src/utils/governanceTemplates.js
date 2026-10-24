@@ -322,29 +322,49 @@ export const noticeOfMeetingTemplate = (data) => {
 // ============================================================
 // 2. FORM OF PROXY (general meetings)
 // Blank, or pre-filled for one member when data.member is given.
+// v1.87.0 — a form lodged in the system carries data.appointment: the
+// proxy and alternate (names and addresses), the voting instructions,
+// the member's signature and when / by whom it was lodged.
 // ============================================================
 export const proxyFormTemplate = (data) => {
     const m = data.meeting || {};
     const st = settingsOf(data);
     const c = companyOf(data);
     const member = data.member || null;
+    const ap = data.appointment || null;
     const line = (v, w = 260) => (v ? `<strong>${esc(v)}</strong>` : `<span style="display:inline-block;min-width:${w}px;border-bottom:1px solid #111;">&nbsp;</span>`);
     const res = (data.resolutions || []).filter(r => r.result !== 'WITHDRAWN');
+    // what the member directed (lodged in the system)
+    const matters = ap && Array.isArray(ap.matters) && ap.matters.length ? ap.matters : null;
+    const mark = (key, v) => (ap && ap.instructions && ap.instructions[key] === v ? '<strong>X</strong>' : '');
+    const voteRows = matters
+        ? matters.map(x => `<tr><td>${esc(x.label)} <span class="muted">(${x.kind === 'SPECIAL' ? 'special' : 'ordinary'})</span></td><td class="text-center">${mark(x.key, 'FOR')}</td><td class="text-center">${mark(x.key, 'AGAINST')}</td><td class="text-center">${mark(x.key, 'ABSTAIN')}</td></tr>`).join('')
+        : null;
     const body = `
         ${formalHeading(data, 'Form of Proxy')}
         <p style="text-align:center;margin-top:-8px;">for use at the <strong>${esc(meetingName(m))}</strong> to be held on <strong>${longDate(m.meeting_date)}</strong> at <strong>${clock(m.start_time)}</strong></p>
-        <p style="text-align:left;line-height:2.3;">I/We ${line(member && member.name, 300)} of ${line(null, 300)} being a member/members of <strong>${esc(c.company_name)}</strong> holding ${line(member && shares(member.shares_held), 90)} shares, hereby appoint ${line(null, 240)} of ${line(null, 200)} or, failing him/her, ${line(null, 220)} of ${line(null, 160)} or, failing him/her, the Chairperson of the meeting, as my/our proxy to attend and vote for me/us and on my/our behalf at the ${esc(meetingName(m))} of the Company to be held on ${longDate(m.meeting_date)} and at any adjournment thereof.</p>
-        ${res.length ? `
+        <p style="text-align:left;line-height:2.3;">I/We ${line(member && member.name, 300)} of ${line(ap && ap.member_address, 300)} being a member/members of <strong>${esc(c.company_name)}</strong> holding ${line(member && shares(member.shares_held), 90)} shares, hereby appoint ${line(ap && ap.proxy_name, 240)} of ${line(ap && ap.proxy_address, 200)} or, failing him/her, ${line(ap && ap.alternate_name, 220)} of ${line(ap && ap.alternate_address, 160)} or, failing him/her, the Chairperson of the meeting, as my/our proxy to attend and vote for me/us and on my/our behalf at the ${esc(meetingName(m))} of the Company to be held on ${longDate(m.meeting_date)} and at any adjournment thereof.</p>
+        ${voteRows ? `
+        <p>I/We direct my/our proxy to vote as indicated below with an "X". Where no indication is given, my/our proxy will vote or abstain as he/she thinks fit.</p>
+        <table>
+            <thead><tr><th>Resolution / business</th><th style="width:60px;" class="text-center">For</th><th style="width:60px;" class="text-center">Against</th><th style="width:60px;" class="text-center">Abstain</th></tr></thead>
+            <tbody>${voteRows}</tbody>
+        </table>` : res.length ? `
         <p>I/We direct my/our proxy to vote on the resolutions as indicated below with an "X". If no indication is given, my/our proxy will vote or abstain as he/she thinks fit.</p>
         <table>
             <thead><tr><th style="width:90px;">No.</th><th>Resolution</th><th style="width:60px;" class="text-center">For</th><th style="width:60px;" class="text-center">Against</th><th style="width:60px;" class="text-center">Abstain</th></tr></thead>
             <tbody>${res.map(r => `<tr><td class="font-mono">${esc(r.resolution_number)}</td><td>${esc(r.title)} <span class="muted">(${r.kind === 'SPECIAL' ? 'special' : 'ordinary'})</span></td><td></td><td></td><td></td></tr>`).join('')}</tbody>
         </table>` : ''}
-        <p style="margin-top:18px;">Signed ${dayOf(null)}.</p>
+        <p style="margin-top:18px;">Signed ${dayOf(ap && ap.signed_at ? ap.signed_at : null)}.</p>
         <div class="signature-section">
-            <div class="signature-block">Signature of member: _______________________<br>Name: ${member ? esc(member.name) : '_______________________'}</div>
+            <div class="signature-block">Signature of member: ${ap && ap.signature_url
+                ? `<img src="${resolveUploadUrl(ap.signature_url)}" alt="Signature" style="height:32px;display:block;margin-top:2px;" />`
+                : '_______________________'}<br>Name: ${member ? esc(member.name) : '_______________________'}</div>
             <div class="signature-block">Signature of joint holder (if any): _______________<br>Name: _______________________</div>
         </div>
+        ${ap ? `<p class="muted" style="font-size:11px;">${ap.on_behalf
+            ? `Recorded in the system by ${esc(ap.lodged_by_name || 'the Company Secretary')} from the member's form`
+            : 'Lodged in the system by the member and signed with their saved signature'} on ${ap.lodged_at ? new Date(ap.lodged_at).toLocaleString('en-GB', { timeZone: 'Africa/Kampala', dateStyle: 'long', timeStyle: 'short' }) : '—'} (Kampala time)${ap.late ? ` — accepted after the deadline: ${esc(ap.late_reason || '')}` : ''}.</p>` : ''}
         <div class="notes"><strong>NOTES</strong><ol>
             <li>A member entitled to attend and vote may appoint a proxy, who need not be a member, to attend and vote instead of him or her${cite(st, 'proxy')}.</li>
             <li>This form must be deposited at the registered office of the Company${c.registered_office ? ` (${esc(c.registered_office)})` : ''} not less than forty-eight (48) hours before the time of the meeting or adjourned meeting.</li>

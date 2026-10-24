@@ -173,10 +173,14 @@ router.get('/directory',
     },
     asyncHandler(async (req, res) => {
         const result = await query(`
-            SELECT id, first_name, last_name
-            FROM   users
-            WHERE  is_active = TRUE
-            ORDER  BY first_name, last_name
+            SELECT u.id, u.first_name, u.last_name
+            FROM   users u
+            WHERE  u.is_active = TRUE
+            -- v1.87.0 — only people who hold a role: accounts waiting for
+            -- access, unverified or flagged never appear in a picker
+            AND    EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.is_active = TRUE
+                           WHERE ur.user_id = u.id AND ur.revoked_at IS NULL)
+            ORDER  BY u.first_name, u.last_name
         `);
         sendSuccess(res, result.rows);
     })

@@ -1,0 +1,41 @@
+%% v1.87.0 — requisitions in four steps; notice date; proxy forms; accounts that never became members
+flowchart TD
+    subgraph REQ["Requisition (money out)"]
+        R1["1. Requested — member\n(documents attached)"] --> R2{"2. Approve?\nTreasurer · Asst Treasurer · Director · Admin\n(not the requester)"}
+        R2 -->|"reject"| RX["REJECTED"]
+        R2 -->|"approve (amount ≤ requested)"| R3["APPROVED — no money moved yet"]
+        R3 -->|"reject (not yet paid)"| RX
+        R3 --> R4{"3. Release\nTreasurer · Asst Treasurer · Admin\nNOT the requester, NOT the approver"}
+        R4 -->|"account · date · method · payment ref"| R5["RELEASED — payment posted to the books,\ndocuments linked to the payment"]
+        R5 -->|"problem"| RP["requester reports a problem\n(Treasury told; stays RELEASED)"]
+        RP --> R5
+        R5 --> R6["4. Received — requester only\ndate · note · tick · signature"]
+        R6 --> R7["ACKNOWLEDGED"]
+        R7 --> RF[["Requisition Form DOC-REQF-…\ntrail: who · position · date · what\nsignature of every party\nlinked to the payment"]]
+        L["before v1.87.0: approved + paid in one step"] -.->|"migration: RELEASED (one step)"| R5
+    end
+
+    subgraph MEET["Meetings"]
+        N1["Issue the notice:\ndate actually given (≤ today, ≤ meeting)\nemail now? yes / no"] --> N2["NOTICE_ISSUED"]
+        N2 -->|"Correct the notice date + reason"| N3["days recomputed\nshort-notice consent if needed\nnote 'old → new: reason' · audited"]
+        N2 --> P1{"member on the register\nbefore the deadline\n(48 h before the meeting)?"}
+        P1 -->|"yes"| P2["member fills the form:\nproxy = person in system OR typed name\nalternate · address · For/Against/Abstain\ntick + signature"]
+        P1 -->|"no / paper form"| P3["Secretary records it\n(after deadline: reason, 'lodged late')"]
+        P2 --> P4[["Form of Proxy DOC-PRXY-…\nregister: BY PROXY"]]
+        P3 --> P4
+        P4 -->|"member attends in person"| P5["proxy REVOKED"]
+    end
+
+    subgraph ACC["Accounts that never held a role"]
+        A1["registered, no role\n(unverified · flagged · declined · not approved)"] --> A2["not in any picker\n(/users, /users/directory, search, emails)"]
+        A1 --> A3{"invited or ever held a role?"}
+        A3 -->|"no (mode not OPEN)"| A4["sign-in refused"]
+        A1 --> A5{"nightly 03:20 — older than 7 days?"}
+        A5 -->|"invited, verified, waiting"| A6["kept for an Admin's decision"]
+        A5 -->|"has records"| A7["declined, kept (history safe)"]
+        A5 -->|"no records"| A8["removed completely"]
+    end
+
+    subgraph DEL["Delete account (fix)"]
+        D1["before: ≈270 COUNT queries at once\n→ pool of 20 · 2 s wait → 500 'Something went wrong'"] --> D2["now: ONE query · cascade/set-null keys ignored\nown bookkeeping cleaned · plain-words refusal"]
+    end

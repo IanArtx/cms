@@ -11,6 +11,7 @@ const { sendRoleAssignedEmail } = require('../services/authService');
 const { uploadBuffer, generateKey, deleteObject, toKey } = require('../services/storageService');
 const { buildMemberPortfolio } = require('../services/portfolioService');
 const { getUserFootprint, hardDeleteUser } = require('../services/userDeletionService');
+const accessControl = require('../services/accessControlService'); // v1.86.0
 
 // ============================================================
 // GET OWN PROFILE
@@ -331,6 +332,21 @@ const getAllUsers = asyncHandler(async (req, res) => {
         params.push(role);
     }
 
+    // v1.86.0 — accounts whose access was declined are listed under
+    // Members › Access requests › Declined, not among the members.
+    if (req.query.include_declined !== '1' && (await accessControl.getSettings()).ready) {
+        conditions.push('u.rejected_at IS NULL');
+    }
+
+    // v1.87.0 — people without a role (not verified, flagged, or simply
+    // never approved) appear in no picker anywhere. Only the Members page
+    // asks for them (include_pending=1), so an Admin can still give one a
+    // role or decline it.
+    if (req.query.include_pending !== '1') {
+        conditions.push(`EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles r2 ON r2.id = ur2.role_id AND r2.is_active = TRUE
+                                 WHERE ur2.user_id = u.id AND ur2.revoked_at IS NULL)`);
+    }
+
     const whereClause = conditions.length > 0
         ? 'WHERE ' + conditions.join(' AND ')
         : '';
@@ -521,7 +537,16 @@ const assignRole = asyncHandler(async (req, res) => {
             'SELECT id, email, first_name, last_name FROM users WHERE id = $1 AND is_active = TRUE',
             [id]
         );
-        if (userResult.rows.length === 0) throw createError.notFound('User not found');
+        if (userResult.rows.length === 0) {
+            // v1.86.0 — say why when the account was declined
+            if ((await accessControl.getSettings()).ready) {
+                const d = await client.query('SELECT rejected_at FROM users WHERE id = $1', [id]);
+                if (d.rows[0] && d.rows[0].rejected_at) {
+                    throw createError.badRequest('Access for this account was declined. Restore it first (Members › Access requests › Declined) if this person should have a role.');
+                }
+            }
+            throw createError.notFound('User not found');
+        }
         const targetUser = userResult.rows[0];
 
         // Check role exists

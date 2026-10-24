@@ -132,7 +132,10 @@ export const uploadFiles = async (requisitionId, files) => {
 export const RequisitionDocuments = ({ requisition, onCount = null }) => {
     const { hasRole, user } = useAuth();
     const isTreasury = hasRole(['Treasurer', 'Assistant Treasurer', 'Admin']);
-    const editable = requisition.status === 'PENDING' && (isTreasury || requisition.requested_by === user?.id);
+    // v1.87.0 — Treasury may still add documents (e.g. proof of payment)
+    // after approval and after release; removing only while pending.
+    const canRemove = requisition.status === 'PENDING' && (isTreasury || requisition.requested_by === user?.id);
+    const editable = canRemove || (isTreasury && ['APPROVED', 'RELEASED'].includes(requisition.status));
     const [docs, setDocs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -188,7 +191,7 @@ export const RequisitionDocuments = ({ requisition, onCount = null }) => {
                                 <span className="font-mono text-xs text-primary-700 mr-1.5">{d.reference_code}</span>{d.title}
                                 <span className="block text-[11px] text-gray-400">added by {d.linked_by_name}, {formatDate(d.linked_at)}</span>
                             </span>
-                            {editable && (
+                            {canRemove && (
                                 <button type="button" className="text-xs text-red-600 hover:underline flex-shrink-0" disabled={busy} onClick={() => remove(d)}>Remove</button>
                             )}
                         </li>

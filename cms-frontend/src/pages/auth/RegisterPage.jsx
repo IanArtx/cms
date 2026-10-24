@@ -1,10 +1,19 @@
 // ============================================================
 // REGISTER PAGE
 // New user registration with role request.
+// v1.86.0 — accounts can be made by invitation only (the default): the
+// page asks the server how registration works (/auth/registration-info).
+//   • By invitation only, without a valid invitation link → no form,
+//     an explanation instead.
+//   • With an invitation link (?invite=…) → the email address is filled
+//     in and locked; the role comes from the invitation.
+//   • Closed → no form.
+// A hidden "website" field is left empty by people; automated sign-up
+// scripts fill it in, and the server then refuses the registration.
 // ============================================================
 
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { authAPI } from '../../api/endpoints';
 import { useBranding } from '../../contexts/BrandingContext';
 import { getErrorMessage } from '../../utils/helpers';
@@ -18,6 +27,11 @@ const RegisterPage = () => {
     const [loading, setLoading] = useState(false);
     const [success, setSuccess] = useState(false);
     const [error,   setError]   = useState(null);
+    const [searchParams] = useSearchParams();
+    const inviteToken = searchParams.get('invite') || '';
+    const [info,    setInfo]    = useState(null);   // v1.86.0 { mode, invite }
+    const [invited, setInvited] = useState(false);  // v1.86.0 — the account was made from an invitation
+    const [website, setWebsite] = useState('');     // v1.86.0 — hidden field (people leave it empty)
 
     const [form, setForm] = useState({
         first_name:              '',
@@ -44,6 +58,27 @@ const RegisterPage = () => {
             .catch(() => {});
     }, []);
 
+    // v1.86.0 — how registration works, and who the invitation is for
+    useEffect(() => {
+        authAPI.registrationInfo(inviteToken || undefined)
+            .then(res => {
+                const d = res.data.data || {};
+                setInfo(d);
+                if (d.invite && d.invite.valid) {
+                    setForm(prev => ({
+                        ...prev,
+                        email:      d.invite.email || prev.email,
+                        first_name: d.invite.first_name || prev.first_name,
+                        last_name:  d.invite.last_name || prev.last_name,
+                    }));
+                }
+            })
+            // an older server without this endpoint: registration as before
+            .catch(() => setInfo({ mode: 'OPEN', invite: null }));
+    }, [inviteToken]);
+
+    const inviteValid = !!(info && info.invite && info.invite.valid);
+
     const handleChange = (e) => {
         setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
     };
@@ -59,7 +94,9 @@ const RegisterPage = () => {
 
         setLoading(true);
         try {
-            await authAPI.register({
+            const res = await authAPI.register({
+                invite_token:        inviteValid ? inviteToken : undefined,
+                website:             website || undefined,
                 first_name:          form.first_name,
                 last_name:           form.last_name,
                 email:               form.email,
@@ -72,6 +109,7 @@ const RegisterPage = () => {
                                         : undefined,
                 role_request_reason: form.role_request_reason || undefined,
             });
+            setInvited(!!res?.data?.data?.invited);
             setSuccess(true);
         } catch (err) {
             setError(getErrorMessage(err));
@@ -99,9 +137,9 @@ const RegisterPage = () => {
                         Registration Successful
                     </h2>
                     <p className="text-gray-500 text-sm mb-6">
-                        Please check your email to verify your account before
-                        logging in. Your role request will be reviewed by an
-                        administrator.
+                        {invited
+                            ? 'Your account is ready — you can sign in now. An administrator will confirm your role; until then you will see a waiting page.'
+                            : 'Please check your email to verify your account before logging in. Your role request will be reviewed by an administrator.'}
                     </p>
                     <button
                         onClick={() => navigate('/login')}
@@ -109,6 +147,35 @@ const RegisterPage = () => {
                     >
                         Go to Login
                     </button>
+                </div>
+            </div>
+        );
+    }
+
+    // v1.86.0 — registration not available without an invitation (or closed)
+    const blockedMessage = !info ? null
+        : info.mode === 'CLOSED'
+            ? 'New accounts cannot be created at the moment. If you are a member of the company, contact the company administrator.'
+            : (info.mode === 'INVITE_ONLY' && !inviteValid)
+                ? (inviteToken && info.invite && info.invite.reason
+                    ? `${info.invite.reason} Ask the company administrator to send you a new invitation.`
+                    : 'Accounts are created by invitation only. If you are a member of the company, ask the company administrator to send you an invitation by email, then open the link in it.')
+                : null;
+
+    if (!info || blockedMessage) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-primary-900
+                to-primary-700 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+                    {!info ? (
+                        <p className="text-sm text-gray-500">Loading…</p>
+                    ) : (
+                        <>
+                            <h2 className="text-xl font-bold text-gray-900 mb-2">Registration by invitation</h2>
+                            <p className="text-gray-600 text-sm mb-6">{blockedMessage}</p>
+                            <button onClick={() => navigate('/login')} className="btn-primary w-full">Go to Login</button>
+                        </>
+                    )}
                 </div>
             </div>
         );
@@ -154,7 +221,21 @@ const RegisterPage = () => {
                         </div>
                     )}
 
+                    {inviteValid && (
+                        <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-900">
+                            You were invited{info.invite.role_name ? <> for the role <strong>{info.invite.role_name}</strong></> : null}.
+                            The account is made for <strong>{info.invite.email}</strong> — the address the invitation was sent to.
+                        </div>
+                    )}
+
                     <form onSubmit={handleSubmit} className="space-y-6">
+
+                        {/* v1.86.0 — hidden from people; automated sign-ups fill it in */}
+                        <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+                            <label htmlFor="reg-website">Website</label>
+                            <input id="reg-website" type="text" name="website" tabIndex={-1} autoComplete="off"
+                                value={website} onChange={e => setWebsite(e.target.value)} />
+                        </div>
 
                         {/* Personal Information */}
                         <div>
@@ -191,7 +272,8 @@ const RegisterPage = () => {
                                         name="email"
                                         value={form.email}
                                         onChange={handleChange}
-                                        className="input"
+                                        className={`input ${inviteValid ? 'bg-gray-50' : ''}`}
+                                        readOnly={inviteValid}
                                         required
                                     />
                                 </div>
@@ -261,7 +343,8 @@ const RegisterPage = () => {
                             </div>
                         </div>
 
-                        {/* Role Request */}
+                        {/* Role Request — from the invitation when invited (v1.86.0) */}
+                        {!(inviteValid && info.invite.role_id) && (
                         <div>
                             <h3 className="section-title mb-4">Role Request</h3>
                             <div className="space-y-4">
@@ -306,6 +389,7 @@ const RegisterPage = () => {
                                 )}
                             </div>
                         </div>
+                        )}
 
                         {/* Submit */}
                         <button

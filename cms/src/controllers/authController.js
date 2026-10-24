@@ -15,6 +15,7 @@ const {
     generateEmailToken,
     sendVerificationEmail, sendPasswordResetEmail, sendRoleAssignedEmail,
 } = require('../services/authService');
+const access = require('../services/accessControlService'); // v1.86.0 — who may register
 
 // ============================================================
 // REGISTER
@@ -29,9 +30,17 @@ const register = asyncHandler(async (req, res) => {
         phone, address, emergency_contact_name,
         emergency_contact_phone, requested_role_id,
         role_request_reason,
+        invite_token, // v1.86.0 — the invitation link's token
+        website,      // v1.86.0 — invisible field: only programs fill it in
     } = req.body;
 
+    let notifyNew = null;
     await withTransaction(async (client) => {
+        // v1.86.0 — registration mode, invitation, fake / blocked addresses
+        const { invitation, settings } = await access.checkRegistration(client, {
+            email, inviteToken: invite_token, honeypot: website,
+        });
+
         // Check email is not already registered
         const existing = await client.query(
             'SELECT id FROM users WHERE email = $1', [email.toLowerCase()]
@@ -66,16 +75,34 @@ const register = asyncHandler(async (req, res) => {
 
         const newUser = userResult.rows[0];
 
+        // v1.86.0 — where it registered from, the invitation it used (the
+        // invitation link proves the address, so it needs no second
+        // verification email) and when the verification link expires.
+        if (settings.ready) {
+            await client.query(`
+                UPDATE users SET registered_ip = $2, registered_user_agent = $3, invitation_id = $4,
+                       email_verification_expires = CASE WHEN $4::int IS NULL THEN $5::timestamptz END,
+                       is_email_verified = ($4::int IS NOT NULL),
+                       email_verification_token = CASE WHEN $4::int IS NULL THEN email_verification_token END
+                WHERE id = $1`,
+            [newUser.id, String(req.ip || '').slice(0, 64), String(req.get ? (req.get('user-agent') || '') : '').slice(0, 500),
+                invitation ? invitation.id : null, verificationExpiry]);
+            if (invitation) {
+                await client.query(`UPDATE account_invitations SET used_at = NOW(), used_by_user_id = $2 WHERE id = $1`, [invitation.id, newUser.id]);
+            }
+        }
+        const roleToRequest = requested_role_id || (invitation && invitation.role_id) || null;
+
         // If a role was requested, create the role request
-        if (requested_role_id) {
+        if (roleToRequest) {
             const roleExists = await client.query(
-                'SELECT id FROM roles WHERE id = $1 AND is_active = TRUE', [requested_role_id]
+                'SELECT id FROM roles WHERE id = $1 AND is_active = TRUE', [roleToRequest]
             );
             if (roleExists.rows.length > 0) {
                 await client.query(`
                     INSERT INTO role_requests (user_id, role_id, reason)
                     VALUES ($1, $2, $3)
-                `, [newUser.id, requested_role_id, role_request_reason || null]);
+                `, [newUser.id, roleToRequest, role_request_reason || (invitation ? 'Invited' : null)]);
             }
         }
 
@@ -84,13 +111,22 @@ const register = asyncHandler(async (req, res) => {
             ipAddress:  req.ip,
             recordType: 'users',
             recordId:   newUser.id,
-            newValues:  { email: newUser.email, first_name, last_name },
-            description: `New user registered: ${email}`,
+            newValues:  { email: newUser.email, first_name, last_name, invited: !!invitation },
+            description: `New user registered: ${email}${invitation ? ' (with an invitation)' : ''}`,
             client,
         });
 
-        // Send verification email (outside transaction — no DB dependency)
-        await sendVerificationEmail(newUser, verificationToken);
+        // Send verification email (outside transaction — no DB dependency).
+        // v1.86.0 — not for an invited person: the invitation proved the address.
+        if (!invitation) await sendVerificationEmail(newUser, verificationToken);
+        if (settings.ready && settings.notify_admins) notifyNew = { user: newUser, invited: !!invitation };
+
+        if (invitation) {
+            return sendCreated(res, {
+                user: { id: newUser.id, uuid: newUser.uuid, email: newUser.email, first_name: newUser.first_name, last_name: newUser.last_name },
+                invited: true,
+            }, 'Account created. You can sign in now — an administrator will confirm your role.');
+        }
 
         sendCreated(res, {
             user: {
@@ -102,6 +138,27 @@ const register = asyncHandler(async (req, res) => {
             },
         }, 'Registration successful. Please check your email to verify your account.');
     });
+
+    // v1.86.0 — tell the Admins someone registered (best effort)
+    if (notifyNew) {
+        try {
+            const { notify } = require('../services/notificationService');
+            const { wrapEmail } = require('../services/emailTemplates');
+            const admins = await query(`
+                SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+                JOIN roles r ON r.id = ur.role_id WHERE r.name = 'Admin' AND u.is_active = TRUE`);
+            const nu = notifyNew.user;
+            const title = `New account: ${nu.first_name} ${nu.last_name} (${nu.email})`;
+            const body = notifyNew.invited
+                ? 'Registered with an invitation — assign the role under Members › Access requests.'
+                : `Registered WITHOUT an invitation from ${req.ip}. If you do not know this person, decline the account under Members › Access requests.`;
+            const html = await wrapEmail(`<p>${title}</p><p>${body}</p>`, { preheader: title });
+            for (const a of admins.rows) {
+                await notify({ userId: a.id, type: 'NEW_REGISTRATION', title, body, link: '/users?tab=access',
+                    module: 'USERS', recordType: 'users', recordId: nu.id, email: { subject: title, html } });
+            }
+        } catch (_) { /* never block a registration on this */ }
+    }
 });
 
 // ============================================================
@@ -112,16 +169,21 @@ const verifyEmail = asyncHandler(async (req, res) => {
     const { token } = req.query;
     if (!token) throw createError.badRequest('Verification token is required');
 
+    // v1.86.0 — the link expires (unverified_expiry_days), and a declined
+    // account cannot be verified. Before the v1.86.0 migration has run, the
+    // old rule (no expiry) applies.
+    const ready = (await access.getSettings()).ready;
     const result = await query(`
         UPDATE users
         SET    is_email_verified = TRUE, email_verification_token = NULL
         WHERE  email_verification_token = $1
         AND    is_email_verified = FALSE
+        ${ready ? 'AND rejected_at IS NULL AND (email_verification_expires IS NULL OR email_verification_expires > NOW())' : ''}
         RETURNING id, email, first_name
     `, [token]);
 
     if (result.rows.length === 0) {
-        throw createError.badRequest('Invalid or expired verification token');
+        throw createError.badRequest('This verification link is not valid or has expired. Register again, or ask the company administrator for an invitation.');
     }
 
     const user = result.rows[0];
@@ -149,7 +211,8 @@ const login = asyncHandler(async (req, res) => {
         SELECT id, uuid, email, first_name, last_name,
                password_hash, is_active, is_email_verified,
                two_factor_enabled, two_factor_secret,
-               COALESCE((to_jsonb(users)->>'session_version')::int, 0) AS session_version
+               COALESCE((to_jsonb(users)->>'session_version')::int, 0) AS session_version,
+               (to_jsonb(users)->>'rejected_at') IS NOT NULL AS declined
         FROM users WHERE email = $1
     `, [email.toLowerCase()]);
 
@@ -170,12 +233,19 @@ const login = asyncHandler(async (req, res) => {
     }
 
     if (!user.is_active) {
-        throw createError.unauthorized('Your account has been deactivated. Contact an administrator.');
+        throw createError.unauthorized(user.declined
+            ? 'Access for this account was declined. Contact the company administrator if you think this is a mistake.'
+            : 'Your account has been deactivated. Contact an administrator.');
     }
 
     if (!user.is_email_verified) {
         throw createError.unauthorized('Please verify your email address before logging in.');
     }
+
+    // v1.87.0 — only invited people and existing members may sign in
+    // (unless registration is OPEN)
+    const entry = await access.mayEnter(user.id);
+    if (!entry.ok) throw createError.forbidden(entry.message);
 
     // Generate tokens
     const { accessToken, refreshToken, sessionId } = generateTokens(user);
@@ -332,6 +402,9 @@ const refreshToken = asyncHandler(async (req, res) => {
     );
     const user = result.rows[0];
     if (!user || !user.is_active) throw createError.unauthorized('Account not found or deactivated');
+    // v1.87.0 — a session of someone who is neither invited nor a member ends here
+    const entry = await access.mayEnter(user.id);
+    if (!entry.ok) throw createError.unauthorized(entry.message);
     // v1.75.0 — refused once the password has been changed since this sign-in.
     if ((parseInt(decoded.sv, 10) || 0) !== (parseInt(user.session_version, 10) || 0)) {
         const e = createError.unauthorized('You were signed out because the password on this account was changed. Please sign in again.');

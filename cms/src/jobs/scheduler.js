@@ -1004,6 +1004,35 @@ const scheduleBouExchangeRates = () => {
 };
 
 // ============================================================
+// ACCESS CLEAN-UP (v1.86.0)
+// Every day at 03:20 Kampala time: accounts that registered but never
+// verified their email within the set number of days (default 3), and —
+// if set — verified accounts that never received a role (default 30
+// days), are declined automatically: inactive, kept for the record, and
+// listed under Members › Access requests › Declined, where they can be
+// restored. Accounts that ever held a role are never touched.
+// v1.87.0 — accounts that never held a role are REMOVED after 7 days
+// (Access control › "Remove accounts that never became members after");
+// invited people still waiting for their role are kept, and an account
+// with any record is declined and kept instead of removed.
+// ============================================================
+const scheduleAccessCleanup = () => {
+    scheduleJob('AccessCleanup', '20 3 * * *', async () => {
+        logger.info('Starting access clean-up job...');
+        try {
+            const access = require('../services/accessControlService');
+            const result = await access.runCleanup();
+            logger.info(`Access clean-up job completed — ${result.skipped ? 'skipped (v1.86.0 migration not run)' : `${result.declined} account(s) declined, ${result.removed || 0} removed, ${result.keptWithRecords || 0} kept because they have records`}`);
+        } catch (err) {
+            logger.error('Access clean-up job failed', { error: err.message });
+        }
+    }, {
+        timezone: 'Africa/Kampala',
+    });
+    logger.info('Access clean-up scheduled: 20 3 * * *');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -1026,6 +1055,7 @@ const startAllJobs = () => {
     scheduleAuditAccessExpiryReminders();
     scheduleTaxDeadlineReminders();
     scheduleBouExchangeRates();
+    scheduleAccessCleanup();
     logger.info('All scheduled jobs started successfully');
 };
 

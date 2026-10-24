@@ -29,6 +29,33 @@ export const authAPI = {
     changePassword:     (data)  => api.post('/auth/change-password', data),
     confirmEmailChange: (token) => api.post('/auth/email-change/confirm', { token }),
     cancelEmailChange:  (token) => api.post('/auth/email-change/cancel', { token }),
+    // v1.86.0 — public: is registration open / by invitation / closed, and
+    // with an invitation link's token, who it was sent to
+    registrationInfo:   (invite) => api.get('/auth/registration-info', { params: invite ? { invite } : {} }),
+};
+
+// ============================================================
+// ACCESS CONTROL (v1.86.0) — accounts waiting for access, declining,
+// invitations, blocked addresses, access settings
+// ============================================================
+// v1.86.1 — register of members and officers, always made from the live records
+export const memberRegisterAPI = {
+    get:      (params)       => api.get('/member-register', { params }),
+    download: (format)       => api.get('/member-register/download', { params: { format }, responseType: 'blob' }),
+};
+
+export const accessAPI = {
+    getSettings:      ()          => api.get('/access/settings'),
+    updateSettings:   (data)      => api.put('/access/settings', data),
+    listRequests:     (view)      => api.get('/access/requests', { params: { view } }),
+    decline:          (data)      => api.post('/access/decline', data),
+    restore:          (data)      => api.post('/access/restore', data),
+    listInvitations:  ()          => api.get('/access/invitations'),
+    invite:           (data)      => api.post('/access/invitations', data),
+    resendInvitation: (id)        => api.post(`/access/invitations/${id}/resend`),
+    revokeInvitation: (id)        => api.post(`/access/invitations/${id}/revoke`),
+    listBlocked:      ()          => api.get('/access/blocked-emails'),
+    unblock:          (id)        => api.delete(`/access/blocked-emails/${id}`),
 };
 
 // ============================================================
@@ -399,6 +426,11 @@ export const meetingsAPI = {
     sign:             (rid, data) => api.post(`/meetings/resolutions/${rid}/sign`, data),
     // The server builds the document's content; preview: true returns it unsaved.
     document:         (data)      => api.post('/meetings/documents', data),
+    // v1.87.0 — correct the notice date; proxy forms filled in the system
+    changeNoticeDate: (id, data)  => api.patch(`/meetings/${id}/notice-date`, data),
+    getProxy:         (id, params) => api.get(`/meetings/${id}/proxy`, { params }),
+    lodgeProxy:       (id, data)  => api.post(`/meetings/${id}/proxy`, data),
+    withdrawProxy:    (id, data)  => api.post(`/meetings/${id}/proxy/withdraw`, data || {}),
 };
 
 // ============================================================
@@ -749,6 +781,11 @@ export const requisitionsAPI = {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),
     unlinkDocument: (id, docId)  => api.delete(`/requisitions/${id}/documents/${docId}`),
+    // v1.87.0 — release the money (Treasury, not the approver), then the
+    // requester acknowledges it or reports a problem
+    release:        (id, data)   => api.post(`/requisitions/${id}/release`, data),
+    acknowledge:    (id, data)   => api.post(`/requisitions/${id}/acknowledge`, data),
+    reportIssue:    (id, note)   => api.post(`/requisitions/${id}/report-issue`, { note }),
 };
 
 // ============================================================

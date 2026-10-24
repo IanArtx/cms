@@ -152,7 +152,10 @@ export const NAV_ITEMS = [
     { id: 'service-fees', label: 'Service fees', href: '/service-fees', group: 'office', icon: BriefcaseIcon,
       show: () => true, keywords: 'agreement fee staff contractor' },
     { id: 'members', label: 'Members', href: '/users', group: 'office', icon: UsersIcon,
-      show: (c) => c.hasPermission('USER_VIEW_ALL'), keywords: 'users roles people shareholders' },
+      // v1.86.1 — the Secretary, Assistant Secretary and Directors also reach it, for the register of members
+      show: (c) => c.hasPermission('USER_VIEW_ALL') || c.hasPermission('USER_MANAGE')
+          || c.hasRole(['Admin', 'Secretary', 'Assistant Secretary', 'Director']),
+      keywords: 'users roles people shareholders register of members' },
     { id: 'settings', label: 'Settings', href: '/settings', group: 'office', icon: Cog6ToothIcon,
       show: (c) => c.hasRole('Admin'), keywords: 'configuration currencies categories company' },
     { id: 'about', label: 'About', href: '/about', group: 'office', icon: InformationCircleIcon,

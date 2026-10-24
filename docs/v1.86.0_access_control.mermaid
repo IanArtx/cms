@@ -1,0 +1,25 @@
+%% v1.86.0 — access control: who may create an account, and refusing the ones nobody knows
+flowchart TD
+    V["Visitor opens /register"] --> I{"registration-info:\nmode + invitation"}
+    I -->|"CLOSED, or INVITE_ONLY without a valid link"| NO["No form — 'by invitation only' message"]
+    I -->|"OPEN, or a valid invitation link"| F["Register form\n(invited: email filled in and locked)"]
+    F --> C{"checkRegistration"}
+    C -->|"hidden field filled (program)"| X1["Refused"]
+    C -->|"address cannot receive email\n(.invalid .test example.com …)"| X2["Refused"]
+    C -->|"blocked domain / blocked address"| X3["Refused"]
+    C -->|"5+ per IP per hour"| X4["Rate-limited"]
+    C -->|"OK"| U["Account created\n(IP, browser, invitation kept)"]
+    U -->|"invited"| UV["Verified at once; role request = invitation's role"]
+    U -->|"not invited"| UE["Verification email — link expires after N days"]
+    U --> N["Admins told: bell + email → Members › Access Requests"]
+
+    subgraph ADMIN["Members › Access Requests (USER_MANAGE)"]
+        W["Waiting for access\n(never held a role) + flags"] -->|"Decline: reason, block address,\nremove if no activity"| D["Declined (inactive, kept)\nor removed completely"]
+        D -->|"Restore"| W
+        B["Blocked addresses"] -->|"Unblock"| OK2["May register again"]
+        S["Access settings (Admin):\nmode, expiry days, blocked domains, notify"]
+    end
+    UE --> W
+    UV --> RR["Role Requests → Approve (role given) or ✗ Decline"]
+    J["Nightly 03:20 AccessCleanup"] -->|"unverified > 3 days,\nno role > 30 days"| D
+    INV["Members › Invitations:\nemail + role → one-time link (hash stored, expires 7 days)"] --> V

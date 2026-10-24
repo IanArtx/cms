@@ -17,6 +17,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { UserPlusIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import { AccessRequestsTab, InvitationsTab, DeclineAccessModal } from './AccessControl'; // v1.86.0
+import MemberRegisterTab from './MemberRegister'; // v1.86.1
 
 // ============================================================
 // ASSIGN ROLE MODAL
@@ -276,7 +278,7 @@ const ManageRolesModal = ({ isOpen, user, onClose, onSuccess, roles }) => {
 // ============================================================
 // ROLE REQUESTS TAB
 // ============================================================
-const RoleRequestsTab = ({ requests, onApprove, loading }) => (
+const RoleRequestsTab = ({ requests, onApprove, onDecline, loading }) => (
     <div className="card">
         <h3 className="section-title mb-4">Pending Role Requests</h3>
         {requests.length === 0 ? (
@@ -322,6 +324,18 @@ const RoleRequestsTab = ({ requests, onApprove, loading }) => (
                             >
                                 <CheckIcon className="h-4 w-4" />
                             </button>
+                            {/* v1.86.0 — a request from someone nobody knows: decline access */}
+                            {onDecline && (
+                                <button
+                                    onClick={() => onDecline(req.user)}
+                                    disabled={loading}
+                                    className="p-1.5 rounded-lg bg-red-50 text-red-600
+                                        hover:bg-red-100 transition-colors"
+                                    title="Decline access (I don't know this person)"
+                                >
+                                    <XMarkIcon className="h-4 w-4" />
+                                </button>
+                            )}
                         </div>
                     </div>
                 ))}
@@ -574,6 +588,10 @@ const ChangeEmailModal = ({ isOpen, user, onClose, onSuccess }) => {
 const UsersPage = () => {
     const { hasPermission, hasRole, user } = useAuth();
     const confirm = useConfirm();
+    // v1.86.1 — the register of members is also open to the Secretary,
+    // Assistant Secretary and Directors, who may not see the members list
+    const canList     = hasPermission('USER_VIEW_ALL');
+    const canRegister = hasPermission('USER_MANAGE') || hasRole(['Admin', 'Secretary', 'Assistant Secretary', 'Director']);
     const [users,        setUsers]        = useState([]);
     const [roles,        setRoles]        = useState([]);
     const [roleRequests, setRoleRequests] = useState([]);
@@ -581,17 +599,20 @@ const UsersPage = () => {
     const [loading,      setLoading]      = useState(true);
     const [error,        setError]        = useState(null);
     const [page,         setPage]         = useState(1);
-    const [activeTab,    setActiveTab]    = useTabParam('members');
+    const [activeTab,    setActiveTab]    = useTabParam(canList ? 'members' : 'register');
     const [manageUser,   setManageUser]   = useState(null);
     const [deletingUser, setDeletingUser] = useState(null);
     const [emailUser,    setEmailUser]    = useState(null); // v1.75.0
     const [search,       setSearch]       = useState('');
     const [actionLoading, setActionLoading] = useState(false);
+    const [declining,    setDeclining]    = useState(null); // v1.86.0
+    const [notice,       setNotice]       = useState(null); // v1.86.0
 
     const loadUsers = useCallback(async () => {
         try {
             setLoading(true);
-            const params = { page, limit: 20 };
+            // v1.87.0 — the member list is the one place accounts without a role still show
+            const params = { page, limit: 20, include_pending: 1 };
             if (search) params.search = search;
             const res = await usersAPI.getAllUsers(params);
             setUsers(res.data.data);
@@ -613,10 +634,11 @@ const UsersPage = () => {
     }, []);
 
     useEffect(() => {
+        if (!canList) { setLoading(false); return; }
         loadUsers();
         usersAPI.getAllRoles().then(r => setRoles(r.data.data)).catch(() => {});
         if (hasPermission('ROLE_ASSIGN')) loadRoleRequests();
-    }, [loadUsers, loadRoleRequests, hasPermission]);
+    }, [loadUsers, loadRoleRequests, hasPermission, canList]);
 
     // Reload single user after role change
     const handleRoleChange = async (userId) => {
@@ -757,6 +779,18 @@ const UsersPage = () => {
                             Change Email
                         </button>
                     )}
+                    {/* v1.86.0 — an account that never got a role: decline access */}
+                    {hasPermission('USER_MANAGE') && row.id !== user?.id && (!row.roles || row.roles.length === 0) && (
+                        <button
+                            onClick={() => setDeclining([row])}
+                            className="text-xs text-red-600 hover:text-red-700
+                                font-medium px-2 py-1 rounded border border-red-200
+                                hover:bg-red-50 transition-colors"
+                            title="I don't recognise this account — decline its access"
+                        >
+                            Decline Access
+                        </button>
+                    )}
                     {hasPermission('USER_MANAGE') && row.is_active && (
                         <button
                             onClick={() => handleDeactivate(row.id)}
@@ -796,10 +830,21 @@ const UsersPage = () => {
                 </div>
             )}
 
-            {/* Tabs — overflow-x-auto (v1.32.5) for consistency with every
-                other tabbed page, though only two tabs live here today. */}
+            {notice && (
+                <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700 flex justify-between gap-2">
+                    <span>{notice}</span>
+                    <button type="button" onClick={() => setNotice(null)} className="text-green-700"><XMarkIcon className="h-4 w-4" /></button>
+                </div>
+            )}
+
+            {/* Tabs — overflow-x-auto (v1.32.5). v1.86.0 adds Access requests
+                and Invitations for those who manage members (USER_MANAGE). */}
             <div className="tab-bar" role="tablist">
-                {['members', 'requests'].map(tab => (
+                {['members', 'requests', 'access', 'invitations', 'register']
+                    .filter(tab => (tab === 'access' || tab === 'invitations') ? hasPermission('USER_MANAGE')
+                        : tab === 'register' ? canRegister
+                        : canList)
+                    .map(tab => (
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
@@ -808,13 +853,16 @@ const UsersPage = () => {
                         {tab === 'requests'
                             ? `Role Requests ${roleRequests.length > 0
                                 ? `(${roleRequests.length})` : ''}`
+                            : tab === 'access' ? 'Access Requests'
+                            : tab === 'invitations' ? 'Invitations'
+                            : tab === 'register' ? 'Register'
                             : 'Members'
                         }
                     </button>
                 ))}
             </div>
 
-            {activeTab === 'members' && (
+            {activeTab === 'members' && canList && (
                 <>
                     {/* Search */}
                     <div className="card mb-6">
@@ -847,9 +895,26 @@ const UsersPage = () => {
                 <RoleRequestsTab
                     requests={roleRequests}
                     onApprove={handleApproveRequest}
+                    onDecline={hasPermission('USER_MANAGE') ? (u) => setDeclining([u]) : null}
                     loading={actionLoading}
                 />
             )}
+
+            {/* v1.86.0 — access control */}
+            {activeTab === 'access' && hasPermission('USER_MANAGE') && (
+                <AccessRequestsTab onChanged={() => { loadUsers(); if (hasPermission('ROLE_ASSIGN')) loadRoleRequests(); }} />
+            )}
+            {activeTab === 'invitations' && hasPermission('USER_MANAGE') && (
+                <InvitationsTab roles={roles} />
+            )}
+            {/* v1.86.1 — register of members and officers */}
+            {activeTab === 'register' && canRegister && <MemberRegisterTab />}
+
+            <DeclineAccessModal
+                accounts={declining}
+                onClose={() => setDeclining(null)}
+                onDone={(m) => { setNotice(m); loadUsers(); if (hasPermission('ROLE_ASSIGN')) loadRoleRequests(); }}
+            />
 
             {/* Manage Roles Modal */}
             <ManageRolesModal

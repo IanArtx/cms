@@ -49,6 +49,7 @@ const DEFAULT_SETTINGS = {
     short_notice_consent_pct: 95,
     resolution_filing_days: 15,
     proxy_votes_on_show_of_hands: false,
+    proxy_deadline_hours: 48, // v1.87.0
     agm_max_interval_months: 15,
     act_name: 'Companies Act, 2012',
     company_type: 'Private Company Limited by Shares',

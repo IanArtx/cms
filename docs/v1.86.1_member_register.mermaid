@@ -1,0 +1,16 @@
+%% v1.86.1 — register of members and officers: made from the live records every time
+flowchart LR
+    subgraph LIVE["Live records (nothing extra is stored)"]
+        U["users — details"]
+        R["user_roles — roles, given / removed when"]
+        C["member_consents — Membership Agreement"]
+        S["share register + URSB figures"]
+        A["audit_log — when an account was deactivated"]
+    end
+    LIVE --> B["memberRegisterService.build()\nmember = active, not declined, holds a role"]
+    B --> P["Members › Register tab\n(summary, filter, former members)"]
+    B --> X["Download Excel\nMembers · Roles · Former members · About"]
+    B --> CSV["CSV (Members)"]
+    B --> PDF["Print / Save as PDF\n(letterhead, A4 landscape)"]
+    P & X & CSV & PDF --> AU["audit log: MEMBER_REGISTER_DOWNLOADED"]
+    W["Who: USER_MANAGE, Admin, Secretary,\nAssistant Secretary, Directors"] -.-> B

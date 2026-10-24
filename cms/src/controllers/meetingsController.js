@@ -34,6 +34,7 @@ const { notifyMany, notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const logger = require('../config/logger');
 const gov = require('../services/governanceService');
+const signatoryService = require('../services/signatoryService'); // v1.87.0 — the member's signature on a proxy form
 const { getOrCreateCategory, getOrCreateChildCategory } = require('../services/categoryService');
 
 const MEETING_TYPE_LABEL = { AGM: 'Annual General Meeting', EGM: 'Extraordinary General Meeting', BOARD: 'Board Meeting' };
@@ -191,6 +192,7 @@ const INT_SETTINGS = {
     agm_notice_days: [0, 365], special_resolution_notice_days: [0, 365], general_meeting_notice_days: [0, 365],
     board_meeting_notice_days: [0, 365], member_quorum: [1, 1000], board_quorum: [1, 100],
     resolution_filing_days: [0, 365], agm_max_interval_months: [1, 36],
+    proxy_deadline_hours: [0, 168], // v1.87.0 — proxy forms close this many hours before the meeting
 };
 const PCT_SETTINGS = { special_resolution_majority_pct: [50.01, 100], short_notice_consent_pct: [50.01, 100] };
 const LEGAL_KEYS = ['agm', 'notice', 'quorum', 'proxy', 'special_resolution', 'filing', 'minutes', 'annual_return', 'register_of_members'];
@@ -476,10 +478,31 @@ const buildMeetingView = async (db, user, meeting) => {
                registered_office, postal_address, company_email, company_phone
         FROM company_settings ORDER BY id LIMIT 1`).catch(() => ({ rows: [] }));
 
+    // v1.87.0 — proxy forms lodged in the system
+    let proxies = [];
+    let proxyDeadline = null;
+    if (meeting.meeting_type !== 'BOARD' && await proxiesReady(db)) {
+        const pr = await db.query(`
+            SELECT p.*, mu.first_name || ' ' || mu.last_name AS member_name, lb.first_name || ' ' || lb.last_name AS lodged_by_name,
+                   drr.reference_code AS document_reference
+            FROM meeting_proxies p
+            JOIN users mu ON mu.id = p.member_user_id
+            JOIN users lb ON lb.id = p.lodged_by
+            LEFT JOIN documents d ON d.id = p.document_id
+            LEFT JOIN references_registry drr ON drr.id = d.reference_id
+            WHERE p.meeting_id = $1 ${gov.canManage(user) ? '' : 'AND p.member_user_id = $2'}
+            ORDER BY p.lodged_at DESC`, gov.canManage(user) ? [meeting.id] : [meeting.id, user.id]);
+        proxies = pr.rows;
+        proxyDeadline = proxyDeadlineOf(meeting, settings);
+    }
+
     return {
         meeting: normMeeting(meeting),
         attendance,
         resolutions,
+        proxies,
+        proxy_deadline: proxyDeadline ? proxyDeadline.toISOString() : null,
+        my_proxy: proxies.find(p => p.member_user_id === user.id && p.status === 'ACTIVE') || null,
         documents,
         tally,
         notice,
@@ -670,6 +693,15 @@ const markAttendance = asyncHandler(async (req, res) => {
             UPDATE meeting_attendance
             SET status = $2, proxy_name = $3, proxy_user_id = $4, marked_at = NOW(), marked_by = $5
             WHERE id = $1`, [a.id, status, proxyName, proxyUserId, req.user.id]);
+        // v1.87.0 — a member present in person revokes their proxy (and a
+        // member marked anything other than "by proxy" no longer has one)
+        if (status !== 'BY_PROXY' && a.user_id && await proxiesReady(client)) {
+            await client.query(`
+                UPDATE meeting_proxies SET status = 'REVOKED', ended_at = NOW(), ended_by = $3,
+                       end_reason = $4
+                WHERE meeting_id = $1 AND member_user_id = $2 AND status = 'ACTIVE'`,
+            [m.id, a.user_id, req.user.id, ['PRESENT', 'PRESENT_VIRTUAL'].includes(status) ? 'The member attended in person' : `Register marked ${status.toLowerCase().replace('_', ' ')}`]);
+        }
         // v1.80.0 — a past meeting: the shares held on that day may be corrected.
         if (m.recorded_after_event && a.capacity === 'MEMBER' && req.body.shares_held !== undefined && req.body.shares_held !== '') {
             const sh = Number(req.body.shares_held);
@@ -702,14 +734,21 @@ const issueNotice = asyncHandler(async (req, res) => {
         if (m.mode !== 'PHYSICAL' && !m.virtual_link) throw createError.badRequest('Give the online meeting link before issuing the notice.');
         // v1.80.0 — a meeting recorded after the event: the notice went out
         // on a date the secretary enters; nobody is emailed now.
+        // v1.87.0 — any meeting: the notice date can be set (the notice is
+        // often given before it is entered here). Default: today.
         let issueDate = gov.todayStr();
-        if (m.recorded_after_event) {
-            issueDate = trimOrNull(req.body.notice_date);
-            if (!issueDate || !/^\d{4}-\d{2}-\d{2}$/.test(issueDate)) throw createError.badRequest('Enter the date the notice was given (YYYY-MM-DD).');
-            if (issueDate > gov.dateStr(m.meeting_date)) throw createError.badRequest('The notice date cannot be after the meeting date.');
-        } else if (gov.todayStr() > gov.dateStr(m.meeting_date)) {
+        const givenDate = trimOrNull(req.body.notice_date);
+        if (m.recorded_after_event && !givenDate) throw createError.badRequest('Enter the date the notice was given (YYYY-MM-DD).');
+        if (givenDate) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(givenDate)) throw createError.badRequest('The notice date must be YYYY-MM-DD.');
+            if (givenDate > gov.todayStr()) throw createError.badRequest('The notice date cannot be in the future — issue the notice on the day it goes out.');
+            if (givenDate > gov.dateStr(m.meeting_date)) throw createError.badRequest('The notice date cannot be after the meeting date.');
+            issueDate = givenDate;
+        }
+        if (!m.recorded_after_event && gov.todayStr() > gov.dateStr(m.meeting_date)) {
             throw createError.badRequest('The meeting date has already passed — change the date first.');
         }
+        const customDate = !!givenDate;
         const consent = req.body.short_notice_consent !== undefined ? !!req.body.short_notice_consent : m.short_notice_consent;
         const note = req.body.short_notice_note !== undefined ? trimOrNull(req.body.short_notice_note) : m.short_notice_note;
         const settings = await gov.getSettings(client);
@@ -729,18 +768,20 @@ const issueNotice = asyncHandler(async (req, res) => {
             SET status = 'NOTICE_ISSUED', notice_issued_at = CASE WHEN $8::boolean THEN $9::date::timestamptz ELSE NOW() END, notice_issued_by = $2,
                 notice_days_required = $3, notice_days_given = $4, short_notice_consent = $5, short_notice_note = $6,
                 quorum_required = $7, updated_at = NOW()
-            WHERE id = $1`, [m.id, req.user.id, ns.required, ns.given, consent, note, gov.quorumRequired(settings, m), !!m.recorded_after_event, issueDate]);
+            WHERE id = $1`, [m.id, req.user.id, ns.required, ns.given, consent, note, gov.quorumRequired(settings, m), customDate, issueDate]);
         const fresh = await loadMeeting(client, m.id);
         await gov.buildRegister(client, fresh);
         const rec = await client.query(`
             SELECT DISTINCT u.id, u.email, u.first_name
             FROM meeting_attendance a JOIN users u ON u.id = a.user_id
             WHERE a.meeting_id = $1 AND u.is_active = TRUE`, [m.id]);
-        recipients = m.recorded_after_event ? [] : rec.rows;
+        // v1.87.0 — members can still be emailed when the notice date was
+        // set to an earlier day (unless the secretary says not to)
+        recipients = (m.recorded_after_event || req.body.send_emails === false) ? [] : rec.rows;
         meetingAfter = fresh;
         await logAction(req.user.id, ACTIONS.MEETING_NOTICE_ISSUED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
-            newValues: { days_required: ns.required, days_given: ns.given, short_notice_consent: consent },
+            newValues: { days_required: ns.required, days_given: ns.given, short_notice_consent: consent, notice_date: issueDate },
             description: `Issued the notice of ${m.title} (${ns.given} days' notice, ${ns.required} required${!ns.sufficient ? ', short notice by consent' : ''})`, client,
         });
     });
@@ -774,7 +815,60 @@ const issueNotice = asyncHandler(async (req, res) => {
 
     const meeting = await loadMeeting({ query }, req.params.id);
     sendSuccess(res, await buildMeetingView({ query }, req.user, meeting),
-        meeting.recorded_after_event ? `Notice recorded as given on ${prettyDate(meeting.notice_issued_at)}` : `Notice issued to ${recipients.length} people`);
+        meeting.recorded_after_event ? `Notice recorded as given on ${prettyDate(meeting.notice_issued_at)}`
+            : `Notice dated ${prettyDate(meeting.notice_issued_at)}${recipients.length ? ` — sent to ${recipients.length} people` : ' — nobody was emailed'}`);
+});
+
+// ============================================================
+// v1.87.0 — CORRECT THE NOTICE DATE — PATCH /api/meetings/:id/notice-date
+// body: { notice_date, reason, short_notice_consent?, short_notice_note? }
+// For a meeting whose notice is issued and which is not closed or
+// cancelled (also one already in progress). The days of notice given are
+// worked out again from the new date; if they are fewer than required,
+// the members' consent to short notice must be recorded.
+// ============================================================
+const changeNoticeDate = asyncHandler(async (req, res) => {
+    requireManager(req.user);
+    const newDate = trimOrNull(req.body.notice_date);
+    const reason = trimOrNull(req.body.reason);
+    if (!newDate || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) throw createError.badRequest('Enter the date the notice was given (YYYY-MM-DD).');
+    if (!reason || reason.length < 3) throw createError.badRequest('Say why the notice date is being corrected (it is kept with the meeting and in the audit log).');
+    let oldDate = null;
+    await withTransaction(async (client) => {
+        const m = await loadMeeting(client, req.params.id, { lock: true });
+        if (!['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) {
+            throw createError.conflict(m.status === 'DRAFT'
+                ? 'The notice has not been issued yet — set its date when you issue it.'
+                : 'This meeting is closed or cancelled — its notice date can no longer be changed.');
+        }
+        if (newDate > gov.todayStr()) throw createError.badRequest('The notice date cannot be in the future.');
+        if (newDate > gov.dateStr(m.meeting_date)) throw createError.badRequest('The notice date cannot be after the meeting date.');
+        oldDate = gov.dateStr(m.notice_issued_at);
+        const consent = req.body.short_notice_consent !== undefined ? !!req.body.short_notice_consent : m.short_notice_consent;
+        const note = req.body.short_notice_note !== undefined ? trimOrNull(req.body.short_notice_note) : m.short_notice_note;
+        const settings = await gov.getSettings(client);
+        const ns = gov.noticeStatus({ ...m, short_notice_consent: consent }, settings, newDate);
+        if (!ns.sufficient && !consent) {
+            const err = createError.conflict(`With the notice dated ${prettyDate(newDate)} only ${ns.given} days' notice was given; ${ns.required} are required. Record the consent to short notice that was given (members holding at least ${settings.short_notice_consent_pct}% of the voting rights${m.meeting_type === 'BOARD' ? ' — for a board meeting, all the directors' : ''}).`);
+            err.details = ns;
+            throw err;
+        }
+        if (!ns.sufficient && consent && !note) throw createError.badRequest('Describe how the consent to short notice was given (who agreed and when).');
+        await client.query(`
+            UPDATE company_meetings
+            SET notice_issued_at = $2::date::timestamptz, notice_days_given = $3, short_notice_consent = $4, short_notice_note = $5,
+                notice_date_note = $6, updated_at = NOW()
+            WHERE id = $1`, [m.id, newDate, ns.given, consent, note, `${prettyDate(oldDate)} → ${prettyDate(newDate)}: ${reason}`]);
+        await logAction(req.user.id, ACTIONS.MEETING_NOTICE_DATE_CHANGED, MODULES.GOVERNANCE, {
+            ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
+            oldValues: { notice_date: oldDate, days_given: m.notice_days_given },
+            newValues: { notice_date: newDate, days_given: ns.given, short_notice_consent: consent, reason },
+            description: `Notice date of ${m.title} corrected from ${oldDate} to ${newDate} (${ns.given} days' notice) — ${reason}`, client,
+        });
+    });
+    const meeting = await loadMeeting({ query }, req.params.id);
+    sendSuccess(res, await buildMeetingView({ query }, req.user, meeting),
+        `Notice date corrected to ${prettyDate(meeting.notice_issued_at)}. Generate the notice document again if one was already saved with the old date.`);
 });
 
 // ============================================================
@@ -1632,7 +1726,259 @@ const saveStatutoryDocument = asyncHandler(async (req, res) => {
     sendCreated(res, { ...saved, template_data: data }, `${kind.label} saved to Documents (${saved.reference}) as a draft — approve it in Documents to collect the signatures.`);
 });
 
+// ============================================================
+// v1.87.0 — PROXY FORMS FILLED IN THE SYSTEM (general meetings)
+// "the proxy form be fillable within the system for members who need it
+// (e.g. absent) where they can appoint members in the system or just
+// type the name of the appointee".
+//   GET  /api/meetings/:id/proxy            the member's own form + choices
+//   POST /api/meetings/:id/proxy            lodge (replaces an earlier one)
+//   POST /api/meetings/:id/proxy/withdraw   withdraw
+// A member lodges their own until proxy_deadline_hours (48) before the
+// meeting starts, signed with their saved signature. The Secretary (any
+// meeting manager) may record one for a member from a paper form — after
+// the deadline only with the reason. The register shows the member "By
+// proxy"; marking them present in person revokes it. A Form of Proxy is
+// filed in Documents (Statutory Records › General Meetings) each time.
+// ============================================================
+let proxyReadyCache = false;
+const proxiesReady = async (db) => {
+    if (proxyReadyCache) return true;
+    const r = await db.query(`SELECT to_regclass('public.meeting_proxies') IS NOT NULL AS ok`);
+    proxyReadyCache = !!r.rows[0].ok;
+    return proxyReadyCache;
+};
+// The meeting starts at meeting_date + start_time, Kampala time (UTC+3).
+const meetingStart = (m) => new Date(`${gov.dateStr(m.meeting_date)}T${String(m.start_time || '09:00').slice(0, 5)}:00+03:00`);
+const proxyDeadlineOf = (m, settings) => {
+    const hours = Number.isInteger(Number(settings.proxy_deadline_hours)) ? Number(settings.proxy_deadline_hours) : 48;
+    return new Date(meetingStart(m).getTime() - hours * 3600 * 1000);
+};
+const VOTE_CHOICES = ['FOR', 'AGAINST', 'ABSTAIN'];
+
+// What the member can vote on through the proxy: the meeting's resolutions
+// still to be voted on, or (none drafted yet) its agenda items of business.
+const proxyMatters = async (db, meeting) => {
+    const r = await db.query(`
+        SELECT id, resolution_number, title, kind FROM meeting_resolutions
+        WHERE meeting_id = $1 AND result = 'PENDING' ORDER BY COALESCE(agenda_no, 9999), id`, [meeting.id]);
+    if (r.rows.length) return r.rows.map(x => ({ key: `res:${x.id}`, label: `${x.resolution_number} — ${x.title}`, kind: x.kind }));
+    return (Array.isArray(meeting.agenda) ? meeting.agenda : [])
+        .filter(a => a && a.title)
+        .map((a, i) => ({ key: `item:${a.no || i + 1}`, label: `${a.no || i + 1}. ${a.title}`, kind: a.business === 'SPECIAL' ? 'SPECIAL' : 'ORDINARY' }));
+};
+
+const getProxyForm = asyncHandler(async (req, res) => {
+    const db = { query };
+    if (!(await proxiesReady(db))) throw createError.conflict('Proxy forms in the system need the v1.87.0 database update.');
+    const m = await loadMeeting(db, req.params.id);
+    await assertCanView(db, req.user, m);
+    if (m.meeting_type === 'BOARD') throw createError.badRequest('Proxies are for general meetings only — directors attend board meetings themselves.');
+    const settings = await gov.getSettings(db);
+    const memberId = req.query.member_user_id && gov.canManage(req.user) ? Number(req.query.member_user_id) : req.user.id;
+    const reg = await db.query(`
+        SELECT a.*, u.address FROM meeting_attendance a LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.meeting_id = $1 AND a.user_id = $2 AND a.capacity = 'MEMBER'`, [m.id, memberId]);
+    const people = await db.query(`
+        SELECT DISTINCT u.id, u.first_name || ' ' || u.last_name AS name
+        FROM users u JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+        JOIN roles ro ON ro.id = ur.role_id AND ro.is_active = TRUE AND ro.name <> 'Auditor'
+        WHERE u.is_active = TRUE AND u.id <> $1
+        ORDER BY name`, [memberId]);
+    const current = await db.query(`
+        SELECT p.*, drr.reference_code AS document_reference FROM meeting_proxies p
+        LEFT JOIN documents d ON d.id = p.document_id LEFT JOIN references_registry drr ON drr.id = d.reference_id
+        WHERE p.meeting_id = $1 AND p.member_user_id = $2 ORDER BY p.lodged_at DESC LIMIT 5`, [m.id, memberId]);
+    const deadline = proxyDeadlineOf(m, settings);
+    const open = m.status === 'NOTICE_ISSUED' && new Date() < deadline;
+    sendSuccess(res, {
+        meeting: normMeeting(m),
+        member: reg.rows[0] ? { user_id: memberId, name: reg.rows[0].name, shares_held: reg.rows[0].shares_held === null ? null : Number(reg.rows[0].shares_held), address: reg.rows[0].address, status: reg.rows[0].status, confirmed: !!reg.rows[0].confirmed_at } : null,
+        on_register: !!reg.rows[0],
+        deadline: deadline.toISOString(),
+        deadline_hours: settings.proxy_deadline_hours ?? 48,
+        open,
+        can_record_for_member: gov.canManage(req.user) && ['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status),
+        people: people.rows,
+        matters: await proxyMatters(db, m),
+        active: current.rows.find(p => p.status === 'ACTIVE') || null,
+        history: current.rows,
+    });
+});
+
+const lodgeProxy = asyncHandler(async (req, res) => {
+    const b = req.body || {};
+    const manager = gov.canManage(req.user);
+    const memberId = b.member_user_id && manager ? Number(b.member_user_id) : req.user.id;
+    const onBehalf = memberId !== req.user.id;
+    let out = null;
+    await withTransaction(async (client) => {
+        if (!(await proxiesReady(client))) throw createError.conflict('Proxy forms in the system need the v1.87.0 database update.');
+        const m = await loadMeeting(client, req.params.id, { lock: true });
+        if (m.meeting_type === 'BOARD') throw createError.badRequest('Proxies are for general meetings only.');
+        const settings = await gov.getSettings(client);
+        const deadline = proxyDeadlineOf(m, settings);
+        const late = new Date() >= deadline || m.status === 'IN_PROGRESS';
+        if (!onBehalf) {
+            if (m.status !== 'NOTICE_ISSUED') throw createError.conflict(m.status === 'DRAFT' ? 'The notice of this meeting has not been issued yet.' : 'Proxy forms can no longer be lodged for this meeting.');
+            if (late) throw createError.conflict(`Proxy forms had to be lodged by ${deadline.toLocaleString('en-GB', { timeZone: 'Africa/Kampala', dateStyle: 'long', timeStyle: 'short' })} (Kampala time), ${settings.proxy_deadline_hours ?? 48} hours before the meeting. Ask the Company Secretary if you need to appoint a proxy now.`);
+        } else {
+            if (!['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) throw createError.conflict('Proxies can be recorded only once the notice is out and until the meeting closes.');
+            if (late && !trimOrNull(b.late_reason)) throw createError.badRequest(`The deadline (${settings.proxy_deadline_hours ?? 48} hours before the meeting) has passed — give the reason this proxy is accepted late.`);
+        }
+        const reg = await client.query(`
+            SELECT a.* FROM meeting_attendance a
+            WHERE a.meeting_id = $1 AND a.user_id = $2 AND a.capacity = 'MEMBER' FOR UPDATE`, [m.id, memberId]);
+        if (!reg.rows.length) throw createError.badRequest(onBehalf ? 'That person is not a member on this meeting\'s register.' : 'You are not on this meeting\'s register of members.');
+        const a = reg.rows[0];
+        if (a.confirmed_at || ['PRESENT', 'PRESENT_VIRTUAL'].includes(a.status)) throw createError.conflict('This member is attending in person, so a proxy cannot act for them.');
+
+        // the proxy: a person in the system, or a typed name
+        const pick = async (uid, name, label) => {
+            if (uid) {
+                const id = Number(uid);
+                if (id === memberId) throw createError.badRequest(`The ${label} cannot be the member themselves.`);
+                return { id, name: await userName(client, id) };
+            }
+            const n = trimOrNull(name);
+            if (n && n.length > 200) throw createError.badRequest(`The ${label}'s name is too long.`);
+            return { id: null, name: n };
+        };
+        const proxy = await pick(b.proxy_user_id, b.proxy_name, 'proxy');
+        if (!proxy.name) throw createError.badRequest('Choose the person you appoint as your proxy, or type their name.');
+        const alt = await pick(b.alternate_user_id, b.alternate_name, 'alternate proxy');
+        if (alt.name && alt.name === proxy.name) throw createError.badRequest('The alternate must be a different person from the proxy.');
+
+        // voting instructions
+        const matters = await proxyMatters(client, m);
+        const allowed = new Set(matters.map(x => x.key));
+        const instructions = {};
+        for (const [k, v] of Object.entries(b.instructions || {})) {
+            if (!v) continue;
+            if (!allowed.has(k)) throw createError.badRequest('A voting instruction refers to an item that is not on this meeting.');
+            if (!VOTE_CHOICES.includes(v)) throw createError.badRequest('Each instruction must be FOR, AGAINST or ABSTAIN.');
+            instructions[k] = v;
+        }
+
+        // the member's own signature (lodged by the member); a paper form
+        // recorded by the Secretary carries no electronic signature
+        let signatureUrl = null;
+        let signedAt = null;
+        if (!onBehalf) {
+            if (b.confirm !== true && b.confirm !== 'true') throw createError.badRequest('Tick the box to sign the form of proxy.');
+            const parties = await signatoryService.buildParties(client, [{ action: 'Signed by', userId: memberId, at: new Date() }], { snapshotPrefix: `proxy-${m.id}-${memberId}` });
+            if (!parties[0] || !parties[0].signature_url) throw createError.badRequest('Draw your signature first (your picture › My profile › Signature) — it signs the form.');
+            signatureUrl = parties[0].signature_url;
+            signedAt = new Date();
+        }
+
+        await client.query(`
+            UPDATE meeting_proxies SET status = 'WITHDRAWN', ended_at = NOW(), ended_by = $3, end_reason = 'Replaced by a new form'
+            WHERE meeting_id = $1 AND member_user_id = $2 AND status = 'ACTIVE'`, [m.id, memberId, req.user.id]);
+        const ins = await client.query(`
+            INSERT INTO meeting_proxies (meeting_id, attendance_id, member_user_id, member_address, proxy_user_id, proxy_name, proxy_address,
+                alternate_user_id, alternate_name, alternate_address, instructions, signature_url, signed_at, lodged_by, lodged_late, late_reason)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+        [m.id, a.id, memberId, trimOrNull(b.member_address), proxy.id, proxy.name, trimOrNull(b.proxy_address),
+            alt.id, alt.name, alt.name ? trimOrNull(b.alternate_address) : null, JSON.stringify(instructions), signatureUrl, signedAt,
+            req.user.id, onBehalf && late, onBehalf ? trimOrNull(b.late_reason) : null]);
+        const p = ins.rows[0];
+        await client.query(`
+            UPDATE meeting_attendance SET status = 'BY_PROXY', proxy_name = $2, proxy_user_id = $3, marked_at = NOW(), marked_by = $4
+            WHERE id = $1`, [a.id, proxy.name, proxy.id, req.user.id]);
+
+        // the Form of Proxy, filed in Documents
+        const view = await buildMeetingView(client, req.user, m);
+        const company = (await client.query(`SELECT to_jsonb(cs) AS row FROM company_settings cs WHERE id = 1`)).rows[0]?.row || {};
+        const memberName = a.name;
+        const data = {
+            doc_kind: 'PROXY',
+            meeting: view.meeting,
+            resolutions: view.resolutions,
+            settings: view.settings,
+            company: {
+                company_name: company.company_name || null, registration_number: company.registration_number || null, tin: company.tin || null,
+                registered_office: company.registered_office || null, postal_address: company.postal_address || null,
+                company_email: company.company_email || null, company_phone: company.company_phone || null,
+            },
+            member: { user_id: memberId, name: memberName, shares_held: a.shares_held === null ? null : Number(a.shares_held) },
+            appointment: {
+                member_address: p.member_address, proxy_name: p.proxy_name, proxy_address: p.proxy_address,
+                proxy_is_user: !!p.proxy_user_id, alternate_name: p.alternate_name, alternate_address: p.alternate_address,
+                instructions, matters, signature_url: signatureUrl, signed_at: signedAt ? signedAt.toISOString() : null,
+                lodged_at: p.lodged_at, lodged_by_name: `${req.user.first_name || ''} ${req.user.last_name || ''}`.trim(),
+                on_behalf: onBehalf, late: p.lodged_late, late_reason: p.late_reason,
+            },
+            document_date: gov.todayStr(),
+            generated_date: new Date().toISOString(),
+        };
+        const parentId = await getOrCreateCategory(client, {
+            module: 'DOCUMENT', name: 'Statutory Records', abbreviation: 'STAT',
+            description: 'Notices, registers of attendance, minutes and resolutions of company meetings (v1.79.0).', createdBy: req.user.id,
+        });
+        const categoryId = await getOrCreateChildCategory(client, {
+            parentId, module: 'DOCUMENT', name: 'General Meetings', abbreviation: 'GMTG',
+            description: 'AGM / EGM notices, proxy forms, registers and minutes.', createdBy: req.user.id,
+        });
+        const tpl = await client.query(`SELECT id FROM document_templates WHERE template_type = 'PROXY_FORM' AND is_active = TRUE ORDER BY id LIMIT 1`);
+        const { referenceId, referenceCode } = await generateReference(client, 'DOC', 'PRXY', 'DOCUMENT', req.user.id);
+        const doc = await client.query(`
+            INSERT INTO documents (reference_id, category_id, title, document_type, source, template_id, template_data,
+                version, related_record_type, related_record_id, status, created_by, approved_by, approved_at, fully_signed, fully_signed_at)
+            VALUES ($1,$2,$3,'PROXY_FORM','SYSTEM_GENERATED',$4,$5,1,'company_meetings',$6,'FINAL',$7,$7,NOW(),$8,$9) RETURNING id`,
+        [referenceId, categoryId, `Form of Proxy — ${m.title} — ${memberName}`.slice(0, 255), tpl.rows[0]?.id || null, JSON.stringify(data),
+            m.id, req.user.id, !!signatureUrl, signatureUrl ? new Date() : null]);
+        await linkReferenceToRecord(client, referenceId, doc.rows[0].id);
+        await client.query('UPDATE meeting_proxies SET document_id = $2 WHERE id = $1', [p.id, doc.rows[0].id]);
+        await logAction(req.user.id, ACTIONS.MEETING_PROXY_LODGED, MODULES.GOVERNANCE, {
+            ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
+            newValues: { member: memberName, proxy: proxy.name, alternate: alt.name, instructions, late: p.lodged_late, document: referenceCode },
+            description: `Proxy lodged for ${memberName} at ${m.title}: ${proxy.name}${alt.name ? ` (or ${alt.name})` : ''}${onBehalf ? ' — recorded by the secretary' : ''}${p.lodged_late ? ` — late: ${p.late_reason}` : ''}`,
+            client,
+        });
+        out = { proxy_id: p.id, document_reference: referenceCode, memberName, proxyName: proxy.name, meetingTitle: m.title, secretary: m.secretary_user_id };
+    });
+    // tell the secretary (and the proxy when they are in the system)
+    if (out.secretary && out.secretary !== req.user.id) {
+        notify({ userId: out.secretary, type: 'MEETING_PROXY', title: `Proxy lodged — ${out.meetingTitle}`,
+            body: `${out.memberName} appointed ${out.proxyName} as proxy (${out.document_reference}).`, link: `/meetings/${req.params.id}`, module: 'GOVERNANCE' });
+    }
+    const meeting = await loadMeeting({ query }, req.params.id);
+    sendSuccess(res, await buildMeetingView({ query }, req.user, meeting),
+        `Form of proxy lodged — ${out.proxyName} will act for ${onBehalf ? out.memberName : 'you'}. Filed as ${out.document_reference}.`);
+});
+
+const withdrawProxy = asyncHandler(async (req, res) => {
+    const manager = gov.canManage(req.user);
+    const memberId = req.body.member_user_id && manager ? Number(req.body.member_user_id) : req.user.id;
+    const onBehalf = memberId !== req.user.id;
+    await withTransaction(async (client) => {
+        if (!(await proxiesReady(client))) throw createError.conflict('Proxy forms in the system need the v1.87.0 database update.');
+        const m = await loadMeeting(client, req.params.id, { lock: true });
+        const settings = await gov.getSettings(client);
+        if (!onBehalf && (m.status !== 'NOTICE_ISSUED' || new Date() >= proxyDeadlineOf(m, settings))) {
+            throw createError.conflict('The proxy can no longer be withdrawn here — tell the Company Secretary, or attend the meeting in person (that revokes it).');
+        }
+        if (onBehalf && !['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) throw createError.conflict('This meeting is closed.');
+        const r = await client.query(`
+            UPDATE meeting_proxies SET status = 'WITHDRAWN', ended_at = NOW(), ended_by = $3, end_reason = $4
+            WHERE meeting_id = $1 AND member_user_id = $2 AND status = 'ACTIVE' RETURNING id, proxy_name`,
+        [m.id, memberId, req.user.id, trimOrNull(req.body.reason) || (onBehalf ? 'Withdrawn by the secretary' : 'Withdrawn by the member')]);
+        if (!r.rows.length) throw createError.notFound('There is no proxy to withdraw.');
+        await client.query(`
+            UPDATE meeting_attendance SET status = 'PENDING', proxy_name = NULL, proxy_user_id = NULL, marked_at = NOW(), marked_by = $3
+            WHERE meeting_id = $1 AND user_id = $2 AND capacity = 'MEMBER' AND status = 'BY_PROXY'`, [m.id, memberId, req.user.id]);
+        await logAction(req.user.id, ACTIONS.MEETING_PROXY_WITHDRAWN, MODULES.GOVERNANCE, {
+            ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id, oldValues: { proxy: r.rows[0].proxy_name },
+            description: `Proxy (${r.rows[0].proxy_name}) withdrawn for member #${memberId} at ${m.title}`, client,
+        });
+    });
+    const meeting = await loadMeeting({ query }, req.params.id);
+    sendSuccess(res, await buildMeetingView({ query }, req.user, meeting), 'Proxy withdrawn.');
+});
+
 module.exports = {
+    changeNoticeDate, getProxyForm, lodgeProxy, withdrawProxy, // v1.87.0
     getGovernanceSettings, updateGovernanceSettings,
     listMeetings, createMeeting, getMeeting, updateMeeting, refreshRegister,
     addAttendee, removeAttendee, markAttendance, issueNotice, openMeeting, confirmAttendance,

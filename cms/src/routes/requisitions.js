@@ -129,13 +129,17 @@ router.delete('/:id/documents/:documentId',
     requisitionsController.unlinkRequisitionDocument
 );
 
-// Approve a requisition — Treasurer and Assistant Treasurer.
-// account_id is required for EXPENSE and FINE_PAYMENT requisitions
-// (which account to pay from / receive the fine into). For
+// Approve a requisition.
+// v1.87.0 — a money-out (EXPENSE) requisition: Treasurer, Assistant
+// Treasurer, a Director or an Admin approve the amount; no money moves.
+// Member payments to be recorded (contribution, side fund, fine): the
+// Treasurer or Assistant Treasurer, and the money is recorded at once —
+// account_id for FINE_PAYMENT (the account the fine was paid into); for
 // CONTRIBUTION_ACKNOWLEDGEMENT it is optional (v1.69.1): the account the
 // member paid into, in any currency; the primary account if omitted.
+// The controller checks the role against the requisition's type.
 router.post('/:id/approve',
-    requireRoles(['Treasurer', 'Assistant Treasurer']),
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Director', 'Admin']),
     validators.idParam('id'),
     [
         body('account_id')
@@ -149,7 +153,42 @@ router.post('/:id/approve',
     requisitionsController.approveRequisition
 );
 
-// Reject a requisition — Treasurer and Directors
+// v1.87.0 — release the money of an approved money request (Treasury,
+// never the approver or the requester), then the requester acknowledges
+// it — or reports a problem.
+router.post('/:id/release',
+    requireRoles(['Treasurer', 'Assistant Treasurer', 'Admin']),
+    validators.idParam('id'),
+    [
+        body('account_id').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('A valid account is required'),
+        body('release_date').isISO8601().withMessage('Enter the date the money was released').custom(notFutureDate),
+        body('release_method').isIn(['BANK_TRANSFER', 'MOBILE_MONEY', 'CASH', 'CHEQUE', 'OTHER']).withMessage('Choose how the money was paid'),
+        body('release_reference').optional({ values: 'falsy' }).trim().isLength({ max: 120 }),
+        body('release_notes').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
+        body('document_ids').optional().isArray(),
+    ],
+    validateRequest,
+    requisitionsController.releaseRequisition
+);
+router.post('/:id/acknowledge',
+    validators.idParam('id'),
+    [
+        body('received_date').isISO8601().withMessage('Enter the date you received the money').custom(notFutureDate),
+        body('note').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
+        body('confirm').isBoolean().withMessage('Confirm you received the money'),
+    ],
+    validateRequest,
+    requisitionsController.acknowledgeRequisition
+);
+router.post('/:id/report-issue',
+    validators.idParam('id'),
+    [body('note').trim().isLength({ min: 3, max: 1000 }).withMessage('Describe the problem (3–1000 characters)')],
+    validateRequest,
+    requisitionsController.reportRequisitionIssue
+);
+
+// Reject a requisition — Treasurer and Directors (v1.87.0: also one that
+// was approved but whose money has not been released yet)
 router.post('/:id/reject',
     requirePermissions(['FINANCE_VIEW_ALL']),
     validators.idParam('id'),

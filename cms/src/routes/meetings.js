@@ -60,6 +60,11 @@ router.post('/:id/attendees', c.addAttendee);
 router.patch('/:id/attendees/:aid', c.markAttendance);
 router.delete('/:id/attendees/:aid', c.removeAttendee);
 router.post('/:id/notice', c.issueNotice);
+router.patch('/:id/notice-date', c.changeNoticeDate); // v1.87.0 — correct the notice date
+// v1.87.0 — proxy forms filled in the system
+router.get('/:id/proxy', c.getProxyForm);
+router.post('/:id/proxy', c.lodgeProxy);
+router.post('/:id/proxy/withdraw', c.withdrawProxy);
 router.post('/:id/open', c.openMeeting);
 router.post('/:id/confirm', c.confirmAttendance);
 router.put('/:id/minutes', c.saveMinutes);

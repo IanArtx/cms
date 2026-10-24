@@ -87,6 +87,10 @@ export const getStatusBadgeClass = (status) => {
         // Capital Goal Calls (v1.43.0) — a fully-settled pledge, and a
         // monthly call whose target has been fully met.
         FULFILLED:        'badge-green',
+        // v1.87.0 — a requisition whose money the requester has confirmed
+        ACKNOWLEDGED:     'badge-green',
+        // v1.87.0 — money released, waiting for the requester to confirm it
+        RELEASED:         'badge-teal',
 
         // Violet — waiting for someone's approval (v1.71.0: was yellow;
         // the Harbour chip colours give "awaiting approval" its own colour)

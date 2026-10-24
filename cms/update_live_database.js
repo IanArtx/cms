@@ -12,7 +12,7 @@
 // 1) CHECK (read-only — changes nothing):
 //       node update_live_database.js --url "postgresql://…"
 //    Shows which company/database it reached, and for every version
-//    from 1.58.0 to 1.85.0 whether its migration is already applied.
+//    from 1.58.0 to 1.87.0 whether its migration is already applied.
 //
 // 2) APPLY the missing migrations, oldest first:
 //       node update_live_database.js --url "postgresql://…" --apply --confirm=<database name>
@@ -76,9 +76,13 @@ const VERSIONS = [
     { v: '1.83.0', file: 'migration_v1.83.0.sql', what: 'BoU rates suggested daily, rate sources, realised FX on transfers', check: tbl('fx_rate_suggestions') },
     { v: '1.83.1', file: null, what: '(no database change — smooth exchange-rate charts, investment totals over time)' },
     { v: '1.84.0', file: 'migration_v1.84.0.sql', what: 'registered-share certificates, REGISTRATION type, share-register correction flag', check: col('share_allotments', 'rate_correction') },
-    { v: '1.85.2', file: null, what: '(no database change — investments page shows what is held now, from the books)' },
-    { v: '1.85.1', file: null, what: '(no database change — every party signs receipts in their own position; fine settlement savings per currency)' },
     { v: '1.85.0', file: 'migration_v1.85.0.sql', what: 'projects on their own or inside an investment, project spending, documents on project/investment pages', check: col('transactions', 'project_id') },
+    { v: '1.85.1', file: null, what: '(no database change — every party signs receipts in their own position; fine settlement savings per currency)' },
+    { v: '1.85.2', file: null, what: '(no database change — investments page shows what is held now, from the books)' },
+    { v: '1.86.0', file: 'migration_v1.86.0.sql', what: 'access control: invitations, declining unknown accounts, blocked addresses, automatic clean-up', check: col('users', 'rejected_at') },
+    { v: '1.86.1', file: null, what: '(no database change — register of members and officers, downloadable)' },
+    { v: '1.86.2', file: null, what: '(no database change — BoU rate check tries again when the BoU website has a passing problem)' },
+    { v: '1.87.0', file: 'migration_v1.87.0.sql', what: 'requisitions approved › released › acknowledged (Requisition Form filed), notice date settable, proxy forms filled in the system, accounts that never became members removed after 7 days', check: col('requisitions', 'released_by') },
 ];
 
 // ---- arguments ------------------------------------------------------
@@ -200,7 +204,7 @@ const printStatus = (rows) => {
         }
 
         if (!missing.length) {
-            console.log('\n✅ This database is up to date (1.85.0). Nothing to apply.');
+            console.log('\n✅ This database is up to date (1.87.0). Nothing to apply.');
             return;
         }
         console.log(`\n${missing.length} migration(s) to apply, in this order: ${missing.map(m => m.v).join(' → ')}`);
@@ -262,7 +266,7 @@ const printStatus = (rows) => {
             console.log('\n⚠️  Still missing: ' + missing.map(m => m.v).join(', '));
             process.exitCode = 1;
         } else {
-            console.log('\n✅ Database is now at 1.85.0.');
+            console.log('\n✅ Database is now at 1.87.0.');
             try {
                 const rc = await client.query(`SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE needs_attention) AS a FROM record_corrections`);
                 console.log(`   Automatic corrections logged by the v1.72.0 repair: ${rc.rows[0].n} (needing a look: ${rc.rows[0].a}) — see Reports › Records check after the code is live.`);

@@ -1,8 +1,23 @@
 // ============================================================
 // REQUISITIONS CONTROLLER
 // Any member can request money for a specific purpose.
-// Treasurer or Director approves or rejects.
-// On approval, a transaction is automatically posted.
+//
+// v1.87.0 — a money-out (EXPENSE) requisition goes through four steps,
+// each by its own person and each recorded with who, when and what:
+//   1. REQUESTED  — the member asks (PENDING), with supporting documents;
+//   2. APPROVED   — the Treasurer, Assistant Treasurer, a Director or an
+//                   Admin approves the amount. No money moves yet;
+//   3. RELEASED   — someone in Treasury who did NOT approve it (and is
+//                   not the requester) pays it: account, date, how
+//                   (bank transfer / mobile money / cash / cheque) and the
+//                   payment reference. The ledger entry is posted here;
+//   4. ACKNOWLEDGED — only the requester confirms receiving the money and
+//                   signs. The Requisition Form (every party, position,
+//                   signature and date) is then filed in Documents and
+//                   connected to the payment.
+// The requester can instead report a problem with what they received.
+// Other requisition types (member payments to be recorded) keep their
+// single approval step, by the Treasurer or Assistant Treasurer.
 // ============================================================
 
 const { query, withTransaction } = require('../config/database');
@@ -21,6 +36,7 @@ const investmentCost = require('../services/investmentCostService');
 const documentLinks = require('../services/documentLinksService');
 const { uploadBuffer, generateKey } = require('../services/storageService');
 const { getOrCreateCategory } = require('../services/categoryService');
+const signatoryService = require('../services/signatoryService'); // v1.87.0 — every party on the requisition form
 
 // ============================================================
 // v1.80.0 — REQUISITIONS: DOCUMENTS FIRST, INVESTMENTS, REVERSAL
@@ -49,6 +65,27 @@ const requisitionsV180Ready = async (db) => {
 };
 const TREASURY = ['Treasurer', 'Assistant Treasurer', 'Admin'];
 const isTreasury = (user) => (user.roles || []).some(r => TREASURY.includes(r));
+// v1.87.0 — four steps for a money request
+const EXPENSE_APPROVERS = ['Treasurer', 'Assistant Treasurer', 'Director', 'Admin'];
+const RELEASERS = ['Treasurer', 'Assistant Treasurer', 'Admin'];
+const RELEASE_METHODS = ['BANK_TRANSFER', 'MOBILE_MONEY', 'CASH', 'CHEQUE', 'OTHER'];
+let reqV187 = false;
+const requisitionsV187Ready = async (db) => {
+    if (reqV187) return true;
+    const r = await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'requisitions' AND column_name = 'released_by'`);
+    reqV187 = r.rows.length > 0;
+    return reqV187;
+};
+// active people holding any of `roles` (excluding some), for notifications
+const usersWithRoles = async (db, roles, excludeIds = []) => {
+    const r = await db.query(`
+        SELECT DISTINCT u.id, u.email, u.first_name
+        FROM users u JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+        JOIN roles ro ON ro.id = ur.role_id AND ro.is_active = TRUE
+        WHERE u.is_active = TRUE AND ro.name = ANY($1::text[]) AND NOT (u.id = ANY($2::int[]))`,
+    [roles, excludeIds.filter(Boolean)]);
+    return r.rows;
+};
 
 // Validate an investment chosen for a requisition.
 const checkInvestmentChoice = async (client, investmentId, purpose) => {
@@ -102,7 +139,9 @@ const linkDocumentsToRequisition = async (client, requisitionId, documentIds, us
 
 // Who may connect / remove documents: the requester while it is pending
 // (only documents they can see — their own uploads), or Treasury.
-const loadRequisitionForDocs = async (client, id, user, { forWrite = false } = {}) => {
+// v1.87.0 — after approval, Treasury may still ADD documents (e.g. the
+// proof of payment when releasing); removing is only while pending.
+const loadRequisitionForDocs = async (client, id, user, { forWrite = false, removing = false } = {}) => {
     const r = await client.query(`SELECT * FROM requisitions WHERE id = $1 ${forWrite ? 'FOR UPDATE' : ''}`, [id]);
     if (!r.rows.length) throw createError.notFound('Requisition not found');
     const q = r.rows[0];
@@ -110,10 +149,24 @@ const loadRequisitionForDocs = async (client, id, user, { forWrite = false } = {
     const canView = own || isTreasury(user) || (user.permissions || []).includes('FINANCE_VIEW_ALL');
     if (!canView) throw createError.forbidden('You cannot see this requisition.');
     if (forWrite) {
-        if (q.status !== 'PENDING') throw createError.badRequest('Documents can only be connected or removed while the requisition is pending.');
+        const addingLater = !removing && isTreasury(user) && ['APPROVED', 'RELEASED'].includes(q.status);
+        if (q.status !== 'PENDING' && !addingLater) {
+            throw createError.badRequest(removing
+                ? 'Documents can only be removed while the requisition is pending.'
+                : 'Documents can be connected while the requisition is pending, or by Treasury until the money is acknowledged.');
+        }
         if (!own && !isTreasury(user)) throw createError.forbidden('Only the person who made the requisition, or Treasury, can change its documents.');
     }
     return q;
+};
+
+// A document added after the money left is connected to the payment too.
+const linkToPaymentToo = async (client, q, documentIds, userId, ip) => {
+    if (!q.transaction_id || !documentIds.length) return;
+    await documentLinks.link(client, {
+        transactionIds: [q.transaction_id], documentIds, userId, via: 'LATER', confirmAdditional: true,
+        note: 'Added to the requisition after the money was released', ipAddress: ip,
+    });
 };
 
 // GET /api/requisitions/investment-options — names of the investments a
@@ -158,6 +211,8 @@ const linkRequisitionDocuments = asyncHandler(async (req, res) => {
             if (mine.rows[0].n !== (req.body.document_ids || []).length) throw createError.forbidden('You can connect only documents you uploaded — upload the file here instead.');
         }
         n = await linkDocumentsToRequisition(client, req.params.id, req.body.document_ids, req.user.id, req.ip);
+        const q = await client.query('SELECT * FROM requisitions WHERE id = $1', [req.params.id]);
+        await linkToPaymentToo(client, q.rows[0], (req.body.document_ids || []).map(Number), req.user.id, req.ip);
     });
     sendSuccess(res, { connected: n }, n ? `${n} document(s) connected` : 'Already connected');
 });
@@ -191,6 +246,7 @@ const uploadRequisitionDocument = asyncHandler(async (req, res) => {
             description: `Document uploaded for a requisition: ${referenceCode} — ${title}`, client,
         });
         await linkDocumentsToRequisition(client, q.id, [d.rows[0].id], req.user.id, req.ip);
+        await linkToPaymentToo(client, q, [d.rows[0].id], req.user.id, req.ip);
         out = { document_id: d.rows[0].id, reference: referenceCode, title };
     });
     sendCreated(res, out, `Document ${out.reference} attached`);
@@ -199,7 +255,7 @@ const uploadRequisitionDocument = asyncHandler(async (req, res) => {
 // DELETE /api/requisitions/:id/documents/:documentId
 const unlinkRequisitionDocument = asyncHandler(async (req, res) => {
     await withTransaction(async (client) => {
-        await loadRequisitionForDocs(client, req.params.id, req.user, { forWrite: true });
+        await loadRequisitionForDocs(client, req.params.id, req.user, { forWrite: true, removing: true });
         const r = await client.query(`
             UPDATE requisition_document_links SET removed_at = NOW(), removed_by = $3
             WHERE requisition_id = $1 AND document_id = $2 AND removed_at IS NULL RETURNING id`,
@@ -402,6 +458,7 @@ const approveRequisition = asyncHandler(async (req, res) => {
         review_notes,
     } = req.body;
 
+    let afterCommit = null; // v1.87.0 — tell people only after the commit
     await withTransaction(async (client) => {
         const reqResult = await client.query(`
             SELECT r.*, rr.reference_code,
@@ -422,6 +479,19 @@ const approveRequisition = asyncHandler(async (req, res) => {
             throw createError.badRequest(
                 `Requisition cannot be approved. Status: ${req_.status}`
             );
+        }
+
+        // v1.87.0 — who may approve: a money-out request by the Treasurer,
+        // Assistant Treasurer, a Director or an Admin (no money moves on
+        // approval); a member's payment to be recorded — which IS posted
+        // on approval — by the Treasurer or Assistant Treasurer only.
+        const roles = req.user.roles || [];
+        if (req_.requisition_type === 'EXPENSE') {
+            if (!roles.some(r => EXPENSE_APPROVERS.includes(r))) {
+                throw createError.forbidden('A money request is approved by the Treasurer, Assistant Treasurer, a Director or an Admin.');
+            }
+        } else if (!roles.some(r => ['Treasurer', 'Assistant Treasurer'].includes(r))) {
+            throw createError.forbidden('Only the Treasurer or Assistant Treasurer can record this payment.');
         }
 
         const approvedAmount = parseFloat(amount_approved || req_.amount_requested);
@@ -729,158 +799,362 @@ const approveRequisition = asyncHandler(async (req, res) => {
         }
 
         // ----------------------------------------------------------
-        // EXPENSE (original behaviour) — money OUT of the selected
-        // account to fulfil the request.
-        // ----------------------------------------------------------
-        // ----------------------------------------------------------
-        // v1.80.0 — PREREQUISITES before money leaves the company:
-        //   • at least one supporting document connected;
-        //   • for an investment: the investment and the purpose.
+        // EXPENSE — v1.87.0: APPROVAL ONLY. No money moves here; it is
+        // released afterwards by someone else in Treasury
+        // (releaseRequisition) and the requester then acknowledges it.
+        // Before approval (v1.80.0): at least one supporting document;
+        // for an investment, the investment and the purpose.
         // ----------------------------------------------------------
         const v180 = await requisitionsV180Ready(client);
-        let docIds = [];
         if (v180) {
-            docIds = await liveDocumentIds(client, id);
+            const docIds = await liveDocumentIds(client, id);
             if (!docIds.length) {
                 throw createError.badRequest('Connect at least one supporting document (quotation, invoice or receipt) to this requisition before approving it.');
             }
         }
-        const { postInvestmentFunding, postInvestmentExpense } = require('./investmentsController');
-        const today = new Date().toISOString().split('T')[0];
-        const payDescription = `Requisition: ${req_.title} — ${req_.first_name} ${req_.last_name} (${req_.reference_code})`;
-        let transactionId; let txRefCode; let balanceBefore; let balanceAfter; let accountRow;
-
         if (v180 && req_.investment_id) {
-            const costType = investmentCost.assertCostType(req_.investment_purpose, { required: true });
-            const invR = await client.query(`
-                SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code, r.public_id
-                FROM   investments i
-                JOIN   accounts a ON a.id = i.funding_account_id
-                JOIN   references_registry r ON r.id = i.reference_id
-                WHERE  i.id = $1
-                FOR UPDATE OF i`, [req_.investment_id]);
-            if (!invR.rows.length) throw createError.notFound('The investment of this requisition was not found.');
-            const inv = invR.rows[0];
-            if (costType === 'CAPITAL' && inv.status !== 'ACTIVE') {
-                throw createError.badRequest(`${inv.name} must be approved (active) before money can be put into it.`);
+            investmentCost.assertCostType(req_.investment_purpose, { required: true });
+            const inv = await client.query('SELECT name, status FROM investments WHERE id = $1', [req_.investment_id]);
+            if (!inv.rows.length) throw createError.notFound('The investment of this requisition was not found.');
+            if (['COMPLETED', 'TERMINATED', 'REJECTED', 'CANCELLED', 'CLOSED'].includes(inv.rows[0].status)) {
+                throw createError.badRequest(`${inv.rows[0].name} is ${inv.rows[0].status.toLowerCase()} — money can no longer be approved for it.`);
             }
-            const payFrom = account_id ? parseInt(account_id, 10) : (costType === 'CAPITAL' ? inv.funding_account_id : inv.returns_account_id);
-            const acc = await client.query('SELECT id, currency_id, account_type, reference_prefix, name FROM accounts WHERE id = $1', [payFrom]);
-            if (!acc.rows.length) throw createError.notFound('Account not found');
-            if (acc.rows[0].currency_id !== inv.currency_id) {
-                throw createError.badRequest(`${inv.name} is kept in another currency — pay it from an account in the investment's currency (or transfer the money first).`);
-            }
-            accountRow = acc.rows[0];
-            const description = `${payDescription} — ${inv.name} (${inv.reference_code})`;
-            const posted = costType === 'CAPITAL'
-                ? await postInvestmentFunding(client, inv, { amount: approvedAmount, description, valueDate: today, userId: req.user.id, accountId: payFrom, categoryId: req_.category_id })
-                : await postInvestmentExpense(client, inv, { amount: approvedAmount, description, entryDate: today, costType, accountId: payFrom, categoryId: req_.category_id, userId: req.user.id });
-            ({ transactionId, referenceCode: txRefCode, balanceBefore, balanceAfter } = posted);
-        } else {
-            if (!account_id) {
-                throw createError.badRequest('A valid account is required to approve this requisition');
-            }
-            const account = await client.query(
-                'SELECT id, currency_id, account_type, reference_prefix FROM accounts WHERE id = $1',
-                [account_id]
-            );
-            if (account.rows.length === 0) {
-                throw createError.notFound('Account not found');
-            }
-            accountRow = account.rows[0];
-
-            const ref = await generateReference(
-                client, resolveModuleCode(account.rows[0]), 'REQ', 'TRANSACTION', req.user.id
-            );
-            txRefCode = ref.referenceCode;
-
-            ({ transactionId, balanceBefore, balanceAfter } =
-                await postTransaction(client, {
-                    accountId:       account_id,
-                    transactionType: 'DEBIT',
-                    inflowType:      'EXPENSE',
-                    amount:          approvedAmount,
-                    currencyId:      account.rows[0].currency_id,
-                    categoryId:      req_.category_id,
-                    description:     payDescription,
-                    valueDate:       today,
-                    createdBy:       req.user.id,
-                    referenceId:     ref.referenceId,
-                }));
-
-            await linkReferenceToRecord(client, ref.referenceId, transactionId);
         }
-
-        // The requisition's documents now belong to the payment too.
-        if (docIds.length) {
-            await documentLinks.link(client, {
-                transactionIds: [transactionId], documentIds: docIds, userId: req.user.id,
-                via: 'AT_ENTRY', confirmAdditional: true, note: `From requisition ${req_.reference_code}`, ipAddress: req.ip,
-            });
+        if (!(await requisitionsV187Ready(client))) {
+            throw createError.conflict('Approving money requests needs the v1.87.0 database update (approval, release and acknowledgement are now separate steps).');
+        }
+        if (approvedAmount > parseFloat(req_.amount_requested)) {
+            throw createError.badRequest('The amount approved cannot be more than the amount requested — ask the member to change the requisition.');
         }
 
         await client.query(`
             UPDATE requisitions
-            SET    status         = 'APPROVED',
-                   account_id     = $1,
-                   currency_id    = $2,
-                   amount_approved = $3,
-                   transaction_id  = $4,
-                   reviewed_by     = $5,
-                   reviewed_at     = NOW(),
-                   review_notes    = $6
-            WHERE  id = $7
-        `, [
-            accountRow.id,
-            accountRow.currency_id,
-            approvedAmount,
-            transactionId,
-            req.user.id,
-            review_notes || null,
-            id,
-        ]);
+            SET    status = 'APPROVED', amount_approved = $1, reviewed_by = $2, reviewed_at = NOW(), review_notes = $3
+            WHERE  id = $4`, [approvedAmount, req.user.id, review_notes || null, id]);
 
         await logAction(req.user.id, ACTIONS.REQUISITION_APPROVED, MODULES.FINANCE, {
             ipAddress:   req.ip,
             recordType:  'requisitions',
             recordId:    parseInt(id),
-            newValues:   { txRefCode, approvedAmount, balanceBefore, balanceAfter },
-            description: `Requisition approved: ${req_.reference_code} — ${approvedAmount}`,
+            newValues:   { approvedAmount, step: 'APPROVED' },
+            description: `Requisition approved (to be released by someone else in Treasury): ${req_.reference_code} — ${approvedAmount}`,
             client,
         });
 
-        notify({
-            userId:     req_.requested_by,
-            type:       'REQUISITION_APPROVED',
-            title:      'Requisition approved',
-            body:       `Your requisition "${req_.title}" (${req_.reference_code}) was approved for ${approvedAmount}.`,
-            link:       `/requisitions`,
-            module:     'FINANCE',
-            recordType: 'requisitions',
-            recordId:   parseInt(id),
+        const releasers = await usersWithRoles(client, RELEASERS, [req.user.id, req_.requested_by]);
+        afterCommit = async () => {
+            notify({
+                userId: req_.requested_by, type: 'REQUISITION_APPROVED', title: 'Requisition approved',
+                body: `Your requisition "${req_.title}" (${req_.reference_code}) was approved for ${approvedAmount}. Treasury will release the money; you will be asked to confirm when you receive it.`,
+                link: '/requisitions', module: 'FINANCE', recordType: 'requisitions', recordId: parseInt(id),
+                email: {
+                    subject: `Requisition approved — ${req_.reference_code}`,
+                    html: await wrapEmail(`
+                        <p>Dear ${req_.first_name},</p>
+                        <p>Your requisition <strong>${req_.title}</strong> (${req_.reference_code}) has been approved for <strong>${approvedAmount}</strong>.</p>
+                        <p>The money will be released by Treasury. When you receive it, open <strong>Requisitions</strong> and press <strong>Acknowledge receipt</strong>.</p>
+                        ${review_notes ? `<p style="color:#6b7280;">Notes: ${review_notes}</p>` : ''}
+                    `, { preheader: 'Your requisition has been approved' }),
+                },
+            });
+            if (releasers.length) {
+                notifyMany(releasers, 'REQUISITION_TO_RELEASE', () => ({
+                    title: 'Requisition approved — money to release',
+                    body: `${req_.reference_code} "${req_.title}" for ${req_.first_name} ${req_.last_name}: ${approvedAmount} approved. Release it (you cannot release one you approved yourself).`,
+                    link: '/requisitions?tab=all', module: 'FINANCE', recordType: 'requisitions', recordId: parseInt(id),
+                })).catch(() => {});
+            }
+        };
+
+        sendSuccess(res, { status: 'APPROVED', amount_approved: approvedAmount },
+            'Requisition approved — someone else in Treasury now releases the money.');
+    });
+    if (afterCommit) await afterCommit().catch(() => {});
+});
+
+// ============================================================
+// v1.87.0 — RELEASE THE MONEY of an approved requisition
+// POST /api/requisitions/:id/release
+// body: { account_id?, release_date, release_method, release_reference?,
+//         release_notes?, document_ids? }
+// Treasurer, Assistant Treasurer or Admin — never the person who
+// approved it, never the requester. Posts the payment.
+// ============================================================
+const releaseRequisition = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!(req.user.roles || []).some(r => RELEASERS.includes(r))) {
+        throw createError.forbidden('Money is released by the Treasurer, the Assistant Treasurer or an Admin.');
+    }
+    const releaseDate = String(req.body.release_date || '').slice(0, 10);
+    const method = String(req.body.release_method || '').toUpperCase();
+    const payRef = (req.body.release_reference || '').toString().trim().slice(0, 120) || null;
+    const notes = (req.body.release_notes || '').toString().trim() || null;
+    let out = null;
+    let afterCommit = null;
+
+    await withTransaction(async (client) => {
+        if (!(await requisitionsV187Ready(client))) throw createError.conflict('Releasing money needs the v1.87.0 database update.');
+        const r = await client.query(`
+            SELECT q.*, rr.reference_code, u.first_name, u.last_name
+            FROM requisitions q JOIN references_registry rr ON rr.id = q.reference_id JOIN users u ON u.id = q.requested_by
+            WHERE q.id = $1 FOR UPDATE OF q`, [id]);
+        if (!r.rows.length) throw createError.notFound('Requisition not found');
+        const req_ = r.rows[0];
+        if (req_.requisition_type !== 'EXPENSE') throw createError.badRequest('Only a money request is released.');
+        if (req_.status !== 'APPROVED') {
+            throw createError.badRequest(req_.status === 'PENDING'
+                ? 'This requisition has not been approved yet.'
+                : `This requisition is already ${req_.status.toLowerCase()}.`);
+        }
+        if (req_.requested_by === req.user.id) throw createError.forbidden('You asked for this money — someone else in Treasury must release it.');
+        if (req_.reviewed_by === req.user.id) throw createError.forbidden('You approved this requisition — a different person must release the money (two people check every payment).');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) throw createError.badRequest('Enter the date the money was released (YYYY-MM-DD).');
+        const today = new Date().toISOString().split('T')[0];
+        if (releaseDate > today) throw createError.badRequest('The release date cannot be in the future.');
+        const approvedOn = new Date(req_.reviewed_at).toISOString().split('T')[0];
+        if (releaseDate < approvedOn) throw createError.badRequest(`The money cannot be released before the requisition was approved (${approvedOn}).`);
+        if (!RELEASE_METHODS.includes(method)) throw createError.badRequest('Choose how the money was paid (bank transfer, mobile money, cash, cheque or other).');
+        if (['BANK_TRANSFER', 'MOBILE_MONEY', 'CHEQUE'].includes(method) && !payRef) {
+            throw createError.badRequest('Give the payment reference (bank / mobile money transaction number, or cheque number).');
+        }
+
+        // proof of payment chosen while releasing
+        if (Array.isArray(req.body.document_ids) && req.body.document_ids.length) {
+            await linkDocumentsToRequisition(client, id, req.body.document_ids, req.user.id, req.ip);
+        }
+        const docIds = await liveDocumentIds(client, id);
+        const amount = parseFloat(req_.amount_approved);
+        const posted = await postRequisitionPayment(client, req_, {
+            amount, accountId: req.body.account_id ? parseInt(req.body.account_id, 10) : null, valueDate: releaseDate,
+            userId: req.user.id, method, payRef,
+        });
+        if (docIds.length) {
+            await documentLinks.link(client, {
+                transactionIds: [posted.transactionId], documentIds: docIds, userId: req.user.id,
+                via: 'AT_ENTRY', confirmAdditional: true, note: `From requisition ${req_.reference_code}`, ipAddress: req.ip,
+            });
+        }
+        await client.query(`
+            UPDATE requisitions
+            SET    status = 'RELEASED', account_id = $2, currency_id = $3, transaction_id = $4,
+                   released_by = $5, released_at = NOW(), release_date = $6, release_method = $7,
+                   release_reference = $8, release_notes = $9
+            WHERE  id = $1`,
+        [id, posted.account.id, posted.account.currency_id, posted.transactionId, req.user.id, releaseDate, method, payRef, notes]);
+        await logAction(req.user.id, ACTIONS.REQUISITION_RELEASED, MODULES.FINANCE, {
+            ipAddress: req.ip, recordType: 'requisitions', recordId: parseInt(id),
+            newValues: { transaction: posted.referenceCode, amount, release_date: releaseDate, method, reference: payRef, balance_before: posted.balanceBefore, balance_after: posted.balanceAfter },
+            description: `Requisition money released: ${req_.reference_code} — ${amount} (${method.replace('_', ' ').toLowerCase()}${payRef ? ` ${payRef}` : ''})`,
+            client,
+        });
+        out = { status: 'RELEASED', transaction_reference: posted.referenceCode, amount, balance_before: posted.balanceBefore, balance_after: posted.balanceAfter };
+        afterCommit = async () => notify({
+            userId: req_.requested_by, type: 'REQUISITION_RELEASED', title: 'Money released — please confirm receipt',
+            body: `${amount} for "${req_.title}" (${req_.reference_code}) was released on ${releaseDate}. When you have it, open Requisitions and press Acknowledge receipt.`,
+            link: '/requisitions', module: 'FINANCE', recordType: 'requisitions', recordId: parseInt(id),
             email: {
-                subject: `Requisition approved — ${req_.reference_code}`,
-                html:    await wrapEmail(`
+                subject: `Money released — ${req_.reference_code}`,
+                html: await wrapEmail(`
                     <p>Dear ${req_.first_name},</p>
-                    <p>Your requisition <strong>${req_.title}</strong> (${req_.reference_code}) has been approved.</p>
+                    <p>The money for your requisition <strong>${req_.title}</strong> (${req_.reference_code}) has been released.</p>
                     <table style="width:100%; border-collapse:collapse; margin:12px 0;">
-                        <tr><td style="padding:4px 0; color:#6b7280;">Amount approved</td><td style="padding:4px 0; text-align:right; font-weight:700;">${approvedAmount}</td></tr>
-                        <tr><td style="padding:4px 0; color:#6b7280;">Transaction reference</td><td style="padding:4px 0; text-align:right;">${txRefCode}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">Amount</td><td style="padding:4px 0; text-align:right; font-weight:700;">${amount}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">Date</td><td style="padding:4px 0; text-align:right;">${releaseDate}</td></tr>
+                        <tr><td style="padding:4px 0; color:#6b7280;">How</td><td style="padding:4px 0; text-align:right;">${method.replace('_', ' ').toLowerCase()}${payRef ? ` — ${payRef}` : ''}</td></tr>
                     </table>
-                    ${review_notes ? `<p style="color:#6b7280;">Reviewer notes: ${review_notes}</p>` : ''}
-                `, { preheader: 'Your requisition has been approved' }),
+                    <p>When you have received it, open <strong>Requisitions</strong> and press <strong>Acknowledge receipt</strong>. If something is wrong, use <strong>Report a problem</strong> there instead.</p>
+                `, { preheader: 'Please confirm you received the money' }),
             },
         });
-
-        sendSuccess(res, {
-            status:                'APPROVED',
-            amount_approved:       approvedAmount,
-            transaction_reference: txRefCode,
-            balance_before:        balanceBefore,
-            balance_after:         balanceAfter,
-        }, 'Requisition approved and payment processed');
     });
+    if (afterCommit) await afterCommit().catch(() => {});
+    sendSuccess(res, out, `Money released (${out.transaction_reference}). The requester is asked to acknowledge it.`);
 });
+
+// The payment of a requisition (what approval used to do before v1.87.0):
+// for an investment — its funding (buying) or expense (running /
+// maintenance); otherwise an expense out of the chosen account.
+const postRequisitionPayment = async (client, req_, { amount, accountId, valueDate, userId, method, payRef }) => {
+    const { postInvestmentFunding, postInvestmentExpense } = require('./investmentsController');
+    const how = method ? ` — ${method.replace('_', ' ').toLowerCase()}${payRef ? ` ${payRef}` : ''}` : '';
+    const payDescription = `Requisition: ${req_.title} — ${req_.first_name} ${req_.last_name} (${req_.reference_code})${how}`;
+    if (req_.investment_id) {
+        const costType = investmentCost.assertCostType(req_.investment_purpose, { required: true });
+        const invR = await client.query(`
+            SELECT i.*, a.currency_id, a.account_type, a.reference_prefix, r.reference_code, r.public_id
+            FROM   investments i
+            JOIN   accounts a ON a.id = i.funding_account_id
+            JOIN   references_registry r ON r.id = i.reference_id
+            WHERE  i.id = $1
+            FOR UPDATE OF i`, [req_.investment_id]);
+        if (!invR.rows.length) throw createError.notFound('The investment of this requisition was not found.');
+        const inv = invR.rows[0];
+        if (costType === 'CAPITAL' && inv.status !== 'ACTIVE') {
+            throw createError.badRequest(`${inv.name} must be approved (active) before money can be put into it.`);
+        }
+        const payFrom = accountId || (costType === 'CAPITAL' ? inv.funding_account_id : inv.returns_account_id);
+        const acc = await client.query('SELECT id, currency_id, account_type, reference_prefix, name FROM accounts WHERE id = $1', [payFrom]);
+        if (!acc.rows.length) throw createError.notFound('Account not found');
+        if (acc.rows[0].currency_id !== inv.currency_id) {
+            throw createError.badRequest(`${inv.name} is kept in another currency — pay it from an account in the investment's currency (or transfer the money first).`);
+        }
+        const description = `${payDescription} — ${inv.name} (${inv.reference_code})`;
+        const posted = costType === 'CAPITAL'
+            ? await postInvestmentFunding(client, inv, { amount, description, valueDate, userId, accountId: payFrom, categoryId: req_.category_id })
+            : await postInvestmentExpense(client, inv, { amount, description, entryDate: valueDate, costType, accountId: payFrom, categoryId: req_.category_id, userId });
+        return { ...posted, account: acc.rows[0] };
+    }
+    if (!accountId) throw createError.badRequest('Choose the account the money is paid from.');
+    const account = await client.query('SELECT id, currency_id, account_type, reference_prefix, name FROM accounts WHERE id = $1', [accountId]);
+    if (!account.rows.length) throw createError.notFound('Account not found');
+    const ref = await generateReference(client, resolveModuleCode(account.rows[0]), 'REQ', 'TRANSACTION', userId);
+    const { transactionId, balanceBefore, balanceAfter } = await postTransaction(client, {
+        accountId,
+        transactionType: 'DEBIT',
+        inflowType:      'EXPENSE',
+        amount,
+        currencyId:      account.rows[0].currency_id,
+        categoryId:      req_.category_id,
+        description:     payDescription,
+        valueDate,
+        createdBy:       userId,
+        referenceId:     ref.referenceId,
+    });
+    await linkReferenceToRecord(client, ref.referenceId, transactionId);
+    return { transactionId, referenceCode: ref.referenceCode, balanceBefore, balanceAfter, account: account.rows[0] };
+};
+
+// ============================================================
+// v1.87.0 — ACKNOWLEDGE RECEIPT (the requester only)
+// POST /api/requisitions/:id/acknowledge  { received_date, note?, confirm: true }
+// Files the Requisition Form — every party, position, signature, date.
+// ============================================================
+const acknowledgeRequisition = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const receivedDate = String(req.body.received_date || '').slice(0, 10);
+    const note = (req.body.note || '').toString().trim() || null;
+    let out = null;
+    let afterCommit = null;
+    await withTransaction(async (client) => {
+        if (!(await requisitionsV187Ready(client))) throw createError.conflict('Acknowledging needs the v1.87.0 database update.');
+        const r = await client.query(`
+            SELECT q.*, rr.reference_code, u.first_name, u.last_name, u.signature_path
+            FROM requisitions q JOIN references_registry rr ON rr.id = q.reference_id JOIN users u ON u.id = q.requested_by
+            WHERE q.id = $1 FOR UPDATE OF q`, [id]);
+        if (!r.rows.length) throw createError.notFound('Requisition not found');
+        const q = r.rows[0];
+        if (q.requested_by !== req.user.id) throw createError.forbidden('Only the person who asked for the money can confirm receiving it.');
+        if (q.status !== 'RELEASED') {
+            throw createError.badRequest(q.status === 'ACKNOWLEDGED' ? 'You have already acknowledged this requisition.' : 'The money for this requisition has not been released yet.');
+        }
+        if (req.body.confirm !== true && req.body.confirm !== 'true') throw createError.badRequest('Tick the box to confirm you received the money.');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(receivedDate)) throw createError.badRequest('Enter the date you received the money (YYYY-MM-DD).');
+        const today = new Date().toISOString().split('T')[0];
+        if (receivedDate > today) throw createError.badRequest('The date received cannot be in the future.');
+        const releasedOn = q.release_date ? new Date(q.release_date).toISOString().split('T')[0] : null;
+        if (releasedOn && receivedDate < releasedOn) throw createError.badRequest(`You cannot have received it before it was released (${releasedOn}).`);
+        if (!q.signature_path) throw createError.badRequest('Draw your signature first (your picture › My profile › Signature) — it is printed on the requisition form.');
+
+        await client.query(`
+            UPDATE requisitions SET status = 'ACKNOWLEDGED', acknowledged_at = NOW(), acknowledged_date = $2, acknowledgement_note = $3
+            WHERE id = $1`, [id, receivedDate, note]);
+        const form = await fileRequisitionForm(client, id, req.user.id, req.ip);
+        await client.query('UPDATE requisitions SET form_document_id = $2 WHERE id = $1', [id, form.documentId]);
+        await logAction(req.user.id, ACTIONS.REQUISITION_ACKNOWLEDGED, MODULES.FINANCE, {
+            ipAddress: req.ip, recordType: 'requisitions', recordId: parseInt(id),
+            newValues: { received_date: receivedDate, note, form: form.referenceCode },
+            description: `Requisition money acknowledged by the requester: ${q.reference_code} (form ${form.referenceCode})`,
+            client,
+        });
+        out = { status: 'ACKNOWLEDGED', form_reference: form.referenceCode, form_document_id: form.documentId };
+        const tell = [...new Set([q.released_by, q.reviewed_by].filter(x => x && x !== req.user.id))];
+        afterCommit = async () => {
+            for (const uid of tell) {
+                notify({
+                    userId: uid, type: 'REQUISITION_ACKNOWLEDGED', title: 'Requisition acknowledged',
+                    body: `${q.first_name} ${q.last_name} confirmed receiving the money for ${q.reference_code} "${q.title}". The requisition form ${form.referenceCode} is in Documents.`,
+                    link: '/requisitions?tab=all', module: 'FINANCE', recordType: 'requisitions', recordId: parseInt(id),
+                });
+            }
+        };
+    });
+    if (afterCommit) await afterCommit().catch(() => {});
+    sendSuccess(res, out, `Thank you — receipt acknowledged. The requisition form ${out.form_reference} is filed in Documents.`);
+});
+
+// ============================================================
+// v1.87.0 — REPORT A PROBLEM with released money (the requester)
+// POST /api/requisitions/:id/report-issue  { note }
+// The requisition stays RELEASED; Treasury is told.
+// ============================================================
+const reportRequisitionIssue = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const note = (req.body.note || '').toString().trim();
+    if (note.length < 3) throw createError.badRequest('Describe the problem (for example: received less, or nothing yet).');
+    let q = null;
+    await withTransaction(async (client) => {
+        if (!(await requisitionsV187Ready(client))) throw createError.conflict('This needs the v1.87.0 database update.');
+        const r = await client.query(`
+            SELECT q.*, rr.reference_code, u.first_name, u.last_name
+            FROM requisitions q JOIN references_registry rr ON rr.id = q.reference_id JOIN users u ON u.id = q.requested_by
+            WHERE q.id = $1 FOR UPDATE OF q`, [id]);
+        if (!r.rows.length) throw createError.notFound('Requisition not found');
+        q = r.rows[0];
+        if (q.requested_by !== req.user.id) throw createError.forbidden('Only the person who asked for the money can report a problem with it.');
+        if (q.status !== 'RELEASED') throw createError.badRequest('A problem can be reported only while the money is released and not yet acknowledged.');
+        await client.query('UPDATE requisitions SET ack_issue_at = NOW(), ack_issue_note = $2 WHERE id = $1', [id, note]);
+        await logAction(req.user.id, ACTIONS.REQUISITION_UPDATED, MODULES.FINANCE, {
+            ipAddress: req.ip, recordType: 'requisitions', recordId: parseInt(id), newValues: { problem: note },
+            description: `Problem reported with the released money of ${q.reference_code}: ${note}`, client,
+        });
+    });
+    const tell = await usersWithRoles({ query }, RELEASERS, [req.user.id]);
+    const ids = new Set([q.released_by, q.reviewed_by, ...tell.map(t => t.id)].filter(x => x && x !== req.user.id));
+    for (const uid of ids) {
+        notify({
+            userId: uid, type: 'REQUISITION_PROBLEM', title: `Problem reported — ${q.reference_code}`,
+            body: `${q.first_name} ${q.last_name} reported a problem with the money released for "${q.title}": ${note}`,
+            link: '/requisitions?tab=all', module: 'FINANCE', recordType: 'requisitions', recordId: parseInt(id),
+        });
+    }
+    sendSuccess(res, null, 'Thank you — Treasury has been told. Acknowledge the requisition once it is sorted out.');
+});
+
+// The Requisition Form filed when the requester acknowledges: a snapshot
+// of the requisition with every party (position and signature as they
+// are now — later changes never alter it), connected to the payment.
+const REQUISITION_FORM_CATEGORY = {
+    module: 'DOCUMENT', name: 'Requisition Forms', abbreviation: 'FIN-REQ',
+    description: 'Completed requisition forms: requested, approved, released and acknowledged, with every party\'s signature (v1.87.0).',
+};
+const fileRequisitionForm = async (client, id, userId, ip) => {
+    const row = (await client.query(`${await requisitionDetailSql()} WHERE r.id = $1`, [id])).rows[0];
+    const parties = await signatoryService.buildParties(client, [
+        { action: 'Requested by', userId: row.requested_by, at: row.created_at },
+        { action: 'Approved by', userId: row.reviewed_by, at: row.reviewed_at },
+        { action: 'Released by', userId: row.released_by, at: row.released_at },
+        { action: 'Received by', userId: row.requested_by, at: row.acknowledged_at },
+    ], { snapshotPrefix: `requisition-${id}` });
+    const categoryId = await getOrCreateCategory(client, { ...REQUISITION_FORM_CATEGORY, createdBy: userId });
+    const { referenceId, referenceCode } = await generateReference(client, MODULE_CODES.DOCUMENT, 'REQF', 'DOCUMENT', userId);
+    const now = new Date();
+    const templateData = { ...row, requisition_kind: 'REQUISITION_FORM', form_reference: referenceCode, parties, generated_date: now.toISOString() };
+    const d = await client.query(`
+        INSERT INTO documents (
+            reference_id, category_id, title, document_type, source, template_data, version,
+            related_record_type, related_record_id, status, created_by, approved_by, approved_at, fully_signed, fully_signed_at)
+        VALUES ($1, $2, $3, 'REQUISITION_FORM', 'SYSTEM_GENERATED', $4, 1, 'requisitions', $5, 'FINAL', $6, $6, $7, TRUE, $7)
+        RETURNING id`,
+    [referenceId, categoryId, `Requisition Form — ${row.reference_code} — ${row.title}`, JSON.stringify(templateData), id, userId, now]);
+    await linkReferenceToRecord(client, referenceId, d.rows[0].id);
+    if (row.transaction_id) {
+        await documentLinks.link(client, {
+            transactionIds: [row.transaction_id], documentIds: [d.rows[0].id], userId, via: 'LATER', confirmAdditional: true,
+            note: `Requisition form of ${row.reference_code}`, ipAddress: ip,
+        });
+    }
+    return { documentId: d.rows[0].id, referenceCode };
+};
 
 // ============================================================
 // REJECT REQUISITION
@@ -897,7 +1171,7 @@ const rejectRequisition = asyncHandler(async (req, res) => {
                reviewed_at  = NOW(),
                review_notes = $2
         WHERE  id = $3
-        AND    status = 'PENDING'
+        AND    (status = 'PENDING' OR (status = 'APPROVED' AND requisition_type = 'EXPENSE')) -- v1.87.0 — approved, money not yet released
         RETURNING id, title, requested_by
     `, [req.user.id, review_notes || null, id]);
 
@@ -936,6 +1210,53 @@ const rejectRequisition = asyncHandler(async (req, res) => {
 });
 
 
+// v1.87.0 — the four steps: who did each, their position now, their
+// saved signature (for the live preview; the filed form keeps snapshots)
+// (own alias — signatoryService.positionSql uses "r" for roles, which is
+// this query's alias for the requisition)
+const pos = (col) => `(
+    SELECT ro.name FROM user_roles urx JOIN roles ro ON ro.id = urx.role_id
+    WHERE  urx.user_id = ${col} AND urx.revoked_at IS NULL AND ro.is_active = TRUE
+    ORDER  BY COALESCE(array_position(ARRAY[${signatoryService.POSITION_ORDER.map(x => `'${x}'`).join(', ')}]::text[], ro.name::text), 99), ro.name
+    LIMIT  1)`;
+const requisitionStepsSql = async () => (await requisitionsV187Ready({ query })) ? `,
+            r.reviewed_by, r.released_by, r.released_at, r.release_date::text AS release_date, r.release_method, r.release_reference, r.release_notes,
+            r.acknowledged_at, r.acknowledged_date::text AS acknowledged_date, r.acknowledgement_note, r.ack_issue_at, r.ack_issue_note,
+            r.form_document_id, r.legacy_one_step, r.account_id,
+            reqr.signature_path AS requested_by_signature, ${pos('r.requested_by')} AS requested_by_position,
+            revr.signature_path AS reviewed_by_signature, ${pos('r.reviewed_by')} AS reviewed_by_position,
+            relr.first_name || ' ' || relr.last_name AS released_by_name, relr.signature_path AS released_by_signature,
+            ${pos('r.released_by')} AS released_by_position,
+            acc.name AS account_name, cur.code AS currency_code,
+            formr.reference_code AS form_reference` : '';
+const requisitionStepsJoin = async () => (await requisitionsV187Ready({ query })) ? `
+        LEFT JOIN users reqr ON reqr.id = r.requested_by
+        LEFT JOIN users revr ON revr.id = r.reviewed_by
+        LEFT JOIN users relr ON relr.id = r.released_by
+        LEFT JOIN accounts acc ON acc.id = r.account_id
+        LEFT JOIN currencies cur ON cur.id = COALESCE(r.currency_id, acc.currency_id)
+        LEFT JOIN documents formd ON formd.id = r.form_document_id
+        LEFT JOIN references_registry formr ON formr.id = formd.reference_id` : '';
+
+// One requisition with everything the Requisition Form prints.
+const requisitionDetailSql = async () => `
+        SELECT r.id, r.title, r.description, r.amount_requested, r.amount_approved, r.purpose, r.required_by_date,
+               r.priority, r.status, r.review_notes, r.created_at, r.reviewed_at, r.requisition_type,
+               r.category_id, r.requested_by, rr.reference_code, rr.public_id,
+               cat.name AS category_name, cp.full_path AS category_trail,
+               u.first_name || ' ' || u.last_name AS requested_by_name, u.email AS requested_by_email,
+               reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name
+               ${await requisitionExtrasSql()}
+               ${await requisitionStepsSql()}
+        FROM  requisitions r
+        JOIN  references_registry rr ON rr.id  = r.reference_id
+        JOIN  categories cat         ON cat.id = r.category_id
+        JOIN  category_paths cp      ON cp.category_id = r.category_id
+        JOIN  users u                ON u.id  = r.requested_by
+        LEFT JOIN users reviewer     ON reviewer.id = r.reviewed_by
+        ${await requisitionExtrasJoin()}
+        ${await requisitionStepsJoin()}`;
+
 const requisitionExtrasSql = async () => (await requisitionsV180Ready({ query })) ? `,
             r.investment_id, r.investment_purpose, r.transaction_id, r.reversed_at, r.reversal_reason,
             inv.name AS investment_name, invr.reference_code AS investment_reference, inv.currency_id AS investment_currency_id,
@@ -966,14 +1287,18 @@ const getMyRequisitions = asyncHandler(async (req, res) => {
             rr.public_id,
             cat.name     AS category_name,
             cp.full_path AS category_trail,
-            reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name
+            reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name,
+            me.first_name || ' ' || me.last_name AS requested_by_name
             ${await requisitionExtrasSql()}
+            ${await requisitionStepsSql()}
         FROM  requisitions r
         JOIN  references_registry rr ON rr.id  = r.reference_id
         JOIN  categories cat         ON cat.id = r.category_id
         JOIN  category_paths cp      ON cp.category_id = r.category_id
+        JOIN  users me               ON me.id = r.requested_by
         LEFT JOIN users reviewer     ON reviewer.id = r.reviewed_by
         ${await requisitionExtrasJoin()}
+        ${await requisitionStepsJoin()}
         WHERE r.requested_by = $1
         ORDER BY r.created_at DESC
     `, [req.user.id]);
@@ -1027,6 +1352,7 @@ const getAllRequisitions = asyncHandler(async (req, res) => {
             u.email      AS requested_by_email,
             reviewer.first_name || ' ' || reviewer.last_name AS reviewed_by_name
             ${await requisitionExtrasSql()}
+            ${await requisitionStepsSql()}
         FROM  requisitions r
         JOIN  references_registry rr ON rr.id  = r.reference_id
         JOIN  categories cat         ON cat.id = r.category_id
@@ -1034,6 +1360,7 @@ const getAllRequisitions = asyncHandler(async (req, res) => {
         JOIN  users u                ON u.id  = r.requested_by
         LEFT JOIN users reviewer     ON reviewer.id = r.reviewed_by
         ${await requisitionExtrasJoin()}
+        ${await requisitionStepsJoin()}
         ${where}
         ORDER BY
             CASE r.priority WHEN 'URGENT' THEN 1 WHEN 'HIGH' THEN 2
@@ -1178,6 +1505,7 @@ const editRequisition = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    releaseRequisition, acknowledgeRequisition, reportRequisitionIssue, // v1.87.0
     getInvestmentOptions, getRequisitionDocuments, linkRequisitionDocuments, uploadRequisitionDocument, unlinkRequisitionDocument, // v1.80.0
     createRequisition,
     editRequisition,

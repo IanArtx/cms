@@ -172,8 +172,9 @@ const BouRatesPanel = ({ canDecide, onRatesChanged, focus = false }) => {
     if (feed === false) return null;
 
     const done = (message) => { setNotice(message); load(); if (onRatesChanged) onRatesChanged(); };
+    // v1.86.2 — the server tries BoU up to 3 times (5 and 10 s apart) if its website hiccups
     const runNow = async () => {
-        setBusy(true); setError(null); setNotice(null);
+        setBusy('check'); setError(null); setNotice(null);
         try { const r = await exchangeRatesAPI.runFeed(); done(r.data.message || 'Checked.'); } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
     };
     const approveAll = async () => {
@@ -200,12 +201,13 @@ const BouRatesPanel = ({ canDecide, onRatesChanged, focus = false }) => {
                 {canDecide && (
                     <div className="flex flex-wrap gap-2">
                         {unflagged > 1 && (
-                            <button type="button" className="btn-primary text-sm flex items-center gap-1.5" disabled={busy} onClick={approveAll}>
+                            <button type="button" className="btn-primary text-sm flex items-center gap-1.5" disabled={!!busy} onClick={approveAll}>
                                 <CheckIcon className="h-4 w-4" /> Approve all not flagged ({unflagged})
                             </button>
                         )}
-                        <button type="button" className="btn-secondary text-sm flex items-center gap-1.5" disabled={busy} onClick={runNow}>
-                            <ArrowPathIcon className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} /> Check BoU now
+                        <button type="button" className="btn-secondary text-sm flex items-center gap-1.5" disabled={!!busy} onClick={runNow}>
+                            <ArrowPathIcon className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
+                            {busy === 'check' ? 'Checking… (up to a minute if BoU is slow)' : 'Check BoU now'}
                         </button>
                     </div>
                 )}

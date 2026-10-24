@@ -585,6 +585,7 @@ export const GovernanceSettingsPanel = ({ canEdit }) => {
                 special_resolution_majority_pct: Number(s.special_resolution_majority_pct), short_notice_consent_pct: Number(s.short_notice_consent_pct),
                 resolution_filing_days: Number(s.resolution_filing_days), agm_max_interval_months: Number(s.agm_max_interval_months),
                 proxy_votes_on_show_of_hands: !!s.proxy_votes_on_show_of_hands,
+                ...(s.proxy_deadline_hours !== undefined ? { proxy_deadline_hours: Number(s.proxy_deadline_hours) } : {}), // v1.87.0
                 act_name: s.act_name, company_type: s.company_type, articles_note: s.articles_note || null,
                 legal_references: s.legal_references,
             };
@@ -635,6 +636,7 @@ export const GovernanceSettingsPanel = ({ canEdit }) => {
                     {numField('short_notice_consent_pct', 'Consent to short notice', '% of voting rights')}
                     {numField('resolution_filing_days', 'File special resolutions within', 'days')}
                     {numField('agm_max_interval_months', 'Longest gap between AGMs', 'months')}
+                    {s.proxy_deadline_hours !== undefined && numField('proxy_deadline_hours', 'Proxy forms close before the meeting', 'hours')}
                 </div>
                 <label className="flex items-start gap-2 text-sm text-gray-700 mt-4">
                     <input type="checkbox" className="mt-1" checked={!!s.proxy_votes_on_show_of_hands} disabled={!canEdit}

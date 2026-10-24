@@ -1,0 +1,14 @@
+%% v1.86.2 — Bank of Uganda rate check: try again on a passing BoU website problem
+flowchart TD
+    S["Check: scheduled (10:15 · 13:15 · 16:15) or 'Check BoU now'"] --> P["1. BoU page list /api/interest-rate"]
+    P -->|"OK"| A["address of OPENING RATES.xlsx"]
+    P -->|"timeout / 429 / 5xx"| R1{"tries left?"}
+    R1 -->|"yes: wait 1 min, 2 min\n(by hand: 5 s, 10 s)"| P
+    R1 -->|"no"| L["last known address\n(reason kept for the message)"]
+    L --> F
+    A --> F["2. download the workbook"]
+    F -->|"OK"| OK["read rates → suggestions to approve"]
+    F -->|"timeout / 429 / 5xx"| R2{"tries left?"}
+    R2 -->|"yes"| F
+    R2 -->|"no"| X["FAILED: what went wrong in words,\naddress tried, where it came from\n→ Treasury told once a day"]
+    F -->|"404 / 403 (not repeated)"| X

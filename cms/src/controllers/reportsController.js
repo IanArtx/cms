@@ -318,6 +318,8 @@ const sendBroadcastAnnouncement = asyncHandler(async (req, res) => {
         SELECT id, email, first_name, last_name
         FROM   users
         WHERE  is_active = TRUE
+        -- v1.87.0 — never to accounts still waiting for access
+        AND    EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.is_active = TRUE WHERE ur.user_id = users.id AND ur.revoked_at IS NULL)
         ORDER  BY first_name ASC
     `);
 

@@ -108,7 +108,8 @@ const runFeed = async ({ trigger = 'SCHEDULE', userId = null } = {}) => {
     // ---- 1. read the sources ----
     let primary = null; let other = null;
     const errors = {};
-    try { primary = await bou.fetchBouOpeningRates(); } catch (err) { errors.BOU = err.message; }
+    // v1.86.2 — scheduled checks retry minutes apart; "Check BoU now" seconds apart
+    try { primary = await bou.fetchBouOpeningRates({ patient: trigger === 'SCHEDULE' }); } catch (err) { errors.BOU = err.message; }
     if (settings.backupConfigured) {
         try {
             const a = await bou.fetchAllRatesToday();

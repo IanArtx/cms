@@ -19,6 +19,7 @@ import { formatDate, formatDateTime, getErrorMessage, getUploadUrl } from '../..
 import { useTabParam } from '../../hooks/useTabParam';
 import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
 import DraftNotice from '../../components/common/DraftNotice';
+import { ProxySection } from './proxyUi'; // v1.87.0 — proxy forms filled in the system
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import {
@@ -643,7 +644,9 @@ const MeetingDetailPage = () => {
     const actions = canManage ? (
         <>
             {['DRAFT', 'NOTICE_ISSUED'].includes(m.status) && <button type="button" className="btn-secondary" onClick={() => setEditing(true)}>Edit</button>}
-            {m.status === 'DRAFT' && <button type="button" className="btn-primary" onClick={() => { setForm({ short_notice_consent: !!m.short_notice_consent, short_notice_note: m.short_notice_note || '', notice_date: '' }); setModal('notice'); }}>{past ? 'Record the notice' : 'Issue the notice'}</button>}
+            {m.status === 'DRAFT' && <button type="button" className="btn-primary" onClick={() => { setForm({ short_notice_consent: !!m.short_notice_consent, short_notice_note: m.short_notice_note || '', notice_date: past ? '' : todayStr(), send_emails: true }); setModal('notice'); }}>{past ? 'Record the notice' : 'Issue the notice'}</button>}
+            {/* v1.87.0 — the notice date can be corrected until the meeting is closed */}
+            {['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) && <button type="button" className="btn-secondary" onClick={() => { setForm({ notice_date: m.notice_issued_at ? String(m.notice_issued_at).slice(0, 10) : '', reason: '', short_notice_consent: !!m.short_notice_consent, short_notice_note: m.short_notice_note || '' }); setModal('noticeDate'); }}>Correct the notice date</button>}
             {m.status === 'NOTICE_ISSUED' && <button type="button" className="btn-primary" onClick={() => setModal('open')}>{past ? 'Record the opening' : 'Open the meeting'}</button>}
             {m.status === 'IN_PROGRESS' && <button type="button" className="btn-primary" onClick={() => { setForm({ closing_time: past ? (m.end_time ? String(m.end_time).slice(0, 5) : '') : nowHHMM() }); setModal('close'); }}>{past ? 'Record the closing' : 'Close the meeting'}</button>}
             {['DRAFT', 'NOTICE_ISSUED'].includes(m.status) && <button type="button" className="btn-secondary" onClick={() => { setForm({ reason: '' }); setModal('cancel'); }}>Cancel</button>}
@@ -698,6 +701,9 @@ const MeetingDetailPage = () => {
                 <p className="mb-4 text-sm text-green-700 flex items-center gap-1.5"><CheckCircleIcon className="h-5 w-5" />You confirmed your attendance on {formatDateTime(mine.confirmed_at)} — code <span className="font-mono">{mine.confirmation_code}</span></p>
             )}
 
+            {/* v1.87.0 — proxy forms filled in the system */}
+            <ProxySection v={v} canManage={canManage} reload={reload} setNotice={setNotice} />
+
             <div className="tab-bar mb-6" role="tablist">
                 {tabs.map(([k, l]) => (
                     <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={`tab ${tab === k ? 'tab-active' : ''}`}>{l}</button>
@@ -715,21 +721,26 @@ const MeetingDetailPage = () => {
             <Modal isOpen={modal === 'notice'} onClose={() => setModal(null)} title={past ? 'Record the notice' : 'Issue the notice'}
                 subtitle={past
                     ? 'This meeting has already taken place. Enter the date its notice was given — nobody is emailed now.'
-                    : 'Everyone on the register gets a notification and an email with the date, place and agenda.'}>
+                    : 'Set the date the notice was (or is) given — it may be earlier than today if it went out before it was entered here.'}>
                 {(() => {
-                    const issueDay = past ? form.notice_date : todayStr();
+                    const issueDay = form.notice_date || (past ? '' : todayStr());
                     const given = issueDay ? Math.round((Date.parse(`${m.meeting_date}T00:00:00Z`) - Date.parse(`${issueDay}T00:00:00Z`)) / 86400000) : null;
                     const enough = given !== null && given >= v.notice.required;
                     return (
                         <div className="space-y-3 text-sm">
-                            {past && (
-                                <div>
-                                    <label className="label">Date the notice was given *</label>
-                                    <input type="date" className="input w-48" max={m.meeting_date} value={form.notice_date || ''}
-                                        onChange={e => setForm(f => ({ ...f, notice_date: e.target.value }))} />
-                                </div>
+                            <div>
+                                <label className="label">Date the notice was given *</label>
+                                <input type="date" className="input w-48" max={[m.meeting_date, todayStr()].sort()[0]} value={form.notice_date || ''}
+                                    onChange={e => setForm(f => ({ ...f, notice_date: e.target.value }))} />
+                                {!past && <p className="text-xs text-gray-500 mt-1">Today by default. If the notice already went out (e.g. by letter or message), enter that day — the days of notice count from it.</p>}
+                            </div>
+                            {!past && (
+                                <label className="flex items-start gap-2">
+                                    <input type="checkbox" className="mt-1" checked={form.send_emails !== false} onChange={e => setForm(f => ({ ...f, send_emails: e.target.checked }))} />
+                                    <span>Email the notice to everyone on the register now</span>
+                                </label>
                             )}
-                            <p>Notice required: <strong>{v.notice.required} days</strong>.{given !== null && <> {past ? 'That notice gave' : 'Issued today it gives'} <strong>{given} days</strong>.</>}</p>
+                            <p>Notice required: <strong>{v.notice.required} days</strong>.{given !== null && <> {issueDay === todayStr() ? 'Issued today it gives' : 'That notice gave'} <strong>{given} days</strong>.</>}</p>
                             {given !== null && !enough && (
                                 <>
                                     <p className="bg-amber-50 text-amber-800 rounded p-2">
@@ -749,12 +760,63 @@ const MeetingDetailPage = () => {
                             )}
                             <div className="flex justify-end gap-3 pt-2">
                                 <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
-                                <button type="button" className="btn-primary" disabled={busy || (past && !form.notice_date)}
+                                <button type="button" className="btn-primary" disabled={busy || !form.notice_date}
                                     onClick={() => act(() => meetingsAPI.issueNotice(m.id, {
-                                        ...(past ? { notice_date: form.notice_date } : {}),
+                                        notice_date: form.notice_date,
+                                        ...(past ? {} : { send_emails: form.send_emails !== false }),
                                         ...(enough ? {} : { short_notice_consent: !!form.short_notice_consent, short_notice_note: form.short_notice_note || null }),
                                     }))}>
-                                    {busy ? 'Saving…' : past ? 'Record the notice' : 'Issue and send'}
+                                    {busy ? 'Saving…' : past ? 'Record the notice' : form.send_emails !== false ? 'Issue and send' : 'Issue (no emails)'}
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })()}
+            </Modal>
+
+            {/* v1.87.0 — correct the notice date of a meeting that is not closed */}
+            <Modal isOpen={modal === 'noticeDate'} onClose={() => setModal(null)} title="Correct the notice date"
+                subtitle="For when the notice went out on a different day than the one entered. The days of notice are worked out again.">
+                {(() => {
+                    const given = form.notice_date ? Math.round((Date.parse(`${m.meeting_date}T00:00:00Z`) - Date.parse(`${form.notice_date}T00:00:00Z`)) / 86400000) : null;
+                    const enough = given !== null && given >= v.notice.required;
+                    return (
+                        <div className="space-y-3 text-sm">
+                            <p>Now recorded: <strong>{m.notice_issued_at ? formatDate(m.notice_issued_at) : '—'}</strong> ({m.notice_days_given ?? '—'} days' notice).</p>
+                            <div>
+                                <label className="label">Date the notice was actually given *</label>
+                                <input type="date" className="input w-48" max={[m.meeting_date, todayStr()].sort()[0]} value={form.notice_date || ''}
+                                    onChange={e => setForm(f => ({ ...f, notice_date: e.target.value }))} />
+                            </div>
+                            {given !== null && <p>Notice required: <strong>{v.notice.required} days</strong>. This date gives <strong>{given} days</strong>.</p>}
+                            {given !== null && !enough && (
+                                <>
+                                    <p className="bg-amber-50 text-amber-800 rounded p-2">That is shorter than required — record it only if consent to short notice was given.</p>
+                                    <label className="flex items-start gap-2">
+                                        <input type="checkbox" className="mt-1" checked={!!form.short_notice_consent} onChange={e => setForm(f => ({ ...f, short_notice_consent: e.target.checked }))} />
+                                        <span>Consent to short notice was given</span>
+                                    </label>
+                                    {form.short_notice_consent && (
+                                        <textarea className="input" rows={2} value={form.short_notice_note || ''} onChange={e => setForm(f => ({ ...f, short_notice_note: e.target.value }))}
+                                            placeholder="Who agreed and how" />
+                                    )}
+                                </>
+                            )}
+                            <div>
+                                <label className="label">Why it is corrected *</label>
+                                <textarea className="input" rows={2} value={form.reason || ''} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
+                                    placeholder="e.g. The notice was sent by letter on 15 October; it was entered later" />
+                            </div>
+                            {m.notice_date_note && <p className="text-xs text-gray-500">Earlier correction: {m.notice_date_note}</p>}
+                            <p className="text-xs text-gray-500">A notice document already saved keeps the old date — generate it again from the Documents tab.</p>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+                                <button type="button" className="btn-primary" disabled={busy || !form.notice_date || (form.reason || '').trim().length < 3}
+                                    onClick={() => act(() => meetingsAPI.changeNoticeDate(m.id, {
+                                        notice_date: form.notice_date, reason: form.reason,
+                                        ...(enough ? {} : { short_notice_consent: !!form.short_notice_consent, short_notice_note: form.short_notice_note || null }),
+                                    }))}>
+                                    {busy ? 'Saving…' : 'Save the date'}
                                 </button>
                             </div>
                         </div>

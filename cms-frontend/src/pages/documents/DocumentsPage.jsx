@@ -15,6 +15,7 @@ import {
     whtCertificateTemplate,
     whtAgentNoticeTemplate,
     taxComputationTemplate,
+    requisitionTemplate, // v1.87.0 — filed Requisition Forms
     previewDocument, printDocument,
 } from '../../utils/exportUtils';
 import PageHeader from '../../components/common/PageHeader';
@@ -71,6 +72,9 @@ const GENERATED_RENDERERS = {
     // before that fix, stored the same way as every other
     // SYSTEM_GENERATED document.
     FINANCIAL_REPORT_INDIVIDUAL: memberPortfolioTemplate,
+    // v1.87.0 — filed when the requester acknowledges the money: every
+    // party, position, signature and date (snapshot in template_data)
+    REQUISITION_FORM: requisitionTemplate,
 };
 
 // Uploaded file types the browser can render inline in a new tab.

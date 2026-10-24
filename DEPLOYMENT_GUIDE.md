@@ -453,6 +453,35 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Requisitions in four steps, notice date, proxy forms, role-less accounts**
+  (v1.87.0): on **both** databases, before pushing the code, run
+  `node update_live_database.js --url "…"` then `--apply --confirm=<database name>`.
+  Requisitions are now approved, then released by a different person (the
+  payment is posted at release), then acknowledged by the requester (a
+  Requisition Form is filed); ones paid before become *Released*. Meeting
+  notices take the date actually given and can be corrected; members fill in
+  proxy forms in the system (closing 48 hours before). **Accounts that never
+  received a role are removed 7 days after registering** (nightly, 03:20
+  Kampala) and cannot sign in unless invited — give every real member a role
+  before the first night after the update. Nothing to set on Render.
+- **Bank of Uganda rate check retries** (v1.86.2): no database change,
+  nothing to run — push the code.
+- **Register of members and officers** (v1.86.1): no database change. The
+  backend gains one package (`exceljs`, for the Excel download): Render
+  installs it by itself; on your computer run `npm install` in `cms` once.
+  Office › Members › Register — always made from the live records.
+- **Access control — invitations, declining unknown accounts** (v1.86.0): on
+  **both** databases, before pushing the code, run `node update_live_database.js
+  --url "…"` then `--apply --confirm=<database name>`. After the code is live,
+  **new accounts are by invitation only** (Members › Invitations); change it
+  under Members › Access Requests › Access settings (Admin). Then, in each
+  company, open Members › Access Requests, tick the accounts nobody recognises
+  (*Select the … flagged in red* picks the scanner accounts) and **Decline
+  selected** with "Block the email address" and "Remove … if it has no
+  activity" ticked. The backend now trusts one proxy hop (Render's) to read
+  the visitor's real address; nothing to set (`TRUST_PROXY_HOPS` only if that
+  ever needs changing). A nightly job (03:20 Kampala) declines accounts left
+  unverified for 3 days or without a role for 30 days — both changeable.
 - **Investments page shows what is held now** (v1.85.2): no database change,
   nothing to run — push the code.
 - **Signatories in their own positions; settling fines with savings**

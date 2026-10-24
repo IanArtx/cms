@@ -31,10 +31,19 @@ router.post('/register',
             .optional().isISO8601().withMessage('Date of birth must be a valid date'),
         body('requested_role_id')
             .optional().isInt({ min: 1 }).withMessage('Role ID must be a positive integer'),
+        // v1.86.0 — the invitation link's token, and a hidden field people never fill in
+        body('invite_token')
+            .optional({ values: 'falsy' }).isString().isLength({ min: 32, max: 128 }).withMessage('The invitation link is incomplete'),
+        body('website')
+            .optional().isString().isLength({ max: 200 }),
     ],
     validateRequest,
     authController.register
 );
+
+// --- REGISTRATION INFO (v1.86.0) — public: is registration open, by invitation, or closed;
+// with ?invite=TOKEN, the invited email address and name (to fill in the form) ---
+router.get('/registration-info', require('../controllers/accessControlController').registrationInfo);
 
 // --- VERIFY EMAIL ---
 router.get('/verify-email', authController.verifyEmail);

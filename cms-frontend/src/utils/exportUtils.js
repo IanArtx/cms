@@ -1388,6 +1388,97 @@ export const eventTemplate = (events) => {
 };
 
 // ============================================================
+// v1.87.0 — REQUISITION: request › approval › release › acknowledgement
+// One row per step: who (and their position), when, and what — plus the
+// payment details and anything the requester reported. Parties for the
+// signature blocks come from the filed form's snapshot (template_data
+// .parties) or, before it is filed, from the record itself.
+// ============================================================
+const REQ_METHOD = { BANK_TRANSFER: 'Bank transfer', MOBILE_MONEY: 'Mobile money', CASH: 'Cash', CHEQUE: 'Cheque', OTHER: 'Other' };
+const requisitionStepsSection = (req) => {
+    if (req.requisition_type && req.requisition_type !== 'EXPENSE') {
+        return documentTrail([
+            { role: 'Requested By', name: req.requested_by_name, date: req.created_at },
+            { role: 'Reviewed By', name: req.reviewed_by_name, date: req.reviewed_at },
+        ]);
+    }
+    const who = (name, position) => (name ? `${escapeText(name)}${position ? `<br><span class="muted">${escapeText(position)}</span>` : ''}` : '—');
+    const rejected = req.status === 'REJECTED';
+    const rows = [
+        {
+            step: '1. Requested',
+            by: who(req.requested_by_name, req.requested_by_position),
+            date: req.created_at,
+            what: `Asked for ${fmt.amount(req.amount_requested)}${req.required_by_date ? `, needed by ${fmt.date(req.required_by_date)}` : ''}`,
+        },
+        {
+            step: rejected ? '2. Rejected' : '2. Approved',
+            by: who(req.reviewed_by_name, req.reviewed_by_position),
+            date: req.reviewed_at,
+            what: req.reviewed_by_name
+                ? (rejected ? `Not approved${req.review_notes ? ` — ${escapeText(req.review_notes)}` : ''}`
+                    : `Approved ${fmt.amount(req.amount_approved)}${req.review_notes ? ` — ${escapeText(req.review_notes)}` : ''}`)
+                : 'Waiting for approval',
+        },
+    ];
+    if (!rejected) {
+        rows.push({
+            step: '3. Released',
+            by: who(req.released_by_name, req.released_by_position),
+            date: req.release_date || req.released_at,
+            what: req.released_by_name
+                ? `Paid ${fmt.amount(req.amount_approved)}${req.account_name ? ` from ${escapeText(req.account_name)}` : ''}${req.release_method ? ` by ${REQ_METHOD[req.release_method] || req.release_method}` : ''}${req.release_reference ? ` — ref. ${escapeText(req.release_reference)}` : ''}${req.transaction_reference ? `<br><span class="muted">Ledger entry ${escapeText(req.transaction_reference)}</span>` : ''}${req.release_notes ? `<br><span class="muted">${escapeText(req.release_notes)}</span>` : ''}${req.legacy_one_step ? '<br><span class="muted">Approved and paid in one step (before v1.87.0)</span>' : ''}`
+                : (req.status === 'APPROVED' ? 'Waiting for Treasury to release the money' : '—'),
+        });
+        rows.push({
+            step: '4. Received',
+            by: req.acknowledged_at ? who(req.requested_by_name, req.requested_by_position) : '—',
+            date: req.acknowledged_date || req.acknowledged_at,
+            what: req.acknowledged_at
+                ? `Confirmed receiving ${fmt.amount(req.amount_approved)}${req.acknowledgement_note ? ` — ${escapeText(req.acknowledgement_note)}` : ''}`
+                : (req.status === 'RELEASED' ? 'Waiting for the requester to confirm' : '—'),
+        });
+    }
+    if (req.status === 'REVERSED') {
+        rows.push({ step: 'Reversed', by: '—', date: req.reversed_at, what: escapeText(req.reversal_reason || 'The payment was reversed.') });
+    }
+    return `
+    <div class="section">
+        <div class="section-title">Requisition Trail</div>
+        <table>
+            <thead><tr><th style="width:90px;">Step</th><th style="width:150px;">By</th><th style="width:85px;">Date</th><th>What</th></tr></thead>
+            <tbody>${rows.map(r => `
+                <tr><td class="trail-role">${r.step}</td><td>${r.by}</td><td>${r.date ? fmt.date(r.date) : '—'}</td><td>${r.what}</td></tr>`).join('')}
+            </tbody>
+        </table>
+        ${req.ack_issue_note ? `<p style="font-size:10px;color:#92400e;margin-top:6px;">Problem reported by the requester${req.ack_issue_at ? ` on ${fmt.date(req.ack_issue_at)}` : ''}: ${escapeText(req.ack_issue_note)}</p>` : ''}
+    </div>`;
+};
+// Before the form is filed: the parties from the record (the same person
+// doing two steps is shown once, e.g. "Requested and received by").
+export const requisitionLiveParties = (req) => {
+    const steps = [
+        { action: 'Requested by', id: req.requested_by, name: req.requested_by_name, position: req.requested_by_position, sig: req.requested_by_signature, at: req.created_at },
+        req.status === 'REJECTED' ? null : { action: 'Approved by', id: req.reviewed_by, name: req.reviewed_by_name, position: req.reviewed_by_position, sig: req.reviewed_by_signature, at: req.reviewed_at },
+        { action: 'Released by', id: req.released_by, name: req.released_by_name, position: req.released_by_position, sig: req.released_by_signature, at: req.released_at },
+        req.acknowledged_at ? { action: 'Received by', id: req.requested_by, name: req.requested_by_name, position: req.requested_by_position, sig: req.requested_by_signature, at: req.acknowledged_at } : null,
+    ].filter(x => x && x.name);
+    const out = [];
+    for (const st of steps) {
+        const same = out.find(o => (st.id && o.id === st.id) || (!st.id && o.name === st.name));
+        if (same) {
+            same.actions.push(st.action.replace(/^(\w)/, m => m.toLowerCase()));
+            if (st.at && (!same.at || new Date(st.at) > new Date(same.at))) same.at = st.at;
+        } else out.push({ ...st, actions: [st.action] });
+    }
+    return out.map(o => ({
+        action: o.actions.length === 1 ? o.actions[0]
+            : `${o.actions.map(a => a.replace(/\s+by$/i, '')).slice(0, -1).join(', ')} and ${o.actions[o.actions.length - 1].replace(/\s+by$/i, '')} by`,
+        name: o.name, position: o.position, signature_url: o.sig || null, at: o.at,
+    }));
+};
+
+// ============================================================
 // TEMPLATE 6: REQUISITION STATEMENT
 // ============================================================
 export const requisitionTemplate = (requisitions) => {
@@ -1405,9 +1496,9 @@ export const requisitionTemplate = (requisitions) => {
 <body>
 <div class="page">
     ${letterhead(
-        isSingle ? 'Requisition Statement' : 'Requisitions Report',
-        isSingle ? req.reference_code : `${list.length} requisitions`,
-        new Date()
+        isSingle ? (req.requisition_kind === 'REQUISITION_FORM' ? 'Requisition Form' : 'Requisition Statement') : 'Requisitions Report',
+        isSingle ? (req.form_reference && req.requisition_kind === 'REQUISITION_FORM' ? `${req.form_reference} · ${req.reference_code}` : req.reference_code) : `${list.length} requisitions`,
+        isSingle && req.generated_date ? new Date(req.generated_date) : new Date()
     )}
 
     <div class="doc-title">
@@ -1452,14 +1543,15 @@ export const requisitionTemplate = (requisitions) => {
             <div class="meta-value">${fmt.date(req.required_by_date)}</div>
         </div>
         <div class="meta-item">
-            <div class="meta-label">Reviewed By</div>
-            <div class="meta-value">${req.reviewed_by_name || '—'}</div>
+            <div class="meta-label">Paid From</div>
+            <div class="meta-value">${req.account_name ? `${escapeText(req.account_name)}${req.currency_code ? ` (${req.currency_code})` : ''}` : '—'}</div>
         </div>
     </div>
 
     <div class="section">
         <div class="section-title">Purpose</div>
         <p style="font-size:11px;color:#374151;line-height:1.7;">${req.purpose || '—'}</p>
+        ${req.investment_name ? `<p style="font-size:11px;color:#374151;">For the investment <strong>${escapeText(req.investment_name)}</strong>${req.investment_reference ? ` (${req.investment_reference})` : ''}</p>` : ''}
     </div>
 
     ${req.description ? `
@@ -1468,29 +1560,10 @@ export const requisitionTemplate = (requisitions) => {
         <p style="font-size:11px;color:#374151;line-height:1.7;">${req.description}</p>
     </div>` : ''}
 
-    ${req.review_notes ? `
-    <div class="section">
-        <div class="section-title">Review Notes</div>
-        <p style="font-size:11px;color:#374151;line-height:1.7;">${req.review_notes}</p>
-    </div>` : ''}
+    ${requisitionStepsSection(req)}
 
-    ${documentTrail([
-        { role: 'Requested By', name: req.requested_by_name, date: req.created_at },
-        { role: 'Reviewed By',  name: req.reviewed_by_name,  date: req.reviewed_at },
-    ])}
-
-    <div class="signature-section">
-        <div class="signature-block">
-            Requested By: ${req.requested_by_name || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
-        <div class="signature-block">
-            Approved By: ${req.reviewed_by_name || '_______________'}<br>
-            Signature: _______________<br>
-            Date: _______________
-        </div>
-    </div>
+    ${partiesSignatureSection(req.parties && req.parties.length ? req.parties : requisitionLiveParties(req))}
+    ${req.form_reference && req.requisition_kind !== 'REQUISITION_FORM' ? `<p class="muted" style="font-size:10px;margin-top:10px;">Filed as ${escapeText(req.form_reference)} in Documents when the money was acknowledged.</p>` : ''}
     ` : `
     <div class="section">
         <div class="section-title">Requisition List</div>

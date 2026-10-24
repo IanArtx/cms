@@ -55,12 +55,59 @@ const fetchWithTimeout = async (url, options = {}) => {
 };
 
 // ------------------------------------------------------------
+// v1.86.2 — try again when BoU's website has a passing problem.
+// Reported: "The BoU rates file could not be downloaded (status 502)".
+// A 502 / 503 / 504 (BoU's server or the gateway in front of it not
+// answering properly), 429 (too many requests), 500, a timeout or no
+// connection are usually brief, so the request is repeated before the
+// check is reported as failed:
+//   scheduled checks: 3 tries, 1 and then 2 minutes apart;
+//   "Check BoU now":  3 tries, 5 and then 10 seconds apart (a person waits).
+// Any other answer (404 file gone, 403 refused …) is not repeated.
+// ------------------------------------------------------------
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRY_WAITS = { patient: [60000, 120000], quick: [5000, 10000] };
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const STATUS_TEXT = {
+    429: 'too many requests', 500: 'server error at Bank of Uganda', 502: 'Bank of Uganda\'s website did not answer properly (bad gateway)',
+    503: 'Bank of Uganda\'s website is unavailable', 504: 'Bank of Uganda\'s website took too long to answer (gateway timeout)',
+    403: 'refused by Bank of Uganda\'s website', 404: 'the file is no longer at this address',
+};
+const describeStatus = (st) => `status ${st}${STATUS_TEXT[st] ? ` — ${STATUS_TEXT[st]}` : ''}`;
+const waitWords = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
+
+// Returns { res, tries } for an OK answer; throws { message, tries } otherwise.
+const fetchWithRetry = async (url, options = {}, { patient = true } = {}) => {
+    const waits = patient ? RETRY_WAITS.patient : RETRY_WAITS.quick;
+    let last = '';
+    for (let i = 0; i <= waits.length; i++) {
+        let retryable = true;
+        try {
+            const res = await fetchWithTimeout(url, options);
+            if (res.ok) return { res, tries: i + 1 };
+            last = describeStatus(res.status);
+            retryable = RETRY_STATUSES.has(res.status);
+        } catch (err) {
+            last = err.message; // timeout / could not be reached
+        }
+        if (!retryable || i === waits.length) {
+            const tried = i + 1 > 1 ? `; tried ${i + 1} times, ${waits.slice(0, i).map(waitWords).join(' and ')} apart` : '';
+            const e = new Error(`${last}${tried}`);
+            e.tries = i + 1;
+            throw e;
+        }
+        await sleep(waits[i]);
+    }
+    throw new Error(last);
+};
+
+// ------------------------------------------------------------
 // The workbook's current address (and when BoU last replaced it).
 // ------------------------------------------------------------
-const findOpeningRatesFile = async () => {
+const findOpeningRatesFile = async ({ patient = true } = {}) => {
+    let why = '';
     try {
-        const res = await fetchWithTimeout(BOU_PAGE_API, { headers: { Accept: 'application/json' } });
-        if (!res.ok) throw new Error(`status ${res.status}`);
+        const { res } = await fetchWithRetry(BOU_PAGE_API, { headers: { Accept: 'application/json' } }, { patient });
         const json = await res.json();
         const files = [];
         for (const group of json?.data?.chart || []) {
@@ -71,8 +118,9 @@ const findOpeningRatesFile = async () => {
         }
         const hit = files.find(f => /opening\s*rates/i.test(f.name)) || files.find(f => /\.xlsx$/i.test(f.url));
         if (hit) return { url: new URL(hit.url, BOU_SITE).href, updatedAt: hit.updatedAt, name: hit.name, discovered: true };
-    } catch (_) { /* fall back to the last known address */ }
-    return { url: `${BOU_SITE}${BOU_FALLBACK_FILE}`, updatedAt: null, name: 'OPENING RATES.xlsx', discovered: false };
+        why = 'the page lists no opening-rates file';
+    } catch (err) { why = err.message; /* fall back to the last known address */ }
+    return { url: `${BOU_SITE}${BOU_FALLBACK_FILE}`, updatedAt: null, name: 'OPENING RATES.xlsx', discovered: false, why };
 };
 
 // ------------------------------------------------------------
@@ -229,10 +277,20 @@ const parseOpeningRatesWorkbook = (buf) => {
     return { rateDate, kind: kind || 'OPENING', rates };
 };
 
-const fetchBouOpeningRates = async () => {
-    const file = await findOpeningRatesFile();
-    const res = await fetchWithTimeout(`${file.url}${file.url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`The BoU rates file could not be downloaded (status ${res.status}).`);
+// patient: true for the scheduled checks (retries minutes apart), false
+// for "Check BoU now" (retries seconds apart).
+const fetchBouOpeningRates = async ({ patient = true } = {}) => {
+    const file = await findOpeningRatesFile({ patient });
+    // where the address came from — tells an outage apart from a moved file
+    const whereFrom = file.discovered
+        ? `address ${file.url}, as listed on BoU's exchange-rates page`
+        : `last known address ${file.url}, because BoU's exchange-rates page could not be read (${file.why || 'unknown reason'})`;
+    let res;
+    try {
+        ({ res } = await fetchWithRetry(`${file.url}${file.url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' }, { patient }));
+    } catch (err) {
+        throw new Error(`The BoU rates file could not be downloaded (${err.message}). Tried the ${whereFrom}.`);
+    }
     const len = Number(res.headers.get('content-length') || 0);
     if (len > MAX_FILE_BYTES) throw new Error('The BoU rates file is unexpectedly large — not read.');
     const buf = Buffer.from(await res.arrayBuffer());

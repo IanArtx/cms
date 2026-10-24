@@ -403,7 +403,7 @@ const markRequisitionsReversed = async (client, { reversalOf, reason, userId }) 
     const r = await client.query(`
         SELECT q.id, q.transaction_id, rr.reference_code FROM requisitions q
         JOIN references_registry rr ON rr.id = q.reference_id
-        WHERE q.transaction_id = ANY($1::int[]) AND q.status = 'APPROVED' FOR UPDATE OF q`, [ids]);
+        WHERE q.transaction_id = ANY($1::int[]) AND q.status IN ('APPROVED', 'RELEASED', 'ACKNOWLEDGED') FOR UPDATE OF q -- v1.87.0 — paid = released (and maybe acknowledged)`, [ids]);
     for (const q of r.rows) {
         await client.query(`
             UPDATE requisitions SET status = 'REVERSED', reversed_at = NOW(), reversed_by = $2,

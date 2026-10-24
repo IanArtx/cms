@@ -64,8 +64,12 @@ export const GENERAL_CHAPTERS = [
         sections: [
             {
                 heading: 'Create your account (Register)',
+                text: [
+                    'Accounts are made by invitation (unless an Admin has opened registration to everyone). An Admin sends you an email "You are invited to …". Click "Create my account" in it: the Register page opens with your email address already filled in. The link works only for that address, only once, and expires after a few days — ask for a new one if it has. Without an invitation the Register page explains that accounts are by invitation only.',
+                    'When you register from an invitation your email is already confirmed, so you can sign in straight away.',
+                ],
                 steps: [
-                    'Open the system\'s web address and click "Register here" under the sign-in box.',
+                    'Open the link in your invitation email (or, if registration is open to everyone, open the system\'s web address and click "Register here" under the sign-in box).',
                     'Fill in Personal Information: first and last name, email address, phone number, nationality, ID / passport number and the other details asked for.',
                     'Under Security, choose a password: at least 8 characters, with a capital letter, a number and a special character (for example ! or #).',
                     'Under Role Request (optional), pick the role you expect to have (for example Shareholder or Treasurer) and give a short reason. This is only a request — an Admin decides.',
@@ -76,7 +80,8 @@ export const GENERAL_CHAPTERS = [
                 heading: 'Confirm your email address',
                 steps: [
                     'Open the email the system sent you and click the confirmation link.',
-                    'The link works for 24 hours. If it has expired, sign in and ask for a new one, or ask an Admin.',
+                    'Not needed if you registered from an invitation.',
+                    'The link works for 24 hours. If it has expired, sign in and ask for a new one, or ask an Admin. An account whose email is not confirmed within a few days (3 by default) is declined automatically; an Admin can restore it.',
                 ],
             },
             {

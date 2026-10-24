@@ -1,8 +1,12 @@
 // ============================================================
 // REQUISITIONS PAGE
 // Any member can submit a money request.
-// Treasurer/Directors approve or reject.
-// Approval automatically posts a transaction.
+// v1.87.0 — a money request goes: requested › approved (Treasurer,
+// Assistant Treasurer, Director or Admin; no money moves) › released
+// (Treasury, never the approver) › acknowledged (the requester confirms
+// and signs; the Requisition Form is then filed in Documents).
+// Member payments to be recorded (contribution, savings, side fund, fine)
+// keep one step: the Treasurer's approval records them.
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -24,6 +28,8 @@ import {
 import { PaperClipIcon, ArrowUturnLeftIcon } from '@heroicons/react/24/outline';
 import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
 import DraftNotice from '../../components/common/DraftNotice';
+import { StepTrail, ReleaseModal, AcknowledgeModal } from './requisitionSteps'; // v1.87.0
+import { BanknotesIcon, HandThumbUpIcon } from '@heroicons/react/24/outline';
 
 // ============================================================
 // PRIORITY BADGE
@@ -367,7 +373,8 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
     const forInvestment = isExpenseReq && !!requisition.investment_id;
     const isSideFund = requisition.requisition_type === 'SIDE_FUND_CONTRIBUTION';
     const isFine = requisition.requisition_type === 'FINE_PAYMENT';
-    const noAccountNeeded = isContribution || isSideFund;
+    // v1.87.0 — approving a money request moves no money (released later)
+    const noAccountNeeded = isContribution || isSideFund || isExpenseReq;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -411,7 +418,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                             {requisition.title}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
-                            {noAccountNeeded ? 'Contributed by' : 'Requested by'}{' '}
+                            {noAccountNeeded && !isExpenseReq ? 'Contributed by' : 'Requested by'}{' '}
                             {requisition.requested_by_name} •{' '}
                             {requisition.category_trail}
                         </p>
@@ -419,13 +426,13 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                             {isContribution ? 'Amount Contributed: ' : isSideFund ? 'Amount Paid: ' : isFine ? 'Fine Amount: ' : 'Amount Requested: '}
                             {parseFloat(requisition.amount_requested).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                         </p>
-                        {noAccountNeeded && requisition.contribution_date && (
+                        {noAccountNeeded && !isExpenseReq && requisition.contribution_date && (
                             <p className="text-xs text-gray-500 mt-1">
                                 Date paid: {requisition.contribution_date}
                             </p>
                         )}
                         <p className="text-xs text-gray-500 mt-1">
-                            {noAccountNeeded ? 'How they paid: ' : 'Purpose: '}
+                            {noAccountNeeded && !isExpenseReq ? 'How they paid: ' : 'Purpose: '}
                             {requisition.purpose}
                         </p>
                         {forInvestment && (
@@ -436,6 +443,10 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                     </div>
                     {isExpenseReq && (
                         <div className="space-y-2 mb-4">
+                            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700">
+                                Approving does not pay anything yet. After you approve, someone else in Treasury
+                                releases the money, and {requisition.requested_by_name || 'the requester'} then confirms receiving it.
+                            </div>
                             <RequisitionDocuments requisition={requisition} onCount={setDocCount} />
                             <div className="bg-gray-50 rounded-lg p-3">
                                 <p className="text-xs font-semibold text-gray-700 mb-1">Before it can be paid</p>
@@ -503,7 +514,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                         )}
                         <div>
                             <label className="label">
-                                {noAccountNeeded ? 'Amount to Acknowledge' : 'Amount to Approve'}
+                                {noAccountNeeded && !isExpenseReq ? 'Amount to Acknowledge' : 'Amount to Approve'}
                                 <span className="text-gray-400 font-normal ml-1">
                                     (leave blank to approve full amount)
                                 </span>
@@ -533,6 +544,7 @@ const ApproveModal = ({ isOpen, requisition, onClose, onSuccess, accounts }) => 
                                     ? 'Processing...'
                                     : isContribution ? 'Approve & Record Contribution'
                                     : isSideFund ? 'Approve & Record Side Fund Payment'
+                                    : isExpenseReq ? 'Approve'
                                     : 'Approve & Pay'}
                             </button>
                         </div>
@@ -632,6 +644,8 @@ const RequisitionsPage = () => {
     const [preview, setPreview] = useState(null);
     const [docsReq, setDocsReq] = useState(null);       // v1.80.0
     const [reverseReq, setReverseReq] = useState(null); // v1.80.0
+    const [releaseReq, setReleaseReq] = useState(null); // v1.87.0
+    const [ackReq,     setAckReq]     = useState(null); // v1.87.0
     const [notice, setNotice] = useState(null);
 
     const canApprove = hasPermission('FINANCE_TRANSACTION_CREATE') &&
@@ -646,8 +660,21 @@ const RequisitionsPage = () => {
     const isTreasuryRole = hasRole(['Treasurer', 'Assistant Treasurer']);
     // v1.80.0 — reversing a paid requisition = asking for the reversal of its
     // payment (the same Treasurer-only, second-person rule as Transactions).
-    const canReverse = (row) => hasRole('Treasurer') && row.status === 'APPROVED' && row.transaction_id
+    // v1.87.0 — paid = released (and perhaps acknowledged)
+    const canReverse = (row) => hasRole('Treasurer') && ['APPROVED', 'RELEASED', 'ACKNOWLEDGED'].includes(row.status) && row.transaction_id
         && row.requisition_type === 'EXPENSE' && !row.pending_reversal_id;
+    // v1.87.0 — release: Treasury, never the approver or the requester
+    const isReleaser = hasRole(['Treasurer', 'Assistant Treasurer', 'Admin']);
+    const canRelease = (row) => isReleaser && row.requisition_type === 'EXPENSE' && row.status === 'APPROVED'
+        && row.reviewed_by !== user?.id && row.requested_by !== user?.id;
+    const releaseButton = (row) => canRelease(row) && (
+        <button onClick={() => setReleaseReq(row)} className="p-1.5 rounded-lg bg-teal-50 text-teal-700 hover:bg-teal-100 transition-colors" title="Release the money">
+            <BanknotesIcon className="h-4 w-4" />
+        </button>
+    );
+    const waitingRelease = (row) => isReleaser && row.requisition_type === 'EXPENSE' && row.status === 'APPROVED' && !canRelease(row) && (
+        <span className="text-[11px] text-gray-400 self-center" title="You approved or requested it — someone else in Treasury releases the money">another person releases</span>
+    );
 
     // v1.80.0 — investment, purpose, documents and reversal under the title
     const extras = (row) => (
@@ -811,7 +838,12 @@ const RequisitionsPage = () => {
         },
         {
             header: 'Status',
-            render: row => <StatusBadge status={row.status} />,
+            render: row => (
+                <div>
+                    <StatusBadge status={row.status} label={row.status === 'RELEASED' ? 'Released — confirm receipt' : null} />
+                    <StepTrail r={row} />
+                </div>
+            ),
         },
         {
             header: 'Review Notes',
@@ -833,6 +865,16 @@ const RequisitionsPage = () => {
                             title="Edit"
                         >
                             <PencilIcon className="h-4 w-4" />
+                        </button>
+                    )}
+                    {/* v1.87.0 — the requester confirms receiving the money */}
+                    {row.status === 'RELEASED' && row.requested_by === user?.id && (
+                        <button
+                            onClick={() => setAckReq(row)}
+                            className="px-2 py-1 rounded-lg bg-teal-600 text-white text-xs font-medium hover:bg-teal-700 transition-colors flex items-center gap-1"
+                            title="Confirm you received the money"
+                        >
+                            <HandThumbUpIcon className="h-4 w-4" /> Acknowledge receipt
                         </button>
                     )}
                     {reverseButton(row)}
@@ -931,7 +973,12 @@ const RequisitionsPage = () => {
         },
         {
             header: 'Status',
-            render: row => <StatusBadge status={row.status} />,
+            render: row => (
+                <div>
+                    <StatusBadge status={row.status} label={row.status === 'APPROVED' && row.requisition_type === 'EXPENSE' ? 'Approved — to release' : null} />
+                    <StepTrail r={row} />
+                </div>
+            ),
         },
         {
             header: 'Actions',
@@ -968,6 +1015,18 @@ const RequisitionsPage = () => {
                             </button>
                         </>
                     )}
+                    {releaseButton(row)}
+                    {waitingRelease(row)}
+                    {/* v1.87.0 — an approved request can still be rejected until its money is released */}
+                    {row.status === 'APPROVED' && row.requisition_type === 'EXPENSE' && canApprove && (
+                        <button
+                            onClick={() => setRejectReq(row)}
+                            className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                            title="Reject (the money has not been released)"
+                        >
+                            <XMarkIcon className="h-4 w-4" />
+                        </button>
+                    )}
                     {reverseButton(row)}
                     <button
                         onClick={() => printDocument(requisitionTemplate(row), row.reference_code)}
@@ -982,13 +1041,14 @@ const RequisitionsPage = () => {
         },
     ];
 
-    const pendingCount = allReqs.filter(r => r.status === 'PENDING').length;
+    // v1.87.0 — waiting for approval, or approved and waiting for someone to release
+    const pendingCount = allReqs.filter(r => r.status === 'PENDING' || (r.status === 'APPROVED' && r.requisition_type === 'EXPENSE' && canRelease(r))).length;
 
     return (
         <div>
             <PageHeader
                 title="Requisitions"
-                subtitle="Money requests — submit, review and approve"
+                subtitle="Money requests — requested, approved, released, acknowledged"
                 actions={
                     <button
                         onClick={() => { setEditingRecord(null); setShowCreate(true); }}
@@ -1070,7 +1130,7 @@ const RequisitionsPage = () => {
                     {/* Status Filter */}
                     <div className="card mb-4">
                         <div className="flex gap-2 flex-wrap">
-                            {['', 'PENDING', 'APPROVED', 'REJECTED', 'REVERSED'].map(s => (
+                            {['', 'PENDING', 'APPROVED', 'RELEASED', 'ACKNOWLEDGED', 'REJECTED', 'REVERSED'].map(s => (
                                 <button
                                     key={s}
                                     onClick={() => {
@@ -1137,6 +1197,15 @@ const RequisitionsPage = () => {
                 </div>
             )}
             <ReversalModal requisition={reverseReq} onClose={() => setReverseReq(null)} onDone={(msg) => { setNotice(msg); handleSuccess(); }} />
+            {/* v1.87.0 — release the money; acknowledge receipt */}
+            {releaseReq && (
+                <ReleaseModal requisition={releaseReq} accounts={accounts} onClose={() => setReleaseReq(null)}
+                    onSuccess={(msg) => { setNotice(msg); handleSuccess(); }} />
+            )}
+            {ackReq && (
+                <AcknowledgeModal requisition={ackReq} onClose={() => setAckReq(null)}
+                    onSuccess={(msg) => { setNotice(msg); handleSuccess(); }} />
+            )}
         </div>
     );
 };

@@ -1,8 +1,8 @@
 # The CMS Bible
 ### The Complete Technical Reference for the ZWECK TUKULA Ltd Company Management System
 
-**Version documented:** 1.87.0
-**Last updated:** 24 October 2026
+**Version documented:** 1.87.1
+**Last updated:** 27 October 2026
 **Status:** Living document — update this file in the same session as any code change (see "How to Keep This Document Alive" near the end).
 
 ---
@@ -2891,6 +2891,20 @@ Requested directly: "the flow should follow: requisition > approval > release > 
 
 Diagram `docs/v1.87.0_requisition_steps_proxies_access.mermaid`.
 
+#### 56. Bank of Uganda's New Daily Rate Card (v1.87.1)
+
+Reported (27 Oct 2026, screenshot): the daily check said "Nothing new from Bank of Uganda (table for 2026-10-22)" every time — also with *Check BoU now* — while bou.or.ug showed newer rates since Thursday 22 Oct.
+
+**56.1 Cause — BoU changed how it publishes.** Checked on BoU's site on 27 Oct: the exchange-rates page (`/interest_rates_exchange_rates`) now shows the rates in an embedded **Power BI** report. The "OPENING RATES.xlsx" workbook the system read since v1.83.0 (§47) is still listed by `/api/interest-rate`, but BoU last replaced it on **22 Oct 2026 07:14 UTC** — so every check found the same 22 Oct table and correctly said "nothing new". The report is fed by a new file in BoU's public file list (`/api/upload/files`): **"Daily Exchange Rate Cards_Website.xlsx"**, uploaded again under a new address each day (26 Oct: `/uploads/Daily_Exchange_Rate_Cards_Website_38b55d185a.xlsx`, 09:29 UTC = 12:29 Kampala). Its layout: a heading "Currency (26 October 2026)" | Mid Rate | Buying | Selling, then one row per currency and session — "USD (Opening)", "USD (Midday)", "USD (Closing)", and the same for **GBP, EUR, KES, TZS, ZAR** (closing rows blank until the afternoon). 26 Oct: EUR opening middle 4,975.579232 (buying 4,969.747744, selling 4,981.41072); USD opening 4,434.76.
+
+**56.2 Fix — `bouRatesService`.** `fetchBouOpeningRates` now (1) asks BoU's file list for the newest "Daily Exchange Rate Cards" `.xlsx` (`?filters[name][$containsi]=…&sort=createdAt:desc`, no caching), (2) downloads it and reads it with the new `parseRateCardWorkbook` (date from the "Currency (<day> <month> <year>)" heading; columns by their headings Mid / Buying / Selling; per currency the **Opening** row, or Midday if the opening one is blank, or Closing; values UGX per one unit, kept to 6 decimals); (3) only if the card cannot be found or read, falls back to the old OPENING RATES workbook, and the check log says why. When both fail the message names what happened to each. The suggestion's note now names the session and the file ("BoU opening rates for 2026-10-26, middle rate, "Daily Exchange Rate Cards_Website.xlsx" (file published 2026-10-26 09:29 UTC)"). Approval, flags, the 3 % jump limit and "hand-entered rates are never replaced" are unchanged.
+
+**56.3 No more quiet "nothing new".** When nothing new is found and the newest table is more than 4 days old, the message now says so: "That table is N days old — Bank of Uganda has not published a newer one where the system reads it. If BoU's website shows newer rates, enter them by hand (Set Rate) and tell the administrator." The check log also records the file name, its upload time and the session used.
+
+**56.4 Limits.** The card has six currencies (USD, GBP, EUR, KES, TZS, ZAR); the old workbook had about 34. Another currency added to the company would get no suggestion from BoU (enter it by hand). The card holds only the latest day, so days missed while the old file was frozen (23 Oct) are not filled automatically — enter them by hand if a transaction needs that day's rate. The card is uploaded around 12:30 Kampala, so the 10:15 check usually finds the previous day's table and the 13:15 check finds the new one.
+
+No database change. Diagram `docs/v1.87.1_bou_rate_card.mermaid`.
+
 ---
 
 ## 5. Deployment Guide
@@ -3129,6 +3143,7 @@ Derived from the `cms/migration_vX.X.0.sql` files' own header comments — each 
 
 | Version | What changed |
 |---|---|
+| 1.87.1 | **Bank of Uganda's new daily rate card.** Reported: the daily check kept saying "Nothing new (table for 2026-10-22)" while bou.or.ug showed newer rates. Cause: BoU now publishes through a Power BI report and stopped replacing the "OPENING RATES.xlsx" workbook on 22 Oct 2026. The check now reads BoU's new "Daily Exchange Rate Cards_Website.xlsx" (newest copy from BoU's public file list; USD, GBP, EUR, KES, TZS, ZAR; opening rate, else midday), falling back to the old workbook; a "nothing new" on a table older than 4 days now says so. No database change. See §56. |
 | 1.87.0 | **Requisitions in four steps, settable notice date, proxy forms in the system, accounts that never became members removed.** Money-out requisitions: requested › approved (Treasurer, Assistant Treasurer, Director, Admin) › released by a different person (account, date, method, payment reference — the payment is posted here) › received, acknowledged by the requester with signature; a Requisition Form (`DOC-REQF-…`) showing every party, what they did and their signature is filed and linked to the payment; requisitions paid in one step before become RELEASED so they can still be acknowledged. Meetings: the notice date is entered (not the entry date) and can be corrected with a reason on meetings not closed; members fill in and sign a proxy form in the system (a person in the system or a typed name, alternate, voting instructions), closing 48 hours before the meeting, the Secretary records paper / late ones; filed as Form of Proxy. Accounts without a role appear in no picker, are removed after 7 days (invited people waiting are kept; accounts with records are declined instead) and cannot sign in unless invited or a member. The "Something went wrong" on deleting an account (≈270 parallel queries exhausting the connection pool) is fixed: one query, plain-words refusal. Migration `migration_v1.87.0.sql`. See §55. |
 | 1.86.2 | **Bank of Uganda rate check tries again.** After a reported "status 502" (BoU's website failing), each check repeats the request up to 3 times on a timeout or 429/5xx — 1 and 2 minutes apart for the scheduled checks, 5 and 10 seconds for *Check BoU now* — and the failure message says in words what went wrong and which address was tried. No database change. See §54. |
 | 1.86.1 | **Register of members and officers, always up to date and downloadable.** Office › Members › **Register**: every active member with roles (since when), personal details, shares held and registered with URSB, Membership Agreement and sign-in security; roles and their holders; former members and officers with dates. Made from the live records at each view/download — Excel (4 sheets), CSV, or Print / Save as PDF on letterhead. Open to `USER_MANAGE`, Admin, Secretary, Assistant Secretary, Directors; every download audited. New backend package `exceljs`. No database change. See §53. |

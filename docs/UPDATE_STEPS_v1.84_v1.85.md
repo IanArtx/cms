@@ -1,4 +1,4 @@
-# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 — step by step
+# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 + v1.87.1 — step by step
 
 This covers **your computer (local)** first, then **both online companies**. Do the local part first: if something goes wrong there, nothing online is affected.
 
@@ -29,6 +29,8 @@ The versions:
   - **Proxy forms** are filled in and signed in the system by members who cannot attend (a person in the system or a typed name). They close 48 hours before the meeting; the Secretary can record a paper or late one.
   - **Accounts without a role** no longer appear in any list to pick from, cannot sign in unless invited, and are removed after 7 days. Invited people waiting for their role are kept; an account with records is declined instead.
   - **Deleting an account** no longer fails with "Something went wrong".
+- **v1.87.1** (no database change)
+  - Bank of Uganda stopped updating its old "OPENING RATES" file on 22 Oct 2026 (its website now shows the rates in a Power BI report). The daily rate check now reads BoU's new daily file, "Daily Exchange Rate Cards", so new rates are suggested again. It covers USD, GBP, EUR, KES, TZS and ZAR.
 
 > Safety rules
 > - Paste the Render database URL only into your own terminal. Never paste it into a chat or a document.
@@ -250,7 +252,7 @@ git push
 ```
 
 ### C2. Wait for Render
-Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.87.0**.
+Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.87.1**.
 
 ## Part D — In each online company
 1. **Share capital › Registered (URSB) › Issue certificates for registered shares**, once.

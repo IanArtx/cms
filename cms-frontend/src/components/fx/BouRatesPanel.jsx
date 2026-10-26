@@ -1,7 +1,7 @@
 // ============================================================
 // BANK OF UGANDA RATES PANEL (v1.83.0) — Money › Accounts
 //
-// Every weekday the system reads Bank of Uganda's "OPENING RATES" table
+// Every weekday the system reads Bank of Uganda's daily rates (since v1.87.1 the "Daily Exchange Rate Cards" file; before, the "OPENING RATES" table)
 // (bou.or.ug) and SUGGESTS that day's rate for each of the company's
 // currencies. Nothing enters the books by itself: the Treasurer,
 // Assistant Treasurer or an Admin approves (or rejects, with a reason)

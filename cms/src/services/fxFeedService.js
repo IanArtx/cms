@@ -208,7 +208,7 @@ const runFeed = async ({ trigger = 'SCHEDULE', userId = null } = {}) => {
         }
 
         const detail = primary.source === 'BOU'
-            ? `BoU ${primary.kind ? primary.kind.toLowerCase() : 'opening'} rates for ${rateDate}, middle rate${primary.fileUpdatedAt ? ` (file published ${String(primary.fileUpdatedAt).replace('T', ' ').slice(0, 16)} UTC)` : ''}`
+            ? `BoU ${(found.session || primary.kind || 'opening').toLowerCase()} rates for ${rateDate}, middle rate${primary.fileName ? `, "${primary.fileName}"` : ''}${primary.fileUpdatedAt ? ` (file published ${String(primary.fileUpdatedAt).replace('T', ' ').slice(0, 16)} UTC)` : ''}`
             : `AllRatesToday copy of the BoU table for ${rateDate}, reference (middle) rate`;
         const ins = await query(`
             INSERT INTO fx_rate_suggestions
@@ -227,10 +227,16 @@ const runFeed = async ({ trigger = 'SCHEDULE', userId = null } = {}) => {
     const runStatus = pending.length ? 'NEW_SUGGESTIONS' : 'NOTHING_NEW';
     const message = pending.length
         ? `${SOURCE_NAME[primary.source]} rates for ${rateDate}: ${pending.map(m => `${m.code} ${fmtRate(m.rate)}${m.flagged ? ' (flagged)' : ''}`).join(', ')} — waiting for approval.`
-        : `Nothing new from ${SOURCE_NAME[primary.source]} (table for ${rateDate}).`;
+        : `Nothing new from ${SOURCE_NAME[primary.source]} (table for ${rateDate}`
+            + `${primary.fileName ? `, file "${primary.fileName}"` : ''}).`
+            // v1.87.1 — say so when the newest table is old, instead of a quiet "nothing new"
+            + (daysBetween(rateDate, today) > 4
+                ? ` That table is ${daysBetween(rateDate, today)} days old — Bank of Uganda has not published a newer one where the system reads it. If BoU's website shows newer rates, enter them by hand (Set Rate) and tell the administrator.`
+                : '')
+            + (primary.note ? ` (${primary.note})` : '');
     await logRun({
         trigger, runBy: userId, status: runStatus, sourceUsed: primary.source, rateDate, suggestions: pending.length,
-        message, details: { made, skipped, errors, crossCheck: other ? other.source : null, fileUrl: primary.fileUrl || null },
+        message, details: { made, skipped, errors, crossCheck: other ? other.source : null, fileUrl: primary.fileUrl || null, fileName: primary.fileName || null, fileUpdatedAt: primary.fileUpdatedAt || null, kind: primary.kind || null, note: primary.note || null },
     });
 
     if (pending.length) {

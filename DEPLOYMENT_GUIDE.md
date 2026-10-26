@@ -453,6 +453,11 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Bank of Uganda's new daily rate card** (v1.87.1): no database change,
+  nothing to run — push the code. BoU stopped updating its "OPENING RATES"
+  workbook on 22 Oct 2026; the daily check now reads BoU's new "Daily Exchange
+  Rate Cards" file (USD, GBP, EUR, KES, TZS, ZAR). Enter 23 Oct 2026 by hand if
+  a transaction needs that day's rate.
 - **Requisitions in four steps, notice date, proxy forms, role-less accounts**
   (v1.87.0): on **both** databases, before pushing the code, run
   `node update_live_database.js --url "…"` then `--apply --confirm=<database name>`.

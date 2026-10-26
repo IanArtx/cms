@@ -1,0 +1,11 @@
+%% v1.87.1 — Bank of Uganda's new daily rate card
+flowchart TD
+    S["Check: scheduled (10:15 · 13:15 · 16:15 Kampala) or 'Check BoU now'"] --> L["1. BoU file list /api/upload/files\nnewest 'Daily Exchange Rate Cards' .xlsx"]
+    L -->|"found"| D["2. download the card\n(no caching, retries as in v1.86.2)"]
+    D --> P["3. read: 'Currency (26 October 2026)'\nUSD/GBP/EUR/KES/TZS/ZAR\nOpening row (else Midday, else Closing)"]
+    P --> F["suggestions as before:\nnew date → waiting for approval\nsame date → nothing new"]
+    L -->|"not found / refused"| O["fallback: old 'OPENING RATES.xlsx'\n(frozen by BoU since 22 Oct 2026)"]
+    D -->|"fails"| O
+    O -->|"read"| F
+    O -->|"fails too"| X["FAILED — message says what happened\nto the card AND the old file"]
+    F -->|"nothing new and table > 4 days old"| W["message says the table is N days old:\nenter rates by hand, tell the administrator"]

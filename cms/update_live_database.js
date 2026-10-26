@@ -83,6 +83,7 @@ const VERSIONS = [
     { v: '1.86.1', file: null, what: '(no database change — register of members and officers, downloadable)' },
     { v: '1.86.2', file: null, what: '(no database change — BoU rate check tries again when the BoU website has a passing problem)' },
     { v: '1.87.0', file: 'migration_v1.87.0.sql', what: 'requisitions approved › released › acknowledged (Requisition Form filed), notice date settable, proxy forms filled in the system, accounts that never became members removed after 7 days', check: col('requisitions', 'released_by') },
+    { v: '1.87.1', file: null, what: '(no database change — Bank of Uganda rates read from its new daily rate card)' },
 ];
 
 // ---- arguments ------------------------------------------------------

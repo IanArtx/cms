@@ -24,6 +24,18 @@
 // cell positions, so small layout changes don't break it; anything
 // unexpected throws a clear error and the Treasurer is told.
 //
+// v1.87.1 — BoU STOPPED UPDATING that workbook on 22 Oct 2026. Its page
+// now shows a Power BI report fed by a new file, "Daily Exchange Rate
+// Cards_Website.xlsx" (re-uploaded under a new address each day), laid out:
+//     Currency (26 October 2026) | Mid Rate | Buying | Selling
+//     USD (Opening)              | 4434.76  | 4429.76 | 4439.76
+//     USD (Midday) … USD (Closing) … GBP, EUR, KES, TZS, ZAR the same way
+// It is found through the site's public file list (/api/upload/files,
+// newest first) and read by parseRateCardWorkbook. The OPENING rate is
+// used (the Midday rate if the opening one is blank), as before. The old
+// workbook is still read when the card cannot be found or read, and the
+// check log then says why.
+//
 // AllRatesToday (optional backup / cross-check, only when the key
 // BOU_RATES_API_KEY is set in .env) republishes the same BoU table:
 //   const r = await fetchAllRatesToday();   → same shape
@@ -34,6 +46,9 @@ const zlib = require('zlib');
 const BOU_SITE = 'https://bou.or.ug';
 const BOU_PAGE_API = `${BOU_SITE}/api/interest-rate?populate=chart.chart.file.file`;
 const BOU_FALLBACK_FILE = '/uploads/OPENING_RATES_4ffc75da06.xlsx';
+// v1.87.1 — the daily rate card behind the Power BI report
+const BOU_RATE_CARD_NAME = 'Daily Exchange Rate Cards';
+const BOU_FILES_API = `${BOU_SITE}/api/upload/files`;
 const ALLRATES_URL = 'https://allratestoday.com/api/v1/central-bank/bou/latest';
 const TIMEOUT_MS = 30000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -277,9 +292,119 @@ const parseOpeningRatesWorkbook = (buf) => {
     return { rateDate, kind: kind || 'OPENING', rates };
 };
 
+// ------------------------------------------------------------
+// v1.87.1 — the daily rate card ("Daily Exchange Rate Cards_Website.xlsx")
+// ------------------------------------------------------------
+const MONTHS = { january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+    jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+const SESSION_ORDER = ['OPENING', 'MIDDAY', 'CLOSING'];
+
+/**
+ * Read the rate card. Exported for the tests.
+ *   → { rateDate, kind: 'OPENING' | 'MIDDAY' | 'CLOSING', rates: { EUR: { middle, buying, selling, label, session } … } }
+ */
+const parseRateCardWorkbook = (buf) => {
+    const cells = readSheetCells(buf);
+    // the date and the heading row: "Currency (26 October 2026)"
+    let rateDate = null; let headRef = null;
+    for (const [ref, v] of cells) {
+        if (typeof v !== 'string') continue;
+        const m = /currency\s*\(\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})\s*\)/i.exec(v);
+        if (m && MONTHS[m[2].toLowerCase()]) {
+            const mm = MONTHS[m[2].toLowerCase()];
+            rateDate = `${m[3]}-${String(mm).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+            headRef = ref;
+            break;
+        }
+    }
+    if (!rateDate) throw new Error('The BoU rate card does not say which date its rates are for ("Currency (<date>)" heading not found).');
+    const hr = rowOf(headRef); const nameCol = colNum(colOf(headRef));
+    let mc = null; let bc = null; let sc = null;
+    for (let c = nameCol + 1; c <= nameCol + 8; c++) {
+        const t = cells.get(`${colName(c)}${hr}`);
+        if (typeof t !== 'string') continue;
+        if (/mid/i.test(t)) mc = c; else if (/buy/i.test(t)) bc = c; else if (/sell/i.test(t)) sc = c;
+    }
+    if (!mc) throw new Error('The BoU rate card has no "Mid Rate" column — its layout has changed.');
+    const found = {}; // code → { OPENING: {…}, MIDDAY: {…}, … }
+    for (let r = hr + 1; r <= hr + 200; r++) {
+        const label = cells.get(`${colName(nameCol)}${r}`);
+        if (typeof label !== 'string') continue;
+        const m = /^\s*([A-Z]{3})\s*\(\s*(opening|midday|mid-day|closing)\s*\)/i.exec(label);
+        if (!m) continue;
+        const code = m[1].toUpperCase();
+        const session = /open/i.test(m[2]) ? 'OPENING' : /clos/i.test(m[2]) ? 'CLOSING' : 'MIDDAY';
+        const middle = cells.get(`${colName(mc)}${r}`);
+        if (code === 'UGX' || typeof middle !== 'number' || !(middle > 0)) continue;
+        const num = (c) => (c && typeof cells.get(`${colName(c)}${r}`) === 'number' ? cells.get(`${colName(c)}${r}`) : null);
+        (found[code] = found[code] || {})[session] = {
+            middle: Math.round(middle * 1e6) / 1e6,
+            buying: num(bc) === null ? null : Math.round(num(bc) * 1e6) / 1e6,
+            selling: num(sc) === null ? null : Math.round(num(sc) * 1e6) / 1e6,
+            label: label.trim(),
+            session,
+        };
+    }
+    const rates = {};
+    for (const [code, bySession] of Object.entries(found)) {
+        const pick = SESSION_ORDER.find(x => bySession[x]);
+        if (pick) rates[code] = bySession[pick];
+    }
+    if (!rates.USD && !rates.EUR) throw new Error('The BoU rate card was read but no US dollar or euro rate was found — its layout has changed.');
+    const kind = (rates.EUR || rates.USD).session;
+    return { rateDate, kind, rates };
+};
+
+const findRateCardFile = async ({ patient = true } = {}) => {
+    const url = `${BOU_FILES_API}?filters[name][$containsi]=${encodeURIComponent(BOU_RATE_CARD_NAME)}`
+        + `&sort=createdAt:desc&pagination[limit]=5&t=${Date.now()}`;
+    const { res } = await fetchWithRetry(url, { headers: { Accept: 'application/json' }, cache: 'no-store' }, { patient });
+    const body = await res.json();
+    const list = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : []);
+    const f = list
+        .filter(x => x && /\.xlsx$/i.test(String(x.url || '')))
+        .sort((a, b) => String(b.createdAt || b.updatedAt || '').localeCompare(String(a.createdAt || a.updatedAt || '')))[0];
+    if (!f) throw new Error('BoU\'s file list has no daily exchange-rate card');
+    return { url: new URL(f.url, BOU_SITE).href, updatedAt: f.updatedAt || f.createdAt || null, name: f.name || 'Daily Exchange Rate Cards.xlsx' };
+};
+
+const downloadXlsx = async (url, { patient }) => {
+    const { res } = await fetchWithRetry(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' }, { patient });
+    const len = Number(res.headers.get('content-length') || 0);
+    if (len > MAX_FILE_BYTES) throw new Error('The BoU rates file is unexpectedly large — not read.');
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_FILE_BYTES) throw new Error('The BoU rates file is unexpectedly large — not read.');
+    return { buf, lastModified: res.headers.get('last-modified') };
+};
+
+const fetchBouRateCard = async ({ patient = true } = {}) => {
+    const file = await findRateCardFile({ patient });
+    let got;
+    try { got = await downloadXlsx(file.url, { patient }); } catch (err) {
+        throw new Error(`The BoU daily rate card could not be downloaded (${err.message}) — ${file.url}`);
+    }
+    const parsed = parseRateCardWorkbook(got.buf);
+    return { ...parsed, source: 'BOU', fileUrl: file.url, fileName: file.name, fileUpdatedAt: file.updatedAt || got.lastModified || null };
+};
+
+// v1.87.1 — the rate card first, the old OPENING RATES workbook as well
+// when the card cannot be read; the newer table wins. When both fail the
+// error says what happened to each.
+const fetchBouOpeningRates = async ({ patient = true } = {}) => {
+    let card = null; let cardError = null;
+    try { card = await fetchBouRateCard({ patient }); } catch (err) { cardError = err.message; }
+    if (card) return card;
+    try {
+        const old = await fetchBouOldWorkbook({ patient });
+        return { ...old, note: `daily rate card not read: ${cardError}` };
+    } catch (err) {
+        throw new Error(`Daily rate card: ${cardError}. Old OPENING RATES workbook: ${err.message}`);
+    }
+};
+
 // patient: true for the scheduled checks (retries minutes apart), false
 // for "Check BoU now" (retries seconds apart).
-const fetchBouOpeningRates = async ({ patient = true } = {}) => {
+const fetchBouOldWorkbook = async ({ patient = true } = {}) => {
     const file = await findOpeningRatesFile({ patient });
     // where the address came from — tells an outage apart from a moved file
     const whereFrom = file.discovered
@@ -344,6 +469,7 @@ module.exports = {
     fetchBouOpeningRates,
     fetchAllRatesToday,
     parseOpeningRatesWorkbook,
+    parseRateCardWorkbook,
     currencyOfLabel,
     allRatesConfigured: () => !!allRatesKey(),
 };

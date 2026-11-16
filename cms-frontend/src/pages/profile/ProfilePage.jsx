@@ -28,8 +28,37 @@ import {
     CheckIcon,
     XMarkIcon,
     DocumentTextIcon,
+    PhotoIcon, ChartPieIcon, BanknotesIcon, EnvelopeIcon, BellAlertIcon, LockClosedIcon,
+    AdjustmentsHorizontalIcon,
 } from '@heroicons/react/24/outline';
+import { MyAccess } from '../users/PersonalAccess'; // v1.89.0
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import { MyEmailPreferences } from '../../components/email/EmailSettings'; // v1.88.0
+
+// v1.88.0 — the sections of My Profile, in groups (side menu / drop-down)
+const PROFILE_SECTIONS = (profile, sideFundDues = []) => [
+    { group: 'About me', items: [
+        { key: 'summary', label: 'Overview', icon: UserCircleIcon },
+        { key: 'personal', label: 'Personal details', icon: PencilIcon },
+        { key: 'photo', label: 'Photo & avatar', icon: PhotoIcon },
+    ] },
+    { group: 'My holdings', items: [
+        { key: 'shares', label: 'Shares & certificates', icon: ChartPieIcon },
+        ...(sideFundDues.length ? [{ key: 'side-fund', label: 'Side fund', icon: BanknotesIcon }] : []),
+    ] },
+    { group: 'Signing', items: [
+        { key: 'signature', label: 'My signature', icon: PencilSquareIcon, flag: profile && !profile.signature_path ? 'No signature drawn yet' : null },
+    ] },
+    { group: 'Sign-in & security', items: [
+        { key: 'password', label: 'Password', icon: KeyIcon },
+        { key: 'email-address', label: 'Email address', icon: EnvelopeIcon },
+        { key: '2fa', label: 'Two-factor authentication', icon: profile?.two_factor_enabled ? ShieldCheckIcon : LockClosedIcon, flag: profile && !profile.two_factor_enabled ? 'Not switched on' : null },
+        { key: 'access', label: 'My access', icon: AdjustmentsHorizontalIcon, flag: profile?.access?.rules_count ? `${profile.access.rules_count} personal limit${profile.access.rules_count === 1 ? '' : 's'}` : null }, // v1.89.0
+    ] },
+    { group: 'Preferences', items: [
+        { key: 'notifications', label: 'Email notifications', icon: BellAlertIcon },
+    ] },
+];
 
 // ============================================================
 // EDIT PERSONAL INFO FORM
@@ -757,6 +786,13 @@ const ProfilePage = () => {
 
     if (loading) return <LoadingSpinner fullPage text="Loading profile..." />;
 
+    // v1.88.0 — open a section (its own address: /profile?tab=…)
+    const go = (key) => {
+        setActiveTab(key);
+        setEditing(false);
+        try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* old browser */ }
+    };
+
     const roles = Array.isArray(profile?.roles)
         ? profile.roles.map(r => typeof r === 'object' ? r.name : r)
         : [];
@@ -765,7 +801,7 @@ const ProfilePage = () => {
         <div className="max-w-6xl mx-auto">
             <PageHeader
                 title="My Profile"
-                subtitle="Your account summary and settings"
+                subtitle="Your details, holdings, signature, sign-in and email choices"
             />
 
             {editSuccess && (
@@ -776,128 +812,216 @@ const ProfilePage = () => {
                 </div>
             )}
 
-            {/* Profile Header Card */}
-            <div className="card mb-6">
-                <div className="flex items-center gap-5">
+            {/* v1.88.0 — "a better redesign of the navigation under My Profile and
+                better separation of pages": a side menu in groups on wide
+                screens (a drop-down on phones); every section is its own
+                page with its own address (?tab=…). */}
+            <div className="grid grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)] gap-6 items-start">
+                <aside className="space-y-4 lg:sticky lg:top-4">
+                    {/* identity card */}
+                    <div className="card p-5">
+                        <div className="flex lg:flex-col items-center gap-4 lg:text-center">
                     {/* Avatar */}
-                    <div style={{ position: 'relative', flexShrink: 0 }}>
-                        <div style={{
-                            width: '88px', height: '88px', borderRadius: '50%',
-                            display: 'flex', alignItems: 'center',
-                            justifyContent: 'center', overflow: 'hidden',
-                            border: '3px solid #e5e7eb',
-                        }}>
-                            <Avatar user={profile} size={88} />
-                            {photoUploading && (
-                                <div style={{
-                                    position: 'absolute', inset: 0,
-                                    backgroundColor: 'rgba(0,0,0,0.5)',
+                        <div style={{ position: 'relative', flexShrink: 0 }}>
+                            <div style={{
+                                width: '88px', height: '88px', borderRadius: '50%',
+                                display: 'flex', alignItems: 'center',
+                                justifyContent: 'center', overflow: 'hidden',
+                                border: '3px solid #e5e7eb',
+                            }}>
+                                <Avatar user={profile} size={88} />
+                                {photoUploading && (
+                                    <div style={{
+                                        position: 'absolute', inset: 0,
+                                        backgroundColor: 'rgba(0,0,0,0.5)',
+                                        display: 'flex', alignItems: 'center',
+                                        justifyContent: 'center',
+                                    }}>
+                                        <div style={{
+                                            width: '20px', height: '20px',
+                                            border: '2px solid white',
+                                            borderTopColor: 'transparent',
+                                            borderRadius: '50%',
+                                            animation: 'spin 0.8s linear infinite',
+                                        }} />
+                                    </div>
+                                )}
+                            </div>
+                            <label htmlFor="photo-upload" title="Change photo"
+                                style={{
+                                    position: 'absolute', bottom: 0, right: 0,
+                                    width: '28px', height: '28px', borderRadius: '50%',
+                                    backgroundColor: '#2563eb', border: '2px solid white',
                                     display: 'flex', alignItems: 'center',
                                     justifyContent: 'center',
+                                    cursor: photoUploading ? 'not-allowed' : 'pointer',
                                 }}>
-                                    <div style={{
-                                        width: '20px', height: '20px',
-                                        border: '2px solid white',
-                                        borderTopColor: 'transparent',
-                                        borderRadius: '50%',
-                                        animation: 'spin 0.8s linear infinite',
-                                    }} />
+                                <CameraIcon style={{ width: '14px', height: '14px',
+                                    color: 'white' }} />
+                            </label>
+                            <input id="photo-upload" type="file"
+                                accept="image/jpeg,image/png"
+                                style={{ display: 'none' }}
+                                onChange={handlePhotoSelect}
+                                disabled={photoUploading} />
+                        </div>
+    
+    
+                            <div className="min-w-0">
+                                <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 truncate">{profile?.first_name} {profile?.last_name}</h2>
+                                <p className="text-xs text-gray-500 truncate">{profile?.email}</p>
+                                {photoError && <p className="text-xs text-red-500 mt-1">{photoError}</p>}
+                                <div className="flex flex-wrap gap-1 mt-2 lg:justify-center">
+                                    {roles.map((role, i) => <span key={i} className="badge-blue">{role}</span>)}
                                 </div>
-                            )}
+                            </div>
                         </div>
-                        <label htmlFor="photo-upload" title="Change photo"
-                            style={{
-                                position: 'absolute', bottom: 0, right: 0,
-                                width: '28px', height: '28px', borderRadius: '50%',
-                                backgroundColor: '#2563eb', border: '2px solid white',
-                                display: 'flex', alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: photoUploading ? 'not-allowed' : 'pointer',
-                            }}>
-                            <CameraIcon style={{ width: '14px', height: '14px',
-                                color: 'white' }} />
-                        </label>
-                        <input id="photo-upload" type="file"
-                            accept="image/jpeg,image/png"
-                            style={{ display: 'none' }}
-                            onChange={handlePhotoSelect}
-                            disabled={photoUploading} />
+                        <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 text-center">
+                            <div>
+                                <p className="text-[11px] text-gray-400">Member since</p>
+                                <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{formatDate(profile?.created_at)}</p>
+                            </div>
+                            <div>
+                                <p className="text-[11px] text-gray-400">Shareholding</p>
+                                <p className="text-xs font-semibold text-primary-700">{profile?.shareholding ? `${profile.shareholding.percentage || '—'}%` : '—'}</p>
+                            </div>
+                        </div>
                     </div>
 
-                    {/* Name and roles */}
-                    <div className="flex-1 min-w-0">
-                        <h2 className="text-2xl font-bold text-gray-900">
-                            {profile?.first_name} {profile?.last_name}
-                        </h2>
-                        <p className="text-sm text-gray-500 mt-0.5">
-                            {profile?.email}
-                        </p>
-                        {photoError && (
-                            <p className="text-xs text-red-500 mt-1">{photoError}</p>
-                        )}
-                        <div className="flex flex-wrap gap-1 mt-2">
-                            {roles.map((role, i) => (
-                                <span key={i} className="badge-blue">{role}</span>
+                    {/* phones: one drop-down */}
+                    <div className="lg:hidden">
+                        <label className="label" htmlFor="profile-section">Section</label>
+                        <select id="profile-section" className="input" value={activeTab} onChange={e => go(e.target.value)}>
+                            {PROFILE_SECTIONS(profile, sideFundDues).map(g => (
+                                <optgroup key={g.group} label={g.group}>
+                                    {g.items.map(it => <option key={it.key} value={it.key}>{it.label}</option>)}
+                                </optgroup>
                             ))}
-                        </div>
+                        </select>
                     </div>
 
-                    {/* Quick stats */}
-                    <div className="text-right flex-shrink-0">
-                        <p className="text-xs text-gray-400">Member since</p>
-                        <p className="text-sm font-semibold text-gray-700">
-                            {formatDate(profile?.created_at)}
-                        </p>
-                        {profile?.last_login_at && (
-                            <>
-                                <p className="text-xs text-gray-400 mt-2">Last login</p>
-                                <p className="text-sm text-gray-600">
-                                    {formatRelativeTime(profile?.last_login_at)}
-                                </p>
-                            </>
-                        )}
-                        {profile?.shareholding && (
-                            <>
-                                <p className="text-xs text-gray-400 mt-2">Shareholding</p>
-                                <p className="text-lg font-bold text-primary-700">
-                                    {profile.shareholding.percentage || '—'}%
-                                </p>
-                            </>
-                        )}
-                    </div>
-                </div>
-            </div>
+                    {/* wide screens: the side menu */}
+                    <nav className="hidden lg:block card p-2" aria-label="My profile sections">
+                        {PROFILE_SECTIONS(profile, sideFundDues).map(g => (
+                            <div key={g.group} className="mb-2 last:mb-0">
+                                <p className="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">{g.group}</p>
+                                {g.items.map(it => (
+                                    <button key={it.key} type="button" onClick={() => go(it.key)} aria-current={activeTab === it.key ? 'page' : undefined}
+                                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors ${activeTab === it.key
+                                            ? 'bg-primary-50 text-primary-700 font-semibold dark:bg-primary-900/30 dark:text-primary-200'
+                                            : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'}`}>
+                                        <it.icon className="h-4 w-4 flex-shrink-0" />
+                                        <span className="flex-1 min-w-0 truncate">{it.label}</span>
+                                        {it.flag && <span className="h-2 w-2 rounded-full bg-amber-400" title={it.flag} />}
+                                    </button>
+                                ))}
+                            </div>
+                        ))}
+                    </nav>
+                </aside>
 
-            {/* Tabs — overflow-x-auto (v1.32.5) so every tab stays reachable
-                by scrolling on a narrow screen instead of overflowing with
-                no way to reach it. */}
-            <div className="tab-bar" role="tablist">
-                {[
-                    { key: 'summary',   label: 'Summary',          icon: UserCircleIcon },
-                    { key: 'personal',  label: 'Personal Info',     icon: PencilIcon },
-                    { key: 'signature', label: 'Signature',         icon: PencilSquareIcon },
-                    { key: 'password',  label: 'Password & Email',  icon: KeyIcon },
-                    { key: '2fa',       label: 'Security',          icon: ShieldCheckIcon },
-                ].map(tab => (
-                    <button
-                        key={tab.key}
-                        onClick={() => { setActiveTab(tab.key); setEditing(false); }}
-                        className={`tab ${activeTab === tab.key ? 'tab-active' : ''}`}
-                    >
-                        <tab.icon className="h-4 w-4" />
-                        {tab.label}
-                    </button>
-                ))}
-            </div>
+            <div className="card min-w-0">
 
-            {/* Tab Content */}
-            <div className="card">
-
-                {/* SUMMARY TAB */}
+                {/* OVERVIEW */}
                 {activeTab === 'summary' && (
                     <div>
-                        <h3 className="section-title mb-6">Account Summary</h3>
+                        <h3 className="section-title mb-6">Overview</h3>
+                        {/* Info Grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">Account Status</p>
+                                <p className="text-sm font-semibold text-green-600 mt-1">
+                                    Active
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">Email Verified</p>
+                                <p className={`text-sm font-semibold mt-1 ${
+                                    profile?.is_email_verified
+                                        ? 'text-green-600' : 'text-red-500'
+                                }`}>
+                                    {profile?.is_email_verified ? 'Yes' : 'No'}
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">2FA Enabled</p>
+                                <p className={`text-sm font-semibold mt-1 ${
+                                    profile?.two_factor_enabled
+                                        ? 'text-green-600' : 'text-yellow-600'
+                                }`}>
+                                    {profile?.two_factor_enabled ? 'Yes' : 'Not set'}
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">Roles Assigned</p>
+                                <p className="text-sm font-semibold text-gray-700 mt-1">
+                                    {roles.length}
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">Member Since</p>
+                                <p className="text-sm font-semibold text-gray-700 mt-1">
+                                    {formatDate(profile?.created_at)}
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <p className="text-xs text-gray-400">Last Login</p>
+                                <p className="text-sm font-semibold text-gray-700 mt-1">
+                                    {profile?.last_login_at
+                                        ? formatRelativeTime(profile.last_login_at)
+                                        : 'Never'}
+                                </p>
+                            </div>
+                        </div>
 
+                        {/* Personal Details Read-only */}
+                        <div className="border-t border-gray-100 pt-5">
+                            <div className="flex items-center justify-between mb-4">
+                                <h4 className="text-sm font-semibold text-gray-700">
+                                    Personal Information
+                                </h4>
+                                <button
+                                    onClick={() => setActiveTab('personal')}
+                                    className="text-xs text-primary-600
+                                        hover:text-primary-700 font-medium
+                                        flex items-center gap-1"
+                                >
+                                    <PencilIcon className="h-3 w-3" />
+                                    Edit
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {[
+                                    { label: 'Phone', value: profile?.phone },
+                                    { label: 'Nationality', value: profile?.nationality },
+                                    { label: 'ID / Passport', value: profile?.id_number },
+                                    { label: 'TIN', value: profile?.tin },
+                                    { label: 'Tax residency', value: profile?.tax_residency === 'NON_RESIDENT' ? 'Not resident in Uganda' : 'Resident in Uganda' },
+                                    { label: 'Address', value: profile?.address },
+                                    { label: 'Emergency Contact',
+                                        value: profile?.emergency_contact_name },
+                                    { label: 'Emergency Phone',
+                                        value: profile?.emergency_contact_phone },
+                                ].map((field, i) => (
+                                    <div key={i}>
+                                        <p className="text-xs text-gray-400">
+                                            {field.label}
+                                        </p>
+                                        <p className="text-sm text-gray-700 mt-0.5">
+                                            {field.value || '—'}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* SHARES & CERTIFICATES (v1.88.0 — own page) */}
+                {activeTab === 'shares' && (
+                    <div>
+                        <h3 className="section-title mb-6">Shares &amp; certificates</h3>
+                        {!profile?.shareholding && <p className="text-sm text-gray-400">You hold no shares on the register.</p>}
                         {/* Shareholding */}
                         {profile?.shareholding && (
                             <div className="bg-gradient-to-r from-primary-900
@@ -1003,6 +1127,14 @@ const ProfilePage = () => {
                             </div>
                         )}
 
+                    </div>
+                )}
+
+                {/* SIDE FUND (v1.88.0 — own page) */}
+                {activeTab === 'side-fund' && (
+                    <div>
+                        <h3 className="section-title mb-6">Side fund</h3>
+                        {sideFundDues.length === 0 && <p className="text-sm text-gray-400">You are not in the side fund.</p>}
                         {/* Side Fund */}
                         {sideFundDues.length > 0 && (() => {
                             const currentDue = sideFundDues[0]; // ORDER BY period DESC
@@ -1060,94 +1192,6 @@ const ProfilePage = () => {
                             );
                         })()}
 
-                        {/* Info Grid */}
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">Account Status</p>
-                                <p className="text-sm font-semibold text-green-600 mt-1">
-                                    Active
-                                </p>
-                            </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">Email Verified</p>
-                                <p className={`text-sm font-semibold mt-1 ${
-                                    profile?.is_email_verified
-                                        ? 'text-green-600' : 'text-red-500'
-                                }`}>
-                                    {profile?.is_email_verified ? 'Yes' : 'No'}
-                                </p>
-                            </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">2FA Enabled</p>
-                                <p className={`text-sm font-semibold mt-1 ${
-                                    profile?.two_factor_enabled
-                                        ? 'text-green-600' : 'text-yellow-600'
-                                }`}>
-                                    {profile?.two_factor_enabled ? 'Yes' : 'Not set'}
-                                </p>
-                            </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">Roles Assigned</p>
-                                <p className="text-sm font-semibold text-gray-700 mt-1">
-                                    {roles.length}
-                                </p>
-                            </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">Member Since</p>
-                                <p className="text-sm font-semibold text-gray-700 mt-1">
-                                    {formatDate(profile?.created_at)}
-                                </p>
-                            </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-xs text-gray-400">Last Login</p>
-                                <p className="text-sm font-semibold text-gray-700 mt-1">
-                                    {profile?.last_login_at
-                                        ? formatRelativeTime(profile.last_login_at)
-                                        : 'Never'}
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* Personal Details Read-only */}
-                        <div className="border-t border-gray-100 pt-5">
-                            <div className="flex items-center justify-between mb-4">
-                                <h4 className="text-sm font-semibold text-gray-700">
-                                    Personal Information
-                                </h4>
-                                <button
-                                    onClick={() => setActiveTab('personal')}
-                                    className="text-xs text-primary-600
-                                        hover:text-primary-700 font-medium
-                                        flex items-center gap-1"
-                                >
-                                    <PencilIcon className="h-3 w-3" />
-                                    Edit
-                                </button>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                {[
-                                    { label: 'Phone', value: profile?.phone },
-                                    { label: 'Nationality', value: profile?.nationality },
-                                    { label: 'ID / Passport', value: profile?.id_number },
-                                    { label: 'TIN', value: profile?.tin },
-                                    { label: 'Tax residency', value: profile?.tax_residency === 'NON_RESIDENT' ? 'Not resident in Uganda' : 'Resident in Uganda' },
-                                    { label: 'Address', value: profile?.address },
-                                    { label: 'Emergency Contact',
-                                        value: profile?.emergency_contact_name },
-                                    { label: 'Emergency Phone',
-                                        value: profile?.emergency_contact_phone },
-                                ].map((field, i) => (
-                                    <div key={i}>
-                                        <p className="text-xs text-gray-400">
-                                            {field.label}
-                                        </p>
-                                        <p className="text-sm text-gray-700 mt-0.5">
-                                            {field.value || '—'}
-                                        </p>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
                     </div>
                 )}
 
@@ -1157,7 +1201,6 @@ const ProfilePage = () => {
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="section-title">Personal Information</h3>
                         </div>
-                        <AvatarPickerSection profile={profile} onSuccess={reloadProfile} />
                         <EditProfileForm
                             user={profile}
                             onSuccess={handleEditSuccess}
@@ -1200,15 +1243,48 @@ const ProfilePage = () => {
                     </div>
                 )}
 
-                {/* PASSWORD TAB */}
+                {/* PASSWORD (v1.88.0 — its own page; the email address has its own too) */}
                 {activeTab === 'password' && (
                     <>
                         <h3 className="section-title mb-4">Change Password</h3>
                         <ChangePasswordForm />
-                        {/* v1.75.0 — email address change */}
-                        <h3 className="section-title mt-8 pt-6 border-t border-gray-200 mb-4">Change Email Address</h3>
+                    </>
+                )}
+
+                {/* EMAIL ADDRESS (v1.75.0; own page since v1.88.0) */}
+                {activeTab === 'email-address' && (
+                    <>
+                        <h3 className="section-title mb-4">Change Email Address</h3>
                         <ChangeEmailForm profile={profile} onChanged={reloadProfile} />
                     </>
+                )}
+
+                {/* EMAIL NOTIFICATIONS (v1.88.0) */}
+                {/* MY ACCESS (v1.89.0) — personal limits set by an Admin */}
+                {activeTab === 'access' && (
+                    <>
+                        <h3 className="section-title mb-2">My access</h3>
+                        <MyAccess />
+                    </>
+                )}
+
+                {activeTab === 'notifications' && (
+                    <>
+                        <h3 className="section-title mb-2">Email notifications</h3>
+                        <MyEmailPreferences />
+                    </>
+                )}
+
+                {/* PHOTO & AVATAR (v1.88.0 — own page) */}
+                {activeTab === 'photo' && (
+                    <div>
+                        <h3 className="section-title mb-2">Photo &amp; avatar</h3>
+                        <p className="text-sm text-gray-500 mb-4">Upload a photo with the camera button on your card, or pick an illustrated avatar below.</p>
+                        <label htmlFor="photo-upload" className="btn-secondary inline-flex items-center gap-2 mb-6 cursor-pointer">
+                            <CameraIcon className="h-4 w-4" /> Upload a photo
+                        </label>
+                        <AvatarPickerSection profile={profile} onSuccess={reloadProfile} />
+                    </div>
                 )}
 
                 {/* 2FA TAB */}
@@ -1223,6 +1299,7 @@ const ProfilePage = () => {
                         />
                     </>
                 )}
+            </div>
             </div>
 
             <PhotoCropModal

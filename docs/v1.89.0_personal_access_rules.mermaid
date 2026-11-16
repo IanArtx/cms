@@ -1,0 +1,21 @@
+%% v1.89.0 — personal access rules (one person, on top of their roles)
+flowchart TD
+    A["Admin: Members › person › Access limits\n(never on own account; reason required; optional From / Until)"] --> R[("user_access_rules")]
+    R -->|"PERMISSION_REMOVE / PERMISSION_ADD"| P["authenticate(): permissions = role permissions − removed + added\n→ every requirePermissions check, menus, buttons"]
+    R -->|"AREA_HIDE"| H["authenticate(): requests into the area refused\n(own things — /me, /my… — still allowed)\nmenu, shortcuts and page hidden"]
+    R -->|"ACTION_BLOCK"| B{"checkpoints"}
+    R -->|"APPROVAL_LIMIT\n(amount per currency and/or accounts)"| L{"approval checkpoints"}
+    B --> B1["approvalGuard (24 approval steps)\nrequisition release · held money entries · reversals\nFX rates · tax year · share-capital changes · savings confirmations"]
+    B --> B2["signSlot: documents / share certificates\nwritten resolutions · financial statements approval\nchoice of meeting signers"]
+    L --> B1
+    B1 --> D{"blocked? amount above limit? other account?"}
+    D -->|"yes"| X["refused — 'someone else must approve' + the reason"]
+    D -->|"no"| OK["approved as before (four-eyes rule still applies)"]
+    R --> N["person told (bell + email, always sent)\nMy Profile › My access shows the rules"]
+    R --> E["end date passes → rule stops by itself\nor Admin ends it early with a reason (kept in history)"]
+    subgraph W["Also fixed: written resolutions in Documents"]
+        W1["signers sign in Meetings › Resolutions"] --> W2["document's table of signatures updated while it is a draft"]
+        W2 --> W3{"Approve in Documents"}
+        W3 -->|"still signing"| W4["refused: 'x of y signed, waiting for …'"]
+        W3 -->|"all signed"| W5["Company Secretary's signature slot → final when signed"]
+    end

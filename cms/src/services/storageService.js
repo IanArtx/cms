@@ -37,7 +37,7 @@ const fs = require('fs');
 const path = require('path');
 const {
     S3Client, PutObjectCommand, GetObjectCommand,
-    DeleteObjectCommand, CopyObjectCommand,
+    DeleteObjectCommand, CopyObjectCommand, ListObjectsV2Command,
 } = require('@aws-sdk/client-s3');
 const { createError } = require('../utils/errors');
 
@@ -230,7 +230,36 @@ const readBuffer = async (key) => {
     return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
 };
 
+// ============================================================
+// LIST the keys under a folder (v1.88.0) — used once to turn the stored
+// signatures blue. Returns [] when there is nothing.
+// ============================================================
+const listKeys = async (prefix) => {
+    const out = [];
+    if (isS3Configured) {
+        let token;
+        for (let page = 0; page < 1000; page++) {
+            const r = await s3Client.send(new ListObjectsV2Command({ Bucket: process.env.S3_BUCKET, Prefix: prefix, ContinuationToken: token }));
+            for (const o of r.Contents || []) out.push(o.Key);
+            if (!r.IsTruncated) break;
+            token = r.NextContinuationToken;
+        }
+        return out;
+    }
+    const dir = localFilePath(prefix);
+    if (!fs.existsSync(dir)) return out;
+    const walk = (d, rel) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            if (e.isDirectory()) walk(path.join(d, e.name), `${rel}${e.name}/`);
+            else out.push(`${rel}${e.name}`);
+        }
+    };
+    walk(dir, prefix.endsWith('/') ? prefix : `${prefix}/`);
+    return out;
+};
+
 module.exports = {
+    listKeys, // v1.88.0
     isS3Configured,
     generateKey,
     toKey,

@@ -42,6 +42,8 @@ import ShareholderDashboard from './ShareholderDashboard';
 import { CapitalGoalsDashboardSection } from '../capitalGoals/capitalGoalUi';
 import { MeetingActionsCard } from '../meetings/MeetingActionsCard'; // v1.79.0
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import {
     BanknotesIcon,
     ChartBarIcon,
@@ -65,14 +67,20 @@ import {
 // dashboards is ever mounted at a time, but a stray leftover
 // wouldn't be safe to assume.
 // ============================================================
-const CompanyInflowOutflowChart = ({ trend, currencyCode }) => {
+const CompanyInflowOutflowChart = ({ trend: rawTrend, currencyCode }) => {
     const theme = useChartTheme();
+    // v1.88.0 — daily figures grouped by the Days / Weeks / Months / Years switch
+    const [group, setGroup] = useGrouping('dash-inflow-outflow', 'month');
+    const trend = groupSeries(rawTrend || [], { granularity: group, date: 'period', fields: { inflow: 'sum', outflow: 'sum' } });
 
     return (
         <div className="card">
-            <h2 className="section-title mb-4">
-                Inflow vs Outflow — Primary &amp; Secondary Accounts
-            </h2>
+            <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h2 className="section-title">
+                    Inflow vs Outflow — Primary &amp; Secondary Accounts
+                </h2>
+                <GroupBy value={group} onChange={setGroup} />
+            </div>
             {!trend || trend.length === 0 ? (
                 <div className="flex items-center justify-center h-56 text-gray-300 text-sm">
                     No transaction history yet
@@ -91,7 +99,7 @@ const CompanyInflowOutflowChart = ({ trend, currencyCode }) => {
                             </linearGradient>
                         </defs>
                         <CartesianGrid {...theme.gridProps} />
-                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                         <YAxis
                             tick={{ fontSize: 11, ...theme.axisTick }}
                             tickLine={false}
@@ -100,6 +108,7 @@ const CompanyInflowOutflowChart = ({ trend, currencyCode }) => {
                         />
                         <Tooltip
                             {...theme.tooltipProps}
+                            labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                             formatter={(v, name) => [
                                 `${currencyCode || ''} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                 name,
@@ -392,7 +401,7 @@ const DashboardPage = () => {
     // v1.56.1 — company-wide inflow/outflow trend for the new chart.
     useEffect(() => {
         if (!canSeeFinance) return;
-        accountsAPI.getInflowOutflowTrend(12)
+        accountsAPI.getInflowOutflowTrend(36, true)
             .then(res => setCompanyTrend(res.data.data || { currencyCode: null, trend: [] }))
             .catch(() => {});
     }, [canSeeFinance]);

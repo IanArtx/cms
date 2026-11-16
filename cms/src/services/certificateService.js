@@ -480,6 +480,17 @@ const emailCertificateToUser = async (cert, signatures = null, stamps = null) =>
     const label = TYPE_LABEL[cert.certificate_type] || 'Monthly';
     const asOfText = cert.as_of_date ? ` as of ${formatLongDate(cert.as_of_date)}` : '';
 
+    // v1.88.0 — email controls: the certificate always stays downloadable
+    // under My Profile; only the email follows the settings
+    const policy = require('./emailPolicyService');
+    const decision = await policy.decide(cert.user.id || cert.user_id, 'CERTIFICATE_EMAIL');
+    if (decision !== 'SEND') {
+        if (decision === 'DIGEST') {
+            await policy.queueForDigest({ userId: cert.user.id || cert.user_id, type: 'CERTIFICATE_EMAIL', subject: `Your ${label} Certificate of Shares`, title: `Your ${label.toLowerCase()} Certificate of Shares (${cert.reference_code}) is ready to download`, link: '/profile' }).catch(() => {});
+        }
+        return;
+    }
+
     await sendEmail({
         to:      cert.user.email,
         subject: `Your ${label} Certificate of Shares — ${cert.reference_code}`,

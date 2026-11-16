@@ -684,7 +684,10 @@ const getAccountSummary = asyncHandler(async (req, res) => {
 // not a silent zero.
 // ============================================================
 const getInflowOutflowTrend = asyncHandler(async (req, res) => {
-    const months = Math.min(Math.max(parseInt(req.query.months) || 12, 1), 36);
+    const months = Math.min(Math.max(parseInt(req.query.months) || 12, 1), 120);
+    // v1.88.0 — daily=1: one row per day, so the chart can group by
+    // day / week / month / year in the browser
+    const daily = req.query.daily === '1';
 
     const currencyResult = await query(`
         SELECT t.currency_id, cur.code AS currency_code
@@ -704,7 +707,7 @@ const getInflowOutflowTrend = asyncHandler(async (req, res) => {
 
     const result = await query(`
         SELECT
-            TO_CHAR(t.value_date, 'YYYY-MM') AS period,
+            TO_CHAR(t.value_date, ${daily ? "'YYYY-MM-DD'" : "'YYYY-MM'"}) AS period,
             -- v1.64.0 fix: this previously read ('CREDIT','REVERSAL_DEBIT') as
             -- inflow and ('DEBIT','REVERSAL_CREDIT') as outflow — backwards
             -- relative to every other cash-direction query in this codebase

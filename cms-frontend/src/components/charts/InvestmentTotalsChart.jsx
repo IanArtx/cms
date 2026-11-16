@@ -26,12 +26,17 @@
 // fees) — the same figure as the Balance Sheet, for OPEN investments
 // only (a closed one counts 0 from the month it closed). The tooltip splits it,
 // and also shows the money put in so far for reference.
+// v1.88.0 — a Days / Weeks / Months / Years switch. Days and weeks ask the
+// server for one point per day (?granularity=day); every period shows
+// the running totals at its end.
 // ============================================================
 
 import { useEffect, useState } from 'react';
 import {
     ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
+import GroupBy, { useGrouping } from './GroupBy';
+import { groupSeries } from '../../utils/timeGrouping';
 import { investmentsAPI } from '../../api/endpoints';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 
@@ -40,13 +45,15 @@ const money = (v) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 
 const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact = false }) => {
     const theme = useChartTheme();
     const [data, setData] = useState(null);
+    const [group, setGroup] = useGrouping(`investment-totals-${idPrefix}`, 'month');
+    const fine = group === 'day' || group === 'week';
     const [currency, setCurrency] = useState(() => {
         try { return localStorage.getItem('cms-inv-chart-currency') || ''; } catch { return ''; }
     });
 
     useEffect(() => {
         let alive = true;
-        investmentsAPI.getTotalsOverTime(currency ? { currency } : undefined)
+        investmentsAPI.getTotalsOverTime({ ...(currency ? { currency } : {}), ...(fine ? { granularity: 'day' } : {}) })
             .then(r => { if (alive) setData(r.data.data); })
             .catch(() => {
                 if (!alive) return;
@@ -54,7 +61,7 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
                 setData({ series: [], failed: true });
             });
         return () => { alive = false; };
-    }, [currency]);
+    }, [currency, fine]);
 
     const choose = (code) => {
         const v = code === data?.functionalCode ? '' : code;
@@ -76,8 +83,12 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
     ) : null;
 
     if (!data) return <div className="flex items-center justify-center text-gray-300 text-sm" style={{ height }}>Loading…</div>;
-    const series = data.series || [];
-    if (series.length === 0) {
+    const raw = data.series || [];
+    const series = groupSeries(raw, {
+        granularity: group, date: 'period',
+        fields: { held: 'last', held_investments: 'last', held_mmf: 'last', invested: 'last', returned: 'last' },
+    });
+    if (raw.length === 0) {
         return (
             <div className="flex items-center justify-center text-gray-300 text-sm" style={{ height }}>
                 {data.failed ? 'The chart could not be loaded' : 'Nothing funded yet'}
@@ -100,7 +111,10 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
                         <span className="font-semibold text-gray-700 dark:text-gray-200">{cur} {money(data.totals.returned)}</span>.
                     </p>
                 ) : <span />}
-                {switcher}
+                <div className="flex items-center gap-2 flex-wrap">
+                    <GroupBy value={group} onChange={setGroup} />
+                    {switcher}
+                </div>
             </div>
             <ResponsiveContainer width="100%" height={height}>
                 <AreaChart data={series} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
@@ -121,11 +135,11 @@ const InvestmentTotalsChart = ({ height = 240, idPrefix = 'invTotals', compact =
                         formatter={(v, name) => [`${cur} ${money(v)}`, name]}
                         labelFormatter={(label, payload) => {
                             const p = payload && payload[0] && payload[0].payload;
-                            if (!p || p.held === undefined) return label;
-                            return `${label} — investments ${cur} ${money(p.held_investments)} · money market funds ${cur} ${money(p.held_mmf)} · put in so far ${cur} ${money(p.invested)}`;
+                            if (!p || p.held === undefined || p.held === null) return label;
+                            return `${p.title || label} — investments ${cur} ${money(p.held_investments)} · money market funds ${cur} ${money(p.held_mmf)} · put in so far ${cur} ${money(p.invested)}`;
                         }} />
                     <Legend {...theme.legendProps} />
-                    <Area type="monotone" dataKey={series[0] && series[0].held !== undefined ? 'held' : 'invested'} name="Held now (running balance)"
+                    <Area type="monotone" dataKey={raw[0] && raw[0].held !== undefined ? 'held' : 'invested'} name="Held now (running balance)"
                         stroke={theme.primary} strokeWidth={2} fill={`url(#${inv})`} dot={false} activeDot={{ r: 4 }} />
                     <Area type="monotone" dataKey="returned" name="Returns (total)"
                         stroke={theme.success} strokeWidth={2} fill={`url(#${ret})`} dot={false} activeDot={{ r: 4 }} />

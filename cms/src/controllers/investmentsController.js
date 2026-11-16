@@ -1695,7 +1695,11 @@ const getInputVsReturn = asyncHandler(async (req, res) => {
 // ============================================================
 const CLOSED_INVESTMENT = ['COMPLETED', 'TERMINATED', 'CANCELLED'];
 
-const heldInBooks = async () => {
+// v1.88.0 — { daily: true } gives the balance at the end of every DAY
+// (keys 'YYYY-MM-DD') instead of every month, so the chart can be grouped
+// by days / weeks / months / years. The month-end day equals the monthly
+// figure: same closing rule, rate of that day.
+const heldInBooks = async ({ daily = false } = {}) => {
     const glService = require('../services/glService');
     const today = new Date().toISOString().slice(0, 10);
     const ctx = await glService.getFunctionalContext();
@@ -1703,7 +1707,7 @@ const heldInBooks = async () => {
     const idInv = ctx.glByCode.get('1400')?.id;
     const { lines } = await glService.getLedgerLines({ basis: glService.BASIS.FUNCTIONAL, toDate: today });
     const r2 = (n) => Math.round(n * 100) / 100;
-    const monthOf = (d) => String(d).slice(0, 7);
+    const monthOf = (d) => String(d).slice(0, daily ? 10 : 7); // the period key (a day or a month)
 
     // ---- investments ------------------------------------------------
     const invs = (await query(`
@@ -1733,7 +1737,7 @@ const heldInBooks = async () => {
         FROM   mmf_accounts m LEFT JOIN references_registry rr ON rr.id = m.reference_id`)).rows;
     const fundMoves = new Map(); // id → Map(month → amount in the fund's currency)
     const fx = (await query(`
-        SELECT x.mmf_account_id AS id, to_char(x.entry_date, 'YYYY-MM') AS m,
+        SELECT x.mmf_account_id AS id, to_char(x.entry_date, ${daily ? "'YYYY-MM-DD'" : "'YYYY-MM'"}) AS m,
                SUM(CASE WHEN x.entry_type IN ('TOPUP', 'INTEREST') THEN x.amount ELSE -x.amount END)::float8 AS amt
         FROM   mmf_transactions x
         WHERE  COALESCE(x.is_reversed, FALSE) = FALSE
@@ -1748,7 +1752,16 @@ const heldInBooks = async () => {
     for (const mm of invMoves.values()) for (const m of mm.keys()) allMonths.add(m);
     for (const mm of fundMoves.values()) for (const m of mm.keys()) allMonths.add(m);
     const months = [];
-    if (allMonths.size) {
+    if (allMonths.size && daily) {
+        const first = [...allMonths].sort()[0];
+        const dt = new Date(`${first}T00:00:00Z`);
+        for (let g = 0; g < 20000; g++) {
+            const k = dt.toISOString().slice(0, 10);
+            months.push(k);
+            if (k >= today) break;
+            dt.setUTCDate(dt.getUTCDate() + 1);
+        }
+    } else if (allMonths.size) {
         let [y, m] = [...allMonths].sort()[0].split('-').map(Number);
         const last = monthOf(today);
         for (let g = 0; g < 600; g++) {
@@ -1762,12 +1775,18 @@ const heldInBooks = async () => {
     const curIds = [...new Set(funds.map(f => f.currency_id))].filter(c => c && c !== F);
     const rateAt = new Map(); // `${cur}|${month}` → rate
     if (curIds.length && months.length) {
-        const rr = await query(`
+        const rr = daily
+            ? await query(`
+            SELECT c.id, to_char(d, 'YYYY-MM-DD') AS m, fx_rate_on(c.id, $1, d::date)::float8 AS rate
+            FROM   unnest($2::int[]) AS c(id)
+            CROSS JOIN generate_series($3::date, CURRENT_DATE, INTERVAL '1 day') AS d`,
+            [F, curIds, months[0]])
+            : await query(`
             SELECT c.id, to_char(d, 'YYYY-MM') AS m,
                    fx_rate_on(c.id, $1, LEAST((date_trunc('month', d) + INTERVAL '1 month - 1 day')::date, CURRENT_DATE))::float8 AS rate
             FROM   unnest($2::int[]) AS c(id)
             CROSS JOIN generate_series($3::date, CURRENT_DATE, INTERVAL '1 month') AS d`,
-        [F, curIds, `${months[0]}-01`]);
+            [F, curIds, `${months[0]}-01`]);
         for (const r of rr.rows) rateAt.set(`${r.id}|${r.m}`, r.rate);
     }
 
@@ -1859,6 +1878,8 @@ const heldInBooks = async () => {
 };
 
 const getTotalsOverTime = asyncHandler(async (req, res) => {
+    // v1.88.0 — ?granularity=day: one point per day (the chart groups them)
+    const daily = req.query.granularity === 'day';
     const fc = await query(`SELECT cs.functional_currency_id AS id, c.code FROM company_settings cs JOIN currencies c ON c.id = cs.functional_currency_id WHERE cs.id = 1`);
     const F = fc.rows[0]?.id || null;
     const fCode = fc.rows[0]?.code || '';
@@ -1912,7 +1933,7 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
             SELECT 'R', d, ugx FROM rets UNION ALL
             SELECT 'R', d, ugx FROM mmf_ret
         )
-        SELECT to_char(date_trunc('month', d), 'YYYY-MM') AS period, k,
+        SELECT to_char(date_trunc(${daily ? "'day'" : "'month'"}, d), ${daily ? "'YYYY-MM-DD'" : "'YYYY-MM'"}) AS period, k,
                COALESCE(SUM(ugx), 0)::float8 AS amount,
                COUNT(*) FILTER (WHERE ugx IS NULL)::int AS missing
         FROM   ev WHERE d IS NOT NULL
@@ -1927,14 +1948,34 @@ const getTotalsOverTime = asyncHandler(async (req, res) => {
         unconverted += r.missing;
     }
     // v1.85.2 — the amount held, from the books
-    const held = await heldInBooks();
+    const held = await heldInBooks({ daily });
     for (const [period, mv] of held.byMonth) {
         if (!byMonth.has(period)) byMonth.set(period, { I: 0, R: 0, H: 0, M: 0 });
         byMonth.get(period).H += mv.inv;
         byMonth.get(period).M += mv.mmf;
     }
     const series = [];
-    if (byMonth.size) {
+    if (byMonth.size && daily) {
+        // v1.88.0 — one point per day (running totals at the end of the day)
+        const days = [...byMonth.keys()].sort();
+        const today = new Date().toISOString().slice(0, 10);
+        const dt = new Date(`${days[0]}T00:00:00Z`);
+        const end = days[days.length - 1] > today ? days[days.length - 1] : today;
+        let invested = 0; let returned = 0; let heldInv = 0; let heldMmf = 0;
+        const round = (n) => Math.round(n * 100) / 100;
+        for (let guard = 0; guard < 20000; guard++) {
+            const key = dt.toISOString().slice(0, 10);
+            const mv = byMonth.get(key);
+            if (mv) { invested += mv.I; returned += mv.R; heldInv += mv.H || 0; heldMmf += mv.M || 0; }
+            series.push({
+                period: key, label: key,
+                held: round(heldInv + heldMmf), held_investments: round(heldInv), held_mmf: round(heldMmf),
+                invested: round(invested), returned: round(returned),
+            });
+            if (key >= end) break;
+            dt.setUTCDate(dt.getUTCDate() + 1);
+        }
+    } else if (byMonth.size) {
         const months = [...byMonth.keys()].sort();
         const now = new Date();
         const last = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -3389,7 +3430,96 @@ const classifyInvestmentExpense = asyncHandler(async (req, res) => {
     sendSuccess(res, { transaction_id: txId, cost_type: costType }, `Classified as ${investmentCost.COST_TYPE_LABEL[costType]}`);
 });
 
+// ============================================================
+// v1.88.0 — DOCUMENTS OF AN INVESTMENT, IN GROUPS
+// GET /api/investments/:id/documents
+// "i would also like to have the documents under the investments grouped
+// under categories, buying, expense, taxes and other related possible
+// categories".
+// Two sources:
+//   • documents put on the investment page — in the group chosen when they
+//     were uploaded (or moved), else worked out from their type;
+//   • documents attached to the investment's money (purchases, running
+//     costs, maintenance, returns, tax) — in the group of that payment:
+//     Buying / expanding = CAPITAL, Running costs = OPERATING,
+//     Maintenance = MAINTENANCE, a tax entry = Taxes, money coming back =
+//     Returns & income.
+// A document attached to both appears once, in the first group found.
+// ============================================================
+const DOC_GROUPS = [
+    { key: 'BUYING', label: 'Buying & expanding' },
+    { key: 'RUNNING', label: 'Running costs' },
+    { key: 'MAINTENANCE', label: 'Maintenance & repairs' },
+    { key: 'TAX', label: 'Taxes' },
+    { key: 'RETURNS', label: 'Returns & income' },
+    { key: 'LEGAL', label: 'Agreements, titles & certificates' },
+    { key: 'PLANNING', label: 'Proposals & reports' },
+    { key: 'OTHER', label: 'Other' },
+];
+const groupOfType = (t) => {
+    if (['CONTRACT', 'BOND_CERTIFICATE', 'LOAN_AGREEMENT', 'GRANT_AGREEMENT', 'SHARE_CERTIFICATE'].includes(t)) return 'LEGAL';
+    if (['INVESTMENT_PROPOSAL', 'PROJECT_PROPOSAL', 'PROJECT_REPORT', 'FINANCIAL_REPORT_GENERAL', 'AUDIT_REPORT'].includes(t)) return 'PLANNING';
+    if (t === 'RECEIPT') return 'BUYING';
+    return 'OTHER';
+};
+const getInvestmentDocuments = asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const inv = await query('SELECT id FROM investments WHERE id = $1', [id]);
+    if (!inv.rows.length) throw createError.notFound('Investment not found');
+    const hasSection = (await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'documents' AND column_name = 'record_section'`)).rows.length > 0;
+    const hasCostType = (await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'investment_cost_type'`)).rows.length > 0;
+    const hasLinks = (await query(`SELECT to_regclass('public.transaction_document_links') IS NOT NULL AS ok`)).rows[0].ok;
+    const hasTax = (await query(`SELECT to_regclass('public.tax_at_source') IS NOT NULL AS ok`)).rows[0].ok;
+
+    const direct = (await query(`
+        SELECT d.id, d.title, d.document_type, d.status, d.created_at, rr.reference_code,
+               ${hasSection ? 'd.record_section' : 'NULL::text AS record_section'}
+        FROM   documents d LEFT JOIN references_registry rr ON rr.id = d.reference_id
+        WHERE  d.related_record_type = 'investments' AND d.related_record_id = $1
+        ORDER  BY d.created_at DESC`, [id])).rows;
+
+    let viaMoney = [];
+    if (hasLinks) {
+        viaMoney = (await query(`
+            SELECT DISTINCT ON (d.id)
+                   d.id, d.title, d.document_type, d.status, d.created_at, rr.reference_code,
+                   tr.reference_code AS transaction_reference, t.id AS transaction_id, t.value_date::text AS value_date,
+                   t.transaction_type, ${hasCostType ? 't.investment_cost_type' : 'NULL::text AS investment_cost_type'},
+                   ${hasTax ? `EXISTS (SELECT 1 FROM tax_at_source x WHERE x.tax_transaction_id = t.id)` : 'FALSE'}
+                   OR COALESCE(c.name, '') ~* 'tax|withholding|wht|vat' AS is_tax
+            FROM   transaction_document_links l
+            JOIN   transactions t ON t.id = l.transaction_id
+            JOIN   documents d ON d.id = l.document_id
+            LEFT JOIN references_registry rr ON rr.id = d.reference_id
+            LEFT JOIN references_registry tr ON tr.id = t.reference_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE  l.removed_at IS NULL AND t.investment_id = $1
+            ORDER  BY d.id, t.value_date`, [id])).rows;
+    }
+
+    const seen = new Set();
+    const items = [];
+    for (const d of direct) {
+        seen.add(d.id);
+        items.push({ ...d, via: 'PAGE', group: d.record_section || groupOfType(d.document_type), group_chosen: !!d.record_section });
+    }
+    for (const d of viaMoney) {
+        if (seen.has(d.id)) continue;
+        seen.add(d.id);
+        let group = 'OTHER';
+        if (d.is_tax) group = 'TAX';
+        else if (['CREDIT', 'REVERSAL_CREDIT'].includes(d.transaction_type)) group = 'RETURNS';
+        else if (d.investment_cost_type === 'OPERATING') group = 'RUNNING';
+        else if (d.investment_cost_type === 'MAINTENANCE') group = 'MAINTENANCE';
+        else if (d.investment_cost_type === 'CAPITAL' || d.transaction_type === 'DEBIT') group = 'BUYING';
+        items.push({ ...d, via: 'PAYMENT', group });
+    }
+    const groups = DOC_GROUPS.map(g => ({ ...g, documents: items.filter(x => x.group === g.key) }));
+    sendSuccess(res, { groups, total: items.length, can_choose_group: hasSection });
+});
+
 module.exports = {
+    getInvestmentDocuments, // v1.88.0
     getInvestmentLedger, classifyInvestmentExpense, // v1.80.0
     postInvestmentFunding, // v1.80.0 — used by paid requisitions
     postInvestmentExpense, // v1.80.0

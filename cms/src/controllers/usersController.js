@@ -63,6 +63,13 @@ const getMyProfile = asyncHandler(async (req, res) => {
 
     const profile = result.rows[0];
 
+    // v1.89.0 — the permissions this person actually has (their roles,
+    // adjusted by their own access rules) and what is limited
+    if (profile) {
+        profile.permissions = req.user.permissions || profile.permissions;
+        profile.access = req.user.access || null;
+    }
+
     if (profile) {
         // --------------------------------------------------------
         // Share value = shares_held × current price per share.
@@ -266,7 +273,12 @@ const updateSignature = asyncHandler(async (req, res) => {
     }
 
     const key = generateKey('signatures', `${req.user.id}.png`);
-    await uploadBuffer(buffer, key, 'image/png');
+    // v1.88.0 — signatures are kept in blue ink everywhere
+    const ink = require('../services/signatureInkService');
+    let stored = buffer;
+    try { stored = await ink.toBlueInk(buffer); } catch (_) { throw createError.badRequest('The signature image could not be read — draw it again.'); }
+    await uploadBuffer(stored, key, 'image/png');
+    await ink.markDone(key);
 
     // Stored as a "/uploads/..." URL path (same convention as
     // settingsController's logo_url), not a raw disk path — so it can

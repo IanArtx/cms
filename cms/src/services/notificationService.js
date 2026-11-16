@@ -66,7 +66,24 @@ const notify = async ({
         return null;
     }
 
+    // v1.88.0 — the email controls (Admin rules + the person's own choice):
+    // sent now, held for the daily summary, or not emailed. The bell
+    // notification above is created either way.
     if (email) {
+        try {
+            const policy = require('./emailPolicyService');
+            const decision = await policy.decide(userId, type);
+            if (decision !== 'SEND') {
+                if (decision === 'DIGEST') {
+                    await policy.queueForDigest({ userId, type, notificationId, subject: email.subject, title, body, link });
+                }
+                await query('UPDATE notifications SET email_sent = FALSE, email_error = $1 WHERE id = $2',
+                    [decision === 'DIGEST' ? 'Held for the daily summary' : 'Not emailed (email settings)', notificationId]).catch(() => {});
+                return notificationId;
+            }
+        } catch (err) {
+            logger.warn('Email controls could not be applied — sending as usual', { userId, type, error: err.message });
+        }
         try {
             let to = email.to;
             if (!to) {

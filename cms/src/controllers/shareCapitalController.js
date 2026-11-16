@@ -161,6 +161,7 @@ const createChangeRequest = asyncHandler(async (req, res) => {
 
 const approveChangeRequest = asyncHandler(async (req, res) => {
     const id = parseInt(req.params.id, 10);
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_SHARE_CAPITAL', { label: 'share-capital change' }); // v1.89.0
     const result = await withTransaction(client => svc.approveChangeRequest(client, {
         requestId: id, userId: req.user.id, note: req.body.note,
     }));

@@ -217,6 +217,7 @@ const returnYear = asyncHandler(async (req, res) => {
 });
 
 const approveYear = asyncHandler(async (req, res) => {
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_TAX', { label: 'tax computation' }); // v1.89.0
     const w = await withTransaction(client => tax.approveYear(client, { taxYearId: id(req), userId: req.user.id }));
     sendSuccess(res, w, 'Computation approved — the corporate tax is now in the books');
 });

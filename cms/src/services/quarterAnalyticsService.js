@@ -81,6 +81,9 @@ const quarterForDate = (dateStr, fiscalQuarters) => {
 //
 // Returns, per currency:
 //   monthly:        [{ period: 'YYYY-MM', income, expense }], sorted
+//   daily:          [{ period: 'YYYY-MM-DD', income, expense }], sorted —
+//                   v1.88.0, so the chart can group by day / week / month /
+//                   year in the browser
 //   quarters:        [{ key, label, income, expense }], sorted by
 //                    each quarter's own earliest-seen date
 //   most_income_quarter / least_income_quarter / most_expense_quarter
@@ -94,7 +97,7 @@ const bucketAndSummarize = (rows, fiscalQuarters) => {
     for (const row of rows) {
         const currency = row.currency;
         if (!byCurrency[currency]) {
-            byCurrency[currency] = { monthlyMap: {}, quarterMap: {} };
+            byCurrency[currency] = { monthlyMap: {}, dailyMap: {}, quarterMap: {} };
         }
         const bucket = byCurrency[currency];
         const dateStr = normalizeDateInput(row.date);
@@ -103,14 +106,17 @@ const bucketAndSummarize = (rows, fiscalQuarters) => {
         const amount = parseFloat(row.amount) || 0;
 
         if (!bucket.monthlyMap[period]) bucket.monthlyMap[period] = { period, income: 0, expense: 0 };
+        if (!bucket.dailyMap[dateStr]) bucket.dailyMap[dateStr] = { period: dateStr, income: 0, expense: 0 };
         if (!bucket.quarterMap[qKey]) bucket.quarterMap[qKey] = { key: qKey, label: qLabel, income: 0, expense: 0, earliestDate: dateStr };
         if (dateStr < bucket.quarterMap[qKey].earliestDate) bucket.quarterMap[qKey].earliestDate = dateStr;
 
         if (row.direction === 'IN') {
             bucket.monthlyMap[period].income += amount;
+            bucket.dailyMap[dateStr].income += amount;
             bucket.quarterMap[qKey].income += amount;
         } else {
             bucket.monthlyMap[period].expense += amount;
+            bucket.dailyMap[dateStr].expense += amount;
             bucket.quarterMap[qKey].expense += amount;
         }
     }
@@ -131,6 +137,7 @@ const bucketAndSummarize = (rows, fiscalQuarters) => {
 
         result[currency] = {
             monthly,
+            daily: Object.values(bucket.dailyMap).sort((a, b) => a.period.localeCompare(b.period)),
             quarters,
             most_income_quarter:   pickExtreme('income',  (a, b) => a > b),
             least_income_quarter:  pickExtreme('income',  (a, b) => a < b),

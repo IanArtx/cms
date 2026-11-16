@@ -1,0 +1,29 @@
+%% v1.88.0 — meetings corrected after the event, email controls, annual financial statements pack
+flowchart TD
+    subgraph M["Meetings (corrected after the event)"]
+        M1["Closed / past meeting"] --> M2["'Correct this meeting' — reason (5+ characters)"]
+        M2 --> M3["change details · register · proxies · resolutions · votes"]
+        M3 --> M4["meeting_amendments: who, when, why, what"]
+        M1 --> M5["Signatories: who signs minutes, resolutions,\nregister, notice, certified copies"]
+        M5 --> M6["documents generated again with those signatures (blue)"]
+    end
+    subgraph E["Emails"]
+        E1["notification created (always in the bell)"] --> E2{"kind of email"}
+        E2 -->|"meeting notice / security"| E3["always sent"]
+        E2 -->|"other kinds"| E4{"Admin: Each time / Daily summary / Off\n+ member's own choice if allowed\n+ 'only essential emails' switch"}
+        E4 -->|"Each time"| E5["sent now"]
+        E4 -->|"Daily summary"| E6["email_digest_queue → one email at the set hour (Kampala)"]
+        E4 -->|"Off"| E7["not emailed"]
+    end
+    subgraph F["Annual financial statements pack"]
+        F1["books (glService: TB, balance sheet, P&L, cash flow)\nthis year + last year, UGX"] --> F2["financialStatementsService\nrounded lines, totals = sums of lines"]
+        F3["fs_pack_settings: non-current accounts, auditors, approvals needed"] --> F2
+        F4["fs_notes: wording per year (Treasurer / Asst / Admin)"] --> F2
+        F2 --> F5["SoFP (current / non-current) · P&L · changes in equity · cash flows · notes 1–15\ndirectors' report · responsibilities · approval page"]
+        F5 --> F6["PDF (pdfService)"]
+        F5 --> F7["Excel: statements with SUM formulas, notes,\ntrial balance, general ledger, cash book"]
+        F8["Directors approve → fs_approvals (signature copy + key totals)"] --> F5
+        F8 --> F9{"books changed since?"}
+        F9 -->|"yes"| F10["status CHANGED + warning"]
+        F9 -->|"no, enough approvals"| F11["status APPROVED (no DRAFT mark)"]
+    end

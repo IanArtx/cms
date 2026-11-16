@@ -22,6 +22,8 @@ router.use(authenticate);
 // account still needs to see/edit its own profile and check whether
 // its role request has been reviewed yet)
 router.get('/me',                   usersController.getMyProfile);
+// v1.89.0 — the limits an Admin has set on my own account
+router.get('/me/access',            require('../controllers/personalAccessController').getMine);
 router.get('/roles',                usersController.getAllRoles);
 // v1.82.0 — guided tour finished / skipped (remembered in the account)
 router.patch('/me/tours',            usersController.updateMyTours);
@@ -185,6 +187,23 @@ router.get('/directory',
         sendSuccess(res, result.rows);
     })
 );
+
+// ============================================================
+// v1.89.0 — PERSONAL ACCESS RULES (Admin): limits — and single extra
+// permissions — for one person on top of their roles.
+// ============================================================
+const personalAccessCtl = require('../controllers/personalAccessController');
+router.get('/access/overview', requireRoles(['Admin']), personalAccessCtl.getOverview);
+router.get('/:id/access', requireRoles(['Admin']), validators.idParam('id'), validateRequest, personalAccessCtl.getPerson);
+router.post('/:id/access', requireRoles(['Admin']), validators.idParam('id'),
+    body('kind').isString().withMessage('Choose the kind of rule'),
+    body('reason').trim().isLength({ min: 5 }).withMessage('Give the reason (at least 5 characters)'),
+    body('starts_on').optional({ nullable: true, checkFalsy: true }).isISO8601(),
+    body('ends_on').optional({ nullable: true, checkFalsy: true }).isISO8601(),
+    validateRequest, personalAccessCtl.addRule);
+router.post('/:id/access/:ruleId/end', requireRoles(['Admin']), validators.idParam('id'), validators.idParam('ruleId'),
+    body('reason').trim().isLength({ min: 5 }).withMessage('Give the reason (at least 5 characters)'),
+    validateRequest, personalAccessCtl.endRule);
 
 router.get('/:id',
     validators.idParam('id'),

@@ -16,6 +16,8 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import {
     ArrowUpCircleIcon,
     ArrowDownCircleIcon,
@@ -277,6 +279,7 @@ const MmfDetailPage = () => {
     const [categories, setCategories] = useState([]);
     const [loading,    setLoading]    = useState(true);
     const [error,      setError]      = useState(null);
+    const [chartGroup, setChartGroup] = useGrouping('mmf-charts', 'month'); // v1.88.0
     const [showTopUp,    setShowTopUp]    = useState(false);
     const [showWithdraw, setShowWithdraw] = useState(false);
     const [showInterest, setShowInterest] = useState(false);
@@ -339,22 +342,24 @@ const MmfDetailPage = () => {
 
     // ---- Running balance over time (funding chart) ----
     let running = 0;
-    const balanceChartData = standing.map(t => {
+    // v1.88.0 — the balance at the end of each day / week / month / year
+    const balanceChartData = groupSeries(standing.map(t => {
         const isCredit = t.entry_type === 'TOPUP' || t.entry_type === 'INTEREST';
         running += isCredit ? parseFloat(t.amount) : -parseFloat(t.amount);
-        return { date: formatDate(t.entry_date), balance: running };
-    });
+        return { date: t.entry_date, balance: running };
+    }), { granularity: chartGroup, fields: { balance: 'last' } });
 
-    // ---- Interest vs Management Fee by month (return chart) ----
-    const monthTotals = {};
-    standing.forEach(t => {
-        if (t.entry_type !== 'INTEREST' && t.entry_type !== 'MANAGEMENT_FEE') return;
-        const monthKey = (t.interest_period || t.entry_date).slice(0, 7);
-        if (!monthTotals[monthKey]) monthTotals[monthKey] = { month: monthKey, Interest: 0, Fees: 0 };
-        if (t.entry_type === 'INTEREST') monthTotals[monthKey].Interest += parseFloat(t.amount);
-        else monthTotals[monthKey].Fees += parseFloat(t.amount);
-    });
-    const returnChartData = Object.values(monthTotals).sort((a, b) => a.month.localeCompare(b.month));
+    // ---- Interest vs Management Fee (return chart) ----
+    // v1.88.0 — interest and fees added up per period. Months and years use
+    // the month the interest is FOR (as before); days and weeks the date it
+    // was recorded.
+    const returnChartData = groupSeries(standing
+        .filter(t => t.entry_type === 'INTEREST' || t.entry_type === 'MANAGEMENT_FEE')
+        .map(t => ({
+            date: ['month', 'year'].includes(chartGroup) ? (t.interest_period || t.entry_date) : t.entry_date,
+            Interest: t.entry_type === 'INTEREST' ? parseFloat(t.amount) : 0,
+            Fees: t.entry_type === 'MANAGEMENT_FEE' ? parseFloat(t.amount) : 0,
+        })), { granularity: chartGroup, fields: { Interest: 'sum', Fees: 'sum' } });
 
     return (
         <div>
@@ -448,19 +453,23 @@ const MmfDetailPage = () => {
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <div className="card">
-                    <h3 className="section-title mb-4">Funding Chart — Balance Over Time</h3>
+                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                        <h3 className="section-title">Funding Chart — Balance Over Time</h3>
+                        <GroupBy value={chartGroup} onChange={setChartGroup} />
+                    </div>
                     {balanceChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <LineChart data={balanceChartData}>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
                                 />
-                                <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
+                                <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={balanceChartData.length <= 40 ? { r: 3, fill: theme.primary } : false} connectNulls />
                             </LineChart>
                         </ResponsiveContainer>
                     ) : (
@@ -471,16 +480,20 @@ const MmfDetailPage = () => {
                 </div>
 
                 <div className="card">
-                    <h3 className="section-title mb-4">Return Chart — Interest vs Fees by Month</h3>
+                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                        <h3 className="section-title">Return Chart — Interest vs Fees</h3>
+                        <GroupBy value={chartGroup} onChange={setChartGroup} />
+                    </div>
                     {returnChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={returnChartData}>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`]}
                                 />
                                 <Legend {...theme.legendProps} />

@@ -14,12 +14,13 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { meetingsAPI } from '../../api/endpoints';
+import { meetingsAPI, setMeetingAmendReason } from '../../api/endpoints';
 import { formatDate, formatDateTime, getErrorMessage, getUploadUrl } from '../../utils/helpers';
 import { useTabParam } from '../../hooks/useTabParam';
 import useFormDraft from '../../hooks/useFormDraft'; // v1.81.0 — unfinished forms kept
 import DraftNotice from '../../components/common/DraftNotice';
 import { ProxySection } from './proxyUi'; // v1.87.0 — proxy forms filled in the system
+import { CorrectionBar, SignatoriesCard, AmendmentHistory } from './meetingCorrections'; // v1.88.0
 import PageHeader from '../../components/common/PageHeader';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import {
@@ -116,7 +117,7 @@ const OverviewTab = ({ v }) => {
 // ------------------------------------------------------------
 // Attendance (the register)
 // ------------------------------------------------------------
-const AttendanceTab = ({ v, canManage, reload, setError }) => {
+const AttendanceTab = ({ v, canManage, reload, setError, corr = false }) => {
     const m = v.meeting;
     const people = useDirectory();
     const [busy, setBusy] = useState(null);
@@ -124,9 +125,10 @@ const AttendanceTab = ({ v, canManage, reload, setError }) => {
     const [proxyName, setProxyName] = useState('');
     const [guest, setGuest] = useState({ name: '', designation: '', user_id: null });
     const [extraPerson, setExtraPerson] = useState({ user_id: null, shares_held: '' });
-    const editable = canManage && ['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status);
+    // v1.88.0 — corr: a closed meeting being corrected (with a reason)
+    const editable = canManage && (['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) || corr);
     const general = m.meeting_type !== 'BOARD';
-    const past = !!m.recorded_after_event;
+    const past = !!m.recorded_after_event || corr || m.meeting_date < todayStr();
     const saveShares = async (a, value) => {
         if (String(value) === String(a.shares_held ?? '')) return;
         setBusy(a.id);
@@ -352,12 +354,12 @@ const VoteModal = ({ r, voters, onClose, onDone }) => {
     );
 };
 
-const ResolutionsTab = ({ v, canManage, reload, setError, setNotice }) => {
+const ResolutionsTab = ({ v, canManage, reload, setError, setNotice, corr = false }) => {
     const m = v.meeting;
     const [adding, setAdding] = useState(false);
     const [editing, setEditing] = useState(null);
     const [voting, setVoting] = useState(null);
-    const canPropose = canManage && ['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status);
+    const canPropose = canManage && (['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) || corr);
     const withdraw = async (r) => {
         try { await meetingsAPI.withdraw(r.id); await reload(); } catch (err) { setError(getErrorMessage(err)); }
     };
@@ -391,9 +393,16 @@ const ResolutionsTab = ({ v, canManage, reload, setError, setNotice }) => {
                     </p>
                     {canManage && r.result === 'PENDING' && (
                         <div className="flex gap-2 mt-3 flex-wrap">
-                            {m.status === 'IN_PROGRESS' && <button type="button" className="btn-primary text-sm" onClick={() => setVoting(r)}>Record the vote</button>}
+                            {(m.status === 'IN_PROGRESS' || corr) && <button type="button" className="btn-primary text-sm" onClick={() => setVoting(r)}>Record the vote</button>}
                             <button type="button" className="btn-secondary text-sm" onClick={() => setEditing(r)}>Edit</button>
                             <button type="button" className="btn-secondary text-sm" onClick={() => withdraw(r)}>Withdraw</button>
+                        </div>
+                    )}
+                    {/* v1.88.0 — a closed meeting being corrected: a decided resolution too */}
+                    {canManage && corr && ['CARRIED', 'LOST'].includes(r.result) && (
+                        <div className="flex gap-2 mt-3 flex-wrap">
+                            <button type="button" className="btn-secondary text-sm" onClick={() => setVoting(r)}>Correct the vote</button>
+                            <button type="button" className="btn-secondary text-sm" onClick={() => setEditing(r)}>Correct the wording</button>
                         </div>
                     )}
                 </div>
@@ -589,6 +598,12 @@ const MeetingDetailPage = () => {
     const [modal, setModal] = useState(null); // notice | open | close | cancel
     const [form, setForm] = useState({});
     const [busy, setBusy] = useState(false);
+    // v1.88.0 — correcting a closed meeting: the reason goes with every change
+    const [correcting, setCorrecting] = useState(false);
+    const [amendReason, setAmendReason] = useState('');
+    const corr = correcting && amendReason.trim().length >= 5;
+    useEffect(() => { setMeetingAmendReason(corr ? amendReason.trim() : null); }, [corr, amendReason]);
+    useEffect(() => () => setMeetingAmendReason(null), []);
 
     const reload = useCallback(async () => {
         // v1.81.0 — only a numbered meeting can be opened here; anything
@@ -643,7 +658,9 @@ const MeetingDetailPage = () => {
 
     const actions = canManage ? (
         <>
-            {['DRAFT', 'NOTICE_ISSUED'].includes(m.status) && <button type="button" className="btn-secondary" onClick={() => setEditing(true)}>Edit</button>}
+            {(['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) || corr) && <button type="button" className="btn-secondary" onClick={() => setEditing(true)}>{m.status === 'CLOSED' ? 'Correct the details' : 'Edit'}</button>}
+            {/* v1.88.0 — a closed meeting can be corrected, with a reason */}
+            {m.status === 'CLOSED' && !correcting && <button type="button" className="btn-secondary" onClick={() => setCorrecting(true)}>Correct this meeting</button>}
             {m.status === 'DRAFT' && <button type="button" className="btn-primary" onClick={() => { setForm({ short_notice_consent: !!m.short_notice_consent, short_notice_note: m.short_notice_note || '', notice_date: past ? '' : todayStr(), send_emails: true }); setModal('notice'); }}>{past ? 'Record the notice' : 'Issue the notice'}</button>}
             {/* v1.87.0 — the notice date can be corrected until the meeting is closed */}
             {['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) && <button type="button" className="btn-secondary" onClick={() => { setForm({ notice_date: m.notice_issued_at ? String(m.notice_issued_at).slice(0, 10) : '', reason: '', short_notice_consent: !!m.short_notice_consent, short_notice_note: m.short_notice_note || '' }); setModal('noticeDate'); }}>Correct the notice date</button>}
@@ -701,8 +718,14 @@ const MeetingDetailPage = () => {
                 <p className="mb-4 text-sm text-green-700 flex items-center gap-1.5"><CheckCircleIcon className="h-5 w-5" />You confirmed your attendance on {formatDateTime(mine.confirmed_at)} — code <span className="font-mono">{mine.confirmation_code}</span></p>
             )}
 
+            {/* v1.88.0 — correcting a closed meeting */}
+            {correcting && m.status === 'CLOSED' && (
+                <CorrectionBar reason={amendReason} setReason={setAmendReason}
+                    onDone={() => { setCorrecting(false); setAmendReason(''); }} />
+            )}
+
             {/* v1.87.0 — proxy forms filled in the system */}
-            <ProxySection v={v} canManage={canManage} reload={reload} setNotice={setNotice} />
+            <ProxySection v={v} canManage={canManage} reload={reload} setNotice={setNotice} corr={corr} amendReason={amendReason} />
 
             <div className="tab-bar mb-6" role="tablist">
                 {tabs.map(([k, l]) => (
@@ -710,9 +733,11 @@ const MeetingDetailPage = () => {
                 ))}
             </div>
             {tab === 'overview' && <OverviewTab v={v} />}
-            {tab === 'attendance' && <AttendanceTab v={v} canManage={canManage} reload={reload} setError={setError} />}
-            {tab === 'resolutions' && <ResolutionsTab v={v} canManage={canManage} reload={reload} setError={setError} setNotice={setNotice} />}
+            {tab === 'overview' && <AmendmentHistory items={v.amendments || []} />}
+            {tab === 'attendance' && <AttendanceTab v={v} canManage={canManage} reload={reload} setError={setError} corr={corr} />}
+            {tab === 'resolutions' && <ResolutionsTab v={v} canManage={canManage} reload={reload} setError={setError} setNotice={setNotice} corr={corr} />}
             {tab === 'minutes' && <MinutesTab v={v} canManage={canManage} reload={reload} setError={setError} setNotice={setNotice} />}
+            {tab === 'documents' && canManage && m.status !== 'CANCELLED' && <SignatoriesCard v={v} reload={reload} setNotice={setNotice} setError={setError} />}
             {tab === 'documents' && <DocumentsTab v={v} canManage={canManage} />}
 
             <MeetingFormModal isOpen={editing} meeting={m} settings={v.settings} onClose={() => setEditing(false)}

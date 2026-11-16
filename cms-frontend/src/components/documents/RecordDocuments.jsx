@@ -15,11 +15,17 @@
 // • "Take off" — the document leaves the page but stays in Documents
 // • "Open" — the document in Documents (preview, signatures, versions)
 // Upload / add / take off: whoever may upload documents.
+// v1.88.0 — on an INVESTMENT page the documents are shown in groups:
+// Buying & expanding, Running costs, Maintenance & repairs, Taxes, Returns
+// & income, Agreements/titles/certificates, Proposals & reports, Other.
+// Documents put on the page go in the group chosen (it can be changed);
+// documents attached to the investment's payments and returns appear in
+// the group of that payment automatically, marked "from a payment".
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { documentsAPI, categoriesAPI } from '../../api/endpoints';
+import { documentsAPI, categoriesAPI, investmentsAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import ErrorMessage from '../common/ErrorMessage';
 import StatusBadge from '../common/StatusBadge';
@@ -37,6 +43,11 @@ export const PAGE_DOC_TYPES = [
     ['FINANCIAL_REPORT_GENERAL', 'Financial report'],
     ['OTHER', 'Other'],
 ];
+export const DOC_GROUPS = [
+    ['BUYING', 'Buying & expanding'], ['RUNNING', 'Running costs'], ['MAINTENANCE', 'Maintenance & repairs'],
+    ['TAX', 'Taxes'], ['RETURNS', 'Returns & income'], ['LEGAL', 'Agreements, titles & certificates'],
+    ['PLANNING', 'Proposals & reports'], ['OTHER', 'Other'],
+];
 const typeLabel = (t) => (PAGE_DOC_TYPES.find(x => x[0] === t) || [t, String(t || '').replace(/_/g, ' ').toLowerCase()])[1];
 
 const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly = false }) => {
@@ -44,12 +55,16 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
     const confirm = useConfirm();
     const canEdit = !readOnly && hasPermission('DOCUMENT_UPLOAD');
     const noun = recordType === 'projects' ? 'project' : 'investment';
+    const grouped = recordType === 'investments'; // v1.88.0
     const [docs, setDocs] = useState(null);
+    const [groups, setGroups] = useState(null); // v1.88.0
+    const [canGroup, setCanGroup] = useState(false);
+    const [closed, setClosed] = useState({}); // folded groups
     const [error, setError] = useState(null);
     const [msg, setMsg] = useState(null);
     const [mode, setMode] = useState(null); // 'upload' | 'pick'
     const [categories, setCategories] = useState([]);
-    const [up, setUp] = useState({ title: '', document_type: recordType === 'projects' ? 'PROJECT_PROPOSAL' : 'INVESTMENT_PROPOSAL', category_id: '' });
+    const [up, setUp] = useState({ title: '', document_type: recordType === 'projects' ? 'PROJECT_PROPOSAL' : 'INVESTMENT_PROPOSAL', category_id: '', record_section: '' });
     const [file, setFile] = useState(null);
     const [busy, setBusy] = useState(false);
     const [search, setSearch] = useState('');
@@ -58,10 +73,26 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
     const timer = useRef(null);
 
     const load = useCallback(() => {
+        if (grouped) {
+            investmentsAPI.getDocuments(recordId)
+                .then(r => {
+                    const d = r.data.data;
+                    setGroups(d.groups || []);
+                    setCanGroup(!!d.can_choose_group);
+                    setDocs((d.groups || []).flatMap(g => g.documents));
+                })
+                .catch(() => {
+                    // an older server: the plain list
+                    documentsAPI.getAll({ related_record_type: recordType, related_record_id: recordId, limit: 100 })
+                        .then(r => { setGroups(null); setDocs(r.data.data || []); })
+                        .catch(err => { setDocs([]); setError(getErrorMessage(err)); });
+                });
+            return;
+        }
         documentsAPI.getAll({ related_record_type: recordType, related_record_id: recordId, limit: 100 })
             .then(r => setDocs(r.data.data || []))
             .catch(err => { setDocs([]); setError(getErrorMessage(err)); });
-    }, [recordType, recordId]);
+    }, [recordType, recordId, grouped]);
     useEffect(() => { load(); }, [load]);
 
     useEffect(() => {
@@ -97,6 +128,7 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
             fd.append('category_id', up.category_id);
             fd.append('related_record_type', recordType);
             fd.append('related_record_id', String(recordId));
+            if (grouped && up.record_section) fd.append('record_section', up.record_section); // v1.88.0
             const r = await documentsAPI.upload(fd);
             setMsg(r.data.message || 'Uploaded.');
             setUp(p => ({ ...p, title: '' })); setFile(null);
@@ -126,6 +158,38 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
             setMsg(r.data.message); load();
         } catch (err) { setError(getErrorMessage(err)); }
     };
+
+    // v1.88.0 — move a document put on the page to another group
+    const move = async (doc, section) => {
+        setError(null); setMsg(null);
+        try { await documentsAPI.setRecordSection(doc.id, section || null); load(); } catch (err) { setError(getErrorMessage(err)); }
+    };
+    const row = (d) => (
+        <li key={`${d.via || 'PAGE'}-${d.id}`} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{d.title}</p>
+                <p className="text-xs text-gray-400">
+                    <span className="font-mono">{d.reference_code}</span> · {typeLabel(d.document_type)} · {formatDate(d.created_at)}
+                    {d.via === 'PAYMENT' && <> · from payment <span className="font-mono">{d.transaction_reference || `#${d.transaction_id}`}</span></>}
+                </p>
+            </div>
+            <div className="flex items-center gap-3">
+                {grouped && canGroup && canEdit && d.via === 'PAGE' && (
+                    <select className="input py-0.5 text-xs w-auto" value={d.group_chosen ? d.group : ''} aria-label="Group"
+                        title="Move to another group" onChange={e => move(d, e.target.value)}>
+                        <option value="">Group: from the type</option>
+                        {DOC_GROUPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                )}
+                <StatusBadge status={d.status} />
+                <Link to={`/documents?doc=${d.id}`} className="text-sm text-primary-700 hover:underline">Open</Link>
+                {canEdit && d.via !== 'PAYMENT' && (
+                    <button type="button" onClick={() => detach(d)} title="Take off this page (the document stays in Documents)"
+                        className="text-gray-400 hover:text-red-600"><XMarkIcon className="h-4 w-4" /></button>
+                )}
+            </div>
+        </li>
+    );
 
     return (
         <div className="card" data-testid={`record-documents-${recordType}`}>
@@ -165,6 +229,15 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
                                 {PAGE_DOC_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                             </select>
                         </div>
+                        {grouped && canGroup && (
+                            <div>
+                                <label className="label">Group on this page</label>
+                                <select className="input" value={up.record_section} onChange={e => setUp(p => ({ ...p, record_section: e.target.value }))}>
+                                    <option value="">From the type (default)</option>
+                                    {DOC_GROUPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                                </select>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Category *</label>
                             <select className="input" required value={up.category_id} onChange={e => setUp(p => ({ ...p, category_id: e.target.value }))}>
@@ -210,26 +283,24 @@ const RecordDocuments = ({ recordType, recordId, title = 'Documents', readOnly =
                     <p className="text-sm text-gray-400 text-center py-6">
                         No documents on this {noun} yet{canEdit ? ' — upload the proposal, agreements, certificates or reports here.' : '.'}
                     </p>
+                ) : grouped && groups ? (
+                    // v1.88.0 — in groups; empty groups are left out
+                    <div className="space-y-3">
+                        {groups.filter(g => g.documents.length).map(g => (
+                            <div key={g.key} className="rounded-lg border border-gray-100 dark:border-gray-800">
+                                <button type="button" onClick={() => setClosed(c => ({ ...c, [g.key]: !c[g.key] }))} aria-expanded={!closed[g.key]}
+                                    className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left bg-gray-50 dark:bg-gray-800/50 rounded-t-lg">
+                                    <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">{g.label}</span>
+                                    <span className="text-xs text-gray-500">{g.documents.length} {closed[g.key] ? '▸' : '▾'}</span>
+                                </button>
+                                {!closed[g.key] && <ul className="divide-y divide-gray-100 dark:divide-gray-800 px-3">{g.documents.map(row)}</ul>}
+                            </div>
+                        ))}
+                        <p className="text-[11px] text-gray-400">Receipts and other documents attached to this investment's payments and returns appear in the group of that payment.</p>
+                    </div>
                 ) : (
                     <ul className="divide-y divide-gray-100 dark:divide-gray-800">
-                        {docs.map(d => (
-                            <li key={d.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{d.title}</p>
-                                    <p className="text-xs text-gray-400">
-                                        <span className="font-mono">{d.reference_code}</span> · {typeLabel(d.document_type)} · {formatDate(d.created_at)}
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                    <StatusBadge status={d.status} />
-                                    <Link to={`/documents?doc=${d.id}`} className="text-sm text-primary-700 hover:underline">Open</Link>
-                                    {canEdit && (
-                                        <button type="button" onClick={() => detach(d)} title="Take off this page (the document stays in Documents)"
-                                            className="text-gray-400 hover:text-red-600"><XMarkIcon className="h-4 w-4" /></button>
-                                    )}
-                                </div>
-                            </li>
-                        ))}
+                        {docs.map(row)}
                     </ul>
                 )}
         </div>

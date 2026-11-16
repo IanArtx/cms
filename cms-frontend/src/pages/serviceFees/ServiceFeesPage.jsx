@@ -26,7 +26,8 @@ import DataTable from '../../components/common/DataTable';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import useChartTheme, { compactNumber } from '../../hooks/useChartTheme';
+import useChartTheme from '../../hooks/useChartTheme';
+import ServiceFeePeriodsChart from '../../components/charts/ServiceFeePeriodsChart'; // v1.88.0
 import { PlusIcon, CheckIcon, XMarkIcon, BanknotesIcon, ArrowDownTrayIcon, PencilIcon, NoSymbolIcon, HandRaisedIcon, ClockIcon } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 
@@ -1563,21 +1564,12 @@ export const RejectAdvanceModal = ({ isOpen, advance, onClose, onSuccess }) => {
 // earned), fed by getMyAgreement's periods/stats.
 // ============================================================
 const ServiceFeePersonalChart = ({ agreement }) => {
-    const theme = useChartTheme();
     const periods = agreement?.periods || [];
     const stats = agreement?.stats || null;
     if (periods.length === 0) return null;
 
-    // v1.54.0 — an EXCLUDED month must never show as "outstanding"
-    // (nothing is owed for it), so its bar is a distinct neutral
-    // segment instead of red — and, being excluded, it also never
-    // shows a "paid" segment, since no money actually moved.
-    const chartData = periods.map(p => ({
-        period: p.period,
-        paid: p.status === 'EXCLUDED' ? 0 : parseFloat(p.amount_paid || 0),
-        outstanding: p.status === 'EXCLUDED' ? 0 : Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
-        excluded: p.status === 'EXCLUDED' ? parseFloat(p.amount_due || 0) : 0,
-    }));
+    // v1.54.0 — an EXCLUDED month never shows as "outstanding" (see
+    // ServiceFeePeriodsChart, v1.88.0, which also groups by months / years).
 
     return (
         <div className="mt-4">
@@ -1609,19 +1601,7 @@ const ServiceFeePersonalChart = ({ agreement }) => {
                     </div>
                 </div>
             )}
-            <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData}>
-                        <CartesianGrid {...theme.gridProps} />
-                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
-                        <YAxis tickFormatter={compactNumber} tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
-                        <Tooltip {...theme.tooltipProps} />
-                        <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} />
-                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
-                        <Bar dataKey="excluded" stackId="a" name="Excluded" fill={theme.neutral} radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                </ResponsiveContainer>
-            </div>
+            <ServiceFeePeriodsChart periods={periods} storageKey="service-fee-mine" />
         </div>
     );
 };

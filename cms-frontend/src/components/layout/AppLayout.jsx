@@ -26,6 +26,7 @@ import MaintenanceStatusBar from '../maintenance/MaintenanceStatusBar'; // v1.74
 import useScrollHints from '../../hooks/useScrollHints'; // v1.77.0
 import { settingsAPI } from '../../api/endpoints';
 import { setStatutory } from '../../utils/exportUtils'; // v1.79.0
+import { NAV_ITEMS, findItemForPath } from './navConfig'; // v1.89.0
 
 // Auto-logout after this many minutes of no mouse/keyboard/touch/
 // scroll activity anywhere in the app — see hooks/useIdleLogout.js.
@@ -36,6 +37,13 @@ const AppLayout = () => {
     const [loggingOut, setLoggingOut] = useState(false);
     const { user, hasRole, logout } = useAuth();
     const location = useLocation();
+    // v1.89.0 — a page an Admin has hidden from this person
+    const hiddenPage = (() => {
+        const hidden = (user && user.access && user.access.hidden_areas) || [];
+        if (!hidden.length) return null;
+        const item = findItemForPath(location.pathname, NAV_ITEMS);
+        return item && hidden.includes(item.id) ? item : null;
+    })();
 
     // v1.79.0 — the registration number, TIN and registered office
     // printed on every generated document's letterhead. Loaded once
@@ -116,7 +124,12 @@ const AppLayout = () => {
                     bottom bar never covers the last row of a page. */}
                 <main id="main-content" className="flex-1 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-28 md:px-6 md:pt-6 md:pb-10">
                     <div className="w-full">
-                        <Outlet />
+                        {hiddenPage ? (
+                            <div className="card max-w-lg mx-auto mt-10 p-6 text-center">
+                                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">{hiddenPage.label} is not available to you</h2>
+                                <p className="text-sm text-gray-500">An Admin has limited your access to this part of the system. You can see your limits and the reasons under My Profile › Sign-in &amp; security › My access.</p>
+                            </div>
+                        ) : <Outlet />}
                     </div>
                 </main>
             </div>

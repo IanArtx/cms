@@ -52,6 +52,95 @@ const Badge = ({ status }) => (
     <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${STATUS[status]?.cls || ''}`}>{STATUS[status]?.label || status}</span>
 );
 
+// ------------------------------------------------------------
+// v1.88.0 — the history, quieter: decisions as a tidy rate list (date,
+// rate, change, who), checks grouped by day with a coloured dot per
+// check; "nothing new" checks are one faint line, the details on hover.
+// ------------------------------------------------------------
+const DOT = { NEW_SUGGESTIONS: 'bg-emerald-500', NOTHING_NEW: 'bg-gray-300 dark:bg-gray-600', FAILED: 'bg-red-500', SWITCHED_OFF: 'bg-amber-400' };
+const dayLabel = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' });
+};
+const timeLabel = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+const shortDate = (ymd) => {
+    const d = new Date(`${String(ymd).slice(0, 10)}T12:00:00`);
+    return Number.isNaN(d.getTime()) ? ymd : d.toLocaleDateString([], { day: '2-digit', month: 'short', year: '2-digit' });
+};
+const firstName = (full) => String(full || '').trim().split(/\s+/)[0] || '';
+
+const FxHistory = ({ recent, runs }) => {
+    const days = [];
+    for (const r of runs) {
+        const key = dayLabel(r.run_at);
+        let g = days.find(x => x.key === key);
+        if (!g) { g = { key, items: [] }; days.push(g); }
+        g.items.push(r);
+    }
+    return (
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
+            <section aria-label="Decisions">
+                <p className="text-[11px] uppercase tracking-wide text-gray-400 mb-2">Decisions</p>
+                {recent.length === 0 ? <p className="text-gray-400">None yet.</p> : (
+                    <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {recent.map(s => {
+                            const ch = s.change_pct === null || s.change_pct === undefined ? null : Number(s.change_pct);
+                            const other = s.status !== 'APPROVED';
+                            return (
+                                <li key={s.id} className="py-1.5">
+                                    <div className="flex items-baseline gap-3">
+                                        <span className="w-20 shrink-0 text-gray-500 dark:text-gray-400 tabular-nums">{shortDate(s.rate_date)}</span>
+                                        <span className="flex-1 min-w-0 font-medium text-gray-800 dark:text-gray-100 tabular-nums">
+                                            {s.base_currency_code} {n(s.rate, 4)}
+                                        </span>
+                                        {ch !== null && Number.isFinite(ch) && (
+                                            <span className={`w-14 text-right tabular-nums ${ch > 0 ? 'text-emerald-600 dark:text-emerald-400' : ch < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-gray-400'}`}>
+                                                {ch > 0 ? '▲' : ch < 0 ? '▼' : ''}{Math.abs(ch).toFixed(2)}%
+                                            </span>
+                                        )}
+                                        <span className="w-24 text-right truncate text-gray-400" title={s.decided_by_name || ''}>
+                                            {other ? <Badge status={s.status} /> : firstName(s.decided_by_name)}
+                                        </span>
+                                    </div>
+                                    {s.decision_note && <p className="ml-[5.75rem] mt-0.5 text-[11px] text-gray-400 leading-snug">{s.decision_note}</p>}
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+            </section>
+            <section aria-label="Checks">
+                <p className="text-[11px] uppercase tracking-wide text-gray-400 mb-2">Checks</p>
+                {days.length === 0 ? <p className="text-gray-400">None yet.</p> : (
+                    <div className="space-y-2.5">
+                        {days.map(g => (
+                            <div key={g.key}>
+                                <p className="text-gray-500 dark:text-gray-400 mb-1">{g.key}</p>
+                                <ul className="space-y-1 border-l border-gray-100 dark:border-gray-800 ml-1 pl-3">
+                                    {g.items.map(r => (
+                                        <li key={r.id} className="flex items-start gap-2" title={r.message || ''}>
+                                            <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${DOT[r.status] || 'bg-gray-300'}`} />
+                                            <span className="w-11 shrink-0 tabular-nums text-gray-400">{timeLabel(r.run_at)}</span>
+                                            <span className={`min-w-0 ${r.status === 'NOTHING_NEW' ? 'text-gray-400' : 'text-gray-700 dark:text-gray-200'}`}>
+                                                {r.status === 'NEW_SUGGESTIONS' ? (r.message || RUN[r.status]).replace(/^Bank of Uganda rates for [0-9-]+: /, 'New: ') : RUN[r.status] || r.status}
+                                                {r.trigger === 'BY_HAND' && <span className="text-gray-400"> · by {firstName(r.run_by_name) || 'hand'}</span>}
+                                                {r.status === 'FAILED' && r.message && <span className="block text-[11px] text-rose-500/80 leading-snug">{r.message}</span>}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </section>
+        </div>
+    );
+};
+
 // ---- one waiting suggestion ----
 const SuggestionCard = ({ s, canDecide, onDone }) => {
     const [checked, setChecked] = useState(false);
@@ -248,34 +337,7 @@ const BouRatesPanel = ({ canDecide, onRatesChanged, focus = false }) => {
                         {showMore ? <ChevronUpIcon className="h-4 w-4" /> : <ChevronDownIcon className="h-4 w-4" />}
                         Earlier decisions and check log
                     </button>
-                    {showMore && (
-                        <div className="mt-2 grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
-                            <div>
-                                <p className="font-semibold text-gray-600 dark:text-gray-300 mb-1">Decisions</p>
-                                <ul className="space-y-1.5">
-                                    {recent.map(s => (
-                                        <li key={s.id} className="text-gray-600 dark:text-gray-300">
-                                            <Badge status={s.status} /> {s.rate_date} · {s.base_currency_code} {n(s.rate, 4)}
-                                            {s.decided_by_name ? ` · ${s.decided_by_name}` : ''}
-                                            {s.decision_note && <span className="block text-gray-400">{s.decision_note}</span>}
-                                        </li>
-                                    ))}
-                                    {recent.length === 0 && <li className="text-gray-400">None yet.</li>}
-                                </ul>
-                            </div>
-                            <div>
-                                <p className="font-semibold text-gray-600 dark:text-gray-300 mb-1">Checks</p>
-                                <ul className="space-y-1.5">
-                                    {(feed?.runs || []).map(r => (
-                                        <li key={r.id} className="text-gray-600 dark:text-gray-300">
-                                            {when(r.run_at)} · {r.trigger === 'BY_HAND' ? `by ${r.run_by_name || 'hand'}` : 'scheduled'} · {RUN[r.status] || r.status}
-                                            <span className="block text-gray-400">{r.message}</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        </div>
-                    )}
+                    {showMore && <FxHistory recent={recent} runs={feed?.runs || []} />}
                 </div>
             )}
         </div>

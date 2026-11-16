@@ -55,9 +55,11 @@ export const LayoutProvider = ({ children }) => {
         hasPermission, hasRole, hasFinancialAccess, isAdminOfficer, isAuditor, capitalGoalTrackingEnabled,
     }), [hasPermission, hasRole, hasFinancialAccess, isAdminOfficer, isAuditor, capitalGoalTrackingEnabled]);
 
+    // v1.89.0 — parts of the system an Admin has hidden from this person
+    const hiddenAreas = useMemo(() => (user && user.access && Array.isArray(user.access.hidden_areas) ? user.access.hidden_areas : []), [user]);
     const visibleItems = useMemo(
-        () => (isAuditor ? AUDITOR_ITEMS : NAV_ITEMS.filter(i => i.show(navCtx))),
-        [isAuditor, navCtx],
+        () => (isAuditor ? AUDITOR_ITEMS : NAV_ITEMS.filter(i => i.show(navCtx) && !hiddenAreas.includes(i.id))),
+        [isAuditor, navCtx, hiddenAreas],
     );
 
     const quickActions = useMemo(

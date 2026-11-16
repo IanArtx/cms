@@ -49,7 +49,7 @@ const SignaturePad = ({ onChange, width = 400, height = 160 }) => {
         ctx.scale(ratio, ratio);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, drawWidth, height);
-        ctx.strokeStyle = '#1a1a1a';
+        ctx.strokeStyle = '#1d3fa8'; // v1.88.0 — blue ink (signatures are blue everywhere)
         ctx.lineWidth = 2.2;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';

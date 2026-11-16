@@ -307,4 +307,27 @@ router.post('/fx/recompute',
     reportsController.recomputeFxValues
 );
 
+// ============================================================
+// FINANCIAL STATEMENTS PACK & BOOKS (v1.88.0)
+// Everyone with FINANCE_VIEW_ALL can view and download. Changing the
+// wording / settings (Treasurer, Assistant Treasurer, Admin) and
+// approving (directors) are checked by role inside fsPackController.
+// ============================================================
+const fsPack = require('../controllers/fsPackController');
+const fsYear = [param('year').isInt({ min: 2000, max: 2100 }).withMessage('Invalid financial year')];
+router.get('/financial-statements/years', requirePermissions(['FINANCE_VIEW_ALL']), fsPack.getYears);
+router.get('/financial-statements', requirePermissions(['FINANCE_VIEW_ALL']),
+    [query('year').optional().isInt({ min: 2000, max: 2100 })], validateRequest, fsPack.getPack);
+router.put('/financial-statements/settings', requirePermissions(['FINANCE_VIEW_ALL']),
+    [body('approvals_required').optional().isInt({ min: 1, max: 10 }), body('classification').optional().isObject()], validateRequest, fsPack.saveSettings);
+router.put('/financial-statements/:year/texts', requirePermissions(['FINANCE_VIEW_ALL']),
+    [...fsYear, body('texts').isObject().withMessage('texts must be an object')], validateRequest, fsPack.saveTexts);
+router.post('/financial-statements/:year/approve', requirePermissions(['FINANCE_VIEW_ALL']), fsYear, validateRequest, fsPack.approve);
+router.post('/financial-statements/:year/withdraw', requirePermissions(['FINANCE_VIEW_ALL']),
+    [...fsYear, body('reason').trim().isLength({ min: 5 }).withMessage('Give a reason (at least 5 characters)')], validateRequest, fsPack.withdraw);
+router.get('/financial-statements/:year/pdf', requirePermissions(['FINANCE_VIEW_ALL']), fsYear, validateRequest, fsPack.downloadPdf);
+router.get('/financial-statements/:year/xlsx', requirePermissions(['FINANCE_VIEW_ALL']), fsYear, validateRequest, fsPack.downloadXlsx);
+router.get('/books.xlsx', requirePermissions(['FINANCE_VIEW_ALL']),
+    [query('from_date').optional().isISO8601(), query('to_date').optional().isISO8601()], validateRequest, fsPack.downloadBooks);
+
 module.exports = router;

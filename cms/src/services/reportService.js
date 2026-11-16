@@ -718,17 +718,31 @@ const sendGeneralReportToAllMembers = async (year, month) => {
     const pdfBuffer = await renderHtmlToPdfBuffer(fullHtml);
     const pdfFilename = `${branding.company_name.replace(/[^a-z0-9]+/gi, '-')}-Monthly-Report-${report.period.replace(/\s+/g, '-')}.pdf`;
 
-    // Get all active members
+    // Get all active members (v1.88.0 — people holding a role only)
     const members = await query(`
         SELECT id, email, first_name, last_name
         FROM   users
         WHERE  is_active = TRUE
         AND    is_email_verified = TRUE
+        AND    EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = users.id AND ur.revoked_at IS NULL)
         ORDER  BY first_name ASC
     `);
 
+    const policy = require('./emailPolicyService'); // v1.88.0 — email controls
     const results = [];
     for (const member of members.rows) {
+        const decision = await policy.decide(member.id, 'MONTHLY_REPORT');
+        if (decision !== 'SEND') {
+            // the bell notification still tells them; a daily-summary reader
+            // gets a line pointing to Reports (the PDF stays in the system)
+            if (decision === 'DIGEST') {
+                await policy.queueForDigest({ userId: member.id, type: 'MONTHLY_REPORT', subject, title: `Monthly report — ${report.period} is ready`, link: '/reports' }).catch(() => {});
+            }
+            notify({ userId: member.id, type: 'MONTHLY_REPORT_SENT', title: `Monthly report — ${report.period}`,
+                body: `The company's monthly report for ${report.period} is ready under Reports.`, link: '/reports', module: 'REPORTS' });
+            results.push({ email: member.email, success: true, held: decision });
+            continue;
+        }
         const html = buildGeneralReportSummaryHtml(report, branding.company_name, member.first_name);
         const result = await sendEmail({
             to:      member.email,
@@ -769,13 +783,25 @@ const sendIndividualReportsToAllMembers = async (year, month) => {
         FROM   users
         WHERE  is_active = TRUE
         AND    is_email_verified = TRUE
+        AND    EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = users.id AND ur.revoked_at IS NULL)
     `);
     const branding = await getBranding();
+    const policy = require('./emailPolicyService'); // v1.88.0 — email controls
 
     const results = [];
     for (const member of members.rows) {
         const report = await generateIndividualReport(member.id, year, month);
         if (!report) continue;
+        const decision = await policy.decide(member.id, 'PERSONAL_REPORT');
+        if (decision !== 'SEND') {
+            if (decision === 'DIGEST') {
+                await policy.queueForDigest({ userId: member.id, type: 'PERSONAL_REPORT', subject: `Your personal report: ${report.period}`, title: `Your personal report for ${report.period} is ready`, link: '/reports' }).catch(() => {});
+            }
+            notify({ userId: member.id, type: 'PERSONAL_REPORT_SENT', title: `Your personal report — ${report.period}`,
+                body: `Your personal report for ${report.period} is ready under Reports.`, link: '/reports', module: 'REPORTS' });
+            results.push({ email: member.email, success: true, held: decision });
+            continue;
+        }
 
         // v1.46.0 — full report becomes a personal PDF attachment;
         // brief summary in the email body. Each member's report is

@@ -14,11 +14,13 @@ import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import { PlusIcon, CheckIcon, XMarkIcon, ArrowDownTrayIcon, PencilIcon, FunnelIcon } from '@heroicons/react/24/outline';
 import { transferTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 import {
-    BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+    AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer,
 } from 'recharts';
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
@@ -72,6 +74,7 @@ const QuarterCallout = ({ label, quarter, tone }) => (
 
 const TransferAnalyticsCharts = ({ analytics, loading }) => {
     const theme = useChartTheme();
+    const [group, setGroup] = useGrouping('transfers-charts', 'month'); // v1.88.0
 
     if (loading) return null;
     const volumeByCurrency = analytics?.volume_by_currency || {};
@@ -84,27 +87,40 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
 
     return (
         <div className="mb-6">
-            <h3 className="section-title mb-3">Transfer Volume & Charges</h3>
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <h3 className="section-title">Transfer Volume & Charges</h3>
+                <GroupBy value={group} onChange={setGroup} />
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {currencies.map(currency => {
+                {currencies.map((currency, ci) => {
                     const c = volumeByCurrency[currency];
                     const ls = largestSmallest[currency];
                     const charges = chargesByCurrency[currency];
+                    // v1.88.0 — daily volumes (newer server) grouped by the switch
+                    const series = groupSeries(c.daily || c.monthly, { granularity: group, date: 'period', fields: { expense: 'sum' } });
                     return (
                         <div className="card" key={currency}>
                             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
                                 {currency}
                             </h4>
                             <ResponsiveContainer width="100%" height={200}>
-                                <BarChart data={c.monthly}>
+                                {/* v1.88.0 — a line (area) chart like the other charts */}
+                                <AreaChart data={series}>
+                                    <defs>
+                                        <linearGradient id={`trVolGrad${ci}`} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={theme.primary} stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor={theme.primary} stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                    <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
+                                        labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                         formatter={(v) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Volume']} />
-                                    <Bar dataKey="expense" name="Volume" fill={theme.primary} radius={[4, 4, 0, 0]} />
-                                </BarChart>
+                                    <Area type="monotone" dataKey="expense" name="Volume" stroke={theme.primary} strokeWidth={2} fill={`url(#trVolGrad${ci})`} dot={false} activeDot={{ r: 4 }} />
+                                </AreaChart>
                             </ResponsiveContainer>
                             <div className="grid grid-cols-2 gap-2 mt-3">
                                 <QuarterCallout label="Most Active Quarter" quarter={c.most_expense_quarter} tone="good" />
@@ -143,7 +159,9 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
                     {pairs.map((pair, idx) => {
                         // v1.83.1 — smooth line, no dots, gradient fill; scale hugs the rates
                         const color = theme.series[idx % theme.series.length];
-                        const vals = rateByPair[pair].map(d => parseFloat(d.rate)).filter(v => !Number.isNaN(v));
+                        // v1.88.0 — the average rate of the transfers in each period
+                        const rateSeries = groupSeries(rateByPair[pair], { granularity: group, fields: { rate: 'avg' }, fill: false });
+                        const vals = rateSeries.map(d => parseFloat(d.rate)).filter(v => !Number.isNaN(v));
                         const lo = vals.length ? Math.min(...vals) : 0; const hi = vals.length ? Math.max(...vals) : 0;
                         const pad = Math.max((hi - lo) * 0.15, hi * 0.01);
                         const step = 5 * Math.pow(10, Math.floor(Math.log10(Math.max(hi, 1e-9))) - 2); // tidy axis numbers
@@ -154,7 +172,7 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
                                 Exchange Rate — {pair}
                             </h4>
                             <ResponsiveContainer width="100%" height={180}>
-                                <AreaChart data={rateByPair[pair]}>
+                                <AreaChart data={rateSeries}>
                                     <defs>
                                         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                                             <stop offset="5%" stopColor={color} stopOpacity={0.35} />
@@ -162,12 +180,13 @@ const TransferAnalyticsCharts = ({ analytics, loading }) => {
                                         </linearGradient>
                                     </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="date" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} minTickGap={16} />
+                                    <XAxis dataKey="label" tick={{ fontSize: 10, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                         domain={vals.length ? [Math.max(0, Math.floor((lo - pad) / step) * step), Math.ceil((hi + pad) / step) * step] : ['auto', 'auto']}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
-                                        formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
+                                        labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
+                                        formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Average rate']} />
                                     <Area type="monotone" dataKey="rate" stroke={color} strokeWidth={2}
                                         fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4 }} />
                                 </AreaChart>

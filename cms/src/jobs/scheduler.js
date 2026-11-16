@@ -1033,6 +1033,29 @@ const scheduleAccessCleanup = () => {
 };
 
 // ============================================================
+// v1.88.0 — DAILY EMAIL SUMMARY
+// Checked every hour at :05 (Kampala); at the hour set under Settings ›
+// Email (default 18:00) everyone with emails held for their daily summary
+// gets one email listing them.
+// ============================================================
+const scheduleEmailDigest = () => {
+    scheduleJob('EmailDigest', '5 * * * *', async () => {
+        try {
+            const policy = require('../services/emailPolicyService');
+            const s = await policy.loadSettings();
+            if (!s.ready) return;
+            const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Africa/Kampala', hour: '2-digit', hour12: false }));
+            if (hour !== Number(s.digestHour)) return;
+            const r = await policy.sendDigests();
+            logger.info(`Daily email summary — ${r.sent || 0} sent, ${r.failed || 0} failed`);
+        } catch (err) {
+            logger.error('Daily email summary failed', { error: err.message });
+        }
+    }, { timezone: 'Africa/Kampala' });
+    logger.info('Daily email summary scheduled: hourly check at :05');
+};
+
+// ============================================================
 // START ALL SCHEDULED JOBS
 // Called once when the server starts
 // ============================================================
@@ -1056,6 +1079,7 @@ const startAllJobs = () => {
     scheduleTaxDeadlineReminders();
     scheduleBouExchangeRates();
     scheduleAccessCleanup();
+    scheduleEmailDigest(); // v1.88.0
     logger.info('All scheduled jobs started successfully');
 };
 

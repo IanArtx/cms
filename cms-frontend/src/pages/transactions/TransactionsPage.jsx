@@ -15,12 +15,14 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import { PlusIcon, FunnelIcon, ArrowDownTrayIcon, ArrowUturnLeftIcon, PrinterIcon } from '@heroicons/react/24/outline';
 import { transactionTemplate, printDocument, downloadBlob } from '../../utils/exportUtils';
 import DocumentPreviewModal from '../../components/common/DocumentPreviewModal';
 import { ExpenseTaxFields, expenseTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
 import {
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+    AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { useNewParam } from '../../hooks/useNewParam'; // v1.71.0 — "+ New" menu
 import { useTabParam } from '../../hooks/useTabParam'; // v1.72.0 — Ledger / Reversal requests tabs
@@ -78,6 +80,7 @@ const QuarterCallout = ({ label, quarter, tone }) => (
 
 const IncomeExpenseCharts = ({ analytics, loading }) => {
     const theme = useChartTheme();
+    const [group, setGroup] = useGrouping('transactions-income-expense', 'month'); // v1.88.0
 
     if (loading) return null;
     const currencies = Object.keys(analytics?.by_currency || {});
@@ -85,27 +88,45 @@ const IncomeExpenseCharts = ({ analytics, loading }) => {
 
     return (
         <div className="mb-6">
-            <h3 className="section-title mb-3">Income vs Expense</h3>
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <h3 className="section-title">Income vs Expense</h3>
+                <GroupBy value={group} onChange={setGroup} />
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {currencies.map(currency => {
+                {currencies.map((currency, ci) => {
                     const c = analytics.by_currency[currency];
+                    // v1.88.0 — daily totals (newer server) grouped by the switch;
+                    // an older server sends months only
+                    const series = groupSeries(c.daily || c.monthly, { granularity: group, date: 'period', fields: { income: 'sum', expense: 'sum' } });
                     return (
                         <div className="card" key={currency}>
                             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
                                 {currency}
                             </h4>
                             <ResponsiveContainer width="100%" height={200}>
-                                <BarChart data={c.monthly}>
+                                {/* v1.88.0 — a line (area) chart like the other charts in the system */}
+                                <AreaChart data={series}>
+                                    <defs>
+                                        <linearGradient id={`txIncGrad${ci}`} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={theme.success} stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor={theme.success} stopOpacity={0} />
+                                        </linearGradient>
+                                        <linearGradient id={`txExpGrad${ci}`} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={theme.danger} stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor={theme.danger} stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                    <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
-                                        formatter={(v) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`]} />
+                                        labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
+                                        formatter={(v, name) => [`${currency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`, name]} />
                                     <Legend {...theme.legendProps} />
-                                    <Bar dataKey="income" name="Income" fill={theme.success} radius={[4, 4, 0, 0]} />
-                                    <Bar dataKey="expense" name="Expense" fill={theme.danger} radius={[4, 4, 0, 0]} />
-                                </BarChart>
+                                    <Area type="monotone" dataKey="income" name="Income" stroke={theme.success} strokeWidth={2} fill={`url(#txIncGrad${ci})`} dot={false} activeDot={{ r: 4 }} />
+                                    <Area type="monotone" dataKey="expense" name="Expense" stroke={theme.danger} strokeWidth={2} fill={`url(#txExpGrad${ci})`} dot={false} activeDot={{ r: 4 }} />
+                                </AreaChart>
                             </ResponsiveContainer>
                             <div className="grid grid-cols-2 gap-2 mt-3">
                                 <QuarterCallout label="Best Income Quarter" quarter={c.most_income_quarter} tone="good" />

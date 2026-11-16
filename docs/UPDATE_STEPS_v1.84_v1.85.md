@@ -1,4 +1,4 @@
-# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 + v1.87.1 — step by step
+# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 + v1.87.1 + v1.88.0 + v1.89.0 — step by step
 
 This covers **your computer (local)** first, then **both online companies**. Do the local part first: if something goes wrong there, nothing online is affected.
 
@@ -31,6 +31,14 @@ The versions:
   - **Deleting an account** no longer fails with "Something went wrong".
 - **v1.87.1** (no database change)
   - Bank of Uganda stopped updating its old "OPENING RATES" file on 22 Oct 2026 (its website now shows the rates in a Power BI report). The daily rate check now reads BoU's new daily file, "Daily Exchange Rate Cards", so new rates are suggested again. It covers USD, GBP, EUR, KES, TZS and ZAR.
+- **v1.88.0** (database change)
+  - **Meetings** that already took place can be corrected (details, attendance, proxies, resolutions, votes). Each change needs a reason and is kept in a history. You choose who signs each meeting's minutes, resolutions and certificates.
+  - **Emails:** the Admin decides, per kind of email, *Each time*, *Daily summary* or *Off*, and whether members may choose for themselves. Meeting notices and security emails always go.
+  - **Annual financial statements pack** (Reports › General Ledger › Annual Pack & Books): all statements with last year beside this year, notes, directors' report and approval page with the directors' signatures. Download as PDF or Excel; the Excel file also has the trial balance, general ledger and cash book.
+  - Also: a tidier FX approvals log, every chart can be grouped by days, weeks, months or years, transactions charts are line charts, My Profile has separate pages, signatures are blue everywhere, and investment documents are grouped (buying, running costs, taxes, returns…).
+- **v1.89.0** (database change)
+  - **Personal access limits:** the Admin can limit one person, whatever their roles — take a permission away (or give one extra), block an action (e.g. approve transfers, release requisitions, sign resolutions), set an approval limit (e.g. up to UGX 5,000,000, or only on the EUR account), or hide a part of the system. Each with a reason, and optionally from / until a date. The person is told and sees their limits under My Profile › My access.
+  - **Written resolutions** saved to Documents now follow the signing and collect the Company Secretary's signature; they can be approved only once everyone has signed.
 
 > Safety rules
 > - Paste the Render database URL only into your own terminal. Never paste it into a chat or a document.
@@ -52,14 +60,14 @@ In File Explorer, open `company management system\cms`, click the address bar, t
 node update_live_database.js
 ```
 - With no `--url`, it uses the database in `cms\.env` (your local one).
-- It prints the **database name** it reached, then a list of versions. Expect **1.84.0**, **1.85.0**, **1.86.0** and **1.87.0** to show as *missing* (only the ones you have not done yet).
+- It prints the **database name** it reached, then a list of versions. Expect **1.84.0**, **1.85.0**, **1.86.0**, **1.87.0**, **1.88.0** and **1.89.0** to show as *missing* (only the ones you have not done yet).
 - Write down the database name.
 
 ### A4. Apply the missing updates
 ```
 node update_live_database.js --apply --confirm=<the database name from A3>
 ```
-It should end with **"Database is now at 1.87.0."** Running it again only says "up to date".
+It should end with **"Database is now at 1.89.0."** Running it again only says "up to date".
 
 #### A4a. If it stops with "must be owner of table …" (local only)
 **Why:** some tables or functions in your local database were created by the PostgreSQL administrator account (`postgres`), for example when a file was run in pgAdmin. The system connects as the user in `cms\.env` (`DB_USER`), and PostgreSQL only lets a table's owner change it. Nothing was saved by the failed step.
@@ -80,7 +88,7 @@ It should end with **"Database is now at 1.87.0."** Running it again only says "
    ```
    node update_live_database.js --apply --confirm=<the database name from A3>
    ```
-   It carries on from where it stopped, and must end with "Database is now at 1.87.0."
+   It carries on from where it stopped, and must end with "Database is now at 1.89.0."
 
 If your administrator account is not called `postgres`, add `--admin=<its name>` to both commands. The online (Render) databases do not need this step.
 
@@ -181,6 +189,20 @@ Start the backend and frontend the way you normally do (for example `npm run dev
     - **Access Requests › Access settings** shows *Remove accounts with no role after (days): 7*.
     - Pick lists elsewhere (for example Deposits › choose a member, or a meeting's chairperson) show only people with a role.
     - Try **Delete Permanently** on a test account: it is removed, or the message says which records stop it — never "Something went wrong".
+16. **v1.88.0 checks:**
+    - **Reports › General Ledger › Annual Pack & Books:** pick last financial year. The statements show this year and last year; the warnings box should be empty. Download **PDF** and **Excel** and open both — the totals must be the same in both and in the Balance Sheet / Income Statement tabs.
+    - **Settings** there: enter the auditors (or leave empty) and bankers; check which accounts are non-current. **Notes & wording:** read the directors' report and change anything that does not fit (for example the dividends paragraph).
+    - As a director, **Approval › Approve**. The PDF's approval page shows the blue signature.
+    - **Settings › Email** (Admin): every kind shows *Each time*. Set one to *Daily summary* to try it; **My Profile › Email notifications** shows the choice.
+    - **Office › Meetings:** open a closed meeting, **Correct this meeting**, give a reason, change something small; the *Corrections* history shows it. **Documents › Signatories:** choose who signs.
+    - **My Profile:** the menu on the left opens separate pages; your signature is blue.
+    - An investment's **Documents** are in groups; a chart anywhere has **Days / Weeks / Months / Years**.
+17. **v1.89.0 checks** (as Admin, on a test person — not yourself):
+    - **Office › Members** › on the person's row **Access limits** › *Add a rule* › *Hide a part of the system* › Tax, reason "test", **Save rule**. Sign in as that person (another browser or private window): Tax is gone from the menu, and opening `/tax` says it is not available. **My Profile › My access** shows the rule.
+    - Back as Admin: **End now** on that rule with a reason. The person sees Tax again after refreshing.
+    - Try an **Approval limit** (e.g. *Every approval that involves money*, UGX 1,000) on someone who approves requisitions, then let them approve a bigger one: they get "you may approve up to UGX 1,000". End the rule afterwards.
+    - **Members › Personal limits** lists everyone with rules.
+    - **Meetings › New written resolution**, save it to Documents before everyone signs: approving it says who is still to sign. After they sign, approve it: the Company Secretary is asked to sign.
 
 If all of that works, go online.
 
@@ -204,7 +226,7 @@ Use that URL in place of `"…"` below. Keep the quotes.
 node update_live_database.js --url "…"
 node update_live_database.js --url "…" --apply --confirm=<database name it printed>
 ```
-It must end with "Database is now at 1.87.0."
+It must end with "Database is now at 1.89.0."
 
 ### B4. Fixed rate (only if that company still shows the yellow banner)
 ```
@@ -241,18 +263,18 @@ Use the **other** database's URL.
 With **GitHub Desktop**:
 1. Open the repository.
 2. Check the list of changed files.
-3. Write the summary `v1.84.0 – v1.87.0 — registered shares, projects, access control, requisition steps, proxies`.
+3. Write the summary `v1.88.0 + v1.89.0 — meetings corrections, email controls, financial statements pack, personal access limits`.
 4. Click **Commit to main**, then **Push origin**.
 
 Or in a terminal at the project folder:
 ```
 git add -A
-git commit -m "v1.84.0 - v1.87.0 — registered shares, projects, access control, requisition steps, proxies"
+git commit -m "v1.88.0 + v1.89.0 — meetings corrections, email controls, financial statements pack, personal access limits"
 git push
 ```
 
 ### C2. Wait for Render
-Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.87.1**.
+Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.89.0**.
 
 ## Part D — In each online company
 1. **Share capital › Registered (URSB) › Issue certificates for registered shares**, once.
@@ -272,7 +294,9 @@ Every service (both backends and both frontends) redeploys by itself. Wait until
    - From v1.87.0, anyone without a role is removed by the system 7 days after registering, and cannot sign in meanwhile unless invited. Give a role (Members › Manage Roles) to every real member who still has none **before the first night after the update**.
 6. **Requisitions (v1.87.0):** in **Money › Requisitions › All Requests**, requisitions paid before the update show **Released**. Tell the members concerned to open *My Requests* and click **Acknowledge receipt** — that files their Requisition Form.
 7. **Meetings (v1.87.0):** for any meeting not yet closed whose notice date is wrong, click **Correct the notice date**.
-8. **Settings › Maintenance:** turn it off.
+8. **v1.88.0:** **Settings › Email** — decide which emails go each time, as a daily summary or not at all. **Reports › General Ledger › Annual Pack & Books › Settings** — auditors, bankers, non-current accounts; then the directors approve each finished year.
+9. **v1.89.0:** if some people must be limited (for example approvals above an amount, or a director who does not sign resolutions), set it under **Members › Access limits**. Nothing is limited until you add a rule.
+10. **Settings › Maintenance:** turn it off.
 
 ## Part E — Afterwards, with URSB
 1. For every allotment marked **"Rate correction"**, file the return of allotment with URSB.

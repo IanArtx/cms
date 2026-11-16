@@ -126,6 +126,10 @@ const ensurePersonSignatureSlots = async (client, targetType, targetId, people =
 // something already signed. Returns { allSigned, remainingRoles }.
 // ============================================================
 const signSlot = async (client, { targetType, targetId, userId }) => {
+    // v1.89.0 — the signer's own access rules
+    await require('./personalAccessService').assertActionAllowed(userId,
+        targetType === 'CERTIFICATE_ROUND' ? 'SIGN_CERTIFICATES' : 'SIGN_DOCUMENTS',
+        targetType === 'CERTIFICATE_ROUND' ? 'sign share certificates' : 'sign documents');
     const userResult = await client.query(
         'SELECT signature_path, first_name, last_name FROM users WHERE id = $1',
         [userId]

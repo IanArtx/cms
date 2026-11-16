@@ -29,6 +29,8 @@ import {
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { useBreadcrumbTitle } from '../../components/layout/LayoutContext'; // v1.71.0
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 
 // ============================================================
 // AMEND PENALTY RATE MODAL
@@ -184,6 +186,7 @@ const LoanDetailPage = ({ loanType }) => {
     const [error,   setError]   = useState(null);
     const [showRepay, setShowRepay] = useState(false);
     const [showAmend, setShowAmend] = useState(false);
+    const [chartGroup, setChartGroup] = useGrouping('loan-charts', 'month'); // v1.88.0
 
     const isReceived = loanType === 'received';
 
@@ -251,23 +254,25 @@ const LoanDetailPage = ({ loanType }) => {
     const PRINCIPAL_COLORS = [theme.success, theme.danger];
 
     // ---- Repayments over time ----
-    const repaymentsChartData = repayments.map(r => ({
-        date:   formatDate(r.payment_date),
+    // v1.88.0 — added up per day / week / month / year (the switch)
+    const repaymentsChartData = groupSeries(repayments.map(r => ({
+        date:   r.payment_date,
         amount: repaymentAmount(r),
-    }));
+    })), { granularity: chartGroup, fields: { amount: 'sum' } });
 
     // ---- Outstanding principal balance over time — walked chronologically
     // from the full principal down through each repayment's principal
     // portion, mirroring how InvestmentDetailPage derives all its chart
     // data client-side from the single detail payload. ----
     let runningBalance = principal;
-    const balanceChartData = [
-        { date: formatDate(loan.disbursement_date || loan.due_date), balance: principal },
-        ...repayments.map(r => {
+    // v1.88.0 — the balance at the end of each day / week / month / year
+    const balanceChartData = groupSeries([
+        { date: loan.disbursement_date || loan.due_date, balance: principal },
+        ...[...repayments].sort((a, b) => String(a.payment_date).localeCompare(String(b.payment_date))).map(r => {
             runningBalance = Math.max(0, runningBalance - parseFloat(r.principal_portion || 0));
-            return { date: formatDate(r.payment_date), balance: runningBalance };
+            return { date: r.payment_date, balance: runningBalance };
         }),
-    ];
+    ], { granularity: chartGroup, fields: { balance: 'last' } });
 
     const canRepay = hasPermission('LOAN_REPAYMENT_RECORD') &&
         ['ACTIVE', 'OVERDUE', 'PARTIALLY_REPAID'].includes(loan.status);
@@ -401,16 +406,20 @@ const LoanDetailPage = ({ loanType }) => {
 
                 {/* Repayments Over Time */}
                 <div className="card lg:col-span-2">
-                    <h3 className="section-title mb-4">Repayments Over Time</h3>
+                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                        <h3 className="section-title">Repayments Over Time</h3>
+                        <GroupBy value={chartGroup} onChange={setChartGroup} />
+                    </div>
                     {repaymentsChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={repaymentsChartData}>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Repayment']}
                                 />
                                 <Bar dataKey="amount" fill={theme.success} radius={[4, 4, 0, 0]} />
@@ -426,18 +435,22 @@ const LoanDetailPage = ({ loanType }) => {
 
             {/* Outstanding Balance Over Time */}
             <div className="card mb-6">
-                <h3 className="section-title mb-4">Outstanding Principal Balance Over Time</h3>
+                <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                    <h3 className="section-title">Outstanding Principal Balance Over Time</h3>
+                    <GroupBy value={chartGroup} onChange={setChartGroup} />
+                </div>
                 <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={balanceChartData}>
                         <CartesianGrid {...theme.gridProps} />
-                        <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                         <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                             tickFormatter={compactNumber} />
                         <Tooltip
                             {...theme.tooltipProps}
+                            labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                             formatter={(v) => [`${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Balance']}
                         />
-                        <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
+                        <Line type="monotone" dataKey="balance" stroke={theme.primary} strokeWidth={2} dot={balanceChartData.length <= 40 ? { r: 3, fill: theme.primary } : false} connectNulls />
                     </LineChart>
                 </ResponsiveContainer>
             </div>

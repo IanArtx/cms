@@ -103,6 +103,8 @@ const ACTIONS = {
     // Auth
     USER_REGISTER:          'USER_REGISTER',
     USER_ACCESS_DECLINED:   'USER_ACCESS_DECLINED',   // v1.86.0
+    ACCESS_RULE_ADDED:      'ACCESS_RULE_ADDED',      // v1.89.0 — a personal access rule set on someone
+    ACCESS_RULE_ENDED:      'ACCESS_RULE_ENDED',      // v1.89.0 — …and ended early
     USER_ACCESS_RESTORED:   'USER_ACCESS_RESTORED',   // v1.86.0
     USER_INVITED:           'USER_INVITED',           // v1.86.0
     USER_INVITATION_REVOKED:'USER_INVITATION_REVOKED',// v1.86.0
@@ -178,6 +180,7 @@ const ACTIONS = {
     PROJECT_LINKED:         'PROJECT_LINKED',           // v1.85.0 — added to an investment
     PROJECT_UNLINKED:       'PROJECT_UNLINKED',         // v1.85.0 — taken out of an investment
     DOCUMENT_ATTACHED:      'DOCUMENT_ATTACHED',        // v1.85.0 — document put on a project / investment page
+    DOCUMENT_UPDATED:       'DOCUMENT_UPDATED',         // v1.88.0 — moved to another group on an investment page
     MILESTONE_UPDATED:      'MILESTONE_UPDATED',
     // Money Market Fund sub-accounts (v1.28.0)
     MMF_ACCOUNT_CREATED:    'MMF_ACCOUNT_CREATED',
@@ -379,6 +382,13 @@ const ACTIONS = {
     MEETING_NOTICE_DATE_CHANGED: 'MEETING_NOTICE_DATE_CHANGED', // v1.87.0
     MEETING_PROXY_LODGED: 'MEETING_PROXY_LODGED',               // v1.87.0
     MEETING_PROXY_WITHDRAWN: 'MEETING_PROXY_WITHDRAWN',         // v1.87.0
+    MEETING_AMENDED: 'MEETING_AMENDED',                         // v1.88.0 — a closed meeting corrected
+    EMAIL_SETTINGS_UPDATED: 'EMAIL_SETTINGS_UPDATED',           // v1.88.0 — which emails go out
+    FS_NOTES_UPDATED: 'FS_NOTES_UPDATED',                       // v1.88.0 — notes / directors' report wording
+    FS_SETTINGS_UPDATED: 'FS_SETTINGS_UPDATED',                 // v1.88.0 — non-current accounts, auditors, approvals needed
+    FS_APPROVED: 'FS_APPROVED',                                 // v1.88.0 — a director approved a year's financial statements
+    FS_APPROVAL_WITHDRAWN: 'FS_APPROVAL_WITHDRAWN',             // v1.88.0 — …and withdrew that approval
+    FS_EXPORTED: 'FS_EXPORTED',                                 // v1.88.0 — financial statements downloaded (PDF / Excel)
     MEETING_ATTENDANCE_MARKED: 'MEETING_ATTENDANCE_MARKED',
     MEETING_ATTENDANCE_CONFIRMED: 'MEETING_ATTENDANCE_CONFIRMED',
     MEETING_OPENED: 'MEETING_OPENED',

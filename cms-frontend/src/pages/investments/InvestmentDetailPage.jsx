@@ -14,6 +14,8 @@ import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import {
     ArrowLeftIcon,
     ArrowTrendingUpIcon,
@@ -1559,6 +1561,7 @@ const InvestmentDetailPage = () => {
     const [categories, setCategories] = useState([]);
     const [loading,    setLoading]    = useState(true);
     const [error,      setError]      = useState(null);
+    const [returnsGroup, setReturnsGroup] = useGrouping('investment-returns', 'month'); // v1.88.0
     const [showExpenseModal,   setShowExpenseModal]   = useState(false);
     const [showReturnModal,    setShowReturnModal]    = useState(false);
     const [showOperationModal, setShowOperationModal] = useState(false);
@@ -1630,11 +1633,11 @@ const InvestmentDetailPage = () => {
     // ---- Returns over time ----
     // v1.72.0 — reversed returns stay in the history (marked "Reversed")
     // but are left out of the chart, as they are left out of Returns.
-    const returnsChartData = returns.filter(r => !r.is_reversed).map(r => ({
-        date:   formatDate(r.return_date),
+    // v1.88.0 — added up per day / week / month / year (the switch)
+    const returnsChartData = groupSeries(returns.filter(r => !r.is_reversed).map(r => ({
+        date:   r.return_date,
         amount: parseFloat(r.amount),
-        type:   r.return_type,
-    }));
+    })), { granularity: returnsGroup, fields: { amount: 'sum' } });
 
     // ---- Spend by project (only worth showing with 2+ projects) ----
     const projectChartData = projects.map(p => ({
@@ -1942,21 +1945,25 @@ const InvestmentDetailPage = () => {
 
                 {/* Returns Over Time */}
                 <div className="card lg:col-span-2">
-                    <h3 className="section-title mb-4">Returns Over Time</h3>
+                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                        <h3 className="section-title">Returns Over Time</h3>
+                        <GroupBy value={returnsGroup} onChange={setReturnsGroup} />
+                    </div>
                     {returnsChartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={returnsChartData}>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }}
-                                    tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }}
+                                    tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v, n, p) => [
                                         `${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
-                                        p.payload.type?.replace(/_/g, ' '),
+                                        p.payload.count === 1 ? 'Return' : `Returns (${p.payload.count})`,
                                     ]}
                                 />
                                 <Bar dataKey="amount" fill={theme.success} radius={[4, 4, 0, 0]} />

@@ -22,7 +22,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { serviceFeesAPI, accountsAPI, categoriesAPI, usersAPI } from '../../api/endpoints';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import { printDocument, serviceFeeAgreementTemplate } from '../../utils/exportUtils';
@@ -30,7 +29,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import StatusBadge from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
-import useChartTheme, { compactNumber } from '../../hooks/useChartTheme';
+import ServiceFeePeriodsChart from '../../components/charts/ServiceFeePeriodsChart'; // v1.88.0
 import {
     CreateAgreementModal, TerminateAgreementModal, RecordPaymentModal,
     SettlePastMonthsModal, OverridePeriodModal,
@@ -145,7 +144,6 @@ const ServiceFeeAgreementDetailPage = () => {
     const [rejectingPaymentRequest, setRejectingPaymentRequest] = useState(null);
     const [approvingAdvance, setApprovingAdvance] = useState(null);
     const [rejectingAdvance, setRejectingAdvance] = useState(null);
-    const theme = useChartTheme();
 
     const loadAgreement = useCallback(async () => {
         try {
@@ -202,12 +200,6 @@ const ServiceFeeAgreementDetailPage = () => {
     // of both hasOutstanding (which drives whether "Settle Past
     // Months" shows) and the chart's "outstanding" segment.
     const hasOutstanding = periods.some(p => p.status !== 'PAID' && p.status !== 'EXCLUDED');
-    const chartData = periods.map(p => ({
-        period: p.period,
-        paid: p.status === 'EXCLUDED' ? 0 : parseFloat(p.amount_paid || 0),
-        outstanding: p.status === 'EXCLUDED' ? 0 : Math.max(0, parseFloat(p.amount_due || 0) - parseFloat(p.amount_paid || 0)),
-        excluded: p.status === 'EXCLUDED' ? parseFloat(p.amount_due || 0) : 0,
-    }));
 
     const handleDownload = () => {
         printDocument(
@@ -308,21 +300,10 @@ const ServiceFeeAgreementDetailPage = () => {
                     <p className="text-sm text-gray-400 text-center py-6">No months tracked yet</p>
                 ) : (
                     <>
-                        {chartData.length > 0 && (
-                            <div className="h-56 mb-4">
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <BarChart data={chartData}>
-                                        <CartesianGrid {...theme.gridProps} />
-                                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
-                                        <YAxis tickFormatter={compactNumber} tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} />
-                                        <Tooltip {...theme.tooltipProps} />
-                                        <Bar dataKey="paid" stackId="a" name="Paid" fill={theme.success} radius={[0, 0, 0, 0]} />
-                                        <Bar dataKey="outstanding" stackId="a" name="Outstanding" fill={theme.danger} />
-                                        <Bar dataKey="excluded" stackId="a" name="Excluded" fill={theme.neutral} radius={[4, 4, 0, 0]} />
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            </div>
-                        )}
+                        {/* v1.88.0 — groups by months or years */}
+                        <div className="mb-4">
+                            <ServiceFeePeriodsChart periods={periods} heightClass="h-56" storageKey="service-fee-agreement" />
+                        </div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm">
                                 <thead>

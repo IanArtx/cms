@@ -63,6 +63,12 @@ export const accessAPI = {
 // ============================================================
 export const usersAPI = {
     getMyProfile:    ()         => api.get('/users/me'),
+    // v1.89.0 — personal access rules
+    getMyAccess:       ()                     => api.get('/users/me/access'),
+    getAccessOverview: ()                     => api.get('/users/access/overview'),
+    getPersonAccess:   (id)                   => api.get(`/users/${id}/access`),
+    addAccessRule:     (id, data)             => api.post(`/users/${id}/access`, data),
+    endAccessRule:     (id, ruleId, reason)   => api.post(`/users/${id}/access/${ruleId}/end`, { reason }),
     updateMyProfile: (data)     => api.patch('/users/me', data),
     getAllUsers:      (params)   => api.get('/users', { params }),
     // v1.69.1 — names only, for person pickers (Generate Document, Events)
@@ -114,7 +120,7 @@ export const accountsAPI = {
     getAll:           ()         => api.get('/accounts'),
     getSummary:       ()         => api.get('/accounts/summary'),
     // v1.56.0 — Shareholder Dashboard inflow/outflow chart
-    getInflowOutflowTrend: (months) => api.get('/accounts/inflow-outflow-trend', { params: { months } }),
+    getInflowOutflowTrend: (months, daily = false) => api.get('/accounts/inflow-outflow-trend', { params: { months, ...(daily ? { daily: 1 } : {}) } }), // v1.88.0 daily
     getById:          (id)       => api.get(`/accounts/${id}`),
     createPrimary:    (data)     => api.post('/accounts/primary', data),
     createSecondary:  (data)     => api.post('/accounts', data),
@@ -270,7 +276,8 @@ export const investmentsAPI = {
     recordTreasuryBillMaturity: (id, data) => api.post(`/investments/${id}/treasury-bill-maturity`, data),
     getPerformanceSummary: () => api.get('/investments/performance-summary'),
     getInputVsReturn:      () => api.get('/investments/input-vs-return'), // v1.56.0
-    getTotalsOverTime:     (params) => api.get('/investments/totals-over-time', { params }), // v1.83.1 — whole portfolio, cumulative; v1.84.0 ?currency=
+    getTotalsOverTime:     (params) => api.get('/investments/totals-over-time', { params }),
+    getDocuments:          (id) => api.get(`/investments/${id}/documents`), // v1.88.0 — in groups // v1.83.1 — whole portfolio, cumulative; v1.84.0 ?currency=
     getPortfolioSummary:   () => api.get('/investments/portfolio-summary'), // v1.57.0
     // v1.40.0
     updateCouponSchedule:     (id, data) => api.patch(`/investments/${id}/coupon-schedule`, data),
@@ -397,6 +404,21 @@ export const eventsAPI = {
 // MEETINGS & RESOLUTIONS (v1.79.0) — AGM / EGM / board meetings,
 // the register of attendees, resolutions, written resolutions
 // ============================================================
+// v1.88.0 — while a closed meeting is being corrected, the reason given
+// once in the correction bar goes with every change (the server keeps it
+// in the meeting's history). Set by MeetingDetailPage; null otherwise.
+let meetingAmendReason = null;
+export const setMeetingAmendReason = (reason) => { meetingAmendReason = reason || null; };
+const amend = (data) => (meetingAmendReason ? { ...(data || {}), amend_reason: meetingAmendReason } : (data || {}));
+
+// v1.88.0 — email controls
+export const emailSettingsAPI = {
+    getCompany:  ()     => api.get('/email-settings/company'),
+    saveCompany: (data) => api.put('/email-settings/company', data),
+    getMine:     ()     => api.get('/email-settings/mine'),
+    saveMine:    (data) => api.put('/email-settings/mine', data),
+};
+
 export const meetingsAPI = {
     getSettings:      ()          => api.get('/meetings/settings'),
     updateSettings:   (data)      => api.patch('/meetings/settings', data),
@@ -404,22 +426,22 @@ export const meetingsAPI = {
     getAll:           (params)    => api.get('/meetings', { params }),
     create:           (data)      => api.post('/meetings', data),
     getById:          (id)        => api.get(`/meetings/${id}`),
-    update:           (id, data)  => api.patch(`/meetings/${id}`, data),
+    update:           (id, data)  => api.patch(`/meetings/${id}`, amend(data)),
     refreshRegister:  (id)        => api.post(`/meetings/${id}/register/refresh`),
-    addAttendee:      (id, data)  => api.post(`/meetings/${id}/attendees`, data),
-    markAttendance:   (id, aid, data) => api.patch(`/meetings/${id}/attendees/${aid}`, data),
-    removeAttendee:   (id, aid)   => api.delete(`/meetings/${id}/attendees/${aid}`),
+    addAttendee:      (id, data)  => api.post(`/meetings/${id}/attendees`, amend(data)),
+    markAttendance:   (id, aid, data) => api.patch(`/meetings/${id}/attendees/${aid}`, amend(data)),
+    removeAttendee:   (id, aid)   => api.delete(`/meetings/${id}/attendees/${aid}`, { data: amend() }),
     issueNotice:      (id, data)  => api.post(`/meetings/${id}/notice`, data || {}),
     open:             (id)        => api.post(`/meetings/${id}/open`, {}),
     confirmAttendance: (id, data) => api.post(`/meetings/${id}/confirm`, data),
     saveMinutes:      (id, data)  => api.put(`/meetings/${id}/minutes`, data),
     close:            (id, data)  => api.post(`/meetings/${id}/close`, data || {}),
     cancel:           (id, data)  => api.post(`/meetings/${id}/cancel`, data),
-    addResolution:    (id, data)  => api.post(`/meetings/${id}/resolutions`, data),
+    addResolution:    (id, data)  => api.post(`/meetings/${id}/resolutions`, amend(data)),
     getResolutions:   (params)    => api.get('/meetings/resolutions', { params }),
     getResolution:    (rid)       => api.get(`/meetings/resolutions/${rid}`),
-    updateResolution: (rid, data) => api.patch(`/meetings/resolutions/${rid}`, data),
-    vote:             (rid, data) => api.post(`/meetings/resolutions/${rid}/vote`, data),
+    updateResolution: (rid, data) => api.patch(`/meetings/resolutions/${rid}`, amend(data)),
+    vote:             (rid, data) => api.post(`/meetings/resolutions/${rid}/vote`, amend(data)),
     withdraw:         (rid)       => api.post(`/meetings/resolutions/${rid}/withdraw`, {}),
     markFiled:        (rid, data) => api.post(`/meetings/resolutions/${rid}/filed`, data),
     createWritten:    (data)      => api.post('/meetings/resolutions/written', data),
@@ -429,8 +451,10 @@ export const meetingsAPI = {
     // v1.87.0 — correct the notice date; proxy forms filled in the system
     changeNoticeDate: (id, data)  => api.patch(`/meetings/${id}/notice-date`, data),
     getProxy:         (id, params) => api.get(`/meetings/${id}/proxy`, { params }),
-    lodgeProxy:       (id, data)  => api.post(`/meetings/${id}/proxy`, data),
-    withdrawProxy:    (id, data)  => api.post(`/meetings/${id}/proxy/withdraw`, data || {}),
+    lodgeProxy:       (id, data)  => api.post(`/meetings/${id}/proxy`, amend(data)),
+    withdrawProxy:    (id, data)  => api.post(`/meetings/${id}/proxy/withdraw`, amend(data)),
+    // v1.88.0 — who signs this meeting's documents
+    setSignatories:   (id, data)  => api.put(`/meetings/${id}/signatories`, data),
 };
 
 // ============================================================
@@ -470,6 +494,7 @@ export const documentsAPI = {
     // v1.85.0 — put a document on / take it off a project or investment page
     attachToRecord:   (id, record_type, record_id) => api.post(`/documents/${id}/attach`, { record_type, record_id }),
     detachFromRecord: (id, record_type, record_id) => api.post(`/documents/${id}/detach`, { record_type, record_id }),
+    setRecordSection: (id, section) => api.patch(`/documents/${id}/record-section`, { section }), // v1.88.0 — group on an investment page
     // v1.46.0 — remove an already-ARCHIVED document from the archive
     // (soft removal — see deleteDocument in documentsController.js)
     remove:         (id)     => api.delete(`/documents/${id}`),
@@ -613,6 +638,17 @@ export const reportsAPI = {
     setTransactionFxRate: (id, data)       => api.patch(`/reports/fx/transactions/${id}/rate`, data),
     clearTransactionFxRate: (id)           => api.delete(`/reports/fx/transactions/${id}/rate`),
     recomputeFxValues:    ()               => api.post('/reports/fx/recompute'),
+
+    // Financial statements pack and the books (v1.88.0)
+    getFsYears:           ()               => api.get('/reports/financial-statements/years'),
+    getFsPack:            (year)           => api.get('/reports/financial-statements', { params: year ? { year } : {} }),
+    saveFsTexts:          (year, texts)    => api.put(`/reports/financial-statements/${year}/texts`, { texts }),
+    saveFsSettings:       (data)           => api.put('/reports/financial-statements/settings', data),
+    approveFs:            (year)           => api.post(`/reports/financial-statements/${year}/approve`),
+    withdrawFsApproval:   (year, reason)   => api.post(`/reports/financial-statements/${year}/withdraw`, { reason }),
+    downloadFsPdf:        (year)           => api.get(`/reports/financial-statements/${year}/pdf`, { responseType: 'blob', timeout: 120000 }),
+    downloadFsXlsx:       (year)           => api.get(`/reports/financial-statements/${year}/xlsx`, { responseType: 'blob', timeout: 120000 }),
+    downloadBooks:        (params)         => api.get('/reports/books.xlsx', { params, responseType: 'blob', timeout: 120000 }),
 };
 
 // ============================================================

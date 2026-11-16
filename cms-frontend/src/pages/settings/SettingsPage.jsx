@@ -42,6 +42,8 @@ import { GovernanceSettingsPanel } from '../meetings/meetingUi'; // v1.79.0
 import MaintenanceSettings from '../../components/maintenance/MaintenanceSettings'; // v1.74.0
 import BouFeedSettings from '../../components/fx/BouFeedSettings'; // v1.83.0
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import { CompanyEmailSettings } from '../../components/email/EmailSettings'; // v1.88.0
+import { EnvelopeIcon } from '@heroicons/react/24/outline'; // v1.88.0
 
 // ============================================================
 // PERMISSIONS MODAL — grant/revoke permissions for a single role
@@ -2136,6 +2138,7 @@ const SettingsPage = () => {
         { key: 'membership-agreement', label: 'Membership Agreement', icon: ClipboardDocumentCheckIcon },
         { key: 'tax', label: 'Registration & Tax', icon: ReceiptPercentIcon },
         { key: 'governance', label: 'Governance', icon: BuildingLibraryIcon }, // v1.79.0 — meetings & resolutions
+        { key: 'email', label: 'Email', icon: EnvelopeIcon }, // v1.88.0 — which emails go out
         { key: 'maintenance', label: 'Maintenance', icon: WrenchScrewdriverIcon }, // v1.74.0
     ];
 
@@ -2179,6 +2182,7 @@ const SettingsPage = () => {
                 {activeTab === 'membership-agreement' && <MembershipAgreementTab />}
                 {activeTab === 'maintenance' && <MaintenanceSettings />}
                 {activeTab === 'governance' && <GovernanceSettingsPanel canEdit />}
+                {activeTab === 'email' && <CompanyEmailSettings />}
                 {activeTab === 'tax' && (
                     <div className="space-y-6">
                         <TaxRegistrationCard canEdit />

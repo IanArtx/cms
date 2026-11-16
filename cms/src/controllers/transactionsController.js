@@ -2422,6 +2422,7 @@ const approveReversalRequest = asyncHandler(async (req, res) => {
     const { id } = req.params;
     await withTransaction(async (client) => {
         const rr = await loadRequestForDecision(client, id, req);
+        await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_REVERSALS', { label: 'reversal request' }); // v1.89.0
         const reason = `${rr.reason} (requested by user #${rr.requested_by}, approved by user #${req.user.id})`;
         const done = await executeReversal(client, { transactionId: rr.transaction_id, reason, userId: rr.requested_by, ip: req.ip });
         const main = done.results.find(x => x.original_id === rr.transaction_id) || done.results[0];

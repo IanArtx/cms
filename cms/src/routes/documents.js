@@ -308,6 +308,7 @@ const pageRecordRules = [
     body('record_id').isInt({ min: 1 }).withMessage('Invalid record'),
 ];
 router.post('/:id/attach', requirePermissions(['DOCUMENT_UPLOAD']), pageRecordRules, validateRequest, documentsController.attachDocument);
+router.patch('/:id/record-section', requirePermissions(['DOCUMENT_UPLOAD']), validators.idParam('id'), validateRequest, documentsController.setRecordSection); // v1.88.0
 router.post('/:id/detach', requirePermissions(['DOCUMENT_UPLOAD']), pageRecordRules, validateRequest, documentsController.detachDocument);
 
 // ============================================================

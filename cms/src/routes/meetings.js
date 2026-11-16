@@ -61,6 +61,7 @@ router.patch('/:id/attendees/:aid', c.markAttendance);
 router.delete('/:id/attendees/:aid', c.removeAttendee);
 router.post('/:id/notice', c.issueNotice);
 router.patch('/:id/notice-date', c.changeNoticeDate); // v1.87.0 — correct the notice date
+router.put('/:id/signatories', c.setSignatories); // v1.88.0 — who signs this meeting's documents
 // v1.87.0 — proxy forms filled in the system
 router.get('/:id/proxy', c.getProxyForm);
 router.post('/:id/proxy', c.lodgeProxy);

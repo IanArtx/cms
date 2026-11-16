@@ -453,6 +453,21 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Personal access rules; written resolutions collect their signatures**
+  (v1.89.0): run the updater on **both** databases (it applies 1.88.0 and
+  1.89.0 together if both are missing). No new package. Nothing changes for
+  anyone until an Admin adds a rule under Members › Access limits.
+- **Meetings corrected after the event, email controls, annual financial
+  statements pack, blue signatures, investment documents in groups** (v1.88.0):
+  on **both** databases, before pushing the code, run
+  `node update_live_database.js --url "…"` then `--apply --confirm=<database name>`.
+  No new package (PDF and Excel use puppeteer and exceljs, already installed).
+  After the deploy: existing signature images turn blue by themselves about
+  15 seconds after the backend starts (once each); an Admin reviews
+  **Settings › Email** (every kind starts at *Each time*, as before); the
+  Treasurer fills **Reports › General Ledger › Annual Pack & Books › Settings**
+  (auditors, bankers, non-current accounts) and the directors approve each
+  finished year there.
 - **Bank of Uganda's new daily rate card** (v1.87.1): no database change,
   nothing to run — push the code. BoU stopped updating its "OPENING RATES"
   workbook on 22 Oct 2026; the daily check now reads BoU's new "Daily Exchange

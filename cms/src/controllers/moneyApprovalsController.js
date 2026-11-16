@@ -11,6 +11,7 @@
 // ============================================================
 
 const { query } = require('../config/database');
+const personalAccess = require('../services/personalAccessService'); // v1.89.0
 const { asyncHandler, createError } = require('../utils/errors');
 const { sendSuccess } = require('../utils/response');
 const { logAction, ACTIONS, MODULES } = require('../services/auditService');
@@ -127,6 +128,13 @@ const approveHeld = asyncHandler(async (req, res) => {
     const cur = await query('SELECT * FROM held_money_entries WHERE id = $1', [id]);
     if (!cur.rows.length) throw createError.notFound('Held entry not found');
     assertNotOwnApproval(req, [cur.rows[0].created_by], 'money entry');
+    // v1.89.0 — the approver's own limits
+    {
+        const h = cur.rows[0];
+        const body = (h.body && typeof h.body === 'object') ? h.body : {};
+        const accountIds = [body.account_id, body.from_account_id, body.to_account_id].map(x => parseInt(x, 10)).filter(Number.isInteger);
+        await personalAccess.assertMayApprove(req.user.id, 'APPROVE_MONEY_ENTRIES', { amount: h.amount, currency: h.currency_code, accountIds, label: 'money entry' });
+    }
 
     // Claim it, so two approvers clicking at once can't post it twice.
     const claim = await query(`

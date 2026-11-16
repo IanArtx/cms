@@ -28,6 +28,8 @@ import ConfirmModal from '../../components/common/ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries, MONTHLY_ONLY } from '../../utils/timeGrouping'; // v1.88.0
 import { useTabParam } from '../../hooks/useTabParam';
 import {
     GoalCard, PledgeModal, pledgeTargetFor, money, pct, periodLabel, StatTile, ProgressBar, MemberStatus,
@@ -320,6 +322,9 @@ const Metric = ({ label, value, tone }) => (
 
 const SummaryPanel = ({ goal, insights, glance, stats, onPledge, onTab }) => {
     const theme = useChartTheme();
+    // v1.88.0 — a goal is set month by month, so it groups by months or years
+    const [group, setGroup] = useGrouping('goal-cumulative', 'month', MONTHLY_ONLY);
+    const cumulative = groupSeries(goal.months || [], { granularity: group, date: 'month', fields: { expected_cumulative: 'last', actual_cumulative: 'last' } });
     const { hasRole } = useAuth();
     const code = goal.currency_code;
     const ins = insights;
@@ -477,16 +482,20 @@ const SummaryPanel = ({ goal, insights, glance, stats, onPledge, onTab }) => {
 
             {/* Dual-line chart — expected vs actual, cumulative */}
             <div className="card">
-                <h3 className="section-title mb-4">Expected vs Actual — Cumulative</h3>
+                <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                    <h3 className="section-title">Expected vs Actual — Cumulative</h3>
+                    <GroupBy value={group} onChange={setGroup} options={MONTHLY_ONLY} />
+                </div>
                 {goal.months && goal.months.length > 0 ? (
                     <ResponsiveContainer width="100%" height={280}>
-                        <LineChart data={goal.months}>
+                        <LineChart data={cumulative}>
                             <CartesianGrid {...theme.gridProps} />
-                            <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                            <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                             <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                 tickFormatter={compactNumber} />
                             <Tooltip
                                 {...theme.tooltipProps}
+                                labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                 formatter={(v, name) => [money(v, code), name]}
                             />
                             <Legend {...theme.legendProps} />
@@ -511,19 +520,24 @@ const SummaryPanel = ({ goal, insights, glance, stats, onPledge, onTab }) => {
 // ============================================================
 const MonthsPanel = ({ goal, monthlyCalls }) => {
     const theme = useChartTheme();
+    const [group, setGroup] = useGrouping('goal-monthly', 'month', MONTHLY_ONLY); // v1.88.0
+    const perPeriod = groupSeries(goal.months || [], { granularity: group, date: 'month', fields: { expected_monthly: 'sum', actual_monthly: 'sum' } });
     const code = goal.currency_code;
     const isCallBased = goal.goal_type != null;
     return (
         <div className="space-y-6">
             <div className="card">
-                <h3 className="section-title mb-4">Each month — expected vs collected</h3>
+                <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                    <h3 className="section-title">{group === 'year' ? 'Each year' : 'Each month'} — expected vs collected</h3>
+                    <GroupBy value={group} onChange={setGroup} options={MONTHLY_ONLY} />
+                </div>
                 {(goal.months || []).length > 0 && (
                     <ResponsiveContainer width="100%" height={240}>
-                        <BarChart data={goal.months}>
+                        <BarChart data={perPeriod}>
                             <CartesianGrid {...theme.gridProps} />
-                            <XAxis dataKey="month" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                            <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                             <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false} tickFormatter={compactNumber} />
-                            <Tooltip {...theme.tooltipProps} formatter={(v, name) => [money(v, code), name]} />
+                            <Tooltip {...theme.tooltipProps} labelFormatter={(l, p) => p?.[0]?.payload?.title || l} formatter={(v, name) => [money(v, code), name]} />
                             <Legend {...theme.legendProps} />
                             <Bar dataKey="expected_monthly" name="Expected" fill={theme.neutral} radius={[3, 3, 0, 0]} />
                             <Bar dataKey="actual_monthly" name="Collected" fill={theme.primary} radius={[3, 3, 0, 0]} />

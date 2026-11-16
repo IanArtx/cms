@@ -38,8 +38,10 @@ const {
 // (signed by the secretary "by order of the board"), the register of
 // attendance (chairperson + secretary certify it), and the certified
 // true copy of a resolution (secretary + a director).
+// v1.89.0 — the written resolution too: the company secretary countersigns
+// it (its directors / members sign the resolution itself in Meetings).
 const PERSON_SIGNATORY_DOCUMENT_TYPES = ['MEETING_MINUTES', 'MEETING_AGENDA', 'RESOLUTION',
-    'NOTICE_OF_MEETING', 'ATTENDANCE_REGISTER', 'CERTIFIED_RESOLUTION'];
+    'NOTICE_OF_MEETING', 'ATTENDANCE_REGISTER', 'CERTIFIED_RESOLUTION', 'WRITTEN_RESOLUTION'];
 const PERSON_SIGNATORY_FIELDS = [
     { key: 'chairperson', positionTitle: 'Chairman' },
     { key: 'secretary',   positionTitle: 'Secretary' },
@@ -120,6 +122,30 @@ const assertPersonalDocumentAccess = (req, ownerUserId) => {
 // POST /api/documents/upload
 // Accepts a file upload and creates a document record.
 // ============================================================
+// v1.88.0 — groups of documents on an investment page
+const RECORD_SECTIONS = ['BUYING', 'RUNNING', 'MAINTENANCE', 'TAX', 'RETURNS', 'LEGAL', 'PLANNING', 'OTHER'];
+let recordSectionCache = null;
+const recordSectionReady = async () => {
+    if (recordSectionCache !== null) return recordSectionCache;
+    const r = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'documents' AND column_name = 'record_section'`);
+    recordSectionCache = r.rows.length > 0;
+    return recordSectionCache;
+};
+
+// PATCH /api/documents/:id/record-section   body: { section }
+const setRecordSection = asyncHandler(async (req, res) => {
+    if (!(await recordSectionReady())) throw createError.conflict('Document groups need the v1.88.0 database update.');
+    const section = req.body.section ? String(req.body.section).toUpperCase() : null;
+    if (section && !RECORD_SECTIONS.includes(section)) throw createError.badRequest(`The group must be one of ${RECORD_SECTIONS.join(', ')}.`);
+    const r = await query('UPDATE documents SET record_section = $2 WHERE id = $1 RETURNING id, title, record_section', [req.params.id, section]);
+    if (!r.rows.length) throw createError.notFound('Document not found');
+    await logAction(req.user.id, ACTIONS.DOCUMENT_UPDATED, MODULES.DOCUMENTS, {
+        ipAddress: req.ip, recordType: 'documents', recordId: r.rows[0].id, newValues: { record_section: section },
+        description: `Moved "${r.rows[0].title}" to the ${section || 'default'} group`,
+    });
+    sendSuccess(res, r.rows[0], 'Moved.');
+});
+
 const uploadDocument = asyncHandler(async (req, res) => {
     if (!req.file) {
         throw createError.badRequest('No file uploaded');
@@ -189,6 +215,12 @@ const uploadDocument = asyncHandler(async (req, res) => {
 
         const documentId = result.rows[0].id;
         await linkReferenceToRecord(client, referenceId, documentId);
+
+        // v1.88.0 — the group on an investment page (buying, running costs, taxes …)
+        const section = String(req.body.record_section || '').toUpperCase();
+        if (section && RECORD_SECTIONS.includes(section) && (await recordSectionReady())) {
+            await client.query('UPDATE documents SET record_section = $1 WHERE id = $2', [section, documentId]);
+        }
 
         // v1.81.0 — the archive type chosen when uploading into the Company
         // Archive (registration, tax filing, licence …) is now kept.
@@ -343,6 +375,20 @@ const approveDocument = asyncHandler(async (req, res) => {
         throw createError.notFound('Document not found');
     }
     const doc = docResult.rows[0];
+
+    // v1.89.0 — a written resolution is approved only once every director /
+    // member listed has signed it (in Meetings › Resolutions); its table of
+    // signatures is brought up to date first.
+    if (doc.document_type === 'WRITTEN_RESOLUTION' && doc.status === 'DRAFT' && doc.template_data && doc.template_data.resolution) {
+        const { refreshResolutionDocuments } = require('./meetingsController');
+        const view = await refreshResolutionDocuments({ query }, doc.template_data.resolution.id);
+        if (view.result === 'PENDING') {
+            const sigs = view.signatories || [];
+            const waiting = sigs.filter(s => !s.signed_at).map(s => s.name);
+            throw createError.conflict(`${view.resolution_number} is still being signed: ${sigs.length - waiting.length} of ${sigs.length} have signed (waiting for ${waiting.join(', ')}). They sign it under Meetings › Resolutions; approve this document once everyone has signed.`);
+        }
+        doc.template_data = (await query('SELECT template_data FROM documents WHERE id = $1', [doc.id])).rows[0].template_data;
+    }
 
     // v1.45.0 — a document can need signatures for either or both of
     // two independent reasons: role-based requirements configured in
@@ -1401,6 +1447,8 @@ const detachDocument = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    setRecordSection,    // v1.88.0
+    RECORD_SECTIONS,     // v1.88.0
     attachDocument,      // v1.85.0
     detachDocument,      // v1.85.0
     uploadDocument,

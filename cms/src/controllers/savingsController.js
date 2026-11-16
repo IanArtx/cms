@@ -478,6 +478,7 @@ const createSavingsHandout = asyncHandler(async (req, res) => {
 // ============================================================
 const confirmSavingsHandout = asyncHandler(async (req, res) => {
     const { id } = req.params;
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_SAVINGS', { label: 'savings entry' }); // v1.89.0
 
     await withTransaction(async (client) => {
         const existing = await client.query(`
@@ -816,6 +817,7 @@ const createSavingsCapitalConversion = asyncHandler(async (req, res) => {
 // ============================================================
 const confirmSavingsCapitalConversion = asyncHandler(async (req, res) => {
     const { id } = req.params;
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_SAVINGS', { label: 'savings entry' }); // v1.89.0
 
     await withTransaction(async (client) => {
         const existing = await client.query(`
@@ -1173,6 +1175,7 @@ const createSavingsCurrencyConversion = asyncHandler(async (req, res) => {
 // ============================================================
 const confirmSavingsCurrencyConversion = asyncHandler(async (req, res) => {
     const { id } = req.params;
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_SAVINGS', { label: 'savings entry' }); // v1.89.0
 
     await withTransaction(async (client) => {
         const existing = await client.query(`

@@ -172,8 +172,10 @@ export const MeetingFormModal = ({ isOpen, onClose, onSaved, meeting = null, set
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} wide
-            title={editing ? 'Edit meeting' : 'Convene a meeting'}
-            subtitle={editing && meeting.status === 'NOTICE_ISSUED'
+            title={editing ? (meeting.status === 'CLOSED' ? 'Correct the meeting details' : 'Edit meeting') : 'Convene a meeting'}
+            subtitle={editing && meeting.status === 'CLOSED'
+                ? 'This meeting is closed. The correction is saved with the reason given in the correction bar and shown in the meeting\'s history. Generate its documents again afterwards.'
+                : editing && meeting.status === 'NOTICE_ISSUED' && meeting.meeting_date >= new Date().toISOString().slice(0, 10)
                 ? 'The notice has already gone out. Changing the date, time, place or agenda means a fresh notice must be issued.'
                 : 'Members (or directors, for a board meeting) are listed on the register automatically.'}>
             <form onSubmit={submit} className="space-y-4">

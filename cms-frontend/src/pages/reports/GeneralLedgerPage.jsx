@@ -56,8 +56,10 @@ import {
     ExclamationTriangleIcon,
     GlobeAltIcon,
     InformationCircleIcon,
+    DocumentChartBarIcon,
 } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
+import FinancialStatementsPack from '../../components/reports/FinancialStatementsPack'; // v1.88.0
 
 const fmt = (n) => parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtRate = (n) => (n === null || n === undefined ? '—' : parseFloat(n).toLocaleString('en-US', { maximumFractionDigits: 6 }));
@@ -1047,6 +1049,7 @@ const TABS = [
     { key: 'balance-sheet',  label: 'Balance Sheet',        icon: BuildingLibraryIcon },
     { key: 'income-statement', label: 'Income Statement',  icon: ArrowTrendingUpIcon },
     { key: 'cash-flow',      label: 'Cash Flow Statement', icon: BanknotesIcon },
+    { key: 'annual-pack',    label: 'Annual Pack & Books', icon: DocumentChartBarIcon }, // v1.88.0
     { key: 'fx',             label: 'FX & Revaluation',    icon: GlobeAltIcon },
     { key: 'ledger-accounts', label: 'Ledger Accounts',    icon: Cog6ToothIcon, adminOnly: true },
 ];
@@ -1076,7 +1079,7 @@ const GeneralLedgerPage = () => {
         <div>
             <PageHeader
                 title="Financial Statements"
-                subtitle="Trial Balance, General Ledger, Balance Sheet, Income Statement, and Cash Flow Statement — official statements consolidated in the company's functional currency, with a by-currency supporting view"
+                subtitle="Trial Balance, General Ledger, Balance Sheet, Income Statement, Cash Flow Statement and the annual pack with notes (PDF / Excel) — official statements consolidated in the company's functional currency, with a by-currency supporting view"
                 showBack backTo="/reports"
             />
 
@@ -1100,6 +1103,7 @@ const GeneralLedgerPage = () => {
             {activeTab === 'balance-sheet' && <BalanceSheetTab accounts={accounts} />}
             {activeTab === 'income-statement' && <IncomeStatementTab key={fyStart} accounts={accounts} fyStart={fyStart} />}
             {activeTab === 'cash-flow' && <CashFlowTab key={fyStart} accounts={accounts} fyStart={fyStart} />}
+            {activeTab === 'annual-pack' && <FinancialStatementsPack glAccounts={glAccounts} />}
             {activeTab === 'fx' && <FxRevaluationTab onStatusChange={setFxStatus} />}
             {activeTab === 'ledger-accounts' && hasPermission('SYSTEM_CONFIG') && <LedgerAccountsTab />}
         </div>

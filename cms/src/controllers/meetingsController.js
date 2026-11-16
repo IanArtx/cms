@@ -33,6 +33,17 @@ const { generateReference, linkReferenceToRecord } = require('../services/refere
 const { notifyMany, notify } = require('../services/notificationService');
 const { wrapEmail } = require('../services/emailTemplates');
 const logger = require('../config/logger');
+// v1.89.0 — personal access rules: someone barred from signing documents
+// cannot be chosen to sign a meeting's documents.
+const personalAccess = require('../services/personalAccessService');
+const assertMaySign = async (userId) => {
+    const rules = await personalAccess.activeRules(userId);
+    const block = rules.find(r => r.kind === 'ACTION_BLOCK' && r.action_code === 'SIGN_DOCUMENTS');
+    if (block) {
+        const n = (await query(`SELECT first_name || ' ' || last_name AS name FROM users WHERE id = $1`, [userId])).rows[0];
+        throw createError.badRequest(`${n ? n.name : 'That person'} may not sign documents (limited by an Admin: ${block.reason}). Choose someone else.`);
+    }
+};
 const gov = require('../services/governanceService');
 const signatoryService = require('../services/signatoryService'); // v1.87.0 — the member's signature on a proxy form
 const { getOrCreateCategory, getOrCreateChildCategory } = require('../services/categoryService');
@@ -495,12 +506,24 @@ const buildMeetingView = async (db, user, meeting) => {
         proxies = pr.rows;
         proxyDeadline = proxyDeadlineOf(meeting, settings);
     }
+    // v1.88.0 — corrections made after the meeting closed (managers see them)
+    let amendments = [];
+    if (gov.canManage(user) && await amendmentsReady(db)) {
+        amendments = (await db.query(`
+            SELECT a.id, a.changed_at, a.reason, a.what, a.details, u.first_name || ' ' || u.last_name AS changed_by_name
+            FROM   meeting_amendments a LEFT JOIN users u ON u.id = a.changed_by
+            WHERE  a.meeting_id = $1 ORDER BY a.changed_at DESC, a.id DESC`, [meeting.id])).rows;
+    }
+    // v1.88.0 — who signs this meeting's documents
+    const signatories = await meetingSignatories(db, meeting);
 
     return {
         meeting: normMeeting(meeting),
         attendance,
         resolutions,
         proxies,
+        amendments,
+        signatories,
         proxy_deadline: proxyDeadline ? proxyDeadline.toISOString() : null,
         my_proxy: proxies.find(p => p.member_user_id === user.id && p.status === 'ACTIVE') || null,
         documents,
@@ -521,8 +544,135 @@ const getMeeting = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// v1.88.0 — CORRECTING A MEETING AFTER IT TOOK PLACE
+// "i am able to record and edit the meetings despite the fact that the
+// meeting was in past and also be able to appoint proxies and signature
+// staff".
+// A meeting that is OPEN or was recorded after the event is edited freely
+// (that is how it gets recorded). A CLOSED meeting can still be corrected
+// by a meeting manager — its details, register, proxies, resolutions and
+// votes — but every correction needs a reason and is kept in
+// meeting_amendments (who, when, why, what), shown on the meeting page and
+// in the audit log. Documents already generated are not changed: generate
+// them again to get the corrected version.
+// ============================================================
+let amendReadyCache = false;
+const amendmentsReady = async (db) => {
+    if (amendReadyCache) return true;
+    const r = await db.query(`SELECT to_regclass('public.meeting_amendments') IS NOT NULL AS ok`);
+    amendReadyCache = !!r.rows[0].ok;
+    return amendReadyCache;
+};
+const isPastMeeting = (m) => !!m.recorded_after_event || gov.dateStr(m.meeting_date) < gov.todayStr();
+// → the reason when this change is a correction of a closed meeting, else null
+const correctionReason = async (client, m, body) => {
+    if (m.status === 'CANCELLED') throw createError.conflict('This meeting was cancelled.');
+    if (m.status !== 'CLOSED') return null;
+    if (!(await amendmentsReady(client))) throw createError.conflict('Correcting a closed meeting needs the v1.88.0 database update — ask the Admin to run it.');
+    const reason = trimOrNull(body && body.amend_reason);
+    if (!reason || reason.length < 5) throw createError.badRequest('This meeting is closed. Say why it is being corrected (at least 5 characters).');
+    return reason.slice(0, 1000);
+};
+const recordAmendment = async (client, m, userId, reason, what, details = {}) => {
+    if (!reason) return;
+    await client.query(`
+        INSERT INTO meeting_amendments (meeting_id, changed_by, reason, what, details)
+        VALUES ($1, $2, $3, $4, $5::jsonb)`, [m.id, userId, reason, String(what).slice(0, 200), JSON.stringify(details || {})]);
+    await logAction(userId, ACTIONS.MEETING_AMENDED || 'MEETING_AMENDED', MODULES.GOVERNANCE, {
+        recordType: 'company_meetings', recordId: m.id, newValues: { what, reason, ...details },
+        description: `Corrected ${m.title} after it closed — ${what}: ${reason}`, client,
+    });
+};
+
+// ============================================================
+// v1.88.0 — WHO SIGNS THIS MEETING'S DOCUMENTS ("signature staff")
+// Chosen per meeting, also for meetings already held. Each document picks
+// up its signers from here when it is generated (the person generating it
+// can still change them for that one document). Empty = the default:
+// the meeting's chairperson / secretary.
+//   PUT /api/meetings/:id/signatories   body: { signatories: { ROLE: userId | null } }
+// ============================================================
+const SIGNER_ROLES = [
+    { role: 'MINUTES_CHAIR', label: 'Minutes — signed by (chairperson)', doc: 'MINUTES', as: 'chairperson' },
+    { role: 'MINUTES_SECRETARY', label: 'Minutes — countersigned by (secretary)', doc: 'MINUTES', as: 'secretary' },
+    { role: 'RESOLUTIONS_CHAIR', label: 'Resolutions — signed by (chairperson)', doc: 'RESOLUTION', as: 'chairperson' },
+    { role: 'RESOLUTIONS_SECRETARY', label: 'Resolutions — countersigned by (secretary)', doc: 'RESOLUTION', as: 'secretary' },
+    { role: 'REGISTER_CHAIR', label: 'Register of attendance — chairperson', doc: 'REGISTER', as: 'chairperson' },
+    { role: 'REGISTER_SECRETARY', label: 'Register of attendance — secretary', doc: 'REGISTER', as: 'secretary' },
+    { role: 'NOTICE_SECRETARY', label: 'Notice — "by order of the board" (secretary)', doc: 'NOTICE', as: 'secretary' },
+    { role: 'CERTIFYING_DIRECTOR', label: 'Certified copies — certified by (director)', doc: 'CERTIFIED', as: 'director' },
+    { role: 'CERTIFIED_SECRETARY', label: 'Certified copies — secretary', doc: 'CERTIFIED', as: 'secretary' },
+];
+let signerColCache = null;
+const signatoriesColumn = async (db) => {
+    if (signerColCache !== null) return signerColCache;
+    const r = await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'company_meetings' AND column_name = 'signatories'`);
+    signerColCache = r.rows.length > 0;
+    return signerColCache;
+};
+const meetingSignatories = async (db, m) => {
+    const chosen = (m.signatories && typeof m.signatories === 'object') ? m.signatories : {};
+    const ids = [...new Set(Object.values(chosen).filter(Boolean).map(Number))];
+    const names = new Map();
+    if (ids.length) {
+        const r = await db.query(`SELECT id, first_name || ' ' || last_name AS name FROM users WHERE id = ANY($1::int[])`, [ids]);
+        for (const u of r.rows) names.set(u.id, u.name);
+    }
+    return SIGNER_ROLES.map(s => {
+        const uid = chosen[s.role] ? Number(chosen[s.role]) : null;
+        const def = s.as === 'chairperson' ? { id: m.chairperson_user_id, name: m.chairperson_name }
+            : s.as === 'secretary' ? { id: m.secretary_user_id, name: m.secretary_name } : { id: null, name: null };
+        return {
+            role: s.role, label: s.label, doc: s.doc, as: s.as,
+            user_id: uid || def.id || null,
+            name: uid ? (names.get(uid) || null) : (def.name || null),
+            chosen: !!uid,
+        };
+    });
+};
+
+const setSignatories = asyncHandler(async (req, res) => {
+    requireManager(req.user);
+    const want = (req.body && req.body.signatories) || {};
+    await withTransaction(async (client) => {
+        if (!(await signatoriesColumn(client))) throw createError.conflict('Choosing who signs needs the v1.88.0 database update.');
+        const m = await loadMeeting(client, req.params.id, { lock: true });
+        if (m.status === 'CANCELLED') throw createError.conflict('This meeting was cancelled.');
+        const next = { ...((m.signatories && typeof m.signatories === 'object') ? m.signatories : {}) };
+        for (const [role, raw] of Object.entries(want)) {
+            const def = SIGNER_ROLES.find(s => s.role === role);
+            if (!def) throw createError.badRequest(`Unknown signing role ${role}.`);
+            if (raw === null || raw === '' || raw === undefined) { delete next[role]; continue; }
+            const uid = Number(raw);
+            const u = await client.query(`
+                SELECT u.id FROM users u WHERE u.id = $1 AND u.is_active = TRUE
+                AND EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.revoked_at IS NULL)`, [uid]);
+            if (!u.rows.length) throw createError.badRequest('Each signer must be an active person holding a role.');
+            await assertMaySign(uid); // v1.89.0
+            if (def.as === 'director') {
+                const d = await client.query(`
+                    SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id = ur.role_id
+                    WHERE ur.user_id = $1 AND ur.revoked_at IS NULL AND ro.name = 'Director'`, [uid]);
+                if (!d.rows.length) throw createError.badRequest('A certified copy is certified by an active director.');
+            }
+            next[role] = uid;
+        }
+        await client.query('UPDATE company_meetings SET signatories = $2::jsonb, updated_at = NOW() WHERE id = $1', [m.id, JSON.stringify(next)]);
+        await logAction(req.user.id, ACTIONS.MEETING_UPDATED, MODULES.GOVERNANCE, {
+            ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
+            oldValues: { signatories: m.signatories || {} }, newValues: { signatories: next },
+            description: `Chose who signs the documents of ${m.title}`, client,
+        });
+    });
+    const meeting = await loadMeeting({ query }, req.params.id);
+    sendSuccess(res, await buildMeetingView({ query }, req.user, meeting), 'Signatories saved — documents generated from now on use them.');
+});
+
+// ============================================================
 // UPDATE MEETING — PATCH /api/meetings/:id
-// Allowed until the meeting opens. Changing the date, time, venue,
+// Allowed until the meeting opens — v1.88.0: and afterwards too, as a
+// correction (a closed meeting with a reason, see correctionReason).
+// Changing the date, time, venue,
 // mode, agenda or special business after the notice went out sends
 // the meeting back to DRAFT: a fresh notice must be issued.
 // ============================================================
@@ -533,10 +683,15 @@ const updateMeeting = asyncHandler(async (req, res) => {
     const f = validateMeetingFields(req.body, { partial: true });
     if (f.meeting_type !== undefined) throw createError.badRequest('The meeting type cannot be changed — cancel this meeting and create a new one.');
     let renoticed = false;
+    let corrected = false;
     await withTransaction(async (client) => {
         const m = await loadMeeting(client, req.params.id, { lock: true });
-        if (!['DRAFT', 'NOTICE_ISSUED'].includes(m.status)) {
-            throw createError.conflict('The meeting details can only be changed before the meeting opens.');
+        // v1.88.0 — an open or closed meeting can be corrected too (a closed
+        // one with a reason); it is never sent back for a fresh notice.
+        const reason = await correctionReason(client, m, req.body);
+        const held = ['IN_PROGRESS', 'CLOSED'].includes(m.status);
+        if (held && f.meeting_date !== undefined && f.meeting_date > gov.todayStr()) {
+            throw createError.badRequest('This meeting has already been held — its date cannot be in the future.');
         }
         const sets = [];
         const params = [];
@@ -551,7 +706,7 @@ const updateMeeting = asyncHandler(async (req, res) => {
         if (f.agenda && f.has_special_business === undefined && f.agenda.some(a => a.business === 'SPECIAL')) {
             add('has_special_business', true);
         }
-        if (m.status === 'NOTICE_ISSUED') {
+        if (m.status === 'NOTICE_ISSUED' && !isPastMeeting(m) && !(f.meeting_date !== undefined && f.meeting_date < gov.todayStr())) {
             const changed = NOTICE_FIELDS.some(k => f[k] !== undefined
                 && JSON.stringify(k === 'meeting_date' ? gov.dateStr(m[k]) : m[k]) !== JSON.stringify(f[k]));
             if (changed) {
@@ -559,7 +714,7 @@ const updateMeeting = asyncHandler(async (req, res) => {
                 sets.push(`status = 'DRAFT'`, 'notice_issued_at = NULL', 'notice_issued_by = NULL', 'notice_days_given = NULL');
             }
         }
-        if (f.meeting_date !== undefined && m.status === 'DRAFT' && await gov.v180Ready(client)) {
+        if (f.meeting_date !== undefined && !held && await gov.v180Ready(client)) {
             params.push(f.meeting_date < gov.todayStr());
             sets.push(`recorded_after_event = $${params.length}`);
         }
@@ -570,7 +725,13 @@ const updateMeeting = asyncHandler(async (req, res) => {
         const fresh = await loadMeeting(client, m.id);
         const settings = await gov.getSettings(client);
         await client.query('UPDATE company_meetings SET quorum_required = $2 WHERE id = $1', [m.id, gov.quorumRequired(settings, fresh)]);
-        if (f.chairperson_user_id !== undefined || f.secretary_user_id !== undefined) await gov.buildRegister(client, fresh);
+        if ((f.chairperson_user_id !== undefined || f.secretary_user_id !== undefined) && !held) await gov.buildRegister(client, fresh);
+        if (reason) {
+            const before = {};
+            for (const k of Object.keys(f)) before[k] = k === 'meeting_date' ? gov.dateStr(m[k]) : m[k];
+            await recordAmendment(client, m, req.user.id, reason, 'Meeting details', { before, after: f });
+            corrected = true;
+        }
         await logAction(req.user.id, ACTIONS.MEETING_UPDATED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id, newValues: f,
             description: `Updated ${m.title}${renoticed ? ' — notice must be re-issued' : ''}`, client,
@@ -578,7 +739,8 @@ const updateMeeting = asyncHandler(async (req, res) => {
     });
     const meeting = await loadMeeting({ query }, req.params.id);
     sendSuccess(res, { ...(await buildMeetingView({ query }, req.user, meeting)), renoticed },
-        renoticed ? 'Saved. The meeting details changed after the notice went out — issue a fresh notice.' : 'Meeting updated');
+        renoticed ? 'Saved. The meeting details changed after the notice went out — issue a fresh notice.'
+            : corrected ? 'Correction saved and recorded in the meeting\'s history. Generate its documents again to get the corrected versions.' : 'Meeting updated');
 });
 
 // ============================================================
@@ -608,13 +770,14 @@ const addAttendee = asyncHandler(async (req, res) => {
     let designation = trimOrNull(req.body.designation) || 'In attendance';
     await withTransaction(async (client) => {
         const m = await loadMeeting(client, req.params.id, { lock: true });
-        if (['CLOSED', 'CANCELLED'].includes(m.status)) throw createError.conflict('This meeting is closed.');
+        const reason = await correctionReason(client, m, req.body); // v1.88.0 — a closed meeting: with a reason
         // v1.80.0 — for a meeting recorded after the event the secretary
         // may also add a member / director the registers did not list.
+        // v1.88.0 — also for any meeting already held or in the past.
         let capacity = 'IN_ATTENDANCE';
         let sharesHeld = null;
         if (['MEMBER', 'DIRECTOR'].includes(req.body.capacity)) {
-            if (!m.recorded_after_event) throw createError.badRequest('Members and directors come from the registers automatically — refresh the register instead.');
+            if (!isPastMeeting(m) && !['IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.badRequest('Members and directors come from the registers automatically — refresh the register instead.');
             if (!userId) throw createError.badRequest('Choose the person from the list of users.');
             const want = m.meeting_type === 'BOARD' ? 'DIRECTOR' : 'MEMBER';
             if (req.body.capacity !== want) throw createError.badRequest(`A ${m.meeting_type === 'BOARD' ? 'board meeting' : 'general meeting'} lists ${want === 'DIRECTOR' ? 'directors' : 'members'}.`);
@@ -635,6 +798,7 @@ const addAttendee = asyncHandler(async (req, res) => {
             INSERT INTO meeting_attendance (meeting_id, user_id, name, capacity, designation, shares_held, sort_order)
             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [m.id, userId, finalName.slice(0, 200), capacity, designation.slice(0, 120), sharesHeld, capacity === 'IN_ATTENDANCE' ? 9500 : 5000]);
+        await recordAmendment(client, m, req.user.id, reason, 'Register — person added', { name: finalName, capacity, designation });
         await logAction(req.user.id, ACTIONS.MEETING_ATTENDANCE_MARKED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
             description: `Added ${finalName} (${designation}) as in attendance at ${m.title}`, client,
@@ -648,13 +812,14 @@ const removeAttendee = asyncHandler(async (req, res) => {
     requireManager(req.user);
     await withTransaction(async (client) => {
         const m = await loadMeeting(client, req.params.id, { lock: true });
-        if (['CLOSED', 'CANCELLED'].includes(m.status)) throw createError.conflict('This meeting is closed.');
+        const reason = await correctionReason(client, m, req.body); // v1.88.0
         const r = await client.query('SELECT * FROM meeting_attendance WHERE id = $1 AND meeting_id = $2', [req.params.aid, m.id]);
         if (!r.rows.length) throw createError.notFound('Attendee not found.');
         const a = r.rows[0];
-        if (a.capacity !== 'IN_ATTENDANCE' && !m.recorded_after_event) throw createError.conflict('Members and directors come from the registers and cannot be removed — mark them absent or with apologies instead.');
+        if (a.capacity !== 'IN_ATTENDANCE' && !isPastMeeting(m) && !['IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.conflict('Members and directors come from the registers and cannot be removed — mark them absent or with apologies instead.');
         if (a.confirmed_at) throw createError.conflict('This person has already confirmed their attendance.');
         await client.query('DELETE FROM meeting_attendance WHERE id = $1', [a.id]);
+        await recordAmendment(client, m, req.user.id, reason, 'Register — person removed', { name: a.name, capacity: a.capacity });
     });
     const meeting = await loadMeeting({ query }, req.params.id);
     sendSuccess(res, await buildMeetingView({ query }, req.user, meeting), 'Removed from the register');
@@ -670,7 +835,8 @@ const markAttendance = asyncHandler(async (req, res) => {
     if (!ATTENDANCE_STATUSES.includes(status)) throw createError.badRequest(`Status must be one of ${ATTENDANCE_STATUSES.join(', ')}.`);
     await withTransaction(async (client) => {
         const m = await loadMeeting(client, req.params.id, { lock: true });
-        if (!['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) {
+        const reason = await correctionReason(client, m, req.body); // v1.88.0 — a closed meeting: with a reason
+        if (!['NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(m.status)) {
             throw createError.conflict(m.status === 'DRAFT'
                 ? 'Issue the notice first — attendance is taken once the meeting has been called.'
                 : 'Attendance can no longer be changed for this meeting.');
@@ -703,11 +869,12 @@ const markAttendance = asyncHandler(async (req, res) => {
             [m.id, a.user_id, req.user.id, ['PRESENT', 'PRESENT_VIRTUAL'].includes(status) ? 'The member attended in person' : `Register marked ${status.toLowerCase().replace('_', ' ')}`]);
         }
         // v1.80.0 — a past meeting: the shares held on that day may be corrected.
-        if (m.recorded_after_event && a.capacity === 'MEMBER' && req.body.shares_held !== undefined && req.body.shares_held !== '') {
+        if ((isPastMeeting(m) || m.status === 'CLOSED') && a.capacity === 'MEMBER' && req.body.shares_held !== undefined && req.body.shares_held !== '') {
             const sh = Number(req.body.shares_held);
             if (!Number.isFinite(sh) || sh < 0) throw createError.badRequest('Shares held must be 0 or more.');
             await client.query('UPDATE meeting_attendance SET shares_held = $2 WHERE id = $1', [a.id, sh]);
         }
+        await recordAmendment(client, m, req.user.id, reason, 'Attendance', { name: a.name, before: a.status, after: status, proxy: proxyName });
         await logAction(req.user.id, ACTIONS.MEETING_ATTENDANCE_MARKED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id,
             newValues: { attendee: a.name, status, proxy: proxyName },
@@ -1105,7 +1272,10 @@ const createMeetingResolution = asyncHandler(async (req, res) => {
     let created = null;
     await withTransaction(async (client) => {
         const m = await loadMeeting(client, req.params.id, { lock: true });
-        if (!['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) throw createError.conflict('Resolutions can only be added before or during the meeting.');
+        // v1.88.0 — a closed meeting: a resolution that was passed but not
+        // recorded can be added, with the reason
+        const reason = await correctionReason(client, m, req.body);
+        if (!['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.conflict('Resolutions can only be added before or during the meeting.');
         const kind = m.meeting_type === 'BOARD' ? 'BOARD' : (req.body.kind || 'ORDINARY');
         if (m.meeting_type === 'BOARD' && req.body.kind && req.body.kind !== 'BOARD') throw createError.badRequest('A board meeting passes board resolutions only.');
         if (m.meeting_type !== 'BOARD' && !['ORDINARY', 'SPECIAL'].includes(kind)) throw createError.badRequest('A general meeting passes ordinary or special resolutions.');
@@ -1128,6 +1298,7 @@ const createMeetingResolution = asyncHandler(async (req, res) => {
             gov.filingRequiredFor(kind, false), req.user.id]);
         created = { ...ins.rows[0], reference_code: referenceCode };
         await linkReferenceToRecord(client, referenceId, created.id);
+        await recordAmendment(client, m, req.user.id, reason, `Resolution ${number} added`, { title: f.title, kind });
         await logAction(req.user.id, ACTIONS.RESOLUTION_CREATED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'meeting_resolutions', recordId: created.id,
             newValues: { number, kind, title: f.title, meeting: m.title },
@@ -1143,8 +1314,12 @@ const updateResolution = asyncHandler(async (req, res) => {
     const f = validateResolutionBody(req.body, { partial: true });
     await withTransaction(async (client) => {
         const r = await loadResolution(client, req.params.rid, { lock: true });
-        if (r.result !== 'PENDING') throw createError.conflict('Only a resolution that has not been decided can be edited.');
-        if (r.meeting_id && !['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS'].includes(r.meeting_status)) throw createError.conflict('The meeting is closed.');
+        // v1.88.0 — a resolution of a CLOSED meeting (decided or not) can be
+        // corrected with a reason; written resolutions keep their rules
+        const rm = r.meeting_id ? await loadMeeting(client, r.meeting_id, { lock: true }) : null;
+        const reason = rm ? await correctionReason(client, rm, req.body) : null;
+        if (r.result !== 'PENDING' && !reason) throw createError.conflict('Only a resolution that has not been decided can be edited (a closed meeting\'s resolutions can be corrected with a reason).');
+        if (r.meeting_id && !['DRAFT', 'NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(r.meeting_status)) throw createError.conflict('The meeting was cancelled.');
         if (!r.meeting_id) {
             const signed = await client.query('SELECT 1 FROM resolution_signatories WHERE resolution_id = $1 AND signed_at IS NOT NULL LIMIT 1', [r.id]);
             if (signed.rows.length) throw createError.conflict('Someone has already signed this written resolution — it can no longer be changed. Withdraw it and create a new one.');
@@ -1161,6 +1336,7 @@ const updateResolution = asyncHandler(async (req, res) => {
         if (!sets.length) throw createError.badRequest('Nothing to update.');
         params.push(r.id);
         await client.query(`UPDATE meeting_resolutions SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${params.length}`, params);
+        if (rm) await recordAmendment(client, rm, req.user.id, reason, `Resolution ${r.resolution_number} edited`, { changes: f });
         await logAction(req.user.id, ACTIONS.RESOLUTION_UPDATED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'meeting_resolutions', recordId: r.id, newValues: f,
             description: `Edited ${r.resolution_number}`, client,
@@ -1178,9 +1354,12 @@ const recordVote = asyncHandler(async (req, res) => {
     await withTransaction(async (client) => {
         const r = await loadResolution(client, req.params.rid, { lock: true });
         if (!r.meeting_id) throw createError.badRequest('Written resolutions are decided by signature, not by a vote.');
-        if (r.result !== 'PENDING') throw createError.conflict(`${r.resolution_number} has already been decided (${r.result}).`);
         const m = await loadMeeting(client, r.meeting_id, { lock: true });
-        if (m.status !== 'IN_PROGRESS') throw createError.conflict('Votes are taken only while the meeting is open.');
+        // v1.88.0 — a closed meeting: the vote can be recorded or corrected
+        // afterwards, with a reason (kept in the meeting's history)
+        const reason = await correctionReason(client, m, req.body);
+        if (r.result !== 'PENDING' && !reason) throw createError.conflict(`${r.resolution_number} has already been decided (${r.result}).`);
+        if (!['IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.conflict('Votes are taken only while the meeting is open.');
         const settings = await gov.getSettings(client);
         const t = gov.tally(m, await loadAttendance(client, m.id), settings);
         if (!t.quorum_met) throw createError.conflict(`The quorum is no longer present (${t.present} of ${t.quorum_required}). No business can be done.`);
@@ -1208,6 +1387,10 @@ const recordVote = asyncHandler(async (req, res) => {
         [r.id, Number(req.body.votes_for), Number(req.body.votes_against), Number(req.body.votes_abstain || 0), t.voters, v.casting,
             v.majority_required_pct, v.result, v.result === 'CARRIED' ? passedOn : null, req.user.id, filingRequired, due]);
         outcome = { ...v, filing_due_date: due };
+        await recordAmendment(client, m, req.user.id, reason, `Vote on ${r.resolution_number}`, {
+            before: { result: r.result, for: r.votes_for, against: r.votes_against, abstain: r.votes_abstain },
+            after: { result: v.result, for: Number(req.body.votes_for), against: Number(req.body.votes_against), abstain: Number(req.body.votes_abstain || 0) },
+        });
         if (due) notifySecretary = { m, r, due };
         await logAction(req.user.id, ACTIONS.RESOLUTION_VOTED, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'meeting_resolutions', recordId: r.id,
@@ -1355,6 +1538,7 @@ const createWrittenResolution = asyncHandler(async (req, res) => {
 const signWrittenResolution = asyncHandler(async (req, res) => {
     const decision = req.body.decision;
     if (!['AGREE', 'DISAGREE'].includes(decision)) throw createError.badRequest('Choose AGREE or DISAGREE.');
+    await personalAccess.assertActionAllowed(req.user.id, 'SIGN_RESOLUTIONS', 'sign written resolutions'); // v1.89.0
     let code = null;
     let finished = null;
     await withTransaction(async (client) => {
@@ -1395,6 +1579,8 @@ const signWrittenResolution = asyncHandler(async (req, res) => {
             description: `Signed ${r.resolution_number}: ${decision} (code ${code})${finished ? ` — resolution ${finished.result}` : ''}`, client,
         });
     });
+    // v1.89.0 — documents already generated from this resolution show the signatures as they now are
+    await refreshResolutionDocuments({ query }, Number(req.params.rid)).catch(err => logger.warn(`Resolution documents not refreshed: ${err.message}`));
     if (finished && finished.r.created_by) {
         notify({
             userId: finished.r.created_by, type: 'RESOLUTION_DECIDED',
@@ -1559,6 +1745,30 @@ const DOC_KINDS = {
     CERTIFIED:  { type: 'CERTIFIED_RESOLUTION', needs: 'resolution', label: 'Certified Copy', code: 'CTC' },
 };
 
+// ============================================================
+// v1.89.0 — a written resolution's document follows its signing
+// "documents like resolutions … once saved to documents and approved
+// don't collect signature despite having the signatories outlined".
+// A generated document keeps a copy of the resolution (template_data).
+// Until it is final, that copy is brought up to date whenever someone
+// signs the resolution, so the table of signatures fills in; documents
+// already final are never changed.
+// ============================================================
+const refreshResolutionDocuments = async (db, resolutionId) => {
+    const view = await resolutionView(db, resolutionId);
+    const docs = await db.query(`
+        SELECT id, document_type, template_data FROM documents
+        WHERE  related_record_type = 'meeting_resolutions' AND related_record_id = $1
+          AND  document_type IN ('WRITTEN_RESOLUTION', 'RESOLUTION', 'CERTIFIED_RESOLUTION') AND status = 'DRAFT'`, [resolutionId]);
+    for (const d of docs.rows) {
+        const t = d.template_data || {};
+        t.resolution = view;
+        t.signatories = view.signatories || [];
+        await db.query('UPDATE documents SET template_data = $2 WHERE id = $1', [d.id, JSON.stringify(t)]);
+    }
+    return view;
+};
+
 const saveStatutoryDocument = asyncHandler(async (req, res) => {
     requireManager(req.user);
     const kind = DOC_KINDS[req.body.doc_kind];
@@ -1618,7 +1828,9 @@ const saveStatutoryDocument = asyncHandler(async (req, res) => {
         if (req.body.doc_kind === 'WRITTEN') delete data.chairperson_user_id;
         if (req.body.doc_kind === 'CERTIFIED') {
             delete data.chairperson_user_id;
-            if (!req.body.director_user_id) throw createError.badRequest('Choose the director who certifies the copy.');
+            if (!req.body.director_user_id && !(meeting && meeting.signatories && meeting.signatories.CERTIFYING_DIRECTOR)) {
+                throw createError.badRequest('Choose the director who certifies the copy (or set one under the meeting\'s Who signs).');
+            }
         }
         if (!resolution.meeting_id) {
             // A written resolution has no meeting: the company secretary
@@ -1631,6 +1843,16 @@ const saveStatutoryDocument = asyncHandler(async (req, res) => {
             if (sec.rows.length) { data.secretary_user_id = sec.rows[0].id; data.secretary_name = sec.rows[0].name; }
         }
     }
+    // v1.88.0 — the signers chosen for this meeting (Who signs) come first
+    if (meeting) {
+        const chosen = (meeting.signatories && typeof meeting.signatories === 'object') ? meeting.signatories : {};
+        const sigs = await meetingSignatories(db, meeting);
+        for (const s of sigs) {
+            if (s.doc !== req.body.doc_kind || !chosen[s.role] || !s.user_id) continue;
+            data[`${s.as}_user_id`] = s.user_id;
+            data[`${s.as}_name`] = s.name;
+        }
+    }
     // v1.80.0 — the person generating the document may pick who signs it
     // (defaults: the meeting's chairperson / secretary) …
     const pickSigner = async (key, allowed) => {
@@ -1640,6 +1862,7 @@ const saveStatutoryDocument = asyncHandler(async (req, res) => {
         const uid = Number(raw);
         const u = await query(`SELECT id, first_name || ' ' || last_name AS name FROM users WHERE id = $1 AND is_active = TRUE`, [uid]);
         if (!u.rows.length) throw createError.badRequest(`The ${key} chosen is not an active user.`);
+        await assertMaySign(uid); // v1.89.0
         if (key === 'director') {
             const isDir = await query(`
                 SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id = ur.role_id
@@ -1723,7 +1946,11 @@ const saveStatutoryDocument = asyncHandler(async (req, res) => {
         });
         return { document_id: ins.rows[0].id, reference: referenceCode, title, document_type: kind.type, status: 'DRAFT' };
     });
-    sendCreated(res, { ...saved, template_data: data }, `${kind.label} saved to Documents (${saved.reference}) as a draft — approve it in Documents to collect the signatures.`);
+    const pendingSigners = (k === 'WRITTEN' && resolution && resolution.result === 'PENDING')
+        ? (resolution.signatories || []).filter(s => !s.signed_at).length : 0;
+    sendCreated(res, { ...saved, template_data: data }, pendingSigners
+        ? `${kind.label} saved to Documents (${saved.reference}) as a draft. ${pendingSigners} signator${pendingSigners === 1 ? 'y has' : 'ies have'} not signed yet — the table of signatures fills in as they sign; it can be approved once everyone has signed.`
+        : `${kind.label} saved to Documents (${saved.reference}) as a draft — approve it in Documents to collect the signatures.`);
 });
 
 // ============================================================
@@ -1798,7 +2025,8 @@ const getProxyForm = asyncHandler(async (req, res) => {
         deadline: deadline.toISOString(),
         deadline_hours: settings.proxy_deadline_hours ?? 48,
         open,
-        can_record_for_member: gov.canManage(req.user) && ['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status),
+        can_record_for_member: gov.canManage(req.user) && ['NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(m.status),
+        closed: m.status === 'CLOSED', // v1.88.0 — recording one needs a reason
         people: people.rows,
         matters: await proxyMatters(db, m),
         active: current.rows.find(p => p.status === 'ACTIVE') || null,
@@ -1812,6 +2040,7 @@ const lodgeProxy = asyncHandler(async (req, res) => {
     const memberId = b.member_user_id && manager ? Number(b.member_user_id) : req.user.id;
     const onBehalf = memberId !== req.user.id;
     let out = null;
+    let proxyAmendReason = null; // v1.88.0
     await withTransaction(async (client) => {
         if (!(await proxiesReady(client))) throw createError.conflict('Proxy forms in the system need the v1.87.0 database update.');
         const m = await loadMeeting(client, req.params.id, { lock: true });
@@ -1823,7 +2052,12 @@ const lodgeProxy = asyncHandler(async (req, res) => {
             if (m.status !== 'NOTICE_ISSUED') throw createError.conflict(m.status === 'DRAFT' ? 'The notice of this meeting has not been issued yet.' : 'Proxy forms can no longer be lodged for this meeting.');
             if (late) throw createError.conflict(`Proxy forms had to be lodged by ${deadline.toLocaleString('en-GB', { timeZone: 'Africa/Kampala', dateStyle: 'long', timeStyle: 'short' })} (Kampala time), ${settings.proxy_deadline_hours ?? 48} hours before the meeting. Ask the Company Secretary if you need to appoint a proxy now.`);
         } else {
-            if (!['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) throw createError.conflict('Proxies can be recorded only once the notice is out and until the meeting closes.');
+            // v1.88.0 — also after the meeting closed (recording what happened),
+            // with the reason
+            if (m.status === 'CLOSED' && !trimOrNull(b.late_reason)) b.late_reason = trimOrNull(b.amend_reason);
+            if (m.status === 'CLOSED') b.amend_reason = b.amend_reason || b.late_reason;
+            proxyAmendReason = await correctionReason(client, m, b);
+            if (!['NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.conflict('Proxies can be recorded once the notice is out (record the notice date first).');
             if (late && !trimOrNull(b.late_reason)) throw createError.badRequest(`The deadline (${settings.proxy_deadline_hours ?? 48} hours before the meeting) has passed — give the reason this proxy is accepted late.`);
         }
         const reg = await client.query(`
@@ -1886,6 +2120,7 @@ const lodgeProxy = asyncHandler(async (req, res) => {
         await client.query(`
             UPDATE meeting_attendance SET status = 'BY_PROXY', proxy_name = $2, proxy_user_id = $3, marked_at = NOW(), marked_by = $4
             WHERE id = $1`, [a.id, proxy.name, proxy.id, req.user.id]);
+        await recordAmendment(client, m, req.user.id, proxyAmendReason, 'Proxy recorded', { member: a.name, proxy: proxy.name }); // v1.88.0
 
         // the Form of Proxy, filed in Documents
         const view = await buildMeetingView(client, req.user, m);
@@ -1959,7 +2194,9 @@ const withdrawProxy = asyncHandler(async (req, res) => {
         if (!onBehalf && (m.status !== 'NOTICE_ISSUED' || new Date() >= proxyDeadlineOf(m, settings))) {
             throw createError.conflict('The proxy can no longer be withdrawn here — tell the Company Secretary, or attend the meeting in person (that revokes it).');
         }
-        if (onBehalf && !['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status)) throw createError.conflict('This meeting is closed.');
+        // v1.88.0 — a closed meeting: the secretary may correct it, with a reason
+        const reason = onBehalf ? await correctionReason(client, m, { amend_reason: req.body.amend_reason || req.body.reason }) : null;
+        if (onBehalf && !['NOTICE_ISSUED', 'IN_PROGRESS', 'CLOSED'].includes(m.status)) throw createError.conflict('This meeting is closed.');
         const r = await client.query(`
             UPDATE meeting_proxies SET status = 'WITHDRAWN', ended_at = NOW(), ended_by = $3, end_reason = $4
             WHERE meeting_id = $1 AND member_user_id = $2 AND status = 'ACTIVE' RETURNING id, proxy_name`,
@@ -1968,6 +2205,7 @@ const withdrawProxy = asyncHandler(async (req, res) => {
         await client.query(`
             UPDATE meeting_attendance SET status = 'PENDING', proxy_name = NULL, proxy_user_id = NULL, marked_at = NOW(), marked_by = $3
             WHERE meeting_id = $1 AND user_id = $2 AND capacity = 'MEMBER' AND status = 'BY_PROXY'`, [m.id, memberId, req.user.id]);
+        await recordAmendment(client, m, req.user.id, reason, 'Proxy withdrawn', { member_user_id: memberId, proxy: r.rows[0].proxy_name });
         await logAction(req.user.id, ACTIONS.MEETING_PROXY_WITHDRAWN, MODULES.GOVERNANCE, {
             ipAddress: req.ip, recordType: 'company_meetings', recordId: m.id, oldValues: { proxy: r.rows[0].proxy_name },
             description: `Proxy (${r.rows[0].proxy_name}) withdrawn for member #${memberId} at ${m.title}`, client,
@@ -1979,6 +2217,7 @@ const withdrawProxy = asyncHandler(async (req, res) => {
 
 module.exports = {
     changeNoticeDate, getProxyForm, lodgeProxy, withdrawProxy, // v1.87.0
+    setSignatories, // v1.88.0
     getGovernanceSettings, updateGovernanceSettings,
     listMeetings, createMeeting, getMeeting, updateMeeting, refreshRegister,
     addAttendee, removeAttendee, markAttendance, issueNotice, openMeeting, confirmAttendance,
@@ -1986,4 +2225,5 @@ module.exports = {
     createMeetingResolution, updateResolution, recordVote, withdrawResolution, markFiled,
     createWrittenResolution, signWrittenResolution, getResolution, listResolutions, myActions,
     documentCategories, saveStatutoryDocument,
+    refreshResolutionDocuments, // v1.89.0
 };

@@ -17,6 +17,8 @@ import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
 import { ExpenseTaxFields, InflowTaxFields, expenseTaxPayload, inflowTaxPayload } from '../../components/tax/TaxFields'; // v1.70.0
 import { DocumentPicker, documentIdsOf, TransactionDetailModal, LinkCount } from '../../components/documents/TransactionDocuments'; // v1.78.0
 import BouRatesPanel from '../../components/fx/BouRatesPanel'; // v1.83.0
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import {
     PlusIcon,
     BuildingLibraryIcon,
@@ -618,6 +620,7 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
     const [showExpense,  setShowExpense]  = useState(false);
     const [showInflow,   setShowInflow]   = useState(false);
     const [detailId,     setDetailId]     = useState(null); // v1.78.0
+    const [balanceGroup, setBalanceGroup] = useGrouping('account-balance', 'day'); // v1.88.0
 
     const loadTransactions = useCallback(async () => {
         try {
@@ -637,10 +640,12 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
     useEffect(() => { loadTransactions(); }, [loadTransactions]);
 
     // Build chart data from transactions
-    const chartData = [...transactions].reverse().map(tx => ({
-        date:    formatDate(tx.value_date),
+    // v1.88.0 — grouped by the Days / Weeks / Months / Years switch: the
+    // balance at the end of each period
+    const chartData = groupSeries([...transactions].reverse().map(tx => ({
+        date:    tx.value_date,
         balance: parseFloat(tx.balance_after),
-    }));
+    })), { granularity: balanceGroup, fields: { balance: 'last' } });
 
     // Build inflow/outflow summary
     const inflows  = transactions.filter(t =>
@@ -811,11 +816,14 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
             </div>
 
             {/* Charts */}
-            {chartData.length > 1 && (
+            {transactions.length > 1 && (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                     {/* Balance Over Time */}
                     <div className="card lg:col-span-2">
-                        <h3 className="section-title mb-4">Balance Over Time</h3>
+                        <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                            <h3 className="section-title">Balance Over Time</h3>
+                            <GroupBy value={balanceGroup} onChange={setBalanceGroup} />
+                        </div>
                         <ResponsiveContainer width="100%" height={200}>
                             <AreaChart data={chartData}>
                                 <defs>
@@ -828,13 +836,14 @@ const AccountDetailView = ({ account, onBack, canEdit, onEditClick, canRecordTra
                                     </linearGradient>
                                 </defs>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }}
-                                    tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }}
+                                    tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false}
                                     axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip
                                     {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v) => [
                                         `${account.currency_code} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                         'Balance'
@@ -1512,6 +1521,7 @@ const MarketHistoryCharts = () => {
     const theme = useChartTheme();
     const [priceHistory, setPriceHistory] = useState([]);
     const [rateHistory,  setRateHistory]  = useState([]);
+    const [marketGroup, setMarketGroup] = useGrouping('market-history', 'day'); // v1.88.0
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -1530,28 +1540,42 @@ const MarketHistoryCharts = () => {
 
     // Both endpoints return newest-first; a left-to-right timeline
     // needs oldest-first.
-    const priceChartData = [...priceHistory].reverse().map(p => ({
-        date: formatDate(p.effective_from),
+    // v1.88.0 — grouped by the switch: price at the end of each period,
+    // exchange rate averaged over it
+    const priceChartData = groupSeries([...priceHistory].reverse().map(p => ({
+        date: p.effective_from,
         price: parseFloat(p.price_per_share),
-    }));
+    })), { granularity: marketGroup, fields: { price: 'last' } });
     const priceCurrency = priceHistory[0]?.currency_code || '';
 
     const byPair = {};
     for (const r of [...rateHistory].reverse()) {
         const pairKey = `${r.base_currency_code} → ${r.target_currency_code}`;
         if (!byPair[pairKey]) byPair[pairKey] = [];
-        byPair[pairKey].push({ date: formatDate(r.effective_from), rate: parseFloat(r.rate) });
+        byPair[pairKey].push({ date: r.effective_from, rate: parseFloat(r.rate) });
+    }
+    // v1.88.0 — a rate holds until the next one: each day carries the
+    // last rate set, then the period shows the average of its days
+    const rawCount = {}; // charts need at least two real rates, whatever the grouping
+    for (const k of Object.keys(byPair)) {
+        rawCount[k] = byPair[k].length;
+        const daily = groupSeries(byPair[k], { granularity: 'day', fields: { rate: 'last' } })
+            .map(d => ({ date: d.start, rate: d.rate }));
+        byPair[k] = groupSeries(daily, { granularity: marketGroup, fields: { rate: 'avg' } });
     }
     const pairs = Object.keys(byPair);
-    const anyChartable = priceChartData.length > 1 || pairs.some(k => byPair[k].length > 1);
+    const anyChartable = priceHistory.length > 1 || pairs.some(k => rawCount[k] > 1);
 
     if (!anyChartable) return null;
 
     return (
         <div className="mb-6">
-            <h3 className="section-title mb-3">Market History</h3>
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <h3 className="section-title">Market History</h3>
+                <GroupBy value={marketGroup} onChange={setMarketGroup} />
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {priceChartData.length > 1 && (
+                {priceHistory.length > 1 && (
                     <div className="card">
                         <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
                             Share Price Over Time{priceCurrency && ` (${priceCurrency})`}
@@ -1559,26 +1583,27 @@ const MarketHistoryCharts = () => {
                         <ResponsiveContainer width="100%" height={200}>
                             <LineChart data={priceChartData}>
                                 <CartesianGrid {...theme.gridProps} />
-                                <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                                <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                 <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                     tickFormatter={compactNumber} />
                                 <Tooltip {...theme.tooltipProps}
+                                    labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                     formatter={(v) => [
                                         `${priceCurrency} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 })}`,
                                         'Price per Share',
                                     ]} />
                                 <Line type="stepAfter" dataKey="price" stroke={theme.primary}
-                                    strokeWidth={2} dot={{ r: 3, fill: theme.primary }} />
+                                    strokeWidth={2} dot={priceChartData.length <= 40 ? { r: 3, fill: theme.primary } : false} connectNulls />
                             </LineChart>
                         </ResponsiveContainer>
                     </div>
                 )}
-                {pairs.filter(k => byPair[k].length > 1).map((pairKey, idx) => {
+                {pairs.filter(k => rawCount[k] > 1).map((pairKey, idx) => {
                     const data = byPair[pairKey];
                     const color = theme.series[idx % theme.series.length];
                     // v1.83.1 — smooth line, no dots, gradient fill (same style as
                     // the other trend charts); the scale hugs the rates so changes show.
-                    const vals = data.map(d => d.rate);
+                    const vals = data.map(d => d.rate).filter(v => v !== null && Number.isFinite(v));
                     const lo = Math.min(...vals); const hi = Math.max(...vals);
                     const pad = Math.max((hi - lo) * 0.15, hi * 0.01);
                     const step = 5 * Math.pow(10, Math.floor(Math.log10(Math.max(hi, 1e-9))) - 2); // tidy axis numbers
@@ -1597,11 +1622,12 @@ const MarketHistoryCharts = () => {
                                         </linearGradient>
                                     </defs>
                                     <CartesianGrid {...theme.gridProps} />
-                                    <XAxis dataKey="date" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
+                                    <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                                     <YAxis tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} axisLine={false}
                                         domain={[Math.max(0, Math.floor((lo - pad) / step) * step), Math.ceil((hi + pad) / step) * step]}
                                         tickFormatter={compactNumber} />
                                     <Tooltip {...theme.tooltipProps}
+                                        labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                                         formatter={(v) => [parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 4 }), 'Rate']} />
                                     <Area type="monotone" dataKey="rate" stroke={color} strokeWidth={2}
                                         fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4 }} />

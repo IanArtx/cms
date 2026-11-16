@@ -249,6 +249,7 @@ app.use('/api/search', require('./src/routes/search'));
 
 app.use('/api/audit', require('./src/routes/audit'));
 app.use('/api/access', require('./src/routes/access'));
+app.use('/api/email-settings', require('./src/routes/emailSettings')); // v1.88.0 — which emails go out
 app.use('/api/member-register', require('./src/routes/memberRegister')); // v1.86.1 — register of members and officers // v1.86.0 — access requests, invitations, blocked addresses
 app.use('/api/staff-access', require('./src/routes/staffAccess'));
 app.use('/api/service-fees', require('./src/routes/serviceFees'));
@@ -294,6 +295,13 @@ const startServer = async () => {
     // Start scheduled jobs
     const { startAllJobs } = require('./src/jobs/scheduler');
     startAllJobs();
+
+    // v1.88.0 — turn the signatures already stored blue (once each), in the
+    // background so the server starts at once
+    setTimeout(() => {
+        require('./src/services/signatureInkService').convertStored()
+            .catch(err => logger.warn(`Blue signatures: ${err.message}`));
+    }, 15000);
 
     // Start listening
     app.listen(PORT, () => {

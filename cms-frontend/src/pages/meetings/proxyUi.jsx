@@ -54,7 +54,7 @@ const PersonChoice = ({ label, people, value, onChange, required = false }) => (
     </div>
 );
 
-export const ProxyFormModal = ({ meetingId, memberUserId = null, members = [], onClose, onDone }) => {
+export const ProxyFormModal = ({ meetingId, memberUserId = null, members = [], defaultLateReason = '', onClose, onDone }) => {
     const [info, setInfo] = useState(null);
     const [member, setMember] = useState(memberUserId || '');
     const [proxy, setProxy] = useState({ mode: 'user', user_id: '', name: '', address: '' });
@@ -62,7 +62,7 @@ export const ProxyFormModal = ({ meetingId, memberUserId = null, members = [], o
     const [memberAddress, setMemberAddress] = useState('');
     const [votes, setVotes] = useState({});
     const [confirm, setConfirm] = useState(false);
-    const [lateReason, setLateReason] = useState('');
+    const [lateReason, setLateReason] = useState(defaultLateReason || '');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const forSomeoneElse = !!(members.length);
@@ -185,7 +185,7 @@ export const ProxyFormModal = ({ meetingId, memberUserId = null, members = [], o
     );
 };
 
-export const ProxySection = ({ v, canManage, reload, setNotice }) => {
+export const ProxySection = ({ v, canManage, reload, setNotice, corr = false, amendReason = '' }) => {
     const m = v.meeting;
     const [open, setOpen] = useState(null); // 'self' | 'member'
     const [busy, setBusy] = useState(false);
@@ -223,7 +223,7 @@ export const ProxySection = ({ v, canManage, reload, setNotice }) => {
                     {mineAsMember && beforeDeadline && v.my_proxy && (
                         <button type="button" className="btn-secondary text-sm" disabled={busy} onClick={() => withdraw()}>Withdraw my proxy</button>
                     )}
-                    {canManage && ['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) && members.length > 0 && (
+                    {canManage && (['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) || corr) && members.length > 0 && (
                         <button type="button" className="btn-secondary text-sm" onClick={() => setOpen('member')}>Record a proxy for a member</button>
                     )}
                 </div>
@@ -248,7 +248,7 @@ export const ProxySection = ({ v, canManage, reload, setNotice }) => {
                                     {p.lodged_late ? ` · late: ${p.late_reason}` : ''}
                                 </p>
                             </div>
-                            {['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) && (
+                            {(['NOTICE_ISSUED', 'IN_PROGRESS'].includes(m.status) || corr) && (
                                 <button type="button" className="text-xs text-red-600 hover:underline" disabled={busy} onClick={() => withdraw(p.member_user_id)}>Withdraw</button>
                             )}
                         </div>
@@ -257,7 +257,7 @@ export const ProxySection = ({ v, canManage, reload, setNotice }) => {
             )}
             {canManage && active.length === 0 && <p className="mt-3 text-xs text-gray-400">No proxies lodged yet.</p>}
             {open === 'self' && <ProxyFormModal meetingId={m.id} onClose={() => setOpen(null)} onDone={done} />}
-            {open === 'member' && <ProxyFormModal meetingId={m.id} members={members} onClose={() => setOpen(null)} onDone={done} />}
+            {open === 'member' && <ProxyFormModal meetingId={m.id} members={members} defaultLateReason={corr ? amendReason : ''} onClose={() => setOpen(null)} onDone={done} />}
         </div>
     );
 };

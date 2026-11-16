@@ -132,6 +132,14 @@ router.get('/:id',
     investmentsController.getInvestmentById
 );
 
+// v1.88.0 — the investment's documents, in groups (buying, running costs, taxes …)
+router.get('/:id/documents',
+    requirePermissions(['INVESTMENT_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    investmentsController.getInvestmentDocuments
+);
+
 // ============================================================
 // v1.80.0 — every ledger entry of one investment, with totals by
 // purpose (buying / running / maintenance) — GET /api/investments/:id/ledger

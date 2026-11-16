@@ -38,6 +38,8 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ErrorMessage from '../../components/common/ErrorMessage';
 import { useAuth } from '../../contexts/AuthContext';
 import { compactNumber, useChartTheme } from '../../hooks/useChartTheme';
+import GroupBy, { useGrouping } from '../../components/charts/GroupBy'; // v1.88.0
+import { groupSeries } from '../../utils/timeGrouping'; // v1.88.0
 import {
     BanknotesIcon,
     ChartPieIcon,
@@ -68,14 +70,20 @@ import InvestmentTotalsChart from '../../components/charts/InvestmentTotalsChart
 // request — a gradient-filled Area, no dot markers on the line —
 // rather than the plain dotted Line chart this started as.
 // ============================================================
-const InflowOutflowChart = ({ trend, currencyCode }) => {
+const InflowOutflowChart = ({ trend: rawTrend, currencyCode }) => {
     const theme = useChartTheme();
+    // v1.88.0 — daily figures grouped by the Days / Weeks / Months / Years switch
+    const [group, setGroup] = useGrouping('sh-inflow-outflow', 'month');
+    const trend = groupSeries(rawTrend || [], { granularity: group, date: 'period', fields: { inflow: 'sum', outflow: 'sum' } });
 
     return (
         <div className="card">
-            <h2 className="section-title mb-4">
-                Inflow vs Outflow — Primary &amp; Secondary Accounts
-            </h2>
+            <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h2 className="section-title">
+                    Inflow vs Outflow — Primary &amp; Secondary Accounts
+                </h2>
+                <GroupBy value={group} onChange={setGroup} />
+            </div>
             {!trend || trend.length === 0 ? (
                 <div className="flex items-center justify-center h-56 text-gray-300 text-sm">
                     No transaction history yet
@@ -94,7 +102,7 @@ const InflowOutflowChart = ({ trend, currencyCode }) => {
                             </linearGradient>
                         </defs>
                         <CartesianGrid {...theme.gridProps} />
-                        <XAxis dataKey="period" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 11, ...theme.axisTick }} tickLine={false} minTickGap={16} />
                         <YAxis
                             tick={{ fontSize: 11, ...theme.axisTick }}
                             tickLine={false}
@@ -103,6 +111,7 @@ const InflowOutflowChart = ({ trend, currencyCode }) => {
                         />
                         <Tooltip
                             {...theme.tooltipProps}
+                            labelFormatter={(l, p) => p?.[0]?.payload?.title || l}
                             formatter={(v, name) => [
                                 `${currencyCode || ''} ${parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
                                 name,
@@ -478,7 +487,7 @@ const ShareholderDashboard = ({ headerActions = null }) => {
             const [
                 trendRes, invRes, ledgerRes, finesRes, duesRes,
             ] = await Promise.allSettled([
-                accountsAPI.getInflowOutflowTrend(12),
+                accountsAPI.getInflowOutflowTrend(36, true),
                 investmentsAPI.getInputVsReturn(),
                 usersAPI.getMyPaymentLedger(5),
                 finesAPI.getMine(),

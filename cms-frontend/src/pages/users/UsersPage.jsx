@@ -19,6 +19,7 @@ import { UserPlusIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 import { AccessRequestsTab, InvitationsTab, DeclineAccessModal } from './AccessControl'; // v1.86.0
 import MemberRegisterTab from './MemberRegister'; // v1.86.1
+import { PersonalAccessModal, PersonalLimitsTab } from './PersonalAccess'; // v1.89.0
 
 // ============================================================
 // ASSIGN ROLE MODAL
@@ -603,6 +604,7 @@ const UsersPage = () => {
     const [manageUser,   setManageUser]   = useState(null);
     const [deletingUser, setDeletingUser] = useState(null);
     const [emailUser,    setEmailUser]    = useState(null); // v1.75.0
+    const [accessUser,   setAccessUser]   = useState(null); // v1.89.0
     const [search,       setSearch]       = useState('');
     const [actionLoading, setActionLoading] = useState(false);
     const [declining,    setDeclining]    = useState(null); // v1.86.0
@@ -768,6 +770,18 @@ const UsersPage = () => {
                             Manage Roles
                         </button>
                     )}
+                    {/* v1.89.0 — personal access rules (Admin; never on oneself) */}
+                    {hasRole('Admin') && row.is_active && row.id !== user?.id && row.roles && row.roles.length > 0 && (
+                        <button
+                            onClick={() => setAccessUser(row)}
+                            className="text-xs text-primary-600 hover:text-primary-700
+                                font-medium px-2 py-1 rounded border border-primary-200
+                                hover:bg-primary-50 transition-colors"
+                            title="Limit what this person may do, whatever their roles"
+                        >
+                            Access limits
+                        </button>
+                    )}
                     {/* v1.75.0 — Admin role only (the server checks too) */}
                     {hasRole('Admin') && row.is_active && row.id !== user?.id && (
                         <button
@@ -840,8 +854,9 @@ const UsersPage = () => {
             {/* Tabs — overflow-x-auto (v1.32.5). v1.86.0 adds Access requests
                 and Invitations for those who manage members (USER_MANAGE). */}
             <div className="tab-bar" role="tablist">
-                {['members', 'requests', 'access', 'invitations', 'register']
+                {['members', 'requests', 'access', 'invitations', 'limits', 'register']
                     .filter(tab => (tab === 'access' || tab === 'invitations') ? hasPermission('USER_MANAGE')
+                        : tab === 'limits' ? hasRole('Admin') // v1.89.0
                         : tab === 'register' ? canRegister
                         : canList)
                     .map(tab => (
@@ -855,6 +870,7 @@ const UsersPage = () => {
                                 ? `(${roleRequests.length})` : ''}`
                             : tab === 'access' ? 'Access Requests'
                             : tab === 'invitations' ? 'Invitations'
+                            : tab === 'limits' ? 'Personal limits'
                             : tab === 'register' ? 'Register'
                             : 'Members'
                         }
@@ -906,6 +922,12 @@ const UsersPage = () => {
             )}
             {activeTab === 'invitations' && hasPermission('USER_MANAGE') && (
                 <InvitationsTab roles={roles} />
+            )}
+            {/* v1.89.0 — personal access rules */}
+            {activeTab === 'limits' && hasRole('Admin') && <PersonalLimitsTab />}
+            {accessUser && (
+                <PersonalAccessModal userId={accessUser.id} name={`${accessUser.first_name} ${accessUser.last_name}`}
+                    onClose={() => setAccessUser(null)} />
             )}
             {/* v1.86.1 — register of members and officers */}
             {activeTab === 'register' && canRegister && <MemberRegisterTab />}

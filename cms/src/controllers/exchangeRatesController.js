@@ -145,6 +145,7 @@ const listSuggestions = asyncHandler(async (req, res) => {
 });
 
 const approveSuggestion = asyncHandler(async (req, res) => {
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_FX_RATES', { label: 'exchange rate' }); // v1.89.0
     const out = await fxFeedService.approveSuggestion({
         id: parseInt(req.params.id, 10), userId: req.user.id,
         confirmFlagged: req.body.confirm_flagged === true || req.body.confirm_flagged === 'true', ipAddress: req.ip,
@@ -155,6 +156,7 @@ const approveSuggestion = asyncHandler(async (req, res) => {
 // Approve every waiting suggestion that is NOT flagged. Flagged ones
 // are left for a person to look at one by one.
 const approveAllSuggestions = asyncHandler(async (req, res) => {
+    await require('../services/personalAccessService').assertMayApprove(req.user.id, 'APPROVE_FX_RATES', { label: 'exchange rate' }); // v1.89.0
     const waiting = await fxFeedService.listSuggestions({ status: 'PENDING', limit: 200 });
     const results = [];
     for (const s of waiting.filter(x => !x.flagged)) {

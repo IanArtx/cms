@@ -901,6 +901,14 @@ const releaseRequisition = asyncHandler(async (req, res) => {
         if (!r.rows.length) throw createError.notFound('Requisition not found');
         const req_ = r.rows[0];
         if (req_.requisition_type !== 'EXPENSE') throw createError.badRequest('Only a money request is released.');
+        // v1.89.0 — the releaser's own limits (blocked, amount, accounts)
+        {
+            const cur = (await client.query('SELECT code FROM currencies WHERE id = $1', [req_.currency_id])).rows[0];
+            const acc = req.body.account_id ? parseInt(req.body.account_id, 10) : req_.account_id;
+            await require('../services/personalAccessService').assertMayApprove(req.user.id, 'RELEASE_REQUISITIONS', {
+                amount: req_.amount_approved || req_.amount_requested, currency: cur ? cur.code : null, accountIds: [acc].filter(Boolean), label: 'release',
+            });
+        }
         if (req_.status !== 'APPROVED') {
             throw createError.badRequest(req_.status === 'PENDING'
                 ? 'This requisition has not been approved yet.'

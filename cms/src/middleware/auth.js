@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 const { createError } = require('../utils/errors');
 const { logAction, ACTIONS, MODULES, extractRequestContext } = require('../services/auditService');
+const personalAccess = require('../services/personalAccessService'); // v1.89.0
 
 // ============================================================
 // AUTHENTICATE
@@ -90,6 +91,11 @@ const authenticate = async (req, res, next) => {
             e.error = 'SESSION_REVOKED';
             return next(e);
         }
+
+        // v1.89.0 — the person's own access rules: permissions taken away /
+        // added, and parts of the system hidden from them.
+        await personalAccess.applyToUser(user);
+        personalAccess.assertAreaAllowed(user, req.method, req.originalUrl);
 
         // Attach user and session context to the request
         req.user = {

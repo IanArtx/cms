@@ -19,10 +19,17 @@
 // The one exception is the Admin role — an Admin may approve their own
 // item (e.g. when they are the only person who could). Every approval
 // is still written to the audit log with who created and who approved.
+//
+// v1.89.0 — assertNotOwnRecord also applies the approver's personal
+// access rules (personalAccessService).
 // ============================================================
 
 const { query } = require('../config/database');
 const { createError } = require('../utils/errors');
+// v1.89.0 — the approver's own limits (blocked approvals, amount per
+// currency, accounts) apply at every one of these checkpoints, Admins
+// included.
+const personalAccess = require('./personalAccessService');
 
 const isAdmin = (req) => (req.user?.roles || []).includes('Admin');
 
@@ -40,6 +47,7 @@ const assertNotOwnApproval = (req, userIds, label = 'item') => {
 // Tables and columns are fixed strings chosen in code (never from the
 // request), so building them into the SQL is safe.
 const assertNotOwnRecord = async (req, client, table, id, columns, label = 'item') => {
+    if (req.user && req.user.id) await personalAccess.assertMayApproveRecord(req.user.id, table, id, label, client);
     if (isAdmin(req)) return;
     const runner = client || { query };
     const cols = columns.join(', ');

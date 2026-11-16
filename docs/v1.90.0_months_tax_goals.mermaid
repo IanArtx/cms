@@ -1,0 +1,27 @@
+%% v1.90.0 — months closed and locked; tax filing worksheet and URA confirmation; pledge pardons; one goal per contribution
+flowchart TD
+    subgraph M["Months (Reports › General Ledger › Months)"]
+        M0["Month OPEN"] -->|"Treasurer: Close\n(checklist: ended · earlier months closed · UGX values ·\nFX revaluation · no held entries)"| M1["Month CLOSED"]
+        M1 -->|"Admin: Reopen with a reason\n(newest closed only; not after the year's return is approved)"| M0
+        M1 -->|"URA confirmation approved"| M2["Month LOCKED — for good"]
+        G[("database guard\ncms_assert_period_open")] -.->|"refuses any change dated in\na CLOSED or LOCKED month"| M1
+        G -.-> M2
+    end
+    subgraph T["Tax › Corporate tax › a year"]
+        T0["Year OPEN"] -->|"Prepare (Treasurer)\nonly when every month is closed"| T1["PREPARED"]
+        T1 -->|"Approve (Director, not the preparer)"| T2["APPROVED"]
+        T2 -->|"Mark filed (portal filled from the\nDT-2002 filing worksheet — PDF / Excel)"| T3["FILED"]
+        T3 -->|"Treasurer uploads the URA confirmation"| T4["waiting for a Director"]
+        T4 -->|"Director (not the uploader) approves"| T5["months locked"]
+        T4 -->|"sent back with a reason"| T3
+        T5 --> M2
+        W["Provisional worksheet\n(estimate × rate − creditable WHT, two instalments)\n+ provisional filing reference"] --- T0
+    end
+    subgraph C["Capital goals"]
+        K["Contribution recorded\n(goal chosen, else the PRIMARY goal for the date)"] --> K1{"member's own pledge for the month,\nmade on or before the date, same currency, still owed?"}
+        K1 -->|"yes"| K2["pays the pledge"]
+        K1 -->|"no / the rest"| K3["'without a pledge' —\ncounts towards that goal only"]
+        P["Pledge PENDING / PARTIAL"] -->|"Treasurer or Director: Pardon + reason"| P1["PARDONED — the unpaid part is no longer owed"]
+        P1 -->|"with 'waive the penalties'"| F["unpaid late fines WAIVED"]
+        K3 --> R["Goal page › Contributions:\nmove to another goal / to none (reason) / add unassigned"]
+    end

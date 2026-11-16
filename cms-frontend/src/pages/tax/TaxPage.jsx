@@ -28,7 +28,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { taxAPI, accountsAPI } from '../../api/endpoints';
+import { taxAPI, accountsAPI, documentsAPI } from '../../api/endpoints';
+import { downloadBlob } from '../../utils/exportUtils';
 import { formatDate, getErrorMessage } from '../../utils/helpers';
 import PageHeader from '../../components/common/PageHeader';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -41,6 +42,9 @@ import {
     InformationCircleIcon,
     CheckCircleIcon,
     TrashIcon,
+    ArrowDownTrayIcon,
+    DocumentTextIcon,
+    LockClosedIcon,
 } from '@heroicons/react/24/outline';
 
 export const money = (n, dp = 0) => (n === null || n === undefined || Number.isNaN(Number(n))
@@ -555,7 +559,169 @@ const Worksheet = ({ w }) => {
     );
 };
 
-const YearPanel = ({ yearId, roles, onChanged }) => {
+// ============================================================
+// v1.90.0 — FILING THE RETURN
+//   • DT-2002 filing worksheet — every figure the URA portal asks for,
+//     laid out in the return's order (final return after the year;
+//     provisional return during it), as PDF or Excel;
+//   • the provisional return's filing reference;
+//   • the URA confirmation: uploaded by the Treasurer / Assistant
+//     Treasurer after filing, approved by a Director (not the uploader)
+//     — approving locks every month of the year for good.
+// ============================================================
+const FilingWorksheetCard = ({ yearId, status }) => {
+    const [kind, setKind] = useState(['APPROVED', 'FILED'].includes(status) ? 'FINAL' : 'PROVISIONAL');
+    const [ws, setWs] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const preview = async (k = kind) => {
+        setBusy(true); setError(null);
+        try { const r = await taxAPI.getFilingWorksheet(yearId, k); setWs(r.data.data); } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
+    };
+    const download = async (fmt) => {
+        setBusy(true); setError(null);
+        try {
+            const r = fmt === 'pdf' ? await taxAPI.downloadFilingPdf(yearId, kind) : await taxAPI.downloadFilingXlsx(yearId, kind);
+            downloadBlob(r.data, `DT-2002_${kind === 'FINAL' ? 'Return' : 'Provisional'}_${yearId}.${fmt}`);
+        } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
+    };
+    const c = ws && ws.computation;
+    const pv = ws && ws.provisional;
+    return (
+        <div className="card space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="section-title flex items-center gap-2"><DocumentTextIcon className="h-5 w-5" />Filing worksheet (DT-2002)</h4>
+                <div className="flex flex-wrap gap-2">
+                    <select className="input w-auto text-sm" value={kind} onChange={e => { setKind(e.target.value); setWs(null); }}>
+                        <option value="FINAL">Final return (after the year)</option>
+                        <option value="PROVISIONAL">Provisional return (estimate)</option>
+                    </select>
+                    <button className="btn-secondary text-sm" disabled={busy} onClick={() => preview()}>Preview</button>
+                    <button className="btn-secondary text-sm inline-flex items-center gap-1" disabled={busy} onClick={() => download('pdf')}><ArrowDownTrayIcon className="h-4 w-4" />PDF</button>
+                    <button className="btn-secondary text-sm inline-flex items-center gap-1" disabled={busy} onClick={() => download('xlsx')}><ArrowDownTrayIcon className="h-4 w-4" />Excel</button>
+                </div>
+            </div>
+            <p className="text-xs text-gray-500">
+                Every figure the URA portal asks for, in the order of the return — the income statement and balance sheet in UGX, the tax computation, the withholding tax credits
+                and the payments already made. Fill the return on the portal from it; it is not sent to URA from here.
+                {kind === 'FINAL' && status !== 'APPROVED' && status !== 'FILED' && ' (Until the year is approved these are the figures so far.)'}
+            </p>
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            {ws && ws.warnings.map((m, i) => <Note key={i} tone="warn">{m}</Note>)}
+            {c && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 text-sm">
+                    <div>
+                        <Line label="Total income" value={ws.incomeStatement.totalIncome} />
+                        <Line label="Total expenses" value={ws.incomeStatement.totalExpenses} />
+                        <Line label="Profit before tax" value={c.profitBeforeTax} bold />
+                        <Line label="Add-backs" value={c.totalAddBacks} />
+                        <Line label="Deductions" value={c.totalDeductions} />
+                        <Line label="Chargeable income" value={c.chargeableIncome} bold />
+                    </div>
+                    <div>
+                        <Line label="Loss brought forward used" value={c.lossUtilised} />
+                        <Line label="Taxable income" value={c.taxableIncome} />
+                        <Line label={`Tax at ${c.taxRate}%`} value={c.grossTax} bold />
+                        <Line label="Less withholding tax credits" value={c.whtCredits} />
+                        <Line label="Less provisional tax paid" value={c.provisionalPaid} />
+                        <Line label={c.balanceDue < 0 ? 'Refund due' : 'Balance to pay with the return'} value={Math.abs(c.balanceDue)} bold />
+                    </div>
+                </div>
+            )}
+            {pv && (
+                <div className="text-sm space-y-1">
+                    <Line label="Estimated chargeable income" value={pv.estimate} />
+                    <Line label={`Estimated tax at ${pv.rate}%`} value={pv.estimated_tax} />
+                    <Line label="Less creditable withholding tax" value={pv.creditable_wht} />
+                    <Line label="Provisional tax payable" value={pv.payable} bold />
+                    {pv.instalments.map(i => (
+                        <Line key={i.no} label={`Instalment ${i.no} — due ${formatDate(i.due)}`} sub={`Paid so far: ${money(i.paid)}`} value={i.amount} />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const FilingRecordsCard = ({ yearId, y, row, roles, onDone }) => {
+    const { user } = useAuth();
+    const confirm = useConfirm();
+    const isPreparer = roles.some(r => PREPARERS.includes(r));
+    const isApprover = roles.some(r => APPROVERS.includes(r));
+    const [prov, setProv] = useState({ filed_on: y.provisionalFiledOn || today(), reference: y.provisionalReturnReference || '' });
+    const [fileObj, setFileObj] = useState(null);
+    const [reason, setReason] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const [success, setSuccess] = useState(null);
+    const act = async (fn) => {
+        setBusy(true); setError(null); setSuccess(null);
+        try { const r = await fn(); setSuccess(r?.data?.message || 'Saved'); setFileObj(null); setReason(''); onDone(); } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
+    };
+    const view = async () => {
+        try { const r = await documentsAPI.download(y.confirmationDocumentId); downloadBlob(r.data, `URA_confirmation_${y.label}`); } catch (err) { setError(getErrorMessage(err)); }
+    };
+    const uploadedByMe = row && row.confirmation_uploaded_by && user && row.confirmation_uploaded_by === user.id;
+    return (
+        <div className="card space-y-4">
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            <Success message={success} onDismiss={() => setSuccess(null)} />
+            <div className="space-y-2">
+                <h4 className="section-title">Provisional return</h4>
+                {y.provisionalFiledOn
+                    ? <p className="text-sm">Filed on <strong>{formatDate(y.provisionalFiledOn)}</strong>{y.provisionalReturnReference ? ` · ${y.provisionalReturnReference}` : ''}.</p>
+                    : <p className="text-sm text-gray-500">Not recorded as filed yet. File the estimate on the URA portal (the Provisional worksheet above has the figures), then record it here.</p>}
+                {isPreparer && (
+                    <div className="flex flex-wrap gap-2">
+                        <input type="date" className="input w-auto" max={today()} value={prov.filed_on} onChange={e => setProv(p => ({ ...p, filed_on: e.target.value }))} />
+                        <input className="input w-auto" placeholder="Acknowledgement number" value={prov.reference} onChange={e => setProv(p => ({ ...p, reference: e.target.value }))} />
+                        <button className="btn-secondary text-sm" disabled={busy || !prov.filed_on} onClick={() => act(() => taxAPI.setProvisionalFiled(yearId, prov))}>{y.provisionalFiledOn ? 'Update' : 'Record as filed'}</button>
+                    </div>
+                )}
+            </div>
+
+            {y.status === 'FILED' && (
+                <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
+                    <h4 className="section-title flex items-center gap-2"><LockClosedIcon className="h-5 w-5" />URA confirmation</h4>
+                    {y.monthsLockedAt ? (
+                        <Note tone="ok">The URA confirmation was approved on {formatDate(y.confirmationApprovedAt)}. Every month of {y.label} is locked for good — nothing dated in it can be changed any more.
+                            {y.confirmationDocumentId && <> <button className="underline" onClick={view}>View the confirmation</button></>}</Note>
+                    ) : y.confirmationDocumentId ? (
+                        <>
+                            <p className="text-sm">Uploaded {row && row.confirmation_uploaded_at ? `on ${formatDate(row.confirmation_uploaded_at)}` : ''} — waiting for a Director to approve it. <button className="underline text-primary-700" onClick={view}>View it</button></p>
+                            {isApprover && !uploadedByMe && (
+                                <div className="flex flex-wrap gap-2 items-start">
+                                    <button className="btn-primary text-sm" disabled={busy}
+                                        onClick={async () => {
+                                            if (await confirm({ title: `Approve the URA confirmation — ${y.label}`, message: `Check that it is the acknowledgement of the ${y.label} return (${y.returnReference || 'no reference recorded'}). Approving LOCKS every month of ${y.label} for good: nothing dated in them can be added, changed or reversed afterwards, and no one can reopen them.`, confirmLabel: 'Approve and lock' })) {
+                                                act(() => taxAPI.approveConfirmation(yearId));
+                                            }
+                                        }}>Approve and lock the year</button>
+                                    <input className="input w-auto flex-1 min-w-[12rem]" placeholder="Reason, to send it back" value={reason} onChange={e => setReason(e.target.value)} />
+                                    <button className="btn-secondary text-sm" disabled={busy || reason.trim().length < 5} onClick={() => act(() => taxAPI.rejectConfirmation(yearId, { reason: reason.trim() }))}>Send back</button>
+                                </div>
+                            )}
+                            {isApprover && uploadedByMe && <p className="text-xs text-gray-500">You uploaded it, so another Director must approve it.</p>}
+                        </>
+                    ) : (
+                        <>
+                            <p className="text-sm text-gray-500">Upload the acknowledgement URA gave for the filed return (PDF or a picture). A Director then approves it, which locks every month of {y.label} for good.</p>
+                            {isPreparer && (
+                                <div className="flex flex-wrap gap-2 items-center">
+                                    <input type="file" accept=".pdf,image/*" className="text-sm" onChange={e => setFileObj(e.target.files[0] || null)} />
+                                    <button className="btn-primary text-sm" disabled={busy || !fileObj}
+                                        onClick={() => { const fd = new FormData(); fd.append('document', fileObj); act(() => taxAPI.uploadConfirmation(yearId, fd)); }}>Upload</button>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const YearPanel = ({ yearId, row, roles, onChanged }) => {
     const confirm = useConfirm();
     const accounts = useUgxAccounts();
     const [data, setData] = useState(null);
@@ -607,13 +773,14 @@ const YearPanel = ({ yearId, roles, onChanged }) => {
                     {y.returnedReason && open && <p className="text-xs text-amber-700">Sent back: {y.returnedReason}</p>}
                 </div>
                 <div className="flex flex-wrap gap-2">
+                    {y.monthsLockedAt && <span className="text-xs text-gray-600 self-center inline-flex items-center gap-1"><LockClosedIcon className="h-4 w-4" />Months locked</span>}
                     {open && isPreparer && !ended && (
                         <span className="text-xs text-gray-500 self-center">Can be prepared for approval after {formatDate(y.endDate)} — the figures below are the year so far.</span>
                     )}
                     {open && isPreparer && ended && (
                         <button className="btn-primary text-sm" disabled={busy}
                             onClick={async () => {
-                                if (await confirm({ title: `Prepare ${y.label}`, message: 'This freezes the computation below and sends it to a Director for approval. Adjustments can no longer be changed unless it is sent back.', confirmLabel: 'Prepare' })) {
+                                if (await confirm({ title: `Prepare ${y.label}`, message: 'This freezes the computation below and sends it to a Director for approval. Adjustments can no longer be changed unless it is sent back. Every month of the year must be closed first (Reports › General Ledger › Months).', confirmLabel: 'Prepare' })) {
                                     act(() => taxAPI.prepareYear(yearId));
                                 }
                             }}>Prepare for approval</button>
@@ -697,6 +864,9 @@ const YearPanel = ({ yearId, roles, onChanged }) => {
                     </div>
                 </div>
             )}
+
+            <FilingWorksheetCard yearId={yearId} status={y.status} />
+            <FilingRecordsCard yearId={yearId} y={y} row={row} roles={roles} onDone={() => { load(); onChanged(); }} />
 
             {y.status === 'APPROVED' && (isPreparer || isApprover) && (
                 <div className="card">
@@ -784,7 +954,7 @@ const CorporateTab = ({ roles, onChanged }) => {
                     </button>
                 ))}
             </div>
-            {selected && <YearPanel key={selected} yearId={selected} roles={roles} onChanged={() => { load(); onChanged(); }} />}
+            {selected && <YearPanel key={selected} yearId={selected} row={years.years.find(y => y.id === selected)} roles={roles} onChanged={() => { load(); onChanged(); }} />}
         </div>
     );
 };

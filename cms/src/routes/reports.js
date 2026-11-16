@@ -308,6 +308,18 @@ router.post('/fx/recompute',
 );
 
 // ============================================================
+// MONTHS — closing / reopening (v1.90.0). Viewing: FINANCE_VIEW_ALL;
+// closing (Treasurer) and reopening (Admin) are checked by role inside.
+// ============================================================
+const periodsCtl = require('../controllers/periodsController');
+router.get('/months', requirePermissions(['FINANCE_VIEW_ALL']), periodsCtl.list);
+router.post('/months/:ym/close', requirePermissions(['FINANCE_VIEW_ALL']),
+    [param('ym').matches(/^\d{4}-\d{2}$/).withMessage('Month must be YYYY-MM')], validateRequest, periodsCtl.close);
+router.post('/months/:ym/reopen', requirePermissions(['FINANCE_VIEW_ALL']),
+    [param('ym').matches(/^\d{4}-\d{2}$/).withMessage('Month must be YYYY-MM'),
+        body('reason').trim().isLength({ min: 5 }).withMessage('Give the reason (at least 5 characters)')], validateRequest, periodsCtl.reopen);
+
+// ============================================================
 // FINANCIAL STATEMENTS PACK & BOOKS (v1.88.0)
 // Everyone with FINANCE_VIEW_ALL can view and download. Changing the
 // wording / settings (Treasurer, Assistant Treasurer, Admin) and

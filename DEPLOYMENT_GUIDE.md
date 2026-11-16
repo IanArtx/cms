@@ -453,6 +453,15 @@ unchanged, just add the equivalent lines to `render.yaml` and
   rebuilt or is down, add `MAINTENANCE_MODE` = `on` to the backend
   service's **Environment** in Render instead — members then see the
   maintenance page even without a database. Delete it when finished.
+- **Months closed and locked, tax filing worksheet and URA confirmation,
+  pledge pardons, one goal per contribution** (v1.90.0): run the updater on
+  **both** databases before pushing the code (it applies 1.88.0, 1.89.0 and
+  1.90.0 together if they are missing). No new package. Nothing is closed by
+  the update itself: every month starts OPEN, and the Treasurer closes them
+  under **Reports › General Ledger › Months**, oldest first. Past contributions
+  are put in their goal automatically (from their pledge payments, otherwise
+  the goal covering their date); check **Capital goals › a goal ›
+  Contributions** afterwards.
 - **Personal access rules; written resolutions collect their signatures**
   (v1.89.0): run the updater on **both** databases (it applies 1.88.0 and
   1.89.0 together if both are missing). No new package. Nothing changes for

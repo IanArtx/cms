@@ -54,6 +54,7 @@ const ACTIONS = [
     { code: 'APPROVE_DIVIDENDS', group: 'Approvals', label: 'Approve dividends', money: true },
     { code: 'APPROVE_SHARE_CAPITAL', group: 'Approvals', label: 'Approve share-capital changes and share-credit refunds', money: true },
     { code: 'APPROVE_CAPITAL_CALLS', group: 'Approvals', label: 'Approve pledge payments (capital calls)', money: true },
+    { code: 'PARDON_PLEDGES', group: 'Approvals', label: 'Pardon pledges and waive their fines (capital calls)', money: false }, // v1.90.0
     { code: 'APPROVE_PAYMENT_ACKS', group: 'Approvals', label: 'Approve payment acknowledgements', money: true },
     { code: 'APPROVE_REVERSALS', group: 'Approvals', label: 'Approve reversal requests', money: false },
     { code: 'APPROVE_FX_RATES', group: 'Approvals', label: 'Approve exchange rates', money: false },

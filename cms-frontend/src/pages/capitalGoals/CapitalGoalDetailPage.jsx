@@ -14,6 +14,11 @@
 //   Investment  secondary goals: the investment the goal raises money
 //               for, and the guided Move → Invest steps
 //   Activity    what happened, newest first
+// v1.90.0:
+//   Contributions  the goal's own contributions — each contribution
+//               belongs to one goal; what paid a pledge and what came
+//               in without one; move / add (Treasurer, Assist. Treasurer)
+//   Pledgers    now also shows "Without a pledge" and pardoned amounts
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -666,13 +671,15 @@ const PledgersPanel = ({ goalId }) => {
     const q = search.trim().toLowerCase();
     const rows = data.members.filter(m => (!filter || m.status === filter) && (!q || m.name.toLowerCase().includes(q)));
     const anyHistorical = data.members.some(m => m.historical > 0);
+    const anyPardoned = data.members.some(m => m.pardoned > 0);
 
     return (
         <div className="space-y-4">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatTile label="Shareholders" value={data.totals.members} icon={UsersIcon}
                     sub={`${data.totals.pledgers} pledged · ${data.totals.contributors} paid`} />
-                <StatTile label="Contributed" value={money(data.totals.contributed, code)} icon={BanknotesIcon} />
+                <StatTile label="Contributed" value={money(data.totals.contributed, code)} icon={BanknotesIcon}
+                    sub={data.totals.without_pledge > 0 ? `incl. ${money(data.totals.without_pledge)} without a pledge` : undefined} />
                 <StatTile label="Still owed" value={money(data.totals.outstanding, code)} icon={ClockIcon} />
                 <StatTile label="Past the deadline" value={money(data.totals.overdue, code)} icon={ExclamationTriangleIcon}
                     tone={data.totals.overdue > 0 ? 'bad' : 'good'} />
@@ -681,7 +688,7 @@ const PledgersPanel = ({ goalId }) => {
             <div className="card">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                     <div className="flex gap-2 flex-wrap">
-                        {[['', 'Everyone'], ['UP_TO_DATE', 'Up to date'], ['OWES', 'Owes'], ['OVERDUE', 'Overdue'], ['NO_PLEDGE', 'No pledge yet']].map(([k, label]) => (
+                        {[['', 'Everyone'], ['UP_TO_DATE', 'Up to date'], ['OWES', 'Owes'], ['OVERDUE', 'Overdue'], ['WITHOUT_PLEDGE', 'Without a pledge'], ['NO_PLEDGE', 'No pledge yet']].map(([k, label]) => (
                             <button key={k} type="button" onClick={() => setFilter(k)}
                                 className={`chip-filter ${filter === k ? 'chip-filter-active' : ''}`}>
                                 {label}{k ? ` (${counts[k] || 0})` : ` (${data.members.length})`}
@@ -701,6 +708,7 @@ const PledgersPanel = ({ goalId }) => {
                                 <th className="py-2 pr-4 text-right">Share</th>
                                 <th className="py-2 pr-4 text-right">Pledged</th>
                                 <th className="py-2 pr-4 text-right">Paid</th>
+                                <th className="py-2 pr-4 text-right">Without a pledge</th>
                                 <th className="py-2 pr-4 text-right">Still owed</th>
                                 <th className="py-2 pr-4 text-right">Months</th>
                                 <th className="py-2 pr-4 text-right">On time</th>
@@ -727,8 +735,10 @@ const PledgersPanel = ({ goalId }) => {
                                         {money(m.paid)}
                                         {m.fulfilment_pct !== null && <span className="block text-[10px] text-gray-400">{pct(m.fulfilment_pct)} of pledged</span>}
                                     </td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{m.without_pledge > 0 ? money(m.without_pledge) : '—'}</td>
                                     <td className={`py-2 pr-4 text-right whitespace-nowrap ${m.overdue > 0 ? 'text-red-600 font-medium' : ''}`}>
                                         {money(m.outstanding)}
+                                        {m.pardoned > 0 && <span className="block text-[10px] text-gray-400 font-normal">{money(m.pardoned)} pardoned</span>}
                                     </td>
                                     <td className="py-2 pr-4 text-right whitespace-nowrap text-gray-600" title="months pledged / paid in full">
                                         {m.months_pledged} / {m.months_paid_in_full}
@@ -739,7 +749,7 @@ const PledgersPanel = ({ goalId }) => {
                                 </tr>
                             ))}
                             {rows.length === 0 && (
-                                <tr><td colSpan={11} className="py-6 text-center text-sm text-gray-400">No one matches</td></tr>
+                                <tr><td colSpan={12} className="py-6 text-center text-sm text-gray-400">No one matches</td></tr>
                             )}
                         </tbody>
                         <tfoot>
@@ -750,6 +760,7 @@ const PledgersPanel = ({ goalId }) => {
                                 <td className="py-2 pr-4 text-right">100%</td>
                                 <td className="py-2 pr-4 text-right whitespace-nowrap">{money(data.members.reduce((s, m) => s + m.pledged, 0))}</td>
                                 <td className="py-2 pr-4 text-right whitespace-nowrap">{money(data.members.reduce((s, m) => s + m.paid, 0))}</td>
+                                <td className="py-2 pr-4 text-right whitespace-nowrap">{money(data.totals.without_pledge)}</td>
                                 <td className="py-2 pr-4 text-right whitespace-nowrap">{money(data.totals.outstanding)}</td>
                                 <td colSpan={4} />
                             </tr>
@@ -760,8 +771,149 @@ const PledgersPanel = ({ goalId }) => {
                     Amounts are in {code} (payments made in another currency are converted at the rate used when the
                     Treasurer approved them). “Months” = months pledged / months paid in full. “On time” = payments made by
                     the month's deadline.{anyHistorical ? ' “Historical” = contributions made in the goal\'s months before it was adopted.' : ''}
+                    {' '}“Without a pledge” = money given towards this goal that was not paying a pledge (no pledge, or paid before the pledge was made).
+                    “Contributed” = paid on pledges + without a pledge{anyHistorical ? ' + historical' : ''}.{anyPardoned ? ' “Pardoned” = unpaid pledges forgiven by the Treasurer or a Director; they are no longer owed.' : ''}
                 </p>
             </div>
+        </div>
+    );
+};
+
+// ============================================================
+// CONTRIBUTIONS TAB (v1.90.0)
+// "each contribution belongs to one goal" — the goal's own
+// contributions, how much of each paid a pledge and how much came in
+// without one. The Treasurer / Assistant Treasurer can move a
+// contribution to another goal (or to none, with a reason) and add
+// contributions that belong to no goal yet. Money that paid a pledge
+// stays with that pledge's goal.
+// ============================================================
+const ContributionsPanel = ({ goal, onChanged }) => {
+    const { hasRole } = useAuth();
+    const canMove = hasRole(['Treasurer', 'Assistant Treasurer']);
+    const [rows, setRows] = useState(null);
+    const [unassigned, setUnassigned] = useState([]);
+    const [goals, setGoals] = useState([]);
+    const [moving, setMoving] = useState(null); // { id, to, reason }
+    const [error, setError] = useState(null);
+    const [notice, setNotice] = useState(null);
+    const [busy, setBusy] = useState(false);
+
+    const load = useCallback(() => {
+        capitalGoalsAPI.getGoalContributions(goal.id).then(r => setRows(r.data.data)).catch(err => setError(getErrorMessage(err)));
+        if (canMove) {
+            capitalGoalsAPI.getUnassignedContributions()
+                .then(r => setUnassigned((r.data.data || []).filter(c => (c.goals || []).some(g => g.id === goal.id))))
+                .catch(() => setUnassigned([]));
+            capitalGoalsAPI.getAll({ status: 'ACTIVE' }).then(r => setGoals((r.data.data || []).filter(g => g.status !== 'CANCELLED'))).catch(() => setGoals([]));
+        }
+    }, [goal.id, canMove]);
+    useEffect(() => { load(); }, [load]);
+
+    const save = async (contributionId, data) => {
+        setBusy(true); setError(null); setNotice(null);
+        try {
+            const r = await capitalGoalsAPI.setContributionGoal(contributionId, data);
+            setNotice(r.data.message); setMoving(null); load(); if (onChanged) onChanged();
+        } catch (err) { setError(getErrorMessage(err)); } finally { setBusy(false); }
+    };
+
+    if (!rows) return error ? <ErrorMessage message={error} /> : <div className="card text-sm text-gray-400">Loading...</div>;
+    const dateOf = (d) => (d ? String(d).slice(0, 10) : '');
+    const totals = rows.reduce((t, c) => ({ amount: t.amount + c.amount, pledged: t.pledged + c.through_pledges, without: t.without + c.without_pledge }), { amount: 0, pledged: 0, without: 0 });
+    const sameCurrency = rows.every(c => c.currency_code === goal.currency_code);
+
+    return (
+        <div className="space-y-4">
+            {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
+            {notice && <div className="bg-green-50 border border-green-200 text-green-700 text-sm rounded-lg p-3">{notice}</div>}
+            <div className="card">
+                <h3 className="section-title mb-1">Contributions of this goal</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                    Every contribution counts towards one goal only. The part that paid a member's pledge is under “Paid a pledge”;
+                    the rest is under “Without a pledge” — it still counts towards the goal, but not as a pledge. A pledge only takes
+                    money paid on or after the day it was made.
+                </p>
+                <div className="cms-table-scroll overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                        <thead>
+                            <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
+                                <th className="py-2 pr-4">Date</th>
+                                <th className="py-2 pr-4">Member</th>
+                                <th className="py-2 pr-4 text-right">Amount</th>
+                                <th className="py-2 pr-4 text-right">Paid a pledge</th>
+                                <th className="py-2 pr-4 text-right">Without a pledge</th>
+                                <th className="py-2 pr-4">Reference</th>
+                                {canMove && <th className="py-2" />}
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                            {rows.map(c => (
+                                <tr key={c.id}>
+                                    <td className="py-2 pr-4 whitespace-nowrap">{formatDate(c.contribution_date)}</td>
+                                    <td className="py-2 pr-4 whitespace-nowrap">{c.member_name}
+                                        {c.goal_assigned_by_name && <span className="block text-[10px] text-gray-400">goal set by {c.goal_assigned_by_name}</span>}</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{money(c.amount, c.currency_code)}</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{c.through_pledges ? money(c.through_pledges) : '—'}</td>
+                                    <td className="py-2 pr-4 text-right whitespace-nowrap">{c.without_pledge ? money(c.without_pledge) : '—'}</td>
+                                    <td className="py-2 pr-4 font-mono text-xs">{c.reference_code}</td>
+                                    {canMove && (
+                                        <td className="py-2 text-right">
+                                            {c.through_pledges > 0
+                                                ? <span className="text-[10px] text-gray-400">stays (paid a pledge)</span>
+                                                : moving && moving.id === c.id ? (
+                                                    <div className="flex flex-col gap-1 items-end min-w-[14rem]">
+                                                        <select className="input text-xs" value={moving.to} onChange={e => setMoving(m => ({ ...m, to: e.target.value }))}>
+                                                            <option value="none">No goal</option>
+                                                            {goals.filter(g => g.id !== goal.id && dateOf(g.start_date) <= c.contribution_date && dateOf(g.end_date) >= c.contribution_date)
+                                                                .map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
+                                                        </select>
+                                                        {moving.to === 'none' && <input className="input text-xs" placeholder="Reason (required)" value={moving.reason} onChange={e => setMoving(m => ({ ...m, reason: e.target.value }))} />}
+                                                        <div className="flex gap-1">
+                                                            <button className="btn-secondary text-xs" onClick={() => setMoving(null)}>Cancel</button>
+                                                            <button className="btn-primary text-xs" disabled={busy || (moving.to === 'none' && moving.reason.trim().length < 5)}
+                                                                onClick={() => save(c.id, moving.to === 'none' ? { capital_goal_id: null, reason: moving.reason.trim() } : { capital_goal_id: Number(moving.to) })}>Move</button>
+                                                        </div>
+                                                    </div>
+                                                ) : <button className="text-xs text-primary-700 hover:underline" onClick={() => setMoving({ id: c.id, to: 'none', reason: '' })}>Move…</button>}
+                                        </td>
+                                    )}
+                                </tr>
+                            ))}
+                            {rows.length === 0 && <tr><td colSpan={canMove ? 7 : 6} className="py-6 text-center text-sm text-gray-400">No contributions belong to this goal yet</td></tr>}
+                        </tbody>
+                        {rows.length > 0 && sameCurrency && (
+                            <tfoot>
+                                <tr className="border-t border-gray-200 text-sm font-semibold">
+                                    <td className="py-2 pr-4" colSpan={2}>Total ({goal.currency_code})</td>
+                                    <td className="py-2 pr-4 text-right">{money(totals.amount)}</td>
+                                    <td className="py-2 pr-4 text-right">{money(totals.pledged)}</td>
+                                    <td className="py-2 pr-4 text-right">{money(totals.without)}</td>
+                                    <td colSpan={canMove ? 2 : 1} />
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+            </div>
+
+            {canMove && unassigned.length > 0 && (
+                <div className="card">
+                    <h3 className="section-title mb-1">Contributions in no goal ({unassigned.length})</h3>
+                    <p className="text-xs text-gray-500 mb-3">Approved contributions dated within this goal that belong to no goal. Add the ones that are for this goal.</p>
+                    <ul className="divide-y divide-gray-50 text-sm">
+                        {unassigned.map(c => (
+                            <li key={c.id} className="py-2 flex flex-wrap items-center gap-3">
+                                <span className="whitespace-nowrap">{formatDate(c.contribution_date)}</span>
+                                <span className="flex-1 min-w-[8rem]">{c.member_name}</span>
+                                <span className="whitespace-nowrap">{money(c.amount, c.currency_code)}</span>
+                                <span className="font-mono text-xs text-gray-400">{c.reference_code}</span>
+                                <button className="btn-secondary text-xs" disabled={busy} onClick={() => save(c.id, { capital_goal_id: goal.id })}>Add to this goal</button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
         </div>
     );
 };
@@ -948,6 +1100,7 @@ const CapitalGoalDetailPage = () => {
     const tabs = [
         { key: 'summary', label: 'Summary' },
         { key: 'months', label: 'Months' },
+        { key: 'contributions', label: 'Contributions' }, // v1.90.0
         ...(isCallBased ? [{ key: 'pledgers', label: 'Pledgers', count: insights ? insights.participation.pledgers : null }] : []),
         ...(isSecondary ? [{ key: 'investment', label: 'Investment' }] : []),
         { key: 'activity', label: 'Activity' },
@@ -1055,6 +1208,7 @@ const CapitalGoalDetailPage = () => {
             )}
             {activeTab === 'months' && <MonthsPanel goal={goal} monthlyCalls={monthlyCalls} />}
             {activeTab === 'pledgers' && <PledgersPanel key={reloadKey} goalId={goal.id} />}
+            {activeTab === 'contributions' && <ContributionsPanel key={reloadKey} goal={goal} onChanged={refreshAll} />}
             {activeTab === 'investment' && <GoalInvestmentPanel goal={goal} onChanged={refreshAll} />}
             {activeTab === 'activity' && <ActivityPanel key={reloadKey} goalId={goal.id} />}
 

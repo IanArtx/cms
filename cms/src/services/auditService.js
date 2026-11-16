@@ -105,6 +105,15 @@ const ACTIONS = {
     USER_ACCESS_DECLINED:   'USER_ACCESS_DECLINED',   // v1.86.0
     ACCESS_RULE_ADDED:      'ACCESS_RULE_ADDED',      // v1.89.0 — a personal access rule set on someone
     ACCESS_RULE_ENDED:      'ACCESS_RULE_ENDED',      // v1.89.0 — …and ended early
+    PERIOD_CLOSED:          'PERIOD_CLOSED',          // v1.90.0 — a month closed (Treasurer)
+    PERIOD_REOPENED:        'PERIOD_REOPENED',        // v1.90.0 — …reopened (Admin, with the reason)
+    PERIODS_LOCKED:         'PERIODS_LOCKED',         // v1.90.0 — months locked for good (tax confirmation approved)
+    TAX_CONFIRMATION_UPLOADED: 'TAX_CONFIRMATION_UPLOADED', // v1.90.0
+    TAX_CONFIRMATION_APPROVED: 'TAX_CONFIRMATION_APPROVED', // v1.90.0
+    TAX_CONFIRMATION_REJECTED: 'TAX_CONFIRMATION_REJECTED', // v1.90.0
+    PLEDGE_PARDONED:        'PLEDGE_PARDONED',        // v1.90.0
+    FINE_WAIVED:            'FINE_WAIVED',            // v1.90.0
+    CONTRIBUTION_GOAL_SET:  'CONTRIBUTION_GOAL_SET',  // v1.90.0 — the goal a contribution belongs to
     USER_ACCESS_RESTORED:   'USER_ACCESS_RESTORED',   // v1.86.0
     USER_INVITED:           'USER_INVITED',           // v1.86.0
     USER_INVITATION_REVOKED:'USER_INVITATION_REVOKED',// v1.86.0

@@ -98,6 +98,22 @@ const globalErrorHandler = (err, req, res, next) => {
         });
     }
 
+    // v1.90.0 — the database refused a change to a closed / locked month
+    // (cms_assert_period_open): 'PERIOD_CLOSED|YYYY-MM|STATUS|what'
+    if (err.code === 'P0001' && typeof err.message === 'string' && err.message.startsWith('PERIOD_CLOSED|')) {
+        const [, ym, status, what] = err.message.split('|');
+        const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        const [y, m] = (ym || '').split('-').map(Number);
+        const label = y && m ? `${MONTHS[m - 1]} ${y}` : ym;
+        return res.status(409).json({
+            success: false,
+            message: status === 'LOCKED'
+                ? `${label} is locked for good — its tax return was filed and the URA confirmation approved — so you cannot ${what} dated in it. Record the correction in an open month instead.`
+                : `${label} is closed, so you cannot ${what} dated in it. Use a date in an open month, or ask an Admin to reopen ${label} (Reports › General Ledger › Months).`,
+            error: 'PERIOD_CLOSED',
+        });
+    }
+
     // Handle specific PostgreSQL errors with friendly messages
     if (err.code === '23505') {
         // Unique constraint violation

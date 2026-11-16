@@ -74,6 +74,8 @@ const STATUS_META = {
     OWES:            { label: 'Owes (not late)', cls: 'badge-blue' },
     OVERDUE:         { label: 'Overdue',         cls: 'badge-red' },
     NO_PLEDGE:       { label: 'No pledge yet',   cls: 'badge-gray' },
+    WITHOUT_PLEDGE:  { label: 'Gave without a pledge', cls: 'badge-teal' }, // v1.90.0 (also one month)
+    PARDONED:        { label: 'Pardoned',        cls: 'badge-purple' },      // v1.90.0 — the rest forgiven
     // one month
     PAID:            { label: 'Paid in full',    cls: 'badge-green' },
     PARTIALLY_PAID:  { label: 'Part paid',       cls: 'badge-teal' },

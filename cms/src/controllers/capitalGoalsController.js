@@ -28,6 +28,7 @@ const { attachInvestment } = require('../services/capitalGoalInsightsService'); 
 const {
     generateMonthlyCallsForGoal, catchUpMonthlyCalls, getFineSettings,
     isHistoricalPeriod, getHistoricalPeriodCollected,
+    goalContributions, // v1.90.0
     isCapitalGoalTrackingEnabled, getCapitalGoalSettings,
 } = require('../services/capitalGoalCallService');
 
@@ -138,7 +139,27 @@ const computeGoalProgress = async (goal, { withMonths = true } = {}) => {
     if (isCallBased && goal.effective_from) {
         for (const row of monthly.rows) {
             if (isHistoricalPeriod(row.period_label, goal)) {
-                row.actual_amount = await getHistoricalPeriodCollected({ query }, row.period_label, goal.currency_id);
+                row.actual_amount = await getHistoricalPeriodCollected({ query }, row.period_label, goal.currency_id, goal.id);
+            }
+        }
+    }
+    // v1.90.0 — each contribution belongs to ONE goal. A live month also
+    // counts the goal's contributions made without a pledge; a goal
+    // without monthly calls counts only its own contributions (in any
+    // currency, converted) instead of every contribution in its currency.
+    const own = await goalContributions({ query }, goal);
+    if (own) {
+        if (isCallBased) {
+            for (const row of monthly.rows) {
+                if (goal.effective_from && isHistoricalPeriod(row.period_label, goal)) continue;
+                const extra = own.filter(c => c.period === row.period_label && c.unpledgedConverted !== null)
+                    .reduce((s, c) => s + c.unpledgedConverted, 0);
+                row.actual_amount = parseFloat(row.actual_amount) + extra;
+            }
+        } else {
+            for (const row of monthly.rows) {
+                const ym = row.month_start.toISOString().slice(0, 7);
+                row.actual_amount = own.filter(c => c.period === ym && c.converted !== null).reduce((s, c) => s + c.converted, 0);
             }
         }
     }

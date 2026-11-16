@@ -266,7 +266,8 @@ const getMonthlyCallStatus = asyncHandler(async (req, res) => {
     `);
 
     const pledges = await query(`
-        SELECT user_id, iteration, status, pledged_amount, amount_settled
+        SELECT user_id, iteration, status, pledged_amount, amount_settled,
+               COALESCE((to_jsonb(capital_goal_pledges)->>'is_system_generated')::boolean, FALSE) AS is_system_generated
         FROM   capital_goal_pledges
         WHERE  monthly_call_id = $1
     `, [id]);
@@ -281,6 +282,10 @@ const getMonthlyCallStatus = asyncHandler(async (req, res) => {
         const p = pledgeByUser[userId];
         if (!p) return { status: 'NOT_RESPONDED' };
         if (p.status === 'REJECTED') return { status: 'NOT_RESPONDED' };
+        // v1.90.0 — a pledge the system made up (before v1.90.0) is money
+        // given without a pledge; a pardoned pledge owes nothing more
+        if (p.is_system_generated) return { status: 'WITHOUT_PLEDGE' };
+        if (p.status === 'PARDONED') return { status: 'PARDONED' };
         if (p.status === 'FULFILLED') {
             return { status: 'PAID' };
         }

@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI, investmentsAPI, projectsAPI } from '../../api/endpoints';
+import { transactionsAPI, accountsAPI, categoriesAPI, usersAPI, sideFundAPI, depositsAPI, investmentsAPI, projectsAPI, capitalGoalsAPI } from '../../api/endpoints';
 import { Link, useSearchParams } from 'react-router-dom'; // v1.80.0
 import { CostTypeBadge } from '../investments/InvestmentLedger'; // v1.80.0
 import { formatDate, getErrorMessage, getInflowTypeLabel } from '../../utils/helpers';
@@ -153,8 +153,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
     const [form, setForm] = useState({
         amount: '', contribution_date: '', category_id: '',
         notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
-        deposit_amount: '', account_id: '',
+        deposit_amount: '', account_id: '', capital_goal_id: '',
     });
+    const [goals, setGoals] = useState([]); // v1.90.0 — the goal this contribution belongs to
     const [loading, setLoading] = useState(false);
     const [error,   setError]   = useState(null);
     const [sideFundActive, setSideFundActive] = useState(false);
@@ -180,6 +181,9 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
         depositsAPI.getSettings()
             .then(res => setDepositActive(!!res.data.data?.is_active))
             .catch(() => setDepositActive(false));
+        capitalGoalsAPI.getAll({ status: 'ACTIVE' })
+            .then(res => setGoals((res.data.data || []).filter(g => g.status === 'ACTIVE' && g.goal_type)))
+            .catch(() => setGoals([]));
     }, [isOpen]);
 
     // v1.81.0 — unfinished input kept and put back
@@ -200,6 +204,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                 ...form,
                 contributed_by: form.contributed_by || user.id,
                 account_id: form.account_id || undefined,
+                capital_goal_id: form.capital_goal_id || undefined,
                 side_fund_amount: includeSideFund ? (form.side_fund_amount || undefined) : undefined,
                 savings_amount:   includeSavings  ? (form.savings_amount  || undefined) : undefined,
                 deposit_amount:   includeDeposit  ? (form.deposit_amount  || undefined) : undefined,
@@ -211,7 +216,7 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
             setDocs([]);
             setForm({ amount: '', contribution_date: '', category_id: '',
                 notes: '', contributed_by: '', side_fund_amount: '', savings_amount: '',
-                deposit_amount: '', account_id: '' });
+                deposit_amount: '', account_id: '', capital_goal_id: '' });
             setIncludeSideFund(false);
             setIncludeSavings(false);
             setIncludeDeposit(false);
@@ -236,6 +241,11 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
         : accounts.find(a => a.account_type === 'PRIMARY');
     const paidCurrency = paidAccount?.currency_code || '';
     const hasSavingsInCurrency = accounts.some(a => a.account_type === 'SAVINGS' && a.currency_code === paidCurrency);
+    // v1.90.0 — goals whose dates cover the contribution date
+    const dateOf = (d) => (d ? String(d).slice(0, 10) : '');
+    const goalsForDate = form.contribution_date
+        ? goals.filter(g => dateOf(g.start_date) <= form.contribution_date && dateOf(g.end_date) >= form.contribution_date)
+        : goals;
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -400,6 +410,25 @@ const ContributionModal = ({ isOpen, onClose, onSuccess, categories, shareholder
                                     ...p, contribution_date: e.target.value }))}
                                 required />
                         </div>
+                        {goals.length > 0 && (
+                            <div>
+                                <label className="label">Capital goal</label>
+                                <select className="input" value={form.capital_goal_id}
+                                    onChange={e => setForm(p => ({ ...p, capital_goal_id: e.target.value }))}>
+                                    <option value="">The primary goal for the date (automatic)</option>
+                                    {goalsForDate.map(g => (
+                                        <option key={g.id} value={g.id}>
+                                            {g.title} ({g.goal_type === 'PRIMARY' ? 'primary' : 'secondary'}, {g.currency_code})
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="text-xs text-gray-400 mt-1">
+                                    A contribution counts towards one goal only. It pays the member's own pledge for that
+                                    month only if the pledge was made on or before the contribution date; anything else
+                                    shows on the goal as "without a pledge".
+                                </p>
+                            </div>
+                        )}
                         <div>
                             <label className="label">Category *</label>
                             <select className="input" value={form.category_id}

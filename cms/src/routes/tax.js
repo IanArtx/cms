@@ -190,6 +190,21 @@ router.post('/years/:id/file',
     ],
     validateRequest, c.fileYear);
 
+// ---- v1.90.0 — DT-2002 filing worksheet, URA confirmation ----
+const { uploadSingle } = require('../middleware/upload');
+router.get('/years/:id/filing-worksheet', requireRoles(VIEW), validators.idParam('id'),
+    [query('kind').optional().isIn(['FINAL', 'PROVISIONAL', 'final', 'provisional'])], validateRequest, c.getFilingWorksheet);
+router.get('/years/:id/filing-worksheet/pdf', requireRoles(VIEW), validators.idParam('id'), validateRequest, c.downloadFilingPdf);
+router.get('/years/:id/filing-worksheet/xlsx', requireRoles(VIEW), validators.idParam('id'), validateRequest, c.downloadFilingXlsx);
+router.post('/years/:id/confirmation', requireRoles(PREPARE), ...uploadSingle('document', 'documents'),
+    validators.idParam('id'), validateRequest, c.uploadConfirmation);
+router.post('/years/:id/confirmation/approve', requireRoles(APPROVE), validators.idParam('id'), validateRequest, c.approveConfirmation);
+router.post('/years/:id/confirmation/reject', requireRoles(APPROVE), validators.idParam('id'),
+    [body('reason').trim().isLength({ min: 5 }).withMessage('Give the reason (at least 5 characters)')], validateRequest, c.rejectConfirmation);
+router.put('/years/:id/provisional-filed', requireRoles(PREPARE), validators.idParam('id'),
+    [body('filed_on').isISO8601().withMessage('The date it was filed is required').custom(notFutureDate),
+        body('reference').optional({ values: 'falsy' }).trim().isLength({ max: 100 })], validateRequest, c.recordProvisionalFiling);
+
 // ---- payments to / from URA ---------------------------------
 router.post('/payments',
     requireRoles(PREPARE),

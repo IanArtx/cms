@@ -850,7 +850,12 @@ const FinesPage = () => {
         { header: 'Amount', render: row => (
             <span className="text-sm font-bold text-gray-900">{formatNumber(row.amount)} {row.currency_code}</span>
         ) },
-        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        { header: 'Status', render: row => (
+            <div>
+                <StatusBadge status={row.status} />
+                {row.status === 'WAIVED' && row.waive_reason && <p className="text-xs text-gray-400 mt-0.5 max-w-[14rem]">{row.waive_reason}</p>}
+            </div>
+        ) },
         { header: 'Assigned', render: row => <span className="text-sm text-gray-500">{formatDate(row.created_at)}</span> },
         { header: 'Paid Date', render: row => <span className="text-sm text-gray-500">{row.paid_date ? formatDate(row.paid_date) : '—'}</span> },
         { header: 'Actions', render: row => (
@@ -872,7 +877,12 @@ const FinesPage = () => {
         { header: 'Amount', render: row => (
             <span className="text-sm font-bold text-gray-900">{formatNumber(row.amount)} {row.currency_code}</span>
         ) },
-        { header: 'Status', render: row => <StatusBadge status={row.status} /> },
+        { header: 'Status', render: row => (
+            <div>
+                <StatusBadge status={row.status} />
+                {row.status === 'WAIVED' && row.waive_reason && <p className="text-xs text-gray-400 mt-0.5 max-w-[14rem]">{row.waive_reason}</p>}
+            </div>
+        ) },
         { header: 'Assigned By', render: row => <span className="text-xs text-gray-500">{row.assigned_by_name}</span> },
         { header: 'Actions', render: row => (
             row.status === 'OUTSTANDING' && canManage ? (

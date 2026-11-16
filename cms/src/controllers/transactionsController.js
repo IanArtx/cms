@@ -736,6 +736,7 @@ const creditShareholderContribution = async (client, {
     // the exact same money it's already attributing itself).
     skipCapitalGoalAutoAttribution = false,
     receiptParties = null, // v1.85.1 — who signs the share purchase receipt (see issueSharePurchaseReceipt)
+    capitalGoalId = null, // v1.90.0 — the capital goal this contribution belongs to (default: the PRIMARY goal covering its date)
 }) => {
     // Get the contributor's details
     const contributorResult = await client.query(`
@@ -931,6 +932,7 @@ const creditShareholderContribution = async (client, {
                 transactionId,
                 contributionId,
                 approvedByUserId: recordedByUserId,
+                capitalGoalId,
             });
             await client.query('RELEASE SAVEPOINT capital_goal_attribution');
         } catch (err) {
@@ -1361,6 +1363,9 @@ const recordContribution = asyncHandler(async (req, res) => {
         account_id, // v1.33.0, optional — which account the contribution
                     // portion is actually paid into; defaults to Primary
                     // inside creditShareholderContribution if omitted.
+        capital_goal_id, // v1.90.0, optional — which capital goal the
+                    // contribution belongs to; defaults to the PRIMARY
+                    // goal covering the contribution date.
     } = req.body;
 
     await withTransaction(async (client) => {
@@ -1478,6 +1483,24 @@ const recordContribution = asyncHandler(async (req, res) => {
             });
         }
 
+        // v1.90.0 — a chosen goal must exist, not be cancelled, and cover
+        // the contribution date (checked here so a wrong choice is refused
+        // instead of being quietly ignored by the attribution step).
+        let capitalGoalId = null;
+        if (capital_goal_id && contributionAmount > 0) {
+            capitalGoalId = parseInt(capital_goal_id, 10);
+            const g = await client.query(
+                `SELECT title, status, start_date::text AS s, end_date::text AS e FROM capital_goals WHERE id = $1`, [capitalGoalId]);
+            if (!g.rows.length || g.rows[0].status === 'CANCELLED') {
+                throw createError.badRequest('The capital goal chosen does not exist or was cancelled.');
+            }
+            const d = String(contribution_date).slice(0, 10);
+            if (d < g.rows[0].s || d > g.rows[0].e) {
+                throw createError.badRequest(
+                    `"${g.rows[0].title}" runs from ${g.rows[0].s} to ${g.rows[0].e}; this contribution is dated ${d}. Choose a goal that covers the date.`);
+            }
+        }
+
         let contribution = null;
         if (contributionAmount > 0) {
             contribution = await creditShareholderContribution(client, {
@@ -1488,6 +1511,7 @@ const recordContribution = asyncHandler(async (req, res) => {
                 notes,
                 recordedByUserId: req.user.id,
                 accountId:        account_id ? parseInt(account_id) : undefined,
+                capitalGoalId,
             });
         }
 

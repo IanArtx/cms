@@ -43,6 +43,9 @@ const clearFine = async (client, {
     if (fine.status === 'PAID') {
         throw createError.badRequest('This fine has already been cleared');
     }
+    if (fine.status === 'WAIVED') { // v1.90.0 — waived with a pledge pardon
+        throw createError.badRequest('This fine was waived — it no longer has to be paid');
+    }
 
     const memberResult = await client.query(
         'SELECT id, first_name, last_name, email FROM users WHERE id = $1', [fine.user_id]

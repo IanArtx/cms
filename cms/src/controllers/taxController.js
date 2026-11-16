@@ -230,6 +230,64 @@ const fileYear = asyncHandler(async (req, res) => {
     sendSuccess(res, r, r.late ? 'Marked as filed — after the due date; a late filing penalty may apply' : 'Marked as filed');
 });
 
+// ============================================================
+// v1.90.0 — the DT-2002 filing worksheet; the URA confirmation; the
+// provisional return reference
+// ============================================================
+const filing = require('../services/taxFilingService');
+const kindOf = (req) => String(req.query.kind || 'FINAL').toUpperCase();
+const getFilingWorksheet = asyncHandler(async (req, res) => {
+    sendSuccess(res, await filing.build(id(req), kindOf(req)));
+});
+const safe = (s) => String(s || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const downloadFilingPdf = asyncHandler(async (req, res) => {
+    const ws = await filing.build(id(req), kindOf(req));
+    const { renderHtmlToPdfBuffer } = require('../services/pdfService');
+    const pdf = await renderHtmlToPdfBuffer(filing.renderHtml(ws), {
+        displayHeaderFooter: true, headerTemplate: '<div></div>',
+        footerTemplate: `<div style="font-family:Arial;font-size:7.5px;color:#64748b;width:100%;padding:0 15mm;display:flex;justify-content:space-between"><span>${ws.header.form.replace(/</g, '')} — ${ws.header.year_label}</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>`,
+        margin: { top: '14mm', bottom: '16mm', left: '14mm', right: '14mm' },
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="DT-2002_${ws.header.kind === 'FINAL' ? 'Return' : 'Provisional'}_${safe(ws.header.year_label)}_${safe(ws.header.company)}.pdf"`);
+    res.send(Buffer.from(pdf));
+});
+const downloadFilingXlsx = asyncHandler(async (req, res) => {
+    const ws = await filing.build(id(req), kindOf(req));
+    const wb = await filing.buildWorkbook(ws);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="DT-2002_${ws.header.kind === 'FINAL' ? 'Return' : 'Provisional'}_${safe(ws.header.year_label)}_${safe(ws.header.company)}.xlsx"`);
+    res.send(Buffer.from(await wb.xlsx.writeBuffer()));
+});
+const uploadConfirmation = asyncHandler(async (req, res) => {
+    if (!req.file) throw createError.badRequest('Choose the file of the URA confirmation (PDF or picture).');
+    const { uploadBuffer, generateKey } = require('../services/storageService');
+    const key = generateKey('documents', req.file.originalname);
+    await uploadBuffer(req.file.buffer, key, req.file.mimetype);
+    const r = await withTransaction(client => tax.attachConfirmation(client, { taxYearId: id(req), file: req.file, key, userId: req.user.id }));
+    const directors = await tax.getTaxStaff(['Director']).catch(() => []);
+    notifyMany((directors || []).filter(u => u.id !== req.user.id), 'TAX_CONFIRMATION', () => ({
+        title: `Approve the URA confirmation — ${r.label}`,
+        body: `The URA confirmation of the ${r.label} income tax return was uploaded (${r.reference}). Approving it locks every month of the year for good.`,
+        link: '/tax?tab=years', module: 'FINANCE', recordType: 'tax_years', recordId: id(req),
+    })).catch(() => {});
+    sendCreated(res, r, `Uploaded (${r.reference}). A Director must now approve it — that locks every month of ${r.label} for good.`);
+});
+const approveConfirmation = asyncHandler(async (req, res) => {
+    const r = await withTransaction(client => tax.approveConfirmation(client, { taxYearId: id(req), userId: req.user.id }));
+    sendSuccess(res, r, `Approved. ${r.locked.length} month(s) of ${r.label} are locked for good: nothing dated in them can be changed any more.`);
+});
+const rejectConfirmation = asyncHandler(async (req, res) => {
+    const r = await withTransaction(client => tax.rejectConfirmation(client, { taxYearId: id(req), reason: req.body.reason, userId: req.user.id }));
+    sendSuccess(res, r, `Sent back — the confirmation for ${r.label} must be uploaded again.`);
+});
+const recordProvisionalFiling = asyncHandler(async (req, res) => {
+    const r = await withTransaction(client => tax.recordProvisionalFiling(client, {
+        taxYearId: id(req), reference: req.body.reference, filedOn: req.body.filed_on, userId: req.user.id,
+    }));
+    sendSuccess(res, r, `Provisional return for ${r.label} recorded as filed on ${r.filedOn}.`);
+});
+
 // ---- payments -----------------------------------------------
 const recordPayment = asyncHandler(async (req, res) => {
     const { tax_year_id, kind, instalment_no, amount, account_id, paid_date, prn, notes } = req.body;
@@ -257,5 +315,6 @@ module.exports = {
     getAtSource, recordAtSource, updateAtSource,
     getYears, getWorksheet, updateYearOptions, setProvisional, addAdjustment, removeAdjustment,
     prepareYear, returnYear, approveYear, fileYear,
+    getFilingWorksheet, downloadFilingPdf, downloadFilingXlsx, uploadConfirmation, approveConfirmation, rejectConfirmation, recordProvisionalFiling, // v1.90.0
     recordPayment, getCalendar, getMyWithholdings,
 };

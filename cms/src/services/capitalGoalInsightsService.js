@@ -102,6 +102,8 @@ const loadPledges = async (goal, { callId = null } = {}) => {
     const r = await query(`
         SELECT p.id, p.user_id, p.iteration, p.status, p.pledged_amount, p.amount_settled, p.currency_id,
                p.submitted_at, p.reviewed_at, p.review_notes,
+               COALESCE(p.is_system_generated, FALSE) AS is_system_generated,
+               p.pardoned_at, p.pardon_reason, COALESCE(p.pardoned_amount, 0) AS pardoned_amount,
                cur.code AS currency_code, rr.reference_code,
                mc.id AS monthly_call_id, mc.period, mc.iteration1_deadline::text AS iteration1_deadline,
                mc.iteration2_deadline::text AS iteration2_deadline, mc.status AS call_status,
@@ -110,8 +112,9 @@ const loadPledges = async (goal, { callId = null } = {}) => {
                COALESCE(SUM(pp.converted_amount_goal_currency), 0) AS paid_goal,
                COUNT(pp.id)::int AS payments,
                COUNT(pp.id) FILTER (WHERE pp.is_late)::int AS late_payments,
-               COALESCE(SUM(f.amount), 0) AS fines_own,
-               COUNT(f.id)::int AS fines_count,
+               COALESCE(SUM(f.amount) FILTER (WHERE f.status <> 'WAIVED'), 0) AS fines_own,
+               COUNT(f.id) FILTER (WHERE f.status <> 'WAIVED')::int AS fines_count,
+               COUNT(f.id) FILTER (WHERE f.status = 'WAIVED')::int AS fines_waived,
                MAX(pp.approved_at) AS last_paid_at
         FROM   capital_goal_pledges p
         JOIN   capital_goal_monthly_calls mc ON mc.id = p.monthly_call_id
@@ -134,7 +137,9 @@ const loadPledges = async (goal, { callId = null } = {}) => {
         if (rate === null) rate = 1; // no rate known: show as-is (rare; pledges are normally in the goal's currency)
         const pledgedGoal = round(num(p.pledged_amount) * rate);
         const rejected = p.status === 'REJECTED';
-        const outstandingOwn = rejected || p.status === 'FULFILLED' ? 0 : Math.max(0, num(p.pledged_amount) - num(p.amount_settled));
+        // v1.90.0: a PARDONED pledge owes nothing more — the unpaid
+        // part was forgiven (pardoned_amount keeps how much).
+        const outstandingOwn = rejected || p.status === 'FULFILLED' || p.status === 'PARDONED' ? 0 : Math.max(0, num(p.pledged_amount) - num(p.amount_settled));
         const outstandingGoal = round(outstandingOwn * rate);
         const deadline = p.iteration === 2 ? p.iteration2_deadline : p.iteration1_deadline;
         const overdue = outstandingGoal > 0 && deadline && deadline < today;
@@ -145,6 +150,8 @@ const loadPledges = async (goal, { callId = null } = {}) => {
             pledged_goal: rejected ? 0 : pledgedGoal,
             outstanding_own: round(outstandingOwn), outstanding_goal: outstandingGoal,
             fines_goal: round(num(p.fines_own) * rate),
+            pardoned_amount: num(p.pardoned_amount),
+            pardoned_goal: round(num(p.pardoned_amount) * rate),
             deadline, overdue,
         });
     }
@@ -156,19 +163,44 @@ const loadPledges = async (goal, { callId = null } = {}) => {
 // per member, in the goal's currency — whole calendar months, the same
 // months the goal itself shows as "Historical" (start month up to, not
 // including, the effective month).
+// v1.90.0: only the contributions that belong to THIS goal
+// (shareholder_contributions.capital_goal_id) — before, every
+// contribution in those months counted towards every goal.
 const historicalByUser = async (goal) => {
     if (!goal.effective_from) return {};
+    const own = await callService.goalColumnReady(db);
     const r = await query(`
         SELECT user_id, amount, currency_id, contribution_date::text AS d
         FROM   shareholder_contributions
         WHERE  status = 'APPROVED'
         AND    to_char(contribution_date, 'YYYY-MM') >= $1 AND to_char(contribution_date, 'YYYY-MM') < $2
-    `, [dateStr(goal.start_date).slice(0, 7), dateStr(goal.effective_from).slice(0, 7)]);
+        ${own ? 'AND capital_goal_id = $3' : ''}
+    `, own ? [dateStr(goal.start_date).slice(0, 7), dateStr(goal.effective_from).slice(0, 7), goal.id]
+           : [dateStr(goal.start_date).slice(0, 7), dateStr(goal.effective_from).slice(0, 7)]);
     const byUser = {};
     for (const row of r.rows) {
         const rate = await rateToGoal(row.currency_id, goal.currency_id, row.d);
         if (rate === null) continue;
         byUser[row.user_id] = (byUser[row.user_id] || 0) + num(row.amount) * rate;
+    }
+    return byUser;
+};
+
+// v1.90.0 — money a member gave towards this goal WITHOUT a pledge, per
+// member, in the goal's currency: the part of each of the goal's own
+// contributions not paid through a pledge, plus payments into a pledge
+// the system made up from a direct contribution before v1.90.0 (the
+// member never pledged those). Months before the goal's effective month
+// are left out: they are "historical" already.
+const withoutPledgeByUser = async (goal) => {
+    const rows = await callService.goalContributions(db, goal);
+    if (!rows) return {};
+    const from = goal.effective_from ? dateStr(goal.effective_from).slice(0, 7) : null;
+    const byUser = {};
+    for (const c of rows) {
+        if (from && c.period < from) continue;
+        if (c.unpledgedConverted === null) continue;
+        byUser[c.user_id] = (byUser[c.user_id] || 0) + c.unpledgedConverted;
     }
     return byUser;
 };
@@ -180,12 +212,14 @@ const getPledgers = async (goalId, { goal: preloaded = null, pledges: preloadedP
     const goal = preloaded || await loadGoal(goalId);
     const pledges = preloadedPledges || await loadPledges(goal);
     const historical = await historicalByUser(goal);
+    const unpledged = await withoutPledgeByUser(goal);
     const members = new Map();
     const member = (id, name) => {
         if (!members.has(id)) {
             members.set(id, {
                 user_id: id, name, is_shareholder: false,
-                pledged: 0, paid: 0, historical: 0, outstanding: 0, overdue: 0,
+                pledged: 0, paid: 0, historical: 0, without_pledge: 0, outstanding: 0, overdue: 0,
+                pardoned: 0, pardoned_pledges: 0, fines_waived: 0,
                 pledges: 0, months_pledged: new Set(), months_paid_in_full: 0,
                 payments: 0, late_payments: 0, fines: 0, fines_count: 0, rejected: 0,
                 last_paid_at: null,
@@ -198,7 +232,16 @@ const getPledgers = async (goalId, { goal: preloaded = null, pledges: preloadedP
     for (const p of pledges) {
         const m = member(p.user_id, p.member_name);
         if (p.status === 'REJECTED') { m.rejected++; continue; }
+        if (p.is_system_generated) {
+            // made up by the system before v1.90.0 — the member never
+            // pledged it, so its payments show as "without a pledge"
+            m.without_pledge += p.paid_goal;
+            if (p.last_paid_at && (!m.last_paid_at || p.last_paid_at > m.last_paid_at)) m.last_paid_at = p.last_paid_at;
+            continue;
+        }
         m.pledges++;
+        if (p.status === 'PARDONED') { m.pardoned += p.pardoned_goal; m.pardoned_pledges++; }
+        m.fines_waived += p.fines_waived || 0;
         m.months_pledged.add(p.period);
         m.pledged += p.pledged_goal;
         m.paid += p.paid_goal;
@@ -215,17 +258,28 @@ const getPledgers = async (goalId, { goal: preloaded = null, pledges: preloadedP
         const m = members.get(parseInt(userId, 10));
         if (m) m.historical += amount;
     }
+    if (Object.keys(unpledged).length) {
+        const names = (await query(`SELECT id, first_name || ' ' || last_name AS name FROM users WHERE id = ANY($1::int[])`,
+            [Object.keys(unpledged).map(Number)])).rows;
+        const nameOf = Object.fromEntries(names.map(n => [n.id, n.name]));
+        for (const [userId, amount] of Object.entries(unpledged)) {
+            const id = parseInt(userId, 10);
+            member(id, nameOf[id] || `Member #${id}`).without_pledge += amount;
+        }
+    }
 
     const rows = [...members.values()].map(m => {
-        const contributed = m.paid + m.historical;
+        const contributed = m.paid + m.historical + m.without_pledge;
         let status = 'NO_PLEDGE';
         if (m.overdue > 0.004) status = 'OVERDUE';
         else if (m.outstanding > 0.004) status = 'OWES';
-        else if (m.pledges > 0 || contributed > 0) status = 'UP_TO_DATE';
+        else if (m.pledges > 0) status = 'UP_TO_DATE';
+        else if (contributed > 0.004) status = 'WITHOUT_PLEDGE'; // v1.90.0 — gave, but never pledged
         return {
             ...m,
             months_pledged: m.months_pledged.size,
             pledged: round(m.pledged), paid: round(m.paid), historical: round(m.historical),
+            without_pledge: round(m.without_pledge), pardoned: round(m.pardoned),
             contributed: round(contributed),
             outstanding: round(m.outstanding), overdue: round(m.overdue), fines: round(m.fines),
             fulfilment_pct: m.pledged > 0 ? round((m.paid / m.pledged) * 100, 1) : null,
@@ -252,6 +306,8 @@ const getPledgers = async (goalId, { goal: preloaded = null, pledges: preloadedP
             pledgers: rows.filter(r => r.pledges > 0).length,
             contributors: rows.filter(r => r.contributed > 0).length,
             contributed: round(totalContributed),
+            without_pledge: round(rows.reduce((s, r) => s + r.without_pledge, 0)),
+            pardoned: round(rows.reduce((s, r) => s + r.pardoned, 0)),
             outstanding: round(rows.reduce((s, r) => s + r.outstanding, 0)),
             overdue: round(rows.reduce((s, r) => s + r.overdue, 0)),
         },
@@ -266,7 +322,9 @@ const getInsights = async (goalId) => {
     const progress = await progressOf(goal, { withMonths: true });
     const pledges = await loadPledges(goal);
     const pledgers = await getPledgers(goalId, { goal, pledges });
-    const live = pledges.filter(p => p.status !== 'REJECTED');
+    // v1.90.0: pledges the system made up before v1.90.0 are not real
+    // pledges — their money shows under "without a pledge".
+    const live = pledges.filter(p => p.status !== 'REJECTED' && !p.is_system_generated);
     const target = num(goal.target_amount);
     const collected = num(progress.total_collected);
     const now = thisPeriod();
@@ -315,11 +373,14 @@ const getInsights = async (goalId) => {
             contributors: pledgers.totals.contributors,
             participation_pct: pledgers.totals.members > 0 ? round((pledgers.totals.pledgers / pledgers.totals.members) * 100, 1) : 0,
             members_overdue: pledgers.members.filter(m => m.status === 'OVERDUE').length,
-            members_without_pledge: pledgers.members.filter(m => m.is_shareholder && m.status === 'NO_PLEDGE').length,
+            members_without_pledge: pledgers.members.filter(m => m.is_shareholder && (m.status === 'NO_PLEDGE' || m.status === 'WITHOUT_PLEDGE')).length,
         },
         pledges: {
             count: live.length,
-            rejected: pledges.length - live.length,
+            rejected: pledges.filter(p => p.status === 'REJECTED').length,
+            pardoned: live.filter(p => p.status === 'PARDONED').length,
+            pardoned_amount: round(live.reduce((s, p) => s + (p.status === 'PARDONED' ? p.pardoned_goal : 0), 0)),
+            without_pledge: pledgers.totals.without_pledge,
             total_pledged: round(totalPledged),
             total_paid: round(totalPaid),
             fulfilment_pct: totalPledged > 0 ? round((totalPaid / totalPledged) * 100, 1) : null,
@@ -459,29 +520,51 @@ const getCallMembers = async (callId) => {
         if (!rows.has(p.user_id)) rows.set(p.user_id, { user_id: p.user_id, name: p.member_name, pledges: [], is_shareholder: false });
         rows.get(p.user_id).pledges.push(p);
     }
+    // v1.90.0 — money given this month without a pledge (the goal's own
+    // contributions not paid through a pledge).
+    const unpledgedThisMonth = {};
+    const goalRows = await callService.goalContributions(db, goal);
+    for (const c of goalRows || []) {
+        if (c.period !== call.period || c.unpledgedConverted === null || c.unpledgedConverted <= 0) continue;
+        unpledgedThisMonth[c.user_id] = (unpledgedThisMonth[c.user_id] || 0) + c.unpledgedConverted;
+        if (!rows.has(c.user_id)) {
+            const n = (await query(`SELECT first_name || ' ' || last_name AS name FROM users WHERE id = $1`, [c.user_id])).rows[0];
+            rows.set(c.user_id, { user_id: c.user_id, name: n ? n.name : `Member #${c.user_id}`, pledges: [], is_shareholder: false });
+        }
+    }
     const members = [...rows.values()].map(r => {
-        const live = r.pledges.filter(p => p.status !== 'REJECTED');
+        // pledges the system made up before v1.90.0 are not the member's
+        // pledges: their payments count as "without a pledge"
+        const live = r.pledges.filter(p => p.status !== 'REJECTED' && !p.is_system_generated);
+        const withoutPledge = (unpledgedThisMonth[r.user_id] || 0)
+            + r.pledges.filter(p => p.is_system_generated && p.status !== 'REJECTED').reduce((s, p) => s + p.paid_goal, 0);
         const shown = live.find(p => p.iteration === 2) || live.find(p => p.iteration === 1) || null;
-        let status = 'NOT_RESPONDED';
+        let status = withoutPledge > 0.004 ? 'WITHOUT_PLEDGE' : 'NOT_RESPONDED';
         if (shown) {
             if (shown.status === 'FULFILLED') status = 'PAID';
+            else if (shown.status === 'PARDONED') status = 'PARDONED';
             else if (shown.status === 'PARTIAL') status = shown.deadline && shown.deadline < today ? 'PARTIAL_OVERDUE' : 'PARTIALLY_PAID';
             else status = shown.iteration === 1 && call.iteration1_deadline < today ? 'DEFAULTED' : 'PLEDGED';
         }
         return {
             user_id: r.user_id, name: r.name, is_shareholder: r.is_shareholder, status,
             pledged: round(live.reduce((s, p) => s + p.pledged_goal, 0)),
-            paid: round(live.reduce((s, p) => s + p.paid_goal, 0)),
+            paid: round(live.reduce((s, p) => s + p.paid_goal, 0) + withoutPledge),
+            paid_on_pledges: round(live.reduce((s, p) => s + p.paid_goal, 0)),
+            without_pledge: round(withoutPledge),
+            pardoned: round(live.reduce((s, p) => s + (p.status === 'PARDONED' ? p.pardoned_goal : 0), 0)),
             outstanding: round(live.reduce((s, p) => s + p.outstanding_goal, 0)),
             late_payments: live.reduce((s, p) => s + p.late_payments, 0),
             pledges: r.pledges.map(p => ({
                 id: p.id, reference_code: p.reference_code, iteration: p.iteration, status: p.status,
+                is_system_generated: p.is_system_generated, pardoned_at: p.pardoned_at, pardon_reason: p.pardon_reason,
+                pardoned_amount: p.pardoned_amount, outstanding_own: p.outstanding_own, user_id: p.user_id,
                 pledged_amount: p.pledged_amount, amount_settled: p.amount_settled, currency_code: p.currency_code,
                 pledged_goal: p.pledged_goal, paid_goal: p.paid_goal, submitted_at: p.submitted_at, deadline: p.deadline,
             })),
         };
     });
-    const order = { PAID: 0, PARTIALLY_PAID: 1, PARTIAL_OVERDUE: 2, PLEDGED: 3, DEFAULTED: 4, NOT_RESPONDED: 5 };
+    const order = { PAID: 0, PARTIALLY_PAID: 1, PARTIAL_OVERDUE: 2, PLEDGED: 3, PARDONED: 4, DEFAULTED: 5, WITHOUT_PLEDGE: 6, NOT_RESPONDED: 7 };
     members.sort((a, b) => (order[a.status] - order[b.status]) || b.paid - a.paid || a.name.localeCompare(b.name));
     const settled = round(members.reduce((s, m) => s + m.paid, 0));
     const target = num(call.monthly_target);
@@ -494,7 +577,8 @@ const getCallMembers = async (callId) => {
         members,
         summary: {
             members: members.filter(m => m.is_shareholder).length,
-            pledged_members: members.filter(m => m.status !== 'NOT_RESPONDED').length,
+            pledged_members: members.filter(m => m.status !== 'NOT_RESPONDED' && m.status !== 'WITHOUT_PLEDGE').length,
+            without_pledge: round(members.reduce((s, m) => s + m.without_pledge, 0)),
             paid_in_full: counts.PAID || 0,
             counts,
             total_pledged: round(members.reduce((s, m) => s + m.pledged, 0)),
@@ -598,6 +682,13 @@ const getOverview = async (user) => {
             WHERE mc.capital_goal_id = $1 AND p.user_id = $2 AND p.status <> 'REJECTED'
         `, [g.id, user.id]);
         let myPaid = 0;
+        // v1.90.0 — plus what I gave to this goal without a pledge
+        try {
+            const own = await callService.goalContributions(db, g);
+            for (const c of own || []) {
+                if (c.user_id === user.id && c.unpledgedConverted !== null) myPaid += c.unpledgedConverted;
+            }
+        } catch (_) { /* informational only */ }
         for (const p of minePledges.rows) {
             myPaid += num(p.paid_goal);
             const owed = Math.max(0, num(p.pledged_amount) - num(p.amount_settled));

@@ -1,4 +1,4 @@
-# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 + v1.87.1 + v1.88.0 + v1.89.0 — step by step
+# Updating to v1.84.0 + v1.85.0 + v1.85.1 + v1.85.2 + v1.86.0 + v1.86.1 + v1.86.2 + v1.87.0 + v1.87.1 + v1.88.0 + v1.89.0 + v1.90.0 — step by step
 
 This covers **your computer (local)** first, then **both online companies**. Do the local part first: if something goes wrong there, nothing online is affected.
 
@@ -39,6 +39,11 @@ The versions:
 - **v1.89.0** (database change)
   - **Personal access limits:** the Admin can limit one person, whatever their roles — take a permission away (or give one extra), block an action (e.g. approve transfers, release requisitions, sign resolutions), set an approval limit (e.g. up to UGX 5,000,000, or only on the EUR account), or hide a part of the system. Each with a reason, and optionally from / until a date. The person is told and sees their limits under My Profile › My access.
   - **Written resolutions** saved to Documents now follow the signing and collect the Company Secretary's signature; they can be approved only once everyone has signed.
+- **v1.90.0** (database change)
+  - **Closing months** (Reports › General Ledger › Months): the Treasurer closes each month after a short checklist; nothing dated in a closed month can then be changed. An Admin may reopen the newest closed month with a reason, until that year's tax return is approved.
+  - **Tax filing worksheet** (Tax › Corporate tax › a year): every figure for the URA return — final and provisional — as PDF or Excel. A year can be prepared only when all its months are closed. After filing, the Treasurer uploads URA's confirmation and a Director approves it: the year's months are then **locked for good**.
+  - **Pledges can be pardoned** by the Treasurer or a Director, with a reason, with or without waiving the fines.
+  - **Each contribution belongs to one capital goal.** Money given without a pledge shows as "without a pledge"; a pledge only takes money paid on or after the day it was made; the primary goal no longer counts other goals' money. A goal's new **Contributions** tab lists its contributions.
 
 > Safety rules
 > - Paste the Render database URL only into your own terminal. Never paste it into a chat or a document.
@@ -60,14 +65,14 @@ In File Explorer, open `company management system\cms`, click the address bar, t
 node update_live_database.js
 ```
 - With no `--url`, it uses the database in `cms\.env` (your local one).
-- It prints the **database name** it reached, then a list of versions. Expect **1.84.0**, **1.85.0**, **1.86.0**, **1.87.0**, **1.88.0** and **1.89.0** to show as *missing* (only the ones you have not done yet).
+- It prints the **database name** it reached, then a list of versions. Expect **1.84.0**, **1.85.0**, **1.86.0**, **1.87.0**, **1.88.0**, **1.89.0** and **1.90.0** to show as *missing* (only the ones you have not done yet).
 - Write down the database name.
 
 ### A4. Apply the missing updates
 ```
 node update_live_database.js --apply --confirm=<the database name from A3>
 ```
-It should end with **"Database is now at 1.89.0."** Running it again only says "up to date".
+It should end with **"Database is now at 1.90.0."** Running it again only says "up to date".
 
 #### A4a. If it stops with "must be owner of table …" (local only)
 **Why:** some tables or functions in your local database were created by the PostgreSQL administrator account (`postgres`), for example when a file was run in pgAdmin. The system connects as the user in `cms\.env` (`DB_USER`), and PostgreSQL only lets a table's owner change it. Nothing was saved by the failed step.
@@ -88,7 +93,7 @@ It should end with **"Database is now at 1.89.0."** Running it again only says "
    ```
    node update_live_database.js --apply --confirm=<the database name from A3>
    ```
-   It carries on from where it stopped, and must end with "Database is now at 1.89.0."
+   It carries on from where it stopped, and must end with "Database is now at 1.90.0."
 
 If your administrator account is not called `postgres`, add `--admin=<its name>` to both commands. The online (Render) databases do not need this step.
 
@@ -203,6 +208,14 @@ Start the backend and frontend the way you normally do (for example `npm run dev
     - Try an **Approval limit** (e.g. *Every approval that involves money*, UGX 1,000) on someone who approves requisitions, then let them approve a bigger one: they get "you may approve up to UGX 1,000". End the rule afterwards.
     - **Members › Personal limits** lists everyone with rules.
     - **Meetings › New written resolution**, save it to Documents before everyone signs: approving it says who is still to sign. After they sign, approve it: the Company Secretary is asked to sign.
+18. **v1.90.0 checks:**
+    - As Treasurer, **Reports › General Ledger › Months**: the oldest open month shows its checklist. Fix what is marked ✗ (often: run the month-end revaluation under *FX & Revaluation*), then **Close**. Try to record an expense dated in that month: it is refused with "… is closed".
+    - As Admin, on the same page, **Reopen** it with a reason; the expense can now be recorded. Close it again as Treasurer.
+    - **Tax › Corporate tax › a year › Filing worksheet**: choose *Final* or *Provisional*, **Preview**, then download the **PDF** and **Excel**. For a year whose months are not all closed, *Prepare for approval* names the open months.
+    - (Only on a test year.) After a year is filed, upload a confirmation file as Treasurer; as a Director, **Approve and lock the year** — its months show *Locked for good* on the Months page.
+    - **Capital goals › a goal › Contributions**: each contribution with what paid a pledge and what was "without a pledge". On *Pledgers*, the new *Without a pledge* column.
+    - **Record contribution** now has a *Capital goal* choice. Record a small one for a secondary goal: it appears only on that goal.
+    - Open a month of a goal (**Member by member**), and on someone else's unpaid pledge click **Pardon…**, give a reason, tick or leave *waive the penalties*. The pledge shows *Pardoned* and is no longer in "Still owed"; the member gets a notification.
 
 If all of that works, go online.
 
@@ -226,7 +239,7 @@ Use that URL in place of `"…"` below. Keep the quotes.
 node update_live_database.js --url "…"
 node update_live_database.js --url "…" --apply --confirm=<database name it printed>
 ```
-It must end with "Database is now at 1.89.0."
+It must end with "Database is now at 1.90.0."
 
 ### B4. Fixed rate (only if that company still shows the yellow banner)
 ```
@@ -263,18 +276,18 @@ Use the **other** database's URL.
 With **GitHub Desktop**:
 1. Open the repository.
 2. Check the list of changed files.
-3. Write the summary `v1.88.0 + v1.89.0 — meetings corrections, email controls, financial statements pack, personal access limits`.
+3. Write the summary `v1.90.0 — months closing, tax filing worksheet and URA confirmation, pledge pardons, one goal per contribution`.
 4. Click **Commit to main**, then **Push origin**.
 
 Or in a terminal at the project folder:
 ```
 git add -A
-git commit -m "v1.88.0 + v1.89.0 — meetings corrections, email controls, financial statements pack, personal access limits"
+git commit -m "v1.90.0 — months closing, tax filing worksheet and URA confirmation, pledge pardons, one goal per contribution"
 git push
 ```
 
 ### C2. Wait for Render
-Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.89.0**.
+Every service (both backends and both frontends) redeploys by itself. Wait until each one shows **Live** in the Render dashboard. The version shown at the bottom of the menu becomes **1.90.0**.
 
 ## Part D — In each online company
 1. **Share capital › Registered (URSB) › Issue certificates for registered shares**, once.
@@ -296,7 +309,10 @@ Every service (both backends and both frontends) redeploys by itself. Wait until
 7. **Meetings (v1.87.0):** for any meeting not yet closed whose notice date is wrong, click **Correct the notice date**.
 8. **v1.88.0:** **Settings › Email** — decide which emails go each time, as a daily summary or not at all. **Reports › General Ledger › Annual Pack & Books › Settings** — auditors, bankers, non-current accounts; then the directors approve each finished year.
 9. **v1.89.0:** if some people must be limited (for example approvals above an amount, or a director who does not sign resolutions), set it under **Members › Access limits**. Nothing is limited until you add a rule.
-10. **Settings › Maintenance:** turn it off.
+10. **v1.90.0:**
+    1. **Capital goals:** open each goal's **Contributions** tab. Past contributions were put in their goal automatically; move any that belong elsewhere (Treasurer or Assistant Treasurer), and add the ones listed under *Contributions in no goal*.
+    2. **Months:** the Treasurer closes the months that are finished, oldest first (Reports › General Ledger › Months). Do it at a quiet time — after closing, nothing dated in those months can be changed without an Admin reopening them.
+11. **Settings › Maintenance:** turn it off.
 
 ## Part E — Afterwards, with URSB
 1. For every allotment marked **"Rate correction"**, file the return of allotment with URSB.

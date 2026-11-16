@@ -91,6 +91,11 @@ export const getStatusBadgeClass = (status) => {
         ACKNOWLEDGED:     'badge-green',
         // v1.87.0 — money released, waiting for the requester to confirm it
         RELEASED:         'badge-teal',
+        // v1.90.0 — a pledge forgiven / a fine waived; a month closed / locked
+        PARDONED:         'badge-teal',
+        WAIVED:           'badge-teal',
+        WITHOUT_PLEDGE:   'badge-teal',
+        LOCKED:           'badge-gray',
 
         // Violet — waiting for someone's approval (v1.71.0: was yellow;
         // the Harbour chip colours give "awaiting approval" its own colour)

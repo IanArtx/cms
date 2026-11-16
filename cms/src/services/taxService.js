@@ -992,6 +992,14 @@ const listTaxYears = async () => {
     const reg = await getRegistration(null);
     const r = await query(`
         SELECT ty.id, ty.label, ty.start_date::text AS start_date, ty.end_date::text AS end_date, ty.is_first_year, ty.status,
+               -- v1.90.0 (read through to_jsonb so an older database still works)
+               (to_jsonb(ty)->>'confirmation_document_id')::int AS confirmation_document_id,
+               to_jsonb(ty)->>'confirmation_uploaded_at' AS confirmation_uploaded_at,
+               (to_jsonb(ty)->>'confirmation_uploaded_by')::int AS confirmation_uploaded_by,
+               to_jsonb(ty)->>'confirmation_approved_at' AS confirmation_approved_at,
+               to_jsonb(ty)->>'months_locked_at' AS months_locked_at,
+               to_jsonb(ty)->>'provisional_return_reference' AS provisional_return_reference,
+               to_jsonb(ty)->>'provisional_filed_on' AS provisional_filed_on,
                ty.provisional_estimate, ty.provisional_tax_estimate, ty.chargeable_income, ty.taxable_income,
                ty.gross_tax, ty.wht_credits, ty.provisional_paid, ty.balance_due, ty.loss_carried_forward,
                ty.filing_date::text AS filing_date, ty.return_reference,
@@ -1228,6 +1236,9 @@ const computeWorksheet = async (yearOrId, depth = 0) => {
             approvedBy: year.approved_by_name || null, approvedAt: year.approved_at || null,
             filedBy: year.filed_by_name || null, filingDate: year.filing_date || null, returnReference: year.return_reference || null,
             returnedReason: year.returned_reason || null, notes: year.notes || null,
+            confirmationDocumentId: year.confirmation_document_id || null, confirmationApprovedAt: year.confirmation_approved_at || null, // v1.90.0
+            monthsLockedAt: year.months_locked_at || null,
+            provisionalReturnReference: year.provisional_return_reference || null, provisionalFiledOn: year.provisional_filed_on ? toDateStr(year.provisional_filed_on) : null,
         },
         company: { name: reg.company_name, tin: reg.tin, registrationNumber: reg.registration_number, incorporationDate: reg.incorporation_date, taxOffice: reg.tax_office },
         currency: f.code,
@@ -1337,6 +1348,12 @@ const prepareYear = async (client, { taxYearId, userId }) => {
     const year = await getTaxYear(client, taxYearId, true);
     assertYearStatus(year, ['OPEN'], 'prepare it');
     if (year.end_date >= todayStr()) throw createError.badRequest(`${year.label} has not ended yet (it ends ${year.end_date}).`);
+    // v1.90.0 — the computation is made from closed months only, so its
+    // figures cannot move afterwards.
+    const openMonths = await require('./periodService').openMonthsBetween(year.start_date, year.end_date);
+    if (openMonths.length) {
+        throw createError.badRequest(`Close every month of ${year.label} first (Reports › General Ledger › Months). Still open: ${openMonths.join(', ')}.`);
+    }
     const w = await computeWorksheet(year);
     const s = snapshotFields(w);
     await client.query(`
@@ -1439,6 +1456,96 @@ const fileYear = async (client, { taxYearId, filingDate, returnReference, userId
         client,
     });
     return { filingDate: fd, late: fd > deadlines.returnDue };
+};
+
+// ============================================================
+// v1.90.0 — THE URA CONFIRMATION OF A FILED RETURN, AND LOCKING
+// After the return is filed, the Treasurer / Assistant Treasurer uploads
+// URA's acknowledgement (or the assessment / confirmation). A Director —
+// not the person who uploaded it — approves it: every month of the year
+// is then LOCKED for good (periodService.lockMonths). A Director may
+// instead send it back with a reason (wrong file), and it is uploaded again.
+// ============================================================
+const confirmationReady = async () => {
+    const r = await query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'tax_years' AND column_name = 'confirmation_document_id'`);
+    return r.rows.length > 0;
+};
+
+const attachConfirmation = async (client, { taxYearId, file, key, userId }) => {
+    if (!(await confirmationReady())) throw createError.conflict('Uploading the URA confirmation needs the v1.90.0 database update.');
+    await assertRole(client, userId, ROLES.PREPARE, 'upload the URA confirmation');
+    const year = await getTaxYear(client, taxYearId, true);
+    assertYearStatus(year, ['FILED'], 'upload the URA confirmation');
+    if (year.confirmation_approved_at) throw createError.conflict(`The URA confirmation for ${year.label} is already approved.`);
+    const categoryId = await getOrCreateCategory(client, { ...TAX_DOC_CATEGORY, createdBy: userId });
+    const { referenceId, referenceCode } = await generateReference(client, 'DOC', 'TAXF', 'DOCUMENT', userId);
+    const doc = await client.query(`
+        INSERT INTO documents (reference_id, category_id, title, document_type, source, file_path, file_name, file_size_bytes, mime_type,
+            version, related_record_type, related_record_id, status, created_by)
+        VALUES ($1, $2, $3, 'OTHER', 'UPLOADED', $4, $5, $6, $7, 1, 'tax_years', $8, 'FINAL', $9) RETURNING id`,
+    [referenceId, categoryId, `URA confirmation — income tax return ${year.label}${year.return_reference ? ` (${year.return_reference})` : ''}`,
+        key, file.originalname, file.size, file.mimetype, year.id, userId]);
+    await linkReferenceToRecord(client, referenceId, doc.rows[0].id);
+    await client.query(`
+        UPDATE tax_years SET confirmation_document_id = $1, confirmation_uploaded_by = $2, confirmation_uploaded_at = NOW(),
+               confirmation_approved_by = NULL, confirmation_approved_at = NULL WHERE id = $3`, [doc.rows[0].id, userId, year.id]);
+    await logAction(userId, ACTIONS.TAX_CONFIRMATION_UPLOADED, MODULES.FINANCE, {
+        recordType: 'tax_years', recordId: year.id, newValues: { document_id: doc.rows[0].id, reference: referenceCode },
+        description: `URA confirmation for ${year.label} uploaded (${referenceCode}) — waiting for a Director's approval`, client,
+    });
+    return { documentId: doc.rows[0].id, reference: referenceCode, label: year.label };
+};
+
+const approveConfirmation = async (client, { taxYearId, userId }) => {
+    if (!(await confirmationReady())) throw createError.conflict('This needs the v1.90.0 database update.');
+    await assertRole(client, userId, ROLES.APPROVE, 'approve the URA confirmation');
+    const year = await getTaxYear(client, taxYearId, true);
+    assertYearStatus(year, ['FILED'], 'approve the URA confirmation');
+    if (!year.confirmation_document_id) throw createError.badRequest('Upload the URA confirmation first.');
+    if (year.confirmation_approved_at) throw createError.conflict('It is already approved.');
+    if (year.confirmation_uploaded_by === userId) throw createError.forbidden('The person who uploaded the confirmation cannot also approve it.');
+    const periods = require('./periodService');
+    const locked = await periods.lockMonths(client, {
+        from: year.start_date, to: year.end_date, taxYearId: year.id, userId,
+        reason: `Tax return ${year.label} filed${year.return_reference ? ` (${year.return_reference})` : ''} and the URA confirmation approved`,
+    });
+    await client.query(`UPDATE tax_years SET confirmation_approved_by = $1, confirmation_approved_at = NOW(), months_locked_at = NOW() WHERE id = $2`, [userId, year.id]);
+    await logAction(userId, ACTIONS.TAX_CONFIRMATION_APPROVED, MODULES.FINANCE, {
+        recordType: 'tax_years', recordId: year.id, newValues: { locked_months: locked },
+        description: `URA confirmation for ${year.label} approved — ${locked.length} month(s) locked for good`, client,
+    });
+    await logAction(userId, ACTIONS.PERIODS_LOCKED, MODULES.FINANCE, {
+        recordType: 'tax_years', recordId: year.id, newValues: { months: locked }, description: `Locked: ${locked.join(', ')}`, client,
+    });
+    return { label: year.label, locked };
+};
+
+const rejectConfirmation = async (client, { taxYearId, reason, userId }) => {
+    await assertRole(client, userId, ROLES.APPROVE, 'send the URA confirmation back');
+    const year = await getTaxYear(client, taxYearId, true);
+    if (!year.confirmation_document_id || year.confirmation_approved_at) throw createError.badRequest('There is no confirmation waiting for approval.');
+    const why = String(reason || '').trim();
+    if (why.length < 5) throw createError.badRequest('Give the reason (at least 5 characters).');
+    await client.query(`UPDATE tax_years SET confirmation_document_id = NULL, confirmation_uploaded_by = NULL, confirmation_uploaded_at = NULL WHERE id = $1`, [year.id]);
+    await logAction(userId, ACTIONS.TAX_CONFIRMATION_REJECTED, MODULES.FINANCE, {
+        recordType: 'tax_years', recordId: year.id, newValues: { reason: why, document_id: year.confirmation_document_id },
+        description: `URA confirmation for ${year.label} sent back: ${why}`, client,
+    });
+    return { label: year.label };
+};
+
+// The provisional return (estimate) filed on the URA portal — its reference.
+const recordProvisionalFiling = async (client, { taxYearId, reference, filedOn, userId }) => {
+    if (!(await confirmationReady())) throw createError.conflict('This needs the v1.90.0 database update.');
+    await assertRole(client, userId, ROLES.PREPARE, 'record the provisional return');
+    const year = await getTaxYear(client, taxYearId, true);
+    const d = toDateStr(filedOn) || todayStr();
+    await client.query(`UPDATE tax_years SET provisional_return_reference = $1, provisional_filed_on = $2 WHERE id = $3`, [String(reference || '').trim().slice(0, 100) || null, d, year.id]);
+    await logAction(userId, ACTIONS.SYSTEM_CONFIG_CHANGED, MODULES.FINANCE, {
+        recordType: 'tax_years', recordId: year.id, newValues: { provisional_return_reference: reference, provisional_filed_on: d },
+        description: `Provisional return ${year.label} filed on ${d}${reference ? ` (${reference})` : ''}`, client,
+    });
+    return { label: year.label, filedOn: d };
 };
 
 const PAYMENT_KINDS = {
@@ -1685,6 +1792,8 @@ module.exports = {
     returnYear,
     approveYear,
     fileYear,
+    attachConfirmation, approveConfirmation, rejectConfirmation, recordProvisionalFiling, confirmationReady, // v1.90.0
+    yearDeadlines,
     recordTaxPayment,
     getCalendar,
     runDeadlineReminders,

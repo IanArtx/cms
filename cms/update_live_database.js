@@ -12,7 +12,7 @@
 // 1) CHECK (read-only — changes nothing):
 //       node update_live_database.js --url "postgresql://…"
 //    Shows which company/database it reached, and for every version
-//    from 1.58.0 to 1.89.0 whether its migration is already applied.
+//    from 1.58.0 to 1.90.0 whether its migration is already applied.
 //
 // 2) APPLY the missing migrations, oldest first:
 //       node update_live_database.js --url "postgresql://…" --apply --confirm=<database name>
@@ -86,6 +86,7 @@ const VERSIONS = [
     { v: '1.87.1', file: null, what: '(no database change — Bank of Uganda rates read from its new daily rate card)' },
     { v: '1.88.0', file: 'migration_v1.88.0.sql', what: 'meetings corrected after the event (with reasons) and who signs them, email controls and daily summary, annual financial statements pack (notes wording, settings, directors\' approvals), blue signatures, investment documents in groups', check: tbl('fs_approvals') },
     { v: '1.89.0', file: 'migration_v1.89.0.sql', what: 'personal access rules — a permission taken away or added for one person, actions blocked, approval limits by amount and account, parts of the system hidden; written resolutions collect their signatures', check: tbl('user_access_rules') },
+    { v: '1.90.0', file: 'migration_v1.90.0.sql', what: 'months closed by the Treasurer and locked for good once the URA confirmation of the tax return is approved; pledges pardoned (with or without their fines); each contribution belongs to one capital goal', check: tbl('accounting_periods') },
 ];
 
 // ---- arguments ------------------------------------------------------
@@ -207,7 +208,7 @@ const printStatus = (rows) => {
         }
 
         if (!missing.length) {
-            console.log('\n✅ This database is up to date (1.89.0). Nothing to apply.');
+            console.log('\n✅ This database is up to date (1.90.0). Nothing to apply.');
             return;
         }
         console.log(`\n${missing.length} migration(s) to apply, in this order: ${missing.map(m => m.v).join(' → ')}`);
@@ -269,7 +270,7 @@ const printStatus = (rows) => {
             console.log('\n⚠️  Still missing: ' + missing.map(m => m.v).join(', '));
             process.exitCode = 1;
         } else {
-            console.log('\n✅ Database is now at 1.89.0.');
+            console.log('\n✅ Database is now at 1.90.0.');
             try {
                 const rc = await client.query(`SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE needs_attention) AS a FROM record_corrections`);
                 console.log(`   Automatic corrections logged by the v1.72.0 repair: ${rc.rows[0].n} (needing a look: ${rc.rows[0].a}) — see Reports › Records check after the code is live.`);

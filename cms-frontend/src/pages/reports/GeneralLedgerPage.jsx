@@ -57,9 +57,11 @@ import {
     GlobeAltIcon,
     InformationCircleIcon,
     DocumentChartBarIcon,
+    CalendarDaysIcon,
 } from '@heroicons/react/24/outline';
 import { useTabParam } from '../../hooks/useTabParam'; // v1.71.0 — tab kept in the address
 import FinancialStatementsPack from '../../components/reports/FinancialStatementsPack'; // v1.88.0
+import MonthsPanel from '../../components/reports/MonthsPanel'; // v1.90.0
 
 const fmt = (n) => parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtRate = (n) => (n === null || n === undefined ? '—' : parseFloat(n).toLocaleString('en-US', { maximumFractionDigits: 6 }));
@@ -1051,6 +1053,7 @@ const TABS = [
     { key: 'cash-flow',      label: 'Cash Flow Statement', icon: BanknotesIcon },
     { key: 'annual-pack',    label: 'Annual Pack & Books', icon: DocumentChartBarIcon }, // v1.88.0
     { key: 'fx',             label: 'FX & Revaluation',    icon: GlobeAltIcon },
+    { key: 'months',         label: 'Months',              icon: CalendarDaysIcon }, // v1.90.0 — closing the books
     { key: 'ledger-accounts', label: 'Ledger Accounts',    icon: Cog6ToothIcon, adminOnly: true },
 ];
 
@@ -1105,6 +1108,7 @@ const GeneralLedgerPage = () => {
             {activeTab === 'cash-flow' && <CashFlowTab key={fyStart} accounts={accounts} fyStart={fyStart} />}
             {activeTab === 'annual-pack' && <FinancialStatementsPack glAccounts={glAccounts} />}
             {activeTab === 'fx' && <FxRevaluationTab onStatusChange={setFxStatus} />}
+            {activeTab === 'months' && <MonthsPanel />}
             {activeTab === 'ledger-accounts' && hasPermission('SYSTEM_CONFIG') && <LedgerAccountsTab />}
         </div>
     );

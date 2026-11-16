@@ -15,6 +15,7 @@ const { authenticate, requireAssignedRole, requireConsent, blockFinanceRestricte
 const capitalGoalsController = require('../controllers/capitalGoalsController');
 const capitalGoalCallsController = require('../controllers/capitalGoalCallsController');
 const insightsController = require('../controllers/capitalGoalInsightsController'); // v1.78.0
+const adjustmentsController = require('../controllers/capitalGoalAdjustmentsController'); // v1.90.0
 
 router.use(authenticate);
 router.use(requireAssignedRole);
@@ -227,6 +228,40 @@ router.patch('/settings/tracking',
 router.get('/pending-pledges',
     requirePermissions(['CAPITAL_GOAL_MANAGE']),
     capitalGoalCallsController.getPendingPledges
+);
+
+// ============================================================
+// v1.90.0 — CONTRIBUTIONS OF A GOAL, AND PLEDGE PARDONS
+// (before /:id so "contributions" is never read as an :id value)
+// ============================================================
+// Approved contributions that belong to no goal.
+router.get('/contributions/unassigned',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    adjustmentsController.listUnassigned
+);
+// Set (or clear, with a reason) the goal a contribution belongs to —
+// Treasurer / Assistant Treasurer (checked in the controller).
+router.put('/contributions/:id/goal',
+    requirePermissions(['CAPITAL_GOAL_MANAGE']),
+    validators.idParam('id'),
+    validateRequest,
+    adjustmentsController.setContributionGoal
+);
+// A goal's own contributions.
+router.get('/:id/contributions',
+    requirePermissions(['CAPITAL_GOAL_VIEW']),
+    validators.idParam('id'),
+    validateRequest,
+    adjustmentsController.listGoalContributions
+);
+// Pardon what is unpaid on a pledge — Treasurer or a Director (checked
+// in the controller), with a reason; waive_penalties waives its fines.
+router.post('/pledges/:id/pardon',
+    validators.idParam('id'),
+    body('reason').trim().isLength({ min: 5 }).withMessage('Give the reason for the pardon (at least 5 characters)'),
+    body('waive_penalties').optional().isBoolean().withMessage('waive_penalties must be true or false'),
+    validateRequest,
+    adjustmentsController.pardonPledge
 );
 
 // ============================================================

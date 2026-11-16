@@ -335,6 +335,11 @@ export const capitalGoalsAPI = {
     getActivity:   (id, params) => api.get(`/capital-goals/${id}/activity`, { params }),
     getFunds:      (id)       => api.get(`/capital-goals/${id}/funds`),
     setInvestment: (id, data) => api.put(`/capital-goals/${id}/investment`, data),
+    // v1.90.0 — each contribution belongs to one goal; pledges can be pardoned
+    getGoalContributions:   (id)       => api.get(`/capital-goals/${id}/contributions`),
+    getUnassignedContributions: ()     => api.get('/capital-goals/contributions/unassigned'),
+    setContributionGoal:    (contributionId, data) => api.put(`/capital-goals/contributions/${contributionId}/goal`, data),
+    pardonPledge:           (pledgeId, data) => api.post(`/capital-goals/pledges/${pledgeId}/pardon`, data),
 };
 
 // ============================================================
@@ -629,6 +634,13 @@ export const reportsAPI = {
     // same figures worked out again from their entries, plus the log of
     // automatic corrections.
     getRecordChecks:      ()               => api.get('/reports/record-checks'),
+
+    // Months (v1.90.0) — closed by the Treasurer, reopened by an Admin
+    // with a reason (only until the year's tax return is approved), and
+    // locked for good once the URA confirmation is approved.
+    getMonths:            ()               => api.get('/reports/months'),
+    closeMonth:           (ym, data)       => api.post(`/reports/months/${ym}/close`, data || {}),
+    reopenMonth:          (ym, data)       => api.post(`/reports/months/${ym}/reopen`, data),
 
     // FX & Revaluation (v1.66.0)
     getFxStatus:          ()               => api.get('/reports/fx/status'),
@@ -977,6 +989,16 @@ export const taxAPI = {
     returnYear:         (id, data)   => api.post(`/tax/years/${id}/return`, data || {}),
     approveYear:        (id)         => api.post(`/tax/years/${id}/approve`),
     fileYear:           (id, data)   => api.post(`/tax/years/${id}/file`, data),
+    // v1.90.0 — DT-2002 filing worksheet (FINAL or PROVISIONAL), the URA
+    // confirmation (upload → a Director approves → months locked) and the
+    // provisional return's filing reference
+    getFilingWorksheet: (id, kind)   => api.get(`/tax/years/${id}/filing-worksheet`, { params: { kind } }),
+    downloadFilingPdf:  (id, kind)   => api.get(`/tax/years/${id}/filing-worksheet/pdf`, { params: { kind }, responseType: 'blob' }),
+    downloadFilingXlsx: (id, kind)   => api.get(`/tax/years/${id}/filing-worksheet/xlsx`, { params: { kind }, responseType: 'blob' }),
+    uploadConfirmation: (id, formData) => api.post(`/tax/years/${id}/confirmation`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+    approveConfirmation: (id)        => api.post(`/tax/years/${id}/confirmation/approve`),
+    rejectConfirmation: (id, data)   => api.post(`/tax/years/${id}/confirmation/reject`, data),
+    setProvisionalFiled: (id, data)  => api.put(`/tax/years/${id}/provisional-filed`, data),
     recordPayment:      (data)       => api.post('/tax/payments', data),
     getCalendar:        ()           => api.get('/tax/calendar'),
     getMyWithholdings:  ()           => api.get('/tax/my-withholdings'),

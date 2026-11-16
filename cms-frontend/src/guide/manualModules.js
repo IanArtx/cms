@@ -189,7 +189,9 @@ export const MODULES = [
                 steps: [
                     'Click Record › Record Contribution (or + New › Record a contribution).',
                     'Choose the shareholder and the account (normally the Primary Account), and enter the amount, the date the money arrived (value date) and the category (INCOME › CAPITAL › CONTRIBUTION).',
+                    'Choose the Capital goal it is for (or leave the primary goal for the date). It pays the member\'s pledge only if the pledge was made on or before this date.',
                     'Add a description and save. The entry gets its reference, the shareholder is notified and their shareholding is updated.',
+                    'A date in a closed month is refused — use a date in an open month or ask an Admin to reopen it.',
                 ],
             },
             {
@@ -426,7 +428,10 @@ export const MODULES = [
             { title: 'Clear a paid fine', steps: ['Click Clear Fine, choose the account the money arrived in and the category.'] },
             { title: 'Pay fines from your savings', steps: ['Click Settle With My Savings, tick the fines and confirm.', 'The Treasury approves the settlement (Approve Settlement / Deny Settlement).'] },
         ],
-        rules: ['A fine in a different currency from the savings cannot be settled from those savings.'],
+        rules: [
+            'A fine in a different currency from the savings cannot be settled from those savings.',
+            'A fine marked WAIVED was forgiven when a pledge was pardoned (the reason is shown under it). It no longer has to be paid; a fine already paid is not refunded.',
+        ],
         tour: [
             { tab: 'My Fines', text: 'Your fines and what you still owe.' },
             { tab: 'All Fines', text: 'Everyone\'s fines (Treasury).' },
@@ -498,8 +503,23 @@ export const MODULES = [
             { title: 'Create a goal', who: 'Treasury', steps: ['Click New Goal: Primary (the year\'s general goal) or Secondary, target, currency, effective date.', 'Open the goal and click Activate Capital Calls to start the monthly calls.'] },
             { title: 'Pledge', steps: ['Open the goal (or Overview › Open for my pledge) and click Pledge.', 'Enter what you will pay and when.'] },
             { title: 'Approve a pledge payment', who: 'Treasury', steps: ['Open Approvals and approve the payment.'] },
+            { title: 'Pardon a pledge', who: 'Treasurer or a Director', steps: [
+                'Open the goal › Months › the month (or a monthly call) › Member by member.',
+                'On the member\'s unpaid pledge click Pardon…, write the reason, and tick "Also waive the penalties" if the late fines on it should be forgiven too.',
+                'Click Pardon. What was still unpaid is no longer owed, the pledge shows Pardoned and the member is told. No money moves; the month stays short by that amount.',
+            ] },
+            { title: 'Choose the goal of a contribution', who: 'Treasurer / Assistant Treasurer', steps: [
+                'When recording a contribution (Transactions › Record Contribution), choose the Capital goal — or leave it on "the primary goal for the date".',
+                'Later: open the goal › Contributions. Move… sends one to another goal covering its date, or to no goal (with a reason). "Contributions in no goal" lists ones that belong nowhere — Add to this goal.',
+            ] },
         ],
-        rules: ['Late payment fines: 5% within the grace period, 10% after it.'],
+        rules: [
+            'Late payment fines: 5% within the grace period, 10% after it.',
+            'Each contribution belongs to one goal only, and counts only towards that goal.',
+            'A contribution pays your pledge for the month only if the pledge was made on or before the day of the contribution; anything else shows as "without a pledge" (it still counts towards the goal).',
+            'A contribution that paid a pledge stays with that pledge\'s goal.',
+            'Nobody can pardon their own pledge.',
+        ],
         tour: [
             { tab: 'Overview', text: 'Active goals and what is open for your pledge.' },
             { tab: 'My pledges', text: 'Your pledges and what you still owe.' },
@@ -514,6 +534,8 @@ export const MODULES = [
                     { target: 'title', text: 'One goal: target, collected so far, what is still to raise and who has pledged.' },
                     { button: 'Activate Capital Calls', text: 'Start the monthly capital calls for this goal.' },
                     { button: 'Pledge', text: 'Pledge what you will contribute.' },
+                    { tab: 'Contributions', text: 'The goal\'s own contributions: what paid a pledge and what came in without one. The Treasury can move a contribution to another goal.' },
+                    { tab: 'Pledgers', text: 'Every member by name: pledged, paid, without a pledge, still owed (pardoned amounts shown).' },
                 ],
             },
         ],
@@ -661,14 +683,25 @@ export const MODULES = [
             { name: 'Overview', what: 'What is owed to URA, deadlines coming up and totals for the year.' },
             { name: 'Deducted from us', what: 'Tax others withheld from the company\'s income (final or creditable), with certificates.' },
             { name: 'Withheld & returns', what: 'Tax the company withheld from payments it made, waiting to be paid to URA — Record payment with the PRN.' },
-            { name: 'Corporate tax', what: 'The year\'s computation: Prepare (for approval) › Approve › Mark filed, plus provisional instalments.' },
+            { name: 'Corporate tax', what: 'The year\'s computation: Prepare (for approval) › Approve › Mark filed, plus provisional instalments, the DT-2002 filing worksheet (PDF / Excel) and the URA confirmation.' },
             { name: 'Calendar', what: 'Every tax deadline.' },
             { name: 'Settings', what: 'Tax rates and their history.' },
         ],
         tasks: [
             { title: 'Pay withheld tax to URA', steps: ['Open Withheld & returns.', 'Select what is waiting to be paid and click Record payment: PRN, return reference, date and account.'] },
-            { title: 'Corporate tax for a year', steps: ['Open Corporate tax; add back or deduct items, then Prepare for approval.', 'A Director clicks Approve (or Send back).', 'After filing, click Mark filed.'] },
+            { title: 'Corporate tax for a year', steps: ['Close every month of the year first (Reports › Financial Statements › Months).', 'Open Corporate tax; add back or deduct items, then Prepare for approval.', 'A Director clicks Approve (or Send back).', 'After filing, click Mark filed.'] },
+            { title: 'Fill the URA return', who: 'Treasurer / Assistant Treasurer', steps: [
+                'Open Corporate tax › the year › Filing worksheet (DT-2002).',
+                'Choose Final return (after the year) or Provisional return (the estimate), click Preview, then PDF or Excel.',
+                'Fill the return on the URA portal from it — nothing is sent to URA from the system. For the provisional return, record the date and acknowledgement number under Provisional return.',
+            ] },
+            { title: 'Upload and approve the URA confirmation', steps: [
+                'After the return is marked filed, the Treasurer or Assistant Treasurer uploads URA\'s acknowledgement under URA confirmation (PDF or picture).',
+                'A Director who did not upload it clicks Approve and lock the year (or sends it back with a reason).',
+                'Approving locks every month of that year for good: nothing dated in them can be changed any more, by anyone.',
+            ] },
         ],
+        rules: ['A year can be prepared only when all its months are closed.', 'The person who uploads the URA confirmation cannot approve it.'],
         tour: [
             { tab: 'Overview', text: 'What is owed to URA and the next deadlines.' },
             { tab: 'Deducted from us', text: 'Tax withheld from the company\'s income.' },
@@ -698,7 +731,17 @@ export const MODULES = [
             ] },
             { title: 'Download the books for any dates', steps: ['Financial Statements › Annual Pack & Books › Download the books: choose From and To and click Books (Excel) — trial balance, general ledger and a cash book for each account in its own currency.'] },
             { title: 'Check the records agree', steps: ['Click Records check: every account, investment and fund compared with the ledger. "Check again" re-runs it; anything with a difference is listed.'] },
+            { title: 'Close a month', who: 'Treasurer', steps: [
+                'Financial Statements › Months shows the next month to close and its checklist: the month has ended, earlier months are closed, every entry has its UGX value, the month-end FX revaluation is done, nothing dated in it waits in Awaiting approval.',
+                'Fix anything marked ✗ (often: FX & Revaluation › run the month-end revaluation), add a note if you wish, and click Close.',
+                'From then on nothing dated in that month can be added, changed or removed — record a correction in the current month instead.',
+            ] },
+            { title: 'Reopen a month', who: 'Admin', steps: [
+                'Financial Statements › Months › Reopen a month: only the newest closed month, and only until that year\'s tax return is approved.',
+                'Write the reason and click Reopen. The Treasurer closes it again after the change.',
+            ] },
         ],
+        rules: ['Months are closed by the Treasurer, oldest first; only an Admin reopens one, with a reason.', 'Once a Director approves the URA confirmation of a year\'s tax return, its months are locked for good.'],
         tour: [
             { button: 'General Report', text: 'The company report for the chosen month.' },
             { button: 'My Report', text: 'Your own report for the month.' },
@@ -710,6 +753,7 @@ export const MODULES = [
             { id: 'ledger', title: 'Financial statements', match: [/^\/reports\/general-ledger/], tour: [
                 { target: 'tabs', text: 'Trial Balance, General Ledger, Balance Sheet, Income Statement, Cash Flow Statement, Annual Pack & Books, FX & Revaluation and Ledger Accounts.' },
                 { tab: 'Annual Pack & Books', text: 'The yearly financial statements with notes, directors\' report and approvals — PDF or Excel — and the books for any dates.' },
+                { tab: 'Months', text: 'Close each finished month (Treasurer); reopen the newest one with a reason (Admin). Closed months cannot be changed.' },
             ] },
         ],
     },

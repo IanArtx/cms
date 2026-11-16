@@ -11,6 +11,9 @@
 //     every pledge submitted against this call, with Approve/Reject
 //     actions. Approving IS the act of recording the payment — the
 //     receiving account must match the pledge's own currency.
+//   - v1.90.0 — the Treasurer or a Director can pardon a pledge (with or
+//     without waiving its fines); money given this month without a
+//     pledge shows as "Gave without a pledge".
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -36,6 +39,8 @@ const CELL_STYLES = {
     PARTIAL_OVERDUE: { bg: 'bg-orange-500', label: 'Partially paid, past deadline' },
     PLEDGED:         { bg: 'bg-blue-400',   label: 'Pledged, not yet paid' },
     DEFAULTED:       { bg: 'bg-red-500',    label: 'Pledged but past deadline, unpaid' },
+    PARDONED:        { bg: 'bg-purple-400', label: 'Pardoned (rest forgiven)' },      // v1.90.0
+    WITHOUT_PLEDGE:  { bg: 'bg-teal-400',   label: 'Gave without a pledge' },         // v1.90.0
     NOT_RESPONDED:   { bg: 'bg-gray-200',   label: 'No pledge made' },
 };
 
@@ -243,12 +248,71 @@ const RejectModal = ({ isOpen, onClose, onSuccess, pledge }) => {
 };
 
 // ============================================================
+// PARDON A PLEDGE (v1.90.0) — Treasurer or a Director, with a reason.
+// What is still unpaid stops being owed (status PARDONED). With "waive
+// the fines" ticked, any unpaid late fine on the pledge is waived too.
+// No money moves; the month's shortfall stays (the money never came).
+// ============================================================
+const PardonModal = ({ isOpen, onClose, onSuccess, pledge }) => {
+    const [reason, setReason] = useState('');
+    const [waive, setWaive] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    useEffect(() => { if (isOpen) { setReason(''); setWaive(false); setError(null); } }, [isOpen]);
+    if (!isOpen || !pledge) return null;
+    const unpaid = Math.max(0, parseFloat(pledge.pledged_amount) - parseFloat(pledge.amount_settled || 0));
+    const submit = async (e) => {
+        e.preventDefault();
+        setLoading(true); setError(null);
+        try {
+            await capitalGoalsAPI.pardonPledge(pledge.id, { reason: reason.trim(), waive_penalties: waive });
+            onSuccess(); onClose();
+        } catch (err) { setError(getErrorMessage(err)); } finally { setLoading(false); }
+    };
+    return (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="fixed inset-0 bg-black bg-opacity-40" onClick={onClose} />
+            <div className="flex min-h-full items-center justify-center p-4">
+                <div className="relative bg-white dark:bg-gray-900 rounded-xl shadow-xl max-w-md w-full p-6">
+                    <h2 className="text-lg font-semibold mb-1">Pardon this pledge?</h2>
+                    <p className="text-sm text-gray-500 mb-4">
+                        {pledge.member_name ? `${pledge.member_name}'s pledge` : 'The pledge'} {pledge.reference_code} — {formatNumber(unpaid)} {pledge.currency_code} still unpaid
+                        will no longer be owed. What was already paid stays paid. No money moves, and the month's shortfall stays as it is.
+                        The member is told, with your reason.
+                    </p>
+                    {error && <div className="mb-4"><ErrorMessage message={error} onDismiss={() => setError(null)} /></div>}
+                    <form onSubmit={submit} className="space-y-4">
+                        <div>
+                            <label className="label" htmlFor="pardon-reason">Reason *</label>
+                            <textarea id="pardon-reason" className="input" rows={2} value={reason} onChange={e => setReason(e.target.value)}
+                                placeholder="e.g. hardship agreed at the board meeting of 10 Nov" />
+                        </div>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input type="checkbox" checked={waive} onChange={e => setWaive(e.target.checked)} />
+                            <span>Also waive the penalties — any unpaid late fine on this pledge is waived (no longer has to be paid). A fine already paid is not refunded.</span>
+                        </label>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+                            <button type="submit" disabled={loading || reason.trim().length < 5} className="btn-primary">
+                                {loading ? 'Pardoning...' : waive ? 'Pardon and waive fines' : 'Pardon (fines stand)'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // MAIN PAGE
 // ============================================================
 const CapitalCallDetailPage = () => {
     const { id } = useParams();
-    const { hasPermission } = useAuth();
+    const { hasPermission, hasRole, user } = useAuth();
     const canManage = hasPermission('CAPITAL_GOAL_MANAGE');
+    const canPardon = hasRole(['Treasurer', 'Director']); // v1.90.0
+    const [pardoning, setPardoning] = useState(null);
 
     const [call, setCall] = useState(null);
     const [status, setStatus] = useState(null);
@@ -415,7 +479,7 @@ const CapitalCallDetailPage = () => {
                         <h3 className="section-title">Member by member</h3>
                         <div className="flex gap-2 flex-wrap">
                             {[['', 'Everyone'], ['PAID', 'Paid'], ['PARTIALLY_PAID', 'Part paid'], ['PLEDGED', 'Pledged'],
-                              ['DEFAULTED', 'Missed'], ['NOT_RESPONDED', 'No pledge']].map(([k, label]) => {
+                              ['DEFAULTED', 'Missed'], ['PARDONED', 'Pardoned'], ['WITHOUT_PLEDGE', 'Without a pledge'], ['NOT_RESPONDED', 'No pledge']].map(([k, label]) => {
                                 const n = k ? (k === 'PARTIALLY_PAID'
                                     ? (members.summary.counts.PARTIALLY_PAID || 0) + (members.summary.counts.PARTIAL_OVERDUE || 0)
                                     : members.summary.counts[k] || 0) : members.members.length;
@@ -445,9 +509,12 @@ const CapitalCallDetailPage = () => {
                                     <tr key={m.user_id}>
                                         <td className="py-2 pr-4 text-gray-900 font-medium whitespace-nowrap">{m.name}</td>
                                         <td className="py-2 pr-4 text-right whitespace-nowrap">{m.pledged ? fmt(m.pledged) : '—'}</td>
-                                        <td className="py-2 pr-4 text-right whitespace-nowrap text-green-700">{m.paid ? fmt(m.paid) : '—'}</td>
+                                        <td className="py-2 pr-4 text-right whitespace-nowrap text-green-700">{m.paid ? fmt(m.paid) : '—'}
+                                            {m.without_pledge > 0 && <span className="block text-[10px] text-gray-400">{m.paid_on_pledges > 0 ? `incl. ${fmt(m.without_pledge)} without a pledge` : 'without a pledge'}</span>}
+                                        </td>
                                         <td className={`py-2 pr-4 text-right whitespace-nowrap ${m.outstanding > 0 && (m.status === 'DEFAULTED' || m.status === 'PARTIAL_OVERDUE') ? 'text-red-600 font-medium' : ''}`}>
                                             {m.outstanding ? fmt(m.outstanding) : '—'}
+                                            {m.pardoned > 0 && <span className="block text-[10px] text-gray-400 font-normal">{fmt(m.pardoned)} pardoned</span>}
                                         </td>
                                         <td className="py-2 pr-4 text-xs text-gray-500">
                                             {m.pledges.length === 0 ? '—' : m.pledges.map(p => (
@@ -455,7 +522,12 @@ const CapitalCallDetailPage = () => {
                                                     <span className="font-mono">{p.reference_code}</span>
                                                     {' · '}{p.iteration === 2 ? 'round 2 · ' : ''}
                                                     {formatNumber(p.pledged_amount)} {p.currency_code}
-                                                    {' · '}<span className="lowercase">{p.status}</span>
+                                                    {' · '}<span className="lowercase">{p.is_system_generated ? 'made by the system' : p.status}</span>
+                                                    {p.status === 'PARDONED' && p.pardon_reason && <span className="block whitespace-normal text-gray-400">pardoned: {p.pardon_reason}</span>}
+                                                    {canPardon && !p.is_system_generated && (p.status === 'PENDING' || p.status === 'PARTIAL') && (!user || p.user_id !== user.id) && (
+                                                        <button type="button" className="ml-2 text-primary-700 hover:underline"
+                                                            onClick={() => setPardoning({ ...p, member_name: m.name })}>Pardon…</button>
+                                                    )}
                                                 </div>
                                             ))}
                                         </td>
@@ -540,6 +612,12 @@ const CapitalCallDetailPage = () => {
                 onSuccess={load}
                 pledge={approving}
                 accounts={accounts}
+            />
+            <PardonModal
+                isOpen={!!pardoning}
+                onClose={() => setPardoning(null)}
+                onSuccess={load}
+                pledge={pardoning}
             />
             <RejectModal
                 isOpen={!!rejecting}
